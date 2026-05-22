@@ -34,14 +34,20 @@ source "$VENV_DIR/bin/activate"
 log "使用 Python：$(python -c 'import sys; print(sys.executable)')"
 
 if [ "$SKIP_INSTALL" != "1" ] && [ "$INSTALL_MODE" = "full" ]; then
-  log "安装/更新完整依赖：requirements.txt"
+  log "安装/更新完整依赖：requirements-local-models.txt"
   log "默认使用 CPU PyTorch：$TORCH_INDEX_URL"
   python -m pip install --upgrade pip
   python -m pip install --index-url "$TORCH_INDEX_URL" torch
+  python -m pip install -r requirements-local-models.txt
+elif [ "$SKIP_INSTALL" != "1" ] && [ "$INSTALL_MODE" = "remote" ]; then
+  log "安装/更新远程服务模式依赖：requirements.txt"
+  log "不会安装 torch / sentence-transformers；默认使用 zwwen embedding/rerank 服务"
+  python -m pip install --upgrade pip
   python -m pip install -r requirements.txt
 elif [ "$SKIP_INSTALL" != "1" ]; then
   log "快速部署模式：跳过完整依赖安装"
-  log "如需运行真实抓取/重排流程，请执行：DPR_INSTALL_MODE=full scripts/bootstrap_local.sh"
+  log "如需补齐远程服务模式依赖，请执行：DPR_INSTALL_MODE=remote scripts/bootstrap_local.sh"
+  log "仅当需要本地模型 fallback 时，再执行：DPR_INSTALL_MODE=full scripts/bootstrap_local.sh"
 else
   log "跳过依赖安装：DPR_SKIP_INSTALL=1"
 fi
