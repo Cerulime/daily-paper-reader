@@ -1,0 +1,1642 @@
+Title: Policy-Compliant Cloud Storage Systems
+
+URL Source: https://arxiv.org/pdf/2606.05423v1
+
+Published Time: Fri, 05 Jun 2026 00:34:21 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# Policy-Compliant Cloud Storage Systems 
+
+# Dimitrios Stavrakakis 1 Masanori Misono 1 Julian Pritzi 1
+
+# Harshavardhan Unnibhavi 1 Nuno Santos 2 Pramod Bhatotia 11Technical University of Munich 2INESC-ID/Instituto Superior Tecnico, University of Lisbon 
+
+Abstract 
+
+Privacy regulations such as the General Data Protection Regulation (GDPR ) impose strict requirements on how personal data is stored, processed, and audited. While key-value stores (KVS) are widely used in latency-sensitive applications, their simple data model and untrusted cloud deployment environments make GDPR compliance particularly challenging. Existing approaches require invasive code modifications, impose high performance overheads, or overlook the integrity of compliance mechanisms themselves. This paper presents GDPRuler , a trusted middleware system that enables verifiable GDPR compliance for KVS on untrusted clouds without modifying their codebase. GDPRuler deploys a 
+
+trusted GDPR monitor inside a Confidential Virtual Machine (CVM), which enforces GDPR policies, manages compliance metadata, and maintains tamper-evident audit logs. A declarative policy language translates core GDPR obligations into enforceable runtime rules. To ensure efficiency, GDPRuler encodes metadata compactly within KV records, builds dedicated metadata indexes for GDPR -specific queries, and logs only compliance-relevant events in a space-efficient format. We implement GDPRuler as a transparent proxy for un-modified Redis and RocksDB deployments. Evaluation with YCSB and GDPR -inspired workloads shows that GDPRuler enforces core compliance guarantees with low overheads: GDPRuler achieves 
+
+≈61% of native KVS throughput with the CVM environment con-tributing 28%-32% of it, metadata storage overhead remains below 20%, and GDPR queries benefit from 13-182 × speedup through meta-data indexing. By embedding verifiable policy enforcement into a trusted middleware layer, GDPRuler offers a practical path toward 
+
+GDPR -compliant KVS on untrusted cloud infrastructures. 
+
+CCS Concepts 
+
+• Security and privacy → Database and storage security .
+
+Keywords 
+
+Confidential computing; GDPR; Security; Database; Storage 
+
+1 Introduction 
+
+The rapid move of data processing and storage to the cloud has shifted control of sensitive information from individuals and orga-nizations to untrusted third - party infrastructures, intensifying the concerns over data security, privacy, and anonymity. Across diverse cloud data architectures—from data warehouses to distributed data processing systems—modern privacy regulations such as the General Data Protection Regulation ( GDPR ) [ 79 ] require data controllers to operationalize users’ rights—such as access and erasure [ 52 , 54 ]—and to uphold principles of purpose and storage limitation [ 65 ] directly in their storage and processing pipelines. Non-compliance can result in severe financial and reputational penalties [ 36 , 91 , 103 , 104 ], moti-vating systems that can not only protect data but also record, enforce, and prove compliance actions through auditable operations on stored data. Achieving this goal in cloud deployments, however, remains difficult: privileged software stacks controlled by cloud operators can observe or tamper with data and audit trails, undermining both confidentiality and the integrity of compliance evidence. Key-Value Stores (KVS) [ 7 , 39 , 97 , 99 , 113 ] constitute a core com-ponent of modern cloud data architectures, exemplifying the tension between simplicity and compliance. They underpin a wide range of modern data services, from caching layers to IoT pipelines, but their flat key-value (KV) abstraction provides no native support for compliance metadata, secondary indexes, or expressive queries. As a result, mechanisms such as purpose-based access must be imple-mented above the data layer, through ad hoc application logic that offers little assurance of correctness or completeness. Unlike rela-tional databases, KVS lack schemas and query semantics that would allow them to represent and reason about regulatory state. A fundamental design question is thus where and how to enforce privacy-aware compliance . Embedding GDPR mechanisms directly into KV engines (e.g., Redis [ 113 ], RocksDB [ 99 ], LevelDB [ 74 ]) would tightly couple regulatory policy with system internals, complicating upgrades and breaking compatibility. Delegating enforcement to the application layer scatters compliance checks and forfeits verifiability. We argue that effective GDPR compliance requires a dedicated, ver-ifiable trusted middleware layer —a secure data-management service interposed between applications and unmodified KVS backends, which centralizes policy enforcement, metadata management, and audit logging while preserving the existing KVS API. However, designing such a layer raises three intertwined chal-lenges spanning security and privacy , policy enforcement , and perfor-mance . First, the middleware must remain secure and trustworthy even when deployed on untrusted clouds, preventing privileged soft-ware from observing or altering compliance logic or logs. Administra-tors or compromised hypervisors may gain access to in-memory data, intercept compliance metadata, or tamper with audit logs to conceal non-compliant behavior [ 114 ], undermining both confidentiality and the ability to demonstrate lawful processing. Existing approaches that rely on application-level controls [ 1 ] or data-engine enforce-ment [ 6, 118 ] assume a trusted cloud stack and leave the integrity of compliance mechanisms (e.g., metadata) and audit logs unprotected. Second, the system must translate legal requirements into enforce-able policies that can be applied to KV operations without relying on schemas or rich query semantics. This translation is challenging because GDPR requirements are written in legal rather than techni-cal language, leaving system builders to decide how principles such as storage or purpose limitation should be represented and enforced. Prior work on compliance-aware relational databases [ 6, 118 ] in-troduces heavy schema extensions and relies on trusted execution environments, but these designs do not generalize to lightweight, high-throughput KVS workloads or to untrusted cloud deployments. Third, the middleware must preserve high performance while continuously enforcing compliance and maintaining observability. 
+
+> arXiv:2606.05423v1 [cs.CR] 3 Jun 2026
+
+Integrating compliance logic in the data path risks undermining effi-ciency that makes KVS attractive. Associating metadata with every record increases storage footprint, while enforcing deletion and ac-cess rights often requires non-key lookups that degenerate into full scans. Prior analyses show that naïve GDPR implementations can lead to high compliance-query latencies even for small datasets [ 118 ]. Moreover, generating tamper-evident audit logs introduces I/O and synchronization overheads that accumulate in high-throughput sce-narios, exhausting resources and inflating latency. Our key insight is that GDPR compliance can be realized as a 
+
+verifiable data-management layer that executes inside a Confidential Virtual Machine (CVM). Running the enforcement logic within this hardware-isolated environment allows the system to mediate all KV operations securely, associate each key with compact compli-ance metadata, and maintain cryptographically protected audit logs, while requiring no modifications to existing storage engines. This paper presents GDPRuler , a trusted middleware that en-ables GDPR -compliant KVS on the untrusted cloud. More precisely, it deploys a trusted compliance monitor inside a CVM, providing hardware-backed isolation, integrity, and attestation guarantees for compliance logic and metadata. The monitor intercepts all KV op-erations, enforces GDPR policies, maintains per-record metadata, and produces verifiable audit trails. To express compliance rules, 
+
+GDPRuler introduces a declarative policy language that compiles le-gal requirements (e.g., purpose limitation) into lightweight runtime checks within the CVM. Compact metadata encoding and dedicated indexes accelerate compliance queries, while a tamper-evident log-ging system records compliance-relevant operations in a secure, space-efficient format. By acting as a transparent proxy, GDPRuler 
+
+preserves compatibility with existing deployments, allowing orga-nizations to retrofit GDPR compliance without code changes. We implement GDPRuler as a transparent proxy layer compat-ible with unmodified Redis and RocksDB deployments. Our eval-uation using YCSB and GDPR -inspired workloads demonstrates that GDPRuler enforces key GDPR obligations while maintaining high throughput and modest storage overheads: GDPRuler achieves 
+
+≈61% of native throughput on average, with the underlying CVM contributing 28-32% of this overhead. GDPR queries achieve 13-182 ×
+
+improvement through dedicated metadata indexing, while metadata storage overhead remains below 20%, and the tamper-evident log-ging system reduces throughput by merely 2%. These results confirm that GDPRuler delivers secure, policy-compliant, and auditable data management on untrusted clouds without sacrificing performance. In summary, the main contributions of this paper are as follows: 
+
+• Trusted middleware architecture: a data-management layer that decouples compliance enforcement from applications and KV engines, providing compatibility and verifiable GDPR control. 
+
+• Secure enforcement environment: a CVM-based trusted com-pliance monitor that ensures confidentiality, integrity, and remote attestation on untrusted cloud infrastructures. 
+
+• Declarative policy framework: a policy language and compiler translating GDPR rules to enforceable constraints in the data path. 
+
+• Efficient metadata and auditing: compact per-record meta-data encoding, compliance-specific indexing, and tamper-evident logging optimized for high-throughput workloads. Alice       
+
+> (Data owner )
+> eShop
+> (Data controller )
+> KV API
+> Cart
+> Name
+> Address
+> Items id
+> Recommendation Service
+> (Data processor )
+> Data protection office
+> (Regulatory authority )
+> Request
+> user data Request &
+> audit logs Purposes
+> Business insights
+> User experience
+> Targeted marketing
+> Key Value
+> uid:name Alice
+> uid:pwd secret!
+> uid:email a@b.com
+> uid:card "..."
+> Insert, update &
+> delete personal data
+> Cart checkout
+
+Figure 1: GDPR ecosystem: The eShop (controller) stores user data in a KVS and uses a recommendation service (pro-cessor). Purpose limitation (Art. 5(1)(b)) restricts Alice’s data usage to the declared purpose. The controller must provide verifiable compliance and respond to regulatory requests. 
+
+• Implementation and evaluation: a prototype supporting Redis and RocksDB demonstrating secure, low-overhead GDPR enforce-ment under realistic workloads. 
+
+2 Background 
+
+2.1 Confidential Virtual Machines (CVMs) 
+
+Confidential computing [ 37 ] protects data in use through hardware-assisted Trusted Execution Environments (TEEs), while providing remote attestation capabilities to ensure the system is deployed with the intended configuration, enabling secure processing in untrusted cloud environments. Recently, the industry has shifted toward VM-level confidential computing solutions, namely Confidential Virtual Machines (CVMs) [ 35 , 75 , 101 ], including AMD SEV-SNP [ 8], Intel TDX [ 78 ], and ARM CCA [ 13 ]. Major cloud providers have started offering CVMs as a service [ 73 , 100 ]. CVMs run the entire guest system within the TEE, enabling the reuse of existing applications while preventing unauthorized access even from the cloud provider. 
+
+2.2 GDPR Policy Compliance for KVS 
+
+KVS provide a simple data model and high performance, making them the backbone of latency-sensitive, large-scale services. At the same time, organizations are increasingly subject to strict regulatory frameworks that govern how personal data must be handled, includ-ing the General Data Protection Regulation ( GDPR ) in Europe, the California Consumer Privacy Act (CCPA) in the United States, and other emerging data protection acts. Among these, GDPR has be-come the global reference, imposing strict responsibilities and hefty penalties for non-compliance. Since many KVS - based applications manage personal data directly, ensuring GDPR compliance is is both a legal and technical necessity. This paper focuses on providing sys-tem support for GDPR -compliant KVS applications , while preserving the efficiency and compatibility that make KVS attractive in practice. 
+
+GDPR entities in KVS applications. GDPR defines distinct ac-tors with specific obligations that naturally map to KVS workflows handling sensitive data (Figure 1). The data owner is the individual whose personal data is stored in the KVS. The data controller is the organization operating the application and bears the legal respon-sibility to ensure GDPR compliance. The data processors are internal or external services that perform operations on the KVS on behalf of the controller and must declare their intended purpose of data use. Finally, regulatory authorities supervise compliance and may request verifiable logs to audit how personal data is processed. 
+
+> 2
+
+Compliance requirements for KVS. To achieve GDPR compliance all KV operations (e.g., get /put /delete ) must respect the policies de-fined by data owners, that processors’ declared purposes are checked against those policies, and that controllers maintain tamper-evident records of processing activities that regulators can independently audit. Compliance is therefore not an external feature bolted onto the application, but an end-to-end property that must extend across the entire workflow. Meeting this goal demands three key requirements: 
+
+(i) confidential and integrity -protected personal data processing and storage; (ii) policy-aware KV operations with verifiable audit log-ging; and (iii) preservation of the performance and simplicity of KVS. 
+
+3 Data Security & GDPR Compliance Challenges 
+
+KVSs are architected for simplicity and performance, fundamen-tally complicating the verifiable enforcement of GDPR require-ments [118]. Meeting these requirements ( § 2.2) in untrusted cloud environments introduces data management challenges across three dimensions: security , policy specification and enforcement , and per-formance .
+
+3.1 Security in Untrusted Cloud Environments 
+
+KVS-based applications in untrusted clouds face GDPR risks be-cause privileged operators can access or tamper with in-memory KV pairs, stored data, operation logs, and audit records. Conven-tional protections such as authentication, access-control lists, or TLS encryption—while effective for data in transit or at rest—implicitly assume a trusted operating system and hypervisor, assumptions that no longer hold in public cloud environments. Therefore, achieving 
+
+GDPR compliance requires end-to-end protection covering both volatile state (e.g., in-memory data, policy decisions, compliance metadata) and persistent state (e.g., KV pairs and audit logs). CVMs establish a strong security foundation by offering three core guarantees: confidentiality of volatile state, ensuring data and metadata privacy; integrity protection, which prevents unautho-rized modification of data and policies during execution; and remote attestation, allowing for external verification of the deployment. However, placing a KVS in a CVM alone is insufficient for GDPR 
+
+compliance because the latter depends on the integrity of policy enforcement and metadata management throughout the workflow. Simply encrypting values does not ensure that deletion requests are honored, retention and purpose policies are correctly enforced, or audit logs remain authentic once data leaves the trusted boundary. 
+
+The core security challenge is thus to extend CVM guarantees beyond volatile state to persistent storage and logs, so that pol-icy decisions and compliance records can be verified end-to-end. These guarantees must remain general and compatible across het-erogeneous KVS without altering their data models. This requires orchestrating KV operations and dataflows so that data, metadata, and policy enforcement execute in a unified, verifiable environment. 
+
+3.2 Policy Specification and Enforcement 
+
+GDPR defines a broad legal framework for data protection, but not all of its articles are equally relevant to the KVS layer [ 118 ]. We focus on requirements technically enforceable within the KVS, such as “purpose limitation” and “storage limitation” (Article 5), “right of access” (Article 15), “right to be forgotten” (Article 17), “right to object” (Article 21), and “records of processing activities” (Article 30). Articles handled at higher application layers—such as breach notification (Articles 33-34) and data portability (Article 20)—are data controller responsibilities that extend beyond the KVS scope. 
+
+GDPR obligations relevant to KVS introduce policy specification challenges , as GDPR ’s legal language cannot be easily mapped to technical constraints. Unlike relational databases with structured schemas and rich metadata support, KVS offers limited expressive-ness for defining complex policies. For example, determining if user behavior tracking for “improving user experience” resembles the same purpose (Article 5) as “product optimization” requires legal interpretation that KVS systems cannot handle autonomously. This gap between legal requirements and technical implementation cre-ates uncertainty on whether systems truly satisfy the GDPR rules, exposing organizations to compliance risks despite their efforts. Beyond specification, policy enforcement introduces its own chal-lenges . GDPR mandates associating user data with rich compliance metadata that govern how it can be accessed or modified. In practice, ensuring correct and efficient enforcement across KVS operations is non-trivial. As KVS lack structured schemas or relational integrity, maintaining key-policy associations through updates or cache op-erations can introduce inconsistencies. Moreover, the granularity of enforcement, whether at the level of individual keys or names-paces, can cause metadata proliferation , demanding careful trade-offs between scalability, consistency, and resource efficiency. These fac-tors collectively make it challenging to realize correct and efficient system-level enforcement of regulatory policies with modern KVS. 
+
+3.3 Preserving Performance 
+
+GDPR mandates rights (e.g., data access, retention) that force KVS to locate and manage records via GDPR metadata, not simple key lookups. These metadata-driven queries (e.g., retrieving all data of a user, implementing the “right to be forgotten”) are inefficient for existing KVS, causing severe latency and I/O overheads. For example, naïve implementations in Redis show latencies of several seconds even on modest datasets [118]. Beyond query processing, compliance mechanisms themselves introduce performance penalties: GDPR ’s audit logging demands creating metadata-rich entries for every operation on sensitive data, transforming lightweight requests into heavier I/O workloads with multiple physical writes. Structured GDPR audit logs also require more complex serialization and parsing than simple append-only logs, adding CPU overhead that compounds the I/O bottleneck and erodes the latency advantages of KVS architectures. Addressing these performance challenges requires rethinking how 
+
+GDPR mechanisms integrate with the KVS data path. A practical approach involves representing compliance metadata compactly, indexing it to avoid full KVS scans, and recording audit trails effi-ciently without disrupting normal KV operations. Equally important is minimizing interference with the critical data path: reads and writes must remain lightweight, while policy enforcement should be optimized through efficient validation pipelines. 
+
+Problem statement. To address these challenges, we target the following question: How can we design a system that enables secure 
+
+GDPR compliance for KVS on untrusted clouds while maintaining high-performance query processing, providing verifiable policy enforcement, and preserving compatibility with existing deployments? 
+
+> 3
+
+4 Overview 
+
+As a solution, we present GDPRuler , a trusted middleware system that acts as a GDPR monitor to transparently ensure GDPR com-pliance for cloud KVS through strict policy enforcement, efficient 
+
+GDPR metadata management, and verifiable audit logs. 
+
+4.1 System Architecture 
+
+Figure 2 depicts GDPRuler ’s architecture, highlighting its trusted boundary (green box) and key components. Interposed between applications and unmodified KVS engines, it runs within a CVM that establishes an isolated, attested environment mediating all KV op-erations. Within this boundary, it enforces GDPR policies, validates query intents, and maintains tamper-evident compliance logs, while preserving compatibility with existing KVS. GDPRuler ’s design is guided by three principles tailored to KVS traits: 
+
+• Policy-driven query control. Since KVS lack schemas or query planners for access controls, GDPRuler introduces a policy specifi-cation language and companion API for data owners and processors to express policies alongside KV queries. The owners define how personal data must be managed (e.g., consent), while processors declare their intended purposes. These policies are compiled into compact metadata structures attached to queries, transforming opaque KVS requests into policy-aware operations. 
+
+• Trusted enforcement and verifiable auditing. GDPRuler en-forces compliance within a trusted monitor running in a CVM. All compliance decisions remain confined to this protected do-main. A KVS-tailored tamper-evident log records policy-relevant actions, while remote-attestation protocols extend trust to external 
+
+GDPR entities allowing them to verify that GDPR enforcement and auditing originate from an authentic, untampered deployment. 
+
+• Backend-agnostic deployment and extensibility. GDPRuler 
+
+operates as a drop-in middleware that can sit atop any KVS. A 
+
+unified interface layer abstracts backend-specific APIs, enabling integration with KVS (e.g., Redis) without re-implementing com-pliance logic. The design supports future backends through light-weight adapters and performance-oriented optimizations, such as efficient metadata encodings, and metadata indexing (see §5). Guided by these principles, GDPRuler comprises five modular components. The Configuration and Attestation Service anchors sys-tem trust by managing entity registration and establishing secure channels via mutual remote attestation, ensuring that only legiti-mate parties interact with the system and register their default data and execution policies used for subsequent enforcement. The Policy Compiler translates these policies to executable rule sets optimized for KVS workloads, intercepting KV operations and transforming them to GDPR -aware queries carrying compliance metadata. It applies compact encodings and merges default policies with per-query overrides for fine-grained runtime enforcement. The Trusted GDPR Monitor enforces the compiled rules within the CVM, validating access, modification, and retention constraints while managing the tamper-evident log. For data operations, it per-forms access control and filters results to ensure that the requesting entity’s declared policy aligns with owners’ consents, sharing permis-sions, and retention settings. It maintains auxiliary data structures optimizing GDPR queries and runs a background expiration scanner. The Data I/O Subsystem bridges the monitor and the backend en-gine, encrypting payloads, authenticating operations, and ensuring Control Path 
+
+> Data Path
+> Hypervisor
+> Untrusted Storage
+> GDPR Logs KVS
+> CVM
+> Policy Language & Compiler
+> Trusted GDPR Monitor
+> KVS Engine
+> Configuration & Attestation Service
+> Data I/O Subsystem
+> Data Queries
+> Data & Execution Policies Provision
+> Audit GDPR Queries
+> Regulatory
+> Authority
+> GDPRuler
+> ①
+> ②
+> ③
+> ④
+> ⑤⑥
+> ⑦
+> Data
+> Owners
+> Data
+> Processors
+> Data
+> Controller
+
+Figure 2: GDPRuler architecture and workflow. 
+
+the confidentiality and integrity of both data and logs. It generates tamper-evident records for all policy-relevant actions and exposes an authenticated audit trail accessible to regulators. Finally, the KVS Engine executes standard key–value operations over encrypted values without GDPR awareness, ensuring compat-ibility with unmodified backend software. Both encrypted data files and audit logs reside in untrusted storage outside the CVM. 
+
+4.2 System Workflow 1. Setup phase. Before launch, the data controller registers public keys of all legitimate entities—data owners, processors, controllers, and regulatory authorities—with the Configuration and Attesta-tion Service , establishing the system’s trust anchors. Entities verify 
+
+GDPRuler ’s integrity through remote attestation, while the service validates their cryptographic identities against the registered keys. After successful mutual attestation, secure channels are established, and session keys are issued for subsequent interactions. Data owners and processors then upload default data and execution policies to the Trusted GDPR Monitor , securing them inside the CVM ( 1 ). 
+
+2. Query execution. When an entity issues a query ( 2 ), it may include GDPR predicates that act as complementary constraints. The 
+
+Policy Compiler parses these predicates and merges them with the entity’s default policy, generates an enforcement rule, and attaches the corresponding metadata to the query. The augmented operation is passed to the Trusted GDPR Monitor ( 3 ), which validates it against the compiled rules, and forwards it to the Data I/O Subsystem ( 4 ). 
+
+3. Data processing and logging. The Data I/O Subsystem creates a tamper-evident log entry for each operation involving personal data or in case of a policy violation ( 5 ). Then, it encrypts the payload (data, metadata), maps the operation to the appropriate API (e.g., Redis SET/GET , RocksDB Put/Get ), and submits it to the KVS ( 6 ) for execution. Subsequently, it returns the result to the monitor, which performs final validation before delivering it to the requesting entity. 
+
+4. Auditing. For regulatory inspection, authorized authorities can request access to GDPR logs ( 7 ), enabling verification of compli-ance and detection of possible violations. The Trusted GDPR Monitor 
+
+authenticates the requester based on its registered key. 
+
+4.3 Programming Model 
+
+GDPRuler exposes a standard put/get/delete API, summarized in Table 1. To support diverse backends that may use distinct bindings, 
+
+GDPRuler provides adapters that map these operations to its unified API. To support metadata management and auditing, required for 
+
+GDPR compliance (§ 3.2), GDPRuler provides compliance-aware                    
+
+> 4Query API Description
+> get(k) Retrieves the value associated with k.
+> put(k,v) Inserts a KV pair and its metadata.
+> delete(k) Deletes the specified KV pair.
+> getm(key_prefix, Retrieves values or metadata. Results are
+> “(meta)data”) filtered based on the query policy.
+> putm(key_prefix, Updates GDPR metadata for KV pairs
+> new_metadata) that comply with the query policy.
+> deletem(key_prefix) Deletes KV pairs that comply with the query policy.
+> getLogs(optional_key) Retrieves all GDPR logs (or those of a specified key).
+
+Table 1: GDPRuler ’s Query API. 
+
+operations (getm /putm /deletem ) and a logging primitive ( getLogs ), enabling the management of GDPR -related metadata and audit logs. Before issuing queries, each GDPR entity specifies a default data handling policy, as shown in the listing below.         
+
+> 1// Data owner (Alice) default data policy:
+> 2{"sessionKey":alice_key, "default_policy": {
+> 3"purpose":[recommendations,orders], "share":[recommender_key],
+> 4"objection":[marketing,analytics], "expTime":[90d],
+> 5"origin":[shop.com/account_creation], "monitor":[true]}}
+> 6// Data processor (Recommendation Service) default execution policy.
+> 7{"sessionKey":recommender_key,
+> 8"default_policy": {"purpose":[recommendations]}}
+
+Entities express queries with GDPRuler ’s policy specification language (§5.1) using predicates shown in Table 2. If no per-query predicates are specified, the system automatically applies the entity’s default policy. The following listing presents query examples.           
+
+> 1// Data owner: store data using the default policy.
+> 2query(put("alice:preferences","data")) ∧sessionKey(alice_key)
+> 3// Data processor: request data for the "recommendations" purpose.
+> 4query(get("alice:preferences")) ∧sessionKey(recommender_key)
+> 5∧objPurIs(recommendations)
+
+4.4 Deployment and Threat Model 
+
+GDPRuler assumes a platform with CVM support to host its trusted components, such as AMD SEV-SNP [ 8], Intel TDX [ 78 ], and ARM CCA [ 13 ]. External applications operated by data owners, processors, controllers, and regulators interact with GDPRuler over mutually attested, encrypted channels established during system setup. Applications outside GDPRuler are assumed to run within trusted domains (e.g., CVM, on-premises environment). Securing applica-tion logic is beyond our scope. The system uses persistent storage for KVS data and compliance logs. We assume this storage provides dura-bility but not rollback protection. Deployments may instantiate a single CVM instance or multiple ones depending on scalability needs. Under this deployment setting, the trusted computing base (TCB) of GDPRuler comprises the CVM hardware, its firmware, and all software components running inside the CVM. All other system software and infrastructure—including the hypervisor and external storage—is untrusted. GDPRuler inherits the standard adversary model of modern CVMs [ 4, 8, 10 , 34 ], defending against powerful attackers [ 44 ] that can compromise the system software stack or perform physical attacks such as memory probing, while assuming the processor package and on-chip state remain protected. We do not consider side-channel attacks [ 5, 9, 40 , 76 , 77 , 136 , 137 ], denial-of-service, or timing manipulation (e.g., clock/frequency tam-pering [ 43 ]). For GDPR logs, we consider adversaries capable of mod-ifying the data or launching rollback and forking attacks [ 18 , 94 , 108 ]. 
+
+5 Design 
+
+5.1 Policy Language and Compiler 
+
+The Policy Language and Compiler transforms data policies into 
+
+GDPR -aware operations. We first describe how policy is specified                                        
+
+> Relational predicates (for GDPRuler policy enforcement)
+> eq (x,y), le (x,y), lt (x,y) x=y, x ≤y, x <y
+> ge (x,y), gt (x,y) x≥y, x >y
+> Session predicates
+> sessionKey (𝐾 )Sets and/or represents the session key K
+> GDPR metadata predicates
+> objOwn (𝑥 ), objOwnIs (𝑥 )Represents the owner of an object
+> objExp (𝑥 ), objExpIs (𝑥 )Represents the expiry time of an object
+> objPur (𝑥 ), objPurIs (𝑥 )Represents the purposes for an object or an entity
+> objOrig (𝑥 ), objOrigIs (𝑥 )Represents the origin of an object
+> objShare (𝑥 ), objShareIs (𝑥 )Represents the sharing information of an object
+> objObj (𝑥 ), objObjIs (𝑥 )Represents the objections imposed on an object
+> GDPR data predicates
+> monitor (𝑡𝑟𝑢𝑒 /𝑓 𝑎𝑙𝑠𝑒 )Enables/disables monitoring
+> encryption (𝑡𝑟𝑢𝑒 /𝑓 𝑎𝑙𝑠𝑒 )Enables/disables encryption
+> Query predicates
+> query (𝑝𝑢𝑡 /𝑔𝑒𝑡 /𝑑𝑒𝑙𝑒𝑡𝑒 )Represents a standard query operation
+> query (𝑝𝑢𝑡𝑚 /𝑔𝑒𝑡𝑚 /𝑑𝑒𝑙𝑒𝑡𝑒𝑚 )Represents a GDPR query operation
+> query (𝑔𝑒𝑡𝐿𝑜𝑔𝑠 )Represents a GDPR getlog query operation
+
+Table 2: GDPRuler policy language predicates. 
+
+with our novel declarative language, along with associated metadata, and then detail its compilation process for enforcement. 
+
+GDPR metadata. In GDPRuler , each KV pair (object) has associated metadata that keeps the policies necessary for GDPR compliance. This metadata includes its owner (session key ), origin (data source), 
+
+purpose (allowed uses), objections (prohibited uses), sharing permis-sions (which processors may access the data), expiration date , an 
+
+encryption flag, and a monitor flag (logging on/off). This metadata is created when a value is inserted and is either provided along with the insertion query or initialized with default policies. Internally, the metadata is prepended to the associated value of a KV pair and stored in the KVS. Besides GDPR metadata associated with KV pairs, 
+
+GDPRuler preserves metadata for data processors (i.e., session key, data processing purposes), initially provided during the setup phase. 
+
+Declarative policy language. Drawing inspiration from declar-ative language for data policy specification (e.g., [ 86 , 128 , 129 ]), 
+
+GDPRuler defines a policy language that enables data owners and processors to specify their data-handling policies along with KV queries in a formal predicate-based syntax (Table 2). These policies use session predicates to specify their session, GDPR metadata and 
+
+GDPR data predicates to specify GDPR policies, and the query predi-cate to specify the actual query, with multiple predicates joined with ‘∧’. For instance, a typical query is formed like the following:          
+
+> 1query(op) ∧sessionKey(K) ∧objExp(x) ∧objPur(y) ∧...
+
+GDPRuler policies are categorized into two parts: data access and 
+
+execution policies. Data access policies override the data owner’s default policy. Specifically, preference type predicates (predicates of the form objXXX() , e.g., objPur(x) ) explicitly specify the policy associated with the KV pair. For example, Alice (data owner) uses        
+
+> 1query(put("alice:purchase","data")) ∧sessionKey(alice_key) ∧
+> 2objPur(orders) ∧objObj(recommendations)
+
+to insert “data” with a key “alice:purchase” using “alice_key” as a session key with the purpose of “orders” and objection to “recom-mendations”. Additionally, filter type predicates (predicates of the form objXXXIs() ) are used to create a filter for the associated meta-data (referred to as the metadata filter ) when performing GDPR 
+
+queries ( getm/putm/deletem ). For example, the following operations get values whose key prefix is “alice:”, and their purpose is “orders”.  
+
+> 1query(getm("alice:","data")) ∧sessionKey(alice_key) ∧objPurIs(orders)
+
+On the other hand, execution policies control the intent of data processors. With this policy, for instance, the data recommendation       
+
+> 5Untrusted Storage
+> Hypervisor
+> Control Path
+> Data Path
+> CVM
+> Regulatory Authority
+> Configuration & Attestation Service
+> Attestation
+> Service
+> Policy Configurations
+> getLogs()
+> Application
+> Audit Path
+> put(K,V), get(K), delete(K)
+> getm( ... ), putm( ... ), deletem( ... )
+> establish_session(policy)
+> Data I/O Subsystem
+> GDPR Logging System
+> Encryption Engine
+> KVS files
+> GDPRuler
+> ...
+> GDPR Logs
+> KVS Engine
+> Trusted GDPR Monitor
+> GDPR Enforcement Engine
+> GDPR Μetadata Indexes
+> Background Expiration Scanner
+> Query Validator
+> Metadata Decoder
+> Policy Language & Compiler
+> Policy Compiler Query Rewriter Metadata Encoder
+> append()
+> exp_check()
+> KV Adapter
+> put(K,V), get(K), delete(K)
+> Trusted Counter Service Data
+> Owners
+> Data
+> Processors
+> Data
+> Controller
+
+Figure 3: Detailed view of GDPRuler system. GDPRuler consists of (i) a policy compiler for GDPRuler ’s declarative policy language, (ii) the Trusted GDPR Monitor, (iii) GDPRuler ’s Data I/O Subsystem, and (iv) Configuration and Attestation Services. 
+
+service (data processor) may send the following query intended to get a value of “alice: purchase” for recommendation purposes.      
+
+> 1query(get("alice:purchase")) ∧sessionKey(recommender_key) ∧
+> 2objPurIs(recommendations)
+
+GDPRuler policy enforcement rules. The Trusted GDPR Mon-itor uses an extended version of our policy language to describe its policy enforcement rules. They are expressed in the form perm :- con-dition . The condition is composed of relational predicates (e.g., eq(x,y) )and predicates used by data access and execution policies. Multiple relational predicates are joined with ‘ ∧’ (logical and) or ‘ ∨’ (logical or) operators. The filter type predicates (predicates of the form ob-jXXXIs() ) are extended to return metadata values associated with a session key or object (e.g., objPurIs(K) returns the purpose of the en-tity K). The language also defines ‘&’ (intersection) and ‘||’ (union) op-erations for metadata values. Using this policy language, GDPRuler 
+
+clearly specifies the GDPR enforcement rules in a declarative manner. For instance, the following enforces the purpose limitation (Article 5):     
+
+> 1// objPurIs(K): the purposes of the entity with session key K
+> 2// objPurIs(k): the allowed purposes of the data object with key k
+> 3read :- eq(objPurIs(K) & objPurIs(k), objPurIs(K))
+
+We detail how the predicates form GDPR enforcement rules in §5.6. 
+
+Policy compiler. The policy compiler transforms high-level GDPR 
+
+policy expressions into executable enforcement directives. For each query operation, it parses the policy predicates from the request, to-kenizes these expressions, and performs semantic analysis to extract predicate attributes and values. It then combines those attributes with default policies to fill the missing values. For GDPR queries, it generates metadata filters for later filtering operations. 
+
+Metadata encoder. For put/putm operations, metadata is stored along with the associated values. GDPRuler utilizes bitmaps for val-ues that represent categories (e.g., purposes), enabling quick bitwise operations for policy validation. The mapping of bits is established during runtime, and all bitmap structures can be resized to accom-modate new entries. This ensures the system remains adaptable to changing compliance requirements while minimizing metadata and maintaining efficient processing. The expiration times have 8-byte precision to ensure precise time-based policy enforcement. 
+
+Query rewriter. Given the policies from the policy compiler, the query rewriter transforms standard KV queries into GDPR -aware operations. For write operations (e.g., put ), it prepends the encoded 
+
+GDPR metadata to the user data. For read operations (e.g., get ), it propagates the query along with the associated metadata filters to the GDPR Enforcement Engine for subsequent validation. 
+
+5.2 Trusted GDPR Monitor 
+
+The Trusted GDPR Monitor serves as the central compliance verifica-tion component of GDPRuler . It processes GDPR -aware operations and ensures all access complies with specified policies. 
+
+GDPR enforcement engine. The GDPR enforcement engine re-ceives operations with GDPR metadata from the query rewriter. For 
+
+get/getm operations, it also retrieves (encoded) GDPR metadata of the associated object, and the Metadata Decoder decodes it. Subse-quently, its query validator validates the policy enforcement rules. After successful validation, it forwards the operations to the Data I/O Subsystem to materialize the KV operation and logging. The query validator first confirms that the data is not expired and validates that the request initiator either is the data owner (for updates) or has explicitly been granted access via the sharing prop-erty (for reads). Then, it checks that declared purposes fall within the subset of allowed purposes, and finally verifies that no query purposes are part of the KV pair’s objections. 
+
+GDPR metadata indexes. To optimize policy validation, GDPRuler 
+
+maintains specialized in-memory data structures that index keys based on their GDPR metadata, as shown in Figure 4, avoiding full KVS scans for metadata operations. GDPRuler provides different indexing options (e.g., hashmap, B+ tree, inverted index). Data con-trollers can enable specific data structures based on anticipated 
+
+GDPR query patterns and metadata types. For instance, hashmap indexes provide O(1) lookups for exact metadata matches, while B+ trees support efficient range queries, useful for temporal fields. 
+
+Background expiration scanner. GDPRuler implements a back-ground expiration scanner to enforce GDPR ’s data minimization and storage limitation principles (Article 5). The scanner operates asyn-chronously at configured intervals. It scans metadata and queues delete requests on expired data to the Data I/O Subsystem. While the KVS backend handles actual deletion, which may implement tech-niques such as tombstoning [ 45 ], GDPRuler ensures that expired data becomes unreachable through its API via its GDPR Enforcement Engine. This approach represents a reasonable trade-off for GDPR 
+
+compliance, while respecting KVS-specific deletion mechanisms.        
+
+> 6Data I/O Subsystem Trusted GDPR Monitor
+> GDPR Metadata Indexes
+> B+ tree Hashmap Inverted Index
+> Logging System
+> Thread-safe Queue
+> Segmented Batching
+> Writers Pool
+> Cnt Header MAC Entries
+> Log #1 Batch #1 Batch #n ... ... Log #n
+> Queries from Query Rewriter
+> Filesystem
+> Encryption Engine
+> Compression Engine
+> GDPR Enforcement Engine
+> append()
+> CVM
+> KV Adapter
+> GDPR logs KVS files
+> KVS Engine
+> put/get/delete()
+> Untrusted Storage
+
+Figure 4: Metadata indexing and data I/O subsystems. 5.3 Data I/O Subsystem 
+
+GDPRuler ’s GDPR Data I/O Subsystem handles all data encryption, KV backend communication, and tamper-evident audit logging. 
+
+KV adapter. The KV adapter bridges GDPRuler ’s components with the unmodified KVS engine. It implements a template-based ap-proach where core operations (e.g., put , get , delete ) are mapped to the specific API of different KV backends. This design enables the seam-less integration of diverse KV stores by utilizing generic data types (e.g., byte streams) that are compatible with most implementations. 
+
+Encryption engine. To ensure confidentiality (Article 32), even if a KVS does not inherently support encryption, GDPRuler offers a built-in encryption engine. During connection establishment, data owners and regulatory authorities perform authenticated key ex-change with GDPRuler using their session keys to derive encryption keys. The encryption engine encrypts user data (values) and log en-tries and produces a Message Authentication Code (MAC) as part of each object’s metadata to validate integrity upon decryption. 
+
+GDPR logging system. To address the GDPR auditing requirements (Article 30/33), GDPRuler incorporates a secure, tamper-evident log-ging system (Figure 4) that ensures the confidentiality, integrity, and freshness properties of GDPR logs. Log entries are batched and com-pressed to optimize write throughput and reduce write amplification. Specifically, they are enqueued in a thread-safe queue, and processed by dedicated writer threads. Processed entries are grouped as a batch based on a hash of the affected key. The batch contains a metadata header, a monotonically incremented software-based trusted counter protected within the CVM for freshness verification, a series of GDPR 
+
+entries encrypted along with the counter, and a MAC for integrity checks. The batched log is written to append-only files, and log files are automatically rotated based on configurable size thresholds. For log access requests from regulatory authorities, GDPRuler 
+
+decrypts the identified files per-batch, verifies integrity (via MAC), and confirms monotonically increasing counter values within the expected range, thereby preventing replay attacks. 
+
+5.4 Configuration and Attestation Service 
+
+The Configuration and Attestation Service establishes trust between external entities and the GDPRuler instance, manages policy con-figurations, and maintains session security. 
+
+Attestation service. GDPRuler ’s attestation service enables exter-nal entities to ensure the integrity of a GDPRuler and KV engine 
+
+Algorithm 1: Unified GDPR-Aware Operation Framework  
+
+> Input :
+
+𝑜𝑝𝑒𝑟𝑎𝑡𝑖𝑜𝑛 ,𝑘𝑒𝑦 /𝑘𝑒𝑦 _𝑝𝑟𝑒 𝑓 𝑖𝑥 ,𝑣𝑎𝑙𝑢𝑒 ,𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 ,𝑞𝑢𝑒𝑟 𝑦 _𝑝𝑜𝑙𝑖𝑐𝑦   
+
+> Output : Compliance-validated result or denial of operation
+> 1Stage 1: Policy Compilation
+> 2
+
+𝑑𝑒 𝑓 𝑎𝑢𝑙𝑡 _𝑝𝑜𝑙𝑖𝑐𝑦 ← get_session_policy (𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 );  
+
+> 3
+
+𝑝𝑜𝑙𝑖𝑐𝑦 ← compile_query_policy (𝑑𝑒 𝑓 𝑎𝑢𝑙𝑡 _𝑝𝑜𝑙𝑖𝑐𝑦 , 𝑞𝑢𝑒𝑟 𝑦 _𝑝𝑜𝑙𝑖𝑐𝑦 );   
+
+> 4Stage 2: Data Retrieval and Metadata Extraction
+> 5
+
+𝑒𝑛𝑐𝑟 𝑦𝑝𝑡𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 (𝑠 ) ← kv_store.get (𝑘𝑒𝑦 or 𝑘𝑒𝑦 _𝑝𝑟𝑒 𝑓 𝑖𝑥 ∗);  
+
+> 6
+
+𝑣𝑎𝑙𝑢𝑒 (𝑠 ) ← decrypt (𝑒𝑛𝑐𝑟 𝑦𝑝𝑡𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 (𝑠 ));  
+
+> 7
+
+𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ← extract_metadata (𝑣𝑎𝑙𝑢𝑒 (𝑠 ));    
+
+> 8Stage 3: Access Validation and Compliance Checking
+> 9foreach
+
+𝑒𝑛𝑡𝑟 𝑦 ∈ 𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 do  
+
+> 10
+
+𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 ← validate (𝑒𝑛𝑡𝑟 𝑦 , 𝑝𝑜𝑙𝑖𝑐𝑦 , 𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 );   
+
+> 11 if
+
+¬𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 then  
+
+> 12 monitor_query (
+
+𝑘𝑒𝑦 , 𝑜𝑝𝑒𝑟𝑎𝑡𝑖𝑜𝑛 , 𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 );   
+
+> 13 Skip or deny this
+
+𝑒𝑛𝑡𝑟 𝑦 ;     
+
+> 14 end
+> 15 end
+> 16 Stage 4: Operation Execution and Audit Logging For Each Value
+> 17 if
+
+𝑜𝑝𝑒𝑟𝑎𝑡𝑖𝑜𝑛 ∈ { 𝑝𝑢𝑡,𝑝𝑢𝑡𝑚 } then  
+
+> 18
+
+𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 ← rewriter.create_new_value ( 𝑝𝑜𝑙𝑖𝑐𝑦 , 𝑣𝑎𝑙𝑢𝑒 );   
+
+> 19 if
+
+𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎.𝑒𝑛𝑐𝑟 𝑦𝑝𝑡 then  
+
+> 20
+
+𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 = encrypt (𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 );   
+
+> 21 end
+> 22
+
+𝑟𝑒𝑠𝑢𝑙𝑡 ← kv_store.put (𝑘𝑒𝑦 , 𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 );   
+
+> 23 else if
+
+𝑜𝑝𝑒𝑟𝑎𝑡𝑖𝑜𝑛 ∈ { 𝑔𝑒𝑡,𝑔𝑒𝑡𝑚 } then  
+
+> 24
+
+𝑟𝑒𝑠𝑢𝑙𝑡 ← filter_and_aggregate (𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑡 _𝑒𝑛𝑡𝑟𝑖𝑒𝑠 );   
+
+> 25 else if
+
+𝑜𝑝𝑒𝑟𝑎𝑡𝑖𝑜𝑛 ∈ { 𝑑𝑒𝑙𝑒𝑡𝑒,𝑑𝑒𝑙𝑒𝑡𝑒𝑚 } then  
+
+> 26
+
+𝑟𝑒𝑠𝑢𝑙𝑡 ← kv_store.delete (𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑡 _𝑘𝑒𝑦𝑠 );   
+
+> 27 if
+
+𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎.𝑚𝑜𝑛𝑖𝑡𝑜𝑟 ∨ 𝑣𝑖𝑜𝑙𝑎𝑡𝑖𝑜𝑛𝑠𝑑𝑒𝑡𝑒𝑐𝑡𝑒𝑑 then  
+
+> 28 monitor_query (
+
+𝑘𝑒𝑦 , 𝑜𝑝𝑒𝑟𝑎𝑡𝑖𝑜𝑛 , 𝑟𝑒𝑠𝑢𝑙𝑡 , 𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 );    
+
+> 29 end
+> 30 return
+
+𝑟𝑒𝑠𝑢𝑙𝑡 ;
+
+before establishing secure communication channels. They verify the platform configuration, guest VM measurements, and GDPRuler 
+
+binaries through attestation reports generated by secure hardware (e.g., AMD Secure Processor [ 10 ]). Following successful verification, 
+
+GDPRuler performs application validation against entity keys, pre-registered by the data controller, ensuring that only pre-authorized, legitimate applications can establish connections with it. 
+
+Policy configurations. The policy configuration component man-ages default GDPR policies, which are provided by each entity after successful mutual attestation. The default policies are associated with the entity’s session key and stored within the CVM memory. 
+
+Trusted counter service. The trusted counter service provides monotonically increasing counters to ensure the freshness of the audit logs. It maintains a software-based counter for each log file that increments with each appended batch. During log retrieval, 
+
+GDPRuler verifies that the log’s counter value matches the expected sequence. Any deviation from the expected values indicates tamper-ing or rollback attacks. The counters are periodically checkpointed to encrypted storage to survive system restarts. 
+
+5.5 Algorithms 
+
+Algorithm 1 illustrates how GDPRuler converts standard KV oper-ations to GDPR -compliant operations through a four-stage pipeline: 
+
+(i) policy compilation, and merging default and query-specific predi-cates, (ii) metadata retrieval from the object, (iii) policy validation for compliance checks, and (iv) operation execution with audit logging. Detailed algorithms for all operations are covered in Appendix A. 
+
+Standard KV queries. For get operations, GDPRuler first com-piles policies from the requesting entity and any operation-specific overrides (Stage 1), retrieves and decrypts the KV pair and extracts embedded GDPR metadata (Stage 2), validates access permissions 
+
+> 7
+
+(e.g., ownership, purposes, objections) (Stage 3), and conditionally logs the access if required by the data’s privacy settings (Stage 4). Failed access attempts are always logged for audit purposes. 
+
+put operations execute Stages 1 and 2 of the pipeline to check if a key exists and fetch its current metadata. To reduce KVS stress, 
+
+GDPRuler preserves an in-memory cache associating a subset of keys with their metadata. For existing keys, Stage 3 validates modifi-cation permissions based on their current metadata. In Stage 4, the query rewriter encodes metadata directly within the value, creat-ing a payload that embeds GDPR properties. The operation is then submitted to the KVS and gets conditionally logged. 
+
+delete operations follow a similar pipeline to get/put . GDPRuler 
+
+ensures that deletion rights are properly enforced while maintaining comprehensive audit trails. 
+
+GDPR queries. For getm operations, GDPRuler performs bulk re-trieval using key prefix matching (Stage 2), then applies a two-stage filtering: (1) filters entries matching specified criteria, and (2) per-forms individual GDPR compliance validation. In Stage 4, every data access is logged, if required, creating detailed audit trails. The putm operation executes Stages 1 and 2 to compile policies and perform bulk retrieval. In Stage 3, the system applies GDPR meta-data filters to identify entries matching the specified criteria, then validates modification permissions for each entry. Stage 4 leverages the query rewriter to create enhanced values. The deletem operation follows the unified framework adapted for bulk deletion. After policy compilation (Stage 1) and bulk retrieval (Stage 2), Stage 3 validates that the requesting entity has deletion rights for each matching pair strictly based on ownership. In Stage 4, GDPRuler performs bulk deletion of compliant KV pairs and logs each deletion with comprehensive audit information. 
+
+Regulatory accesses. The getLogs operation requires explicit reg-ulator authentication and follows a specialized retrieval path. The operation validates regulatory authority credentials through their registered keys, temporarily pauses ongoing logging to ensure con-sistency in the retrieved audit trail, retrieves log files either for spe-cific keys (using hash-based partitioning) or the entirety of the log files, and internally performs integrity and freshness verification and reports any tampering detections to the authorities. 
+
+5.6 GDPR Policy Predicates 
+
+We next present how GDPRuler ’s policy predicates express GDPR 
+
+articles related to KVS [ 118 ] through an e-commerce scenario (Fig-ure 1): customer Alice (data owner), RecommendationService and AnalyticsService (processors), and an online retailer (controller). Alice’s default policy allows recommendations and orders, objects to marketing and analytics, sets 90-day retention, and shares her data with RecommendationService, which in turn declares its recom-mendation purpose in its execution policy, as shown in §4.3. Table 3 summarizes GDPRuler ’s enforcement rules. 
+
+Purpose limitation (Article 5). When RecommendationService attempts to read Alice’s shopping preferences, GDPRuler validates that the declared purpose “recommendations” is included in Alice’s allowed purposes and does not conflict with her objections and shar-ing is permitted. The access succeeds, and since Alice’s monitoring flag is enabled, the operation is logged for auditing.                      
+
+> 1query(get("alice:preferences")) ∧sessionKey(recommender_key)
+> 2∧objPurIs(recommendations)
+> GDPR Articles Policy enforcement rule
+> #5 Purpose limitation read :- eq(objPurIs( 𝐾 ) & objPurIs( 𝑘 ), objPurIs( 𝐾 ))
+> #5 Storage limitation read :- le(time, objExpIs( 𝑘 ))
+> #13,#14 Information to be provided read_metadata :- eq(objOwnIs( 𝑘 ), objOwnIs( 𝐾 ))
+> #15 Right of access by users read(_metadata) :- eq(objOwnIs(K), objOwnIs(k))
+> update(_metadata) :- eq(objOwnIs(K), objOwnIs(k))
+> #17 Right to be forgotten delete :- eq(objOwnIs(K), objOwnIs(k))
+> #21 Right to object update :- gt(objPurIs( 𝐾 ) & objPurIs( 𝑘 ),0)
+> read :- eq(objPurIs( 𝐾 ) & objObjIs( 𝑘 ),0)
+> #22 Automated individual decision-making Derived from policies in #5 and #21
+> #25 Data protection by design and default
+> read :- eq(objOwnIs( 𝐾 ), objOwnIs( 𝑘 )) ∨
+> gt(objOwnIs( 𝐾 ) || objShareIs( 𝑘 ), 0)
+> update :- eq(objOwnIs( 𝐾 ), objOwnIs( 𝑘 ))
+> delete :- eq(objOwnIs( 𝐾 ), objOwnIs( 𝑘 ))
+> #28 Do not grant unlimited access to data
+> Access control based on session keys and ownership verification
+> #30 Records of processing activity
+> read :- eq(monitor( 𝑘 ), true)
+> update :- eq(monitor( 𝑘 ), true)
+> delete :- eq(monitor( 𝑘 ), true)
+> #31 Cooperation with supervisory authorities
+> GDPRuler ’s mutual attestation protocol, and tamper-evident logging scheme
+> #32 Security of processing Encryption of data and metadata, and TEE security properties
+> #33 Personal data breach read :- eq( 𝐾 ,𝐾 𝑟𝑒𝑔 )∧query(getLogs())
+
+Table 3: GDPR articles related to KVS [ 118 ] and their mapping to GDPRuler ’s policy enforcement rules. 𝐾 : the session key of the querying entity, 𝑘 : the requested data object, 𝐾 𝑟𝑒𝑔 : the session key of a regulatory authority. 
+
+In contrast, when AnalyticsService attempts to access the same data with purpose “analytics”, GDPRuler detects this in Alice’s objections, denies access and logs the violation attempt.      
+
+> 1query(get("alice:preferences")) ∧sessionKey(analytics_key)
+> 2∧objPurIs(analytics)
+
+Right of access (Article 15). Alice exercises her right to retrieve all her personal data stored in the retailer’s system. GDPRuler locates all entries where Alice is the owner, and returns them.  
+
+> 1query(getm("alice:","data")) ∧sessionKey(alice_key) ∧objOwnIs(alice)
+
+Right to object (Article 21). After receiving targeted recommen-dations, Alice decides she no longer wants this processing. She exer-cises her right to object by updating her metadata across all entries. 
+
+GDPRuler updates the objections bitmap in all affected entries while preserving the underlying data values.        
+
+> 1query(putm("alice:")) ∧sessionKey(alice_key) ∧objOwnIs(alice)
+> 2∧objObjections(marketing,analytics,recommendations)
+
+Right to be forgotten (Article 17). Alice requests complete dele-tion of her personal data. GDPRuler validates her ownership, locates all her entries, executes the deletion, and creates a comprehensive audit log documenting the deletion operation.      
+
+> 1query(deletem("alice:")) ∧sessionKey(alice_key) ∧objOwnIs(alice)
+
+Records of processing activities (Article 30). The DataProtec-tionAuthority audits processing activities for Alice’s preferences. 
+
+GDPRuler authenticates the authority, retrieves the logs, performs integrity and freshness checks, and returns a formatted audit trail.    
+
+> 1query(getLogs("alice:preferences")) ∧sessionKey(regulator_key)
+
+6 Security Analysis 
+
+Our security analysis comprehensively details potential attack vec-tors and their mitigations (Table 4), including both system-level and 
+
+GDPR -specific threats. Further, we formally verify GDPRuler ’s at-testation and logging protocols using the Tamarin Prover [ 41 , 96 ]under the Dolev-Yao [44] attacker model, detailed in Appendix B.                         
+
+> 8Attack vector Mitigation System level attacks
+> Read the GDPRuler ’s memory CVM protection Read user data in the query request Data encryption Load forged GDPRuler Attestation DMA to the GDPRuler ’s memory CVM protection Manipulate user request Data encryption Rollback KV data Undetected (out of scope)
+> GDPR -specific attacks
+> Access other KV instance’s memory CVM protection Read the GDPR logs Log encryption, access control Tamper with GDPR logs Detection via integrity checks Rollback GDPR logs Detection via freshness checks Read KV data Data encryption Tamper with KV data Detection via integrity checks Malicious request for access to KV data Policy check, access control Fake user identity Mutual attestation (optional)
+
+Table 4: Attack vectors and GDPRuler ’s mitigations. 
+
+For system-level attacks, GDPRuler leverages CVM protection to prevent unauthorized memory access, including DMA. Data en-cryption and the respective integrity checks protect query data and prevent data manipulation during transit. The attestation mecha-nism allows the detection of loading forged GDPRuler instances, ensuring only legitimate deployments can process sensitive data. Note that GDPRuler does not protect against rollback attacks on database data, as this kind of attack requires an intrusive design in the format that databases store their data (e.g., versioning), which contradicts the compatibility goal of GDPRuler . To prevent time-manipulation attacks, GDPRuler uses secure time sources provided by CVMs, e.g., AMD’s secureTSC [92]. For GDPR -specific attacks, CVM-provided isolation prevents ac-cess to other KV instances’ memory, while log encryption and ac-cess control protect GDPR logs from unauthorized access. Integrity checks detect tampering with both logs and database data, and fresh-ness checks prevent rollback attacks on logs. Lastly, GDPR policy checks and access control mechanisms prevent malicious requests for unauthorized database access, and mutual attestation can prevent fake user identity attacks when enabled. 
+
+7 Evaluation 
+
+We evaluate GDPRuler by analyzing its GDPR compliance perfor-mance (§7.1), storage efficiency (§7.2), and I/O subsystem (§7.3). 
+
+Prototype. We implement GDPRuler ’s policy compiler in Python 
+
+and runtime components in C++ . The KV adapter supports Redis [ 113 ]and RocksDB [ 99 ], communicating via Unix domain sockets, and uses OpenSSL [ 106 ] for cryptographic operations. GDPRuler ’s log-ging system features a lossless zlib [ 71 , 140 ] compression layer, which supports various compression levels (0-9), balancing between CPU consumption and compression efficiency [68, 89, 122]. 
+
+Testbed. We perform our experiments on an AMD SEV-SNP server with an AMD EPYC 7713P CPU (64 cores, hyperthreading disabled) and 1024 GB of DDR4 DRAM.The server runs NixOS 25.05 with an AMD SEV SNP-enabled Linux kernel (v6.16.11). CVMs run Ubuntu 22.04 OS with a Linux kernel version v6.5.0. 
+
+Baseline and variants. We conduct experiments with the variants described in Table 5. “GDPR” employs GDPRuler , “Encryption” in-cludes data encryption, and “CVM” deploys the system in CVMs. 
+
+Importantly, with Native KVS (deployed outside a VM), we show the worst-case overheads for GDPRuler .
+
+Workloads. We use YCSB workloads (A-D, & F) [ 19 , 38 ] to evaluate end-to-end KVS performance (we exclude workload E due to the                           
+
+> Variant GDPR Encryption CVM
+> Native KVS (deployed w/o VM) ✗✗✗
+> Native GDPRuler (w/o Encr) ✓✗✗
+> Native GDPRuler ✓✓✗
+> CVM KVS ✗✗✓
+> GDPRuler (w/o Encr) ✓✗✓
+> GDPRuler ✓✓✓
+
+Table 5: Benchmarking variants.                   
+
+> Workload Access pattern Request distribution YCSB[19]  A50% Read, 50% Update Zipfian B95% Read, 5% Update Zipfian C100% Read Zipfian D95% Read, 5% Insert Latest F100% Read-Modify-Write Zipfian
+> GDPR  [118]  Controller 50% Insert, 25% Update metadata, 25% Delete Uniform Customer 20% Read, 20% Read metadata, 20% Update, 20% Update metadata, 20% Delete Zipfian Processor 80% Read, 20% Read by metadata Uniform
+
+Table 6: Benchmarking workloads and their characteristics. 
+
+lack of range queries in our prototype). Each client uses a crafted default policy, controlling encryption and logging percentage. We also evaluate GDPRuler with GDPR -specific workloads (Ta-ble 6) proposed by GDPRBench [ 118 ]. These workloads include: 
+
+(i) Controller , representing data controllers inserting KV pairs and performing administrative metadata updates and deletions, (ii) Cus-tomer , representing data owners exercising GDPR rights by reading their data, updating privacy preferences, and requesting deletions, and (iii) Processor , representing data processors reading data with occasional metadata-based queries.We omit the Regulator workload of GDPRBench as it was not publicly available by the authors. In every run, we preload the KVS per YCSB guidelines [ 20 ]. Unless otherwise specified, we report the average across 3 runs. 
+
+7.1 Performance under GDPR Compliance 
+
+We evaluate GDPRuler across three dimensions: (i) KVS workload performance, (ii) scalability, and (iii) GDPR workloads performance. 
+
+KVS workload analysis. For each YCSB workload, we execute 1M queries over 100K distinct keys. We set the logging to be 0% to show the effect of processing the GDPR metadata and performing their filtering in the hot data path. For variants employing GDPRuler , we ensure all queries have valid policies, maintaining consistent data retrieval and insertion across experiments. Figure 5 presents the end-to-end throughput across all YCSB workloads with a single client (1 thread). In this setup, GDPRuler 
+
+achieves 61.8% and 61.7% of the Native KVS throughput on aver-age across all workloads for Redis and RocksDB, respectively. The read-heavy Workload C reaches 61.4-62.3% of baseline, while the respective range for the write-heavy Workload A is 61-62.1%. The performance degradation mainly stems from write operations requir-ing metadata encoding and policy validation before KV insertion, while read operations primarily perform metadata extraction and filtering. We further observe that the deployment of the KVS en-gine in a CVM introduces 28.5-32.2% overhead compared to native execution, mainly due to memory encryption and CVM I/O costs. Notably, adding GDPRuler ’s GDPR compliance on top of the CVM introduces only an additional 8.6% overhead, while the encryption (AES-GCM) contributes minimally to this overhead ( <2.6%). 
+
+Scalability analysis. To evaluate GDPRuler ’s scalability, we vary the number of concurrent clients. Figure 6 presents the scalability              
+
+> 9ABCDF
+> YCSB Workload
+> 0
+> 5
+> 10
+> 15
+> Throughput (kops/s)  (a) Redis (Higher is better↑)
+> ABCDF
+> YCSB Workload
+> 0
+> 5
+> 10
+> Throughput (kops/s)  (b) RocksDB (Higher is better↑)
+> Native KVS Native GDPRuler (w/o Encr) Native GDPRuler CVM KVS GDPRuler (w/o Encr) GDPRuler
+
+Figure 5: Workload analysis for Redis and RocksDB: GDPRuler ’s performance with different YCSB workloads. 1 2 4 8 16          
+
+> Threads
+> 0
+> 50
+> 100
+> Throughput (kops/s)  (a) Redis - Workload A (50/50 R/W) (Higher is better↑)
+> 124816
+> Threads
+> 0
+> 50
+> 100
+> 150
+> Throughput (kops/s)  (b) RocksDB - Workload A (50/50 R/W) (Higher is better↑)
+> Native KVS Native GDPRuler (w/o Encr) Native GDPRuler CVM KVS GDPRuler (w/o Encr) GDPRuler
+
+Figure 6: Scalability analysis for Redis and RocksDB: GDPRuler ’s scalability with YCSB’s write-heavy workload A. Other YCSB workloads are covered in Appendix C. Controller Customer Processor   
+
+> GDPR Workload
+> 10 1
+> 10 2
+> 10 3
+> Throughput (ops/s)
+> 6
+> 13 15
+> 353
+> 3103
+> 262
+> 5
+> 12 14
+> 259
+> 2186
+> 175
+> 55.5×
+> 54.1×
+> 232.5×
+> 182.2×
+> 17.8×
+> 12.8×
+> (a) Throughput (Higher is better↑)
+> Native GDPRuler
+> Native GDPRuler (w/ indexes)
+> GDPRuler
+> GDPRuler (w/ indexes)
+> 1000
+> 2000
+> 3000
+> (b) Query Latency
+> (Lower is better↓)
+> putm
+> getm
+> deletem 0
+> 100
+> 200
+> 12.97
+> 105.30
+> 89.96
+> Avg Latency (ms)
+
+Figure 7: GDPRuler ’s performance for GDPR workloads and average latency of GDPR queries with Redis backend. RocksDB results are covered in Appendix C. 
+
+results for Redis and RocksDB for Workload A. Additional results for the rest YCSB workloads are provided in Appendix C. As thread count increases from 1 to 16, GDPRuler demonstrates good scalability with the throughput gap between the baseline and GDPRuler remaining relatively constant ( ≈50%). For instance, 
+
+GDPRuler with RocksDB achieves 80.6 K ops/sec for Workload A, while the baseline 165.1 K ops/sec, when handling 16 concur-rent clients. However, for Redis deployments with more than 8 clients, GDPRuler using Unix sockets achieves comparable or better throughput than the native Redis with TCP connections. Specifi-cally, GDPRuler achieves 86.1 K ops/sec for Workload A, while the baseline reaches only 57.9 K ops/sec. Our analysis indicates Redis’s 
+
+single-threaded architecture creates a bottleneck at the TCP layer which GDPRuler ’s connection handling bypasses. This phenome-non does not occur with our RocksDB server, which properly utilizes multiple threads and shows expected overhead patterns. 
+
+GDPR workloads. We evaluate GDPRuler ’s performance on GDPR -specific workloads (Table 6) that use metadata-based operations (putm , getm , deletem ). We preload 100K KV pairs, then execute GDPR 
+
+workloads consisting of 1K operations with 8 connecting clients and encryption enabled, similarly to prior work [ 118 ]. We run GDPRuler 
+
+with (1) no indexing, and (2) “user” and “purpose” metadata indexing, which are the most frequently queried fields in GDPR workloads. We distribute KV pairs among 128 users and 128 data sources with round-robin assignment of purposes and objections. Each KV pair is configured to be shared with 10 users to reflect realistic multi-user access patterns and reduce query failure rates. We ensure that query operations specify valid purposes, maintaining consistency with realistic GDPR -compliant access patterns. We present the re-sults of Redis here; RocksDB exhibits similar trends and is detailed in Appendix C due to space constraints. Figure 7(a) demonstrates the throughput of GDPRuler on Con-troller, Customer, and Processor workloads for Redis. Without in-dexes, GDPRuler must perform full KVS scans to locate entries matching metadata criteria, resulting in significant performance drop as low as 4.8, 12.0, and 13.6 ops/sec for the three workloads respectively. This low throughput shows that even a relatively small subset of GDPR queries—only 1K operations across 100K pairs— can become detrimental without proper indexing support. With 
+
+GDPR indexes enabled, performance improves by 12.8-182.2 ×, de-pending on the workload. Specifically, Customer workloads that access all personal data of a specific owner benefit the most through indexed ownership lookups (182.2 ×). Similarly, Processor workloads performing purpose-based filtering achieve significantly faster exe-cution (12.8 ×). These improvements highlight that GDPR metadata indexing effectively eliminates the need for multiple full-KVS scans. Note that, similar to previous experiments, CVM deployment main-tains 26.6-42.8% overhead compared to native execution. Figure 7(b) presents the latency for GDPR operations averaged across the three workloads, justifying the poor performance in the non-indexed implementation. GDPR queries show significant la-tency reductions with indexing, from 2,178-2,654 ms to just 13-105 ms on average for Redis. Precisely, putm operations improve by 168 ×, while getm operations achieve 25 × speedup. This massive decrease is reasonable if we consider that, with indexes, operations transform from full KVS scans examining every KV pair to efficient index lookups followed by targeted KV pair fetching and metadata validation. We further notice that even standard operations ( put , get ,     
+
+> 10 AC
+> Workload
+> 0
+> 20
+> 40
+> 60
+> Throughput (kops/s)  (a) Redis (Higher is better↑)
+> AC
+> Workload
+> 0
+> 20
+> 40
+> 60
+> Throughput (kops/s)  (b) RocksDB (Higher is better↑)
+> Percentage of logged KV pairs
+> 0% 10% 50% 100%
+
+Figure 8: GDPRuler ’s throughput with varying logged KV pair percentages for Redis and RocksDB. 
+
+delete ) benefit from reduced contention, showing 12-45% latency improvements for Redis despite not directly using GDPR indexes. 
+
+7.2 Storage Efficiency 
+
+We analyze the GDPRuler ’s storage layer characteristics across four dimensions: (i) the end-to-end impact of logging on application throughput, (ii) the isolated throughput of the logging subsystem itself, (iii) the storage overhead introduced by embedding GDPR meta-data within KV records, and (iv) the audit log storage requirements 
+
+under varying logging configurations and compression settings. 
+
+Logging layer impact on applications. To quantify the impact of GDPR audit logging, we run a write-heavy (Workload A) and a read-heavy (Workload C) workload with 8 client threads with varying logging percentages. For these experiments, we configure 
+
+GDPRuler with compression level 3 and encryption enabled. Figure 8 highlights that GDPRuler ’s asynchronous logging ar-chitecture incurs minimal performance overhead, with throughput degradation under 2% even at 100% logging across workloads and KVS. The low overhead stems from GDPRuler ’s design decisions: asynchronous logging decouples it from the critical path, batched log writes amortize I/O costs across multiple entries, and efficient compression reduces the volume of data written to storage. These results show that GDPR audit logging can be achieved in production systems without sacrificing performance, validating GDPRuler ’s approach of treating logging as an off-critical-path operation. 
+
+Logging layer performance. To further understand GDPRuler ’s logging system parameters, we evaluate the logging layer using a mi-crobenchmark with 16 producer threads, varying logging threads (4 or 8), batch size (512-8192 entries), and log entry size (256 bytes, 1KB, 4KB), processing 10GB total in each configuration. We use random-generated payloads in a format similar to the one used in YCSB workloads and disable compression to write an equivalent amount of data in each setup. We use Zipfian-distributed keys ( 𝜃 =0.99) across 100K files to simulate realistic patterns, with files written to a ded-icated ext4 filesystem on a separate block device. Figure 9(a) presents the throughput of GDPRuler ’s logging sys-tem. We observe that batching effectiveness is inversely proportional to entry size: smaller entries (256 bytes) benefit significantly from batching, achieving substantial throughput gains as batch size in-creases, while larger entries (4KB) have diminishing returns. Further, the 8-writer configuration outperforms the 4-writer setup for most configurations, demonstrating effective parallelization. At batch size 2048, the 8-writer configuration achieves 1354, 705 and 283 K entries/sec for 256-byte, 1KB, and 4KB entries, respectively. The throughput metric (K entries/s) reveals that the system achieves consistent and efficient I/O performance across different entry sizes, 512 2048 8192        
+
+> Batch Size
+> 500
+> 1000
+> Throughput (K entries/s)  (a) Throughput
+> (Higher is better ↑)
+> 512 2048 8192
+> Batch Size
+> 0
+> 2
+> 4
+> 6
+> Write Amplification (%)  (b) Write Amplification
+> (Lower is better ↓)
+> W:4,E:256 W:8,E:256 W:4,E:1K W:8,E:1K W:4,E:4K W:8,E:4K
+
+Figure 9: Logging layer performance analysis for various writer threads (W) and entry sizes (E).                           
+
+> KVS KVS (MB)
+> GDPRuler
+> KVS (MB) Compr. level
+> GDPR logs (MB) 10% 50% 100% Redis 103.27 112.42 044.47 221.11 463.20 37.18 43.02 87.97 66.80 41.62 84.45
+> RocksDB 144.40 173.06 044.44 221.07 463.17 37.02 43.03 88.03 66.80 41.63 84.44
+
+Table 7: Storage requirements analysis for GDPRuler .
+
+as larger entries inherently carry larger payloads. This validates that the logging system’s I/O pipeline handles varying data volumes effectively. The results also demonstrate an interaction between CPU resources and batching: with 8 writers, the system reaches a plateau shown in batch sizes 2048 and 8192. In contrast, the resource-constrained configuration (4 threads) continues to benefit from larger batch sizes, as it compensates for limited CPU parallelism by amor-tizing per-batch processing overhead. Figure 9(b) shows write amplification, measuring the ratio of ac-tual bytes written to storage versus the original payload size. Write amplification remains consistently low (below 7%) across all con-figurations, validating that GDPRuler ’s logging format introduces minimal metadata overhead. The slight increase in write amplifi-cation for smaller entry sizes (256 bytes showing 6-7% overhead) reflects the relatively higher cost of per-entry headers, while larger entries (4KB showing < 1% overhead) amortize this cost. 
+
+KVS metadata storage overhead. Table 7 quantifies the storage overhead introduced by GDPR metadata. Redis KVS consumes 103.27 MB for 100K KV pairs with 1KB values, while GDPRuler requires 112.42 MB for KVS files, an 8.9% increase. RocksDB shows a sim-ilar pattern with 19.8% metadata overhead (144.40 MB vs. 173.06 MB). This overhead stems from embedding compliance metadata— purposes, objections, ownership, retention periods, and sharing permissions—in each value and is inversely proportional to value size; larger values dilute the relative metadata cost. 
+
+Audit log storage requirements. Table 7 presents GDPR log stor-age requirements with varying log percentages and compression levels. Without compression (level 0), logging all operations (100%) generates 463.20 MB of logs for 100K entries with 1M operations, yielding a 4.3:1 ratio of logs to original KVS size (103.27 MB). This substantial volume reflects comprehensive audit trail requirements where each operation generates a metadata-rich log entry. At 50% logging—representing realistic selective monitoring involving only sensitive data—uncompressed logs consume 221.11 MB (almost twice the KVS size), while conservative 10% logging generates 44.47 MB of audit trail. However, when compression (level 3) is used, it reduces    
+
+> 11 Seq Read
+> Seq Write
+> Rand Read
+> Rand Write
+> 0
+> 200
+> 400
+> 600
+> 800
+> Throughput (K IOPS)
+> 659
+> 275
+> 670
+> 186
+> 403
+> 273
+> 184
+> 184
+> 372
+> 262
+> 181
+> 183
+> 373
+> 249
+> 181
+> 185
+> (a) Throughput (Higher is better ↑)
+> Seq Read
+> Seq Write
+> Rand Read
+> Rand Write
+> 0
+> 50
+> 100
+> 150
+> 4KB Latency (us)
+> 73
+> 21
+> 74
+> 21
+> 105
+> 35
+> 105
+> 36
+> 114
+> 41
+> 114
+> 41
+> 111
+> 40
+> 113
+> 41
+> (b) Latency (Lower is better ↓)
+> Native VM SNP SNP-poll
+
+Figure 10: FIO performance analysis. 
+
+log storage by 5 × overall, reaching ≈88 MB for 100% logging. At 50%, logs are 43 MB ( ≈40% of KVS size). Level 6 offers negligible extra savings ( ≈2.1%) but increases CPU overhead [68, 89, 122]. 
+
+7.3 Data I/O Subsystem Analysis 
+
+To contextualize GDPRuler ’s performance results and isolate the baseline costs of confidential computing from GDPR compliance, we evaluate the I/O behavior of CVMs. 
+
+Storage I/O performance. Figure 10 shows FIO benchmark [ 70 ]results comparing 4KB IOPS across native execution, standard VM, and CVM (SNP) configurations. We observe that sequential reads de-grade to 61% and 57% of the native variant while random reads drop even further, to just 27% of native throughput for both VM and CVM configurations. In contrast, both sequential and random writes main-tain near-native performance (95-99% of the native variant) for both VM and CVM configurations. We further observe that enabling halt polling [ 90 ] (SNP-poll) does not result in any significant differences from standard SNP configurations across all workloads. The cost of memory encryption remains modest (8-15%), demonstrating that virtualization dominates performance impact. These measurements align with previous CVM characterizations [ 101 , 112 ]. Importantly, 
+
+GDPRuler ’s logging system operates in sequential write patterns where CVMs maintain 95% of native performance, validating the almost negligible <2% logging overhead (§7.2). 
+
+Network I/O characteristics. Figure 11 presents network perfor-mance evaluation using iperf3 [ 80 ] (a) and Redis (b) with a virtio-net device (8 queues, 8 kernel vhost threads on host, 8 interrupt vectors in guest). vhost optimization [ 93 ] (VM-vhost, SNP-vhost) significantly improves throughput for large messages: for 128KB transfers, VM-vhost achieves 145 Gbps and SNP-vhost reaches 102 Gbps, compared to 12-14 Gbps for standard VM/SNP configurations. However, even so, CVMs show up to 60% performance drop compared to native TCP, particularly as packet size increases. Redis workloads exhibit oppo-site behavior. For GET queries, standard VM achieves 1.34 M req/s while VM-vhost delivers only 0.91 M req/s and SNP-vhost 0.69 M re-q/s. While vhost with multiqueue excels at iperf’s bulk transfers via parallel processing, Redis’s request-response pattern generates ex-cessive software interrupt requests (softIRQs) and context switches from multiple host threads. This causes interrupt overhead that dom-inates parallelization benefits, making standard paravirtualization a better choice for KVS workloads. 
+
+8 Related work 
+
+Policy compliance. A significant line of work explores policy-based compliance systems to address the requirements of privacy regulations. Systems such as Qapla [ 95 ], K9db [ 6], and Deep En-forcement [ 83 ] focus on policy-driven schema transformations and 256 4K 32K 128K        
+
+> Packet Size (byte)
+> 0
+> 100
+> 200
+> 300
+> Throughput (Gbps)
+> 7.59
+> 86.1
+> 233
+> 249
+> 6.07
+> 12.1
+> 12.1
+> 12.7
+> 6.14
+> 60.4
+> 135
+> 145
+> 5.91
+> 13.1
+> 13.5
+> 13.7
+> 5.93
+> 45.7
+> 88.5
+> 102
+> (a) Iperf (Higher is better ↑)
+> SET GET SET(tls) GET(tls)
+> Workload
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> Throughput (M req/s)
+> 0.15
+> 1.49
+> 0.07
+> 0.72
+> 0.13
+> 1.34
+> 0.07
+> 0.74
+> 0.09
+> 0.91
+> 0.06
+> 0.59
+> 0.1
+> 1.04
+> 0.07
+> 0.66
+> 0.07
+> 0.69
+> 0.04
+> 0.4
+> (b) Redis (Higher is better ↑)
+> Native VM VM-vhost SNP SNP-vhost
+
+Figure 11: Iperf and Redis performance (multiqueue=8). 
+
+access control to ensure policy compliance. Other efforts, mainly for relational databases, formalize and enforce data policies using policy languages [ 17 , 33 , 107 , 116 , 128 , 135 ], optimize for performance [ 47 ], or propose storage-centric policy compliance solutions [ 81 , 86 , 129 ]. On the GDPR frontier, prior work examines compliance challenges in the cloud [ 102 , 119 , 120 , 124 ], its impact on storage systems [ 117 ], and proposed techniques to enforce GDPR regulations [ 32 , 115 , 118 ]. Unlike these approaches, GDPRuler is an end-to-end system for 
+
+GDPR compliance that couples a rich policy language with verifiable execution for KVS. 
+
+Compliance plugins. Prior studies that investigate compliance frameworks for existing systems either provide transparent runtime policy enforcement for legacy SQL databases [ 1 , 85 , 87 ], enforce policies at the programming language layer [ 82 ], develop specialized auditing frameworks [ 2 ], or design enforcement systems for web applications [ 69 , 126 , 138 ] or storage systems [ 46 , 86 , 128 ]. These solutions either require intrusive application changes, such as at the database layer [ 6, 118 ], placing the burden on developers to build compliance mechanisms [ 1 ], or lack the security guarantees needed for compliance [ 69 ]. Moreover, they fail to provide such compliance in a verifiable manner on untrusted cloud infrastructures. Compared to them, GDPRuler enables GDPR compliance for KVS without requiring changes to the application or KVS engines. 
+
+Secure data management systems. A line of work focuses on secure cloud database and storage systems, including systems that ensure data security at the database level [ 12 , 109 ] and support rela-tional queries over encrypted data [ 11 , 88 , 105 , 110 , 127 ]. Hardware-based solutions [ 3 , 15 , 16 , 42 , 84 , 98 , 111 , 121 , 123 , 125 , 139 ] leverage TEEs to protect data during processing and at rest, while others ex-tend security guarantees to distributed cloud environments [ 14 , 72 ]. In contrast, GDPRuler focuses on GDPR compliance, addressing purpose limitation, data subject rights, and auditable logging, while preserving strong security guarantees for both data and metadata and ensuring compatibility with existing KV store deployments. 
+
+9 Conclusion 
+
+In this paper, we present GDPRuler , an end-to-end system en-abling GDPR compliance for KVS without codebase modification. 
+
+GDPRuler balances compliance and system performance using a comprehensive policy language, a secure runtime monitor, and an efficient metadata management system. Deploying the enforcement engine within a CVM ensures private data and metadata protec-tion throughout the processing pipeline. Our evaluation shows that 
+
+GDPRuler achieves GDPR compliance with reasonable performance overhead, minimizes metadata storage via optimized encoding, and 
+
+> 12
+
+provides tamper-evident logging and efficient GDPR queries, demon-strating its suitability for cloud adoption. 
+
+Acknowledgments 
+
+This work was supported in part by an ERC Starting Grant (ID: 101077577) and the Chips Joint Undertaking (JU), European Union (EU) HORIZON-JU-IA, under grant agreement No. 101140087 (SMARTY), the Intel Trustworthy Data Center of the Future (TD-CoF), Google Research Grants, Portuguese national funds through Fundação para a Ciência e a Tecnologia, I.P. (FCT) under projects UID/50021/2025 (DOI: https://doi.org/10.54499/UID/50021/2025) and UID/PRR/50021/2025 (DOI: https://doi.org/10.54499/UID/PRR/50021/ 2025), IAPMEI under grant C6632206063-00466847 (PT Smart Retail), and the European Union’s Horizon Europe Research and Innovation Programme under Grant Agreement No. 101189689. 
+
+Ethical Considerations 
+
+The research team attests that we considered the ethics of this re-search. All experiments and evaluations were executed exclusively on local computing environments, ensuring that no live systems were affected. The research did not require the collection of personal or sensitive data. The findings of this research are intended to estab-lish GDPR compliance and ensure data privacy and security for data management systems deployed on untrusted cloud infrastructures, and are intended for constructive and beneficial purposes. 
+
+Open Science 
+
+We openly share our research artifact, including the GDPRuler 
+
+framework (Github link) and its associated security protocol proofs (Github link). Our artifact includes GDPRuler ’s code, its policy language and compiler, its formal verification proofs, and is accom-panied by the respective README files. It also incorporates scripts that generate the workloads used in GDPRuler ’s evaluation and others that provide guidance for its configuration, deployment, and evaluation on AMD SEV-SNP machines. 
+
+References 
+
+[1] Archita Agarwal, Marilyn George, Aaron Jeyaraj, and Malte Schwarzkopf. Retrofitting gdpr compliance onto legacy databases. Proc. VLDB Endow. ,15(4):958–970, December 2021. [2] Rakesh Agrawal, Roberto Bayardo, Christos Faloutsos, Jerry Kiernan, Ralf Rantzau, and Ramakrishnan Srikant. Auditing compliance with a hippocratic database. In Proceedings of the Thirtieth International Conference on Very Large Data Bases - Volume 30 , VLDB ’04, page 516–527. VLDB Endowment, 2004. [3] Adil Ahmad, Kyungtae Kim, Muhammad Sarfaraz, and Byoungyoung Lee. Obliviate: A data oblivious filesystem for intel sgx. 01 2018. [4] Erdem Aktas, Cfir Cohen, Josh Eads, James Forshaw, and Felix Wilhelm. Intel Trust Domain Extensions (TDX) Security Review, 2024. [5] A K M Mubashwir Alam and Keke Chen. Making Your Program Oblivious: A Comparative Study for Side-channel-Safe Confidential Computing. In 
+
+Proceedings of the IEEE 16th International Conference on Cloud Computing .Institute of Electrical and Electronics Engineers, 2023. [6] Kinan Dak Albab, Ishan Sharma, Justus Adam, Benjamin Kilimnik, Aaron Jeyaraj, Raj Paul, Artem Agvanian, Leonhard Spiegelberg, and Malte Schwarzkopf. K9db: Privacy-Compliant storage for web applications by construction. In 17th USENIX Symposium on Operating Systems Design and Implementation (OSDI 23) , pages 99–116, Boston, MA, July 2023. USENIX Association. [7] Amazon. Amazon DynamoDB. https://aws.amazon.com/dynamodb/, 2025. Last accessed: Oct, 2025. [8] AMD. AMD SEV-SNP: Strengthening VM Isolation with Integrity Protection and More, 2020. [9] AMD. TECHNICAL GUIDANCE FOR MITIGATING EFFECTS OF CIPHERTEXT VISIBILITY UNDER AMD SEV REVISION 5.10.22, 2022. [10] AMD. SEV Secure Nested Paging Firmware ABI Specification Revision: 1.55, 2023. [11] Panagiotis Antonopoulos, Arvind Arasu, Kunal D. Singh, Ken Eguro, Nitish Gupta, Rajat Jain, Raghav Kaushik, Hanuma Kodavalla, Donald Kossmann, Nikolas Ogg, Ravi Ramamurthy, Jakub Szymaszek, Jeffrey Trimmer, Kapil Vaswani, Ramarathnam Venkatesan, and Mike Zwilling. Azure sql database always encrypted. In Proceedings of the 2020 ACM SIGMOD International Conference on Management of Data , SIGMOD ’20, page 1511–1525, New York, NY, USA, 2020. Association for Computing Machinery. [12] Arvind Arasu, Ken Eguro, Raghav Kaushik, Donald Kossmann, Pingfan Meng, Vineet Pandey, and Ravi Ramamurthy. Concerto: A high concurrency key-value store with integrity. In Proceedings of the 2017 ACM International Conference on Management of Data , SIGMOD ’17, page 251–266, New York, NY, USA, 2017. Association for Computing Machinery. [13] ARM. Arm Confidential Compute Architecture, [n. d.]. [14] Maurice Bailleu, Dimitra Giantsidi, Vasilis Gavrielatos, Do Le Quoc, Vijay Nagarajan, and Pramod Bhatotia. Avocado: A secure In-Memory distributed storage system. In 2021 USENIX Annual Technical Conference (USENIX ATC 21) ,pages 65–79. USENIX Association, July 2021. [15] Maurice Bailleu, Jörg Thalheim, Pramod Bhatotia, Christof Fetzer, Michio Honda, and Kapil Vaswani. SPEICHER: Securing LSM-based Key-Value stores using shielded execution. In 17th USENIX Conference on File and Storage Technologies (FAST 19) , pages 173–190, Boston, MA, February 2019. USENIX Association. [16] Sumeet Bajaj and Radu Sion. Trusteddb: A trusted hardware-based database with privacy and data confidentiality. IEEE Transactions on Knowledge and Data Engineering , 26(3):752–765, 2014. [17] Chinmayi Baramashetru, Silvia Lizeth Tapia Tarifa, Olaf Owe, and Nils Gruschka. 
+
+A Policy Language to Capture Compliance of Data Protection Requirements , pages 289–309. 06 2022. [18] Marcus Brandenburger, Christian Cachin, Matthias Lorenz, and Rüdiger Kapitza. Rollback and forking detection for trusted execution environments using lightweight collective memory, 2017. [19] Brian Frank Cooper. YCSB. https://github.com/brianfrankcooper/YCSB, 2025. Last accessed: May, 2025. [20] Brian Frank Cooper. YCSB - Running a Workload - Step 5. Load the data. https://github.com/brianfrankcooper/YCSB/wiki/Running-a-Workload#step-5-load-the-data, 2025. Last accessed: June, 2025. [21] California. Sec. 1798.100 General duties of businesses that collect personal in-formation. https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml? lawCode=CIV&sectionNum=1798.100, 2025. Last accessed: December, 2025. [22] California. Sec. 1798.105 Consumers’ right to delete personal information. https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode= CIV&sectionNum=1798.105, 2025. Last accessed: December, 2025. [23] California. Sec. 1798.106 Consumers’ Right to Correct Inaccurate Personal In-formation. https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml? lawCode=CIV&sectionNum=1798.106, 2025. Last accessed: December, 2025. [24] California. Sec. 1798.110 Regulations. https://leginfo.legislature.ca.gov/faces/ codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.110, 2025. Last accessed: December, 2025. [25] California. Sec. 1798.115 Regulations. https://leginfo.legislature.ca.gov/faces/ codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.115, 2025. Last accessed: December, 2025. [26] California. Sec. 1798.120 Consumers’ right to opt-out of sale or sharing of per-sonal information. https://leginfo.legislature.ca.gov/faces/codes_displaySection. xhtml?lawCode=CIV&sectionNum=1798.120, 2025. Last accessed: December, 2025. [27] California. Sec. 1798.121 Consumers’ right to limit use and disclosure of sensitive personal information. https://leginfo.legislature.ca.gov/faces/codes_ displaySection.xhtml?lawCode=CIV&sectionNum=1798.121, 2025. Last accessed: December, 2025. [28] California. Sec. 1798.130 Regulations. https://leginfo.legislature.ca.gov/faces/ codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.130, 2025. Last accessed: December, 2025. [29] California. Sec. 1798.185 Regulations. https://leginfo.legislature.ca.gov/faces/ codes_displaySection.xhtml?lawCode=CIV&sectionNum=1798.185, 2025. Last accessed: December, 2025. [30] California. Sec. 1798.81.5 Reasonable security procedures and practices. https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode= CIV&sectionNum=1798.81.5, 2025. Last accessed: December, 2025. [31] California. Sec. 1798.82 Breach of security system notification. https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode= CIV&sectionNum=1798.82, 2025. Last accessed: December, 2025. [32] Vishal Chakraborty, Stacy Ann-Elvy, Sharad Mehrotra, Faisal Nawab, Mohammad Sadoghi, Shantanu Sharma, Nalini Venkatsubhramanian, and Farhan Saeed. Data-case: Grounding data regulations for compliant data processing systems, 2023. [33] Haobin Hiroki Chen, Hongbo Chen, Mingshen Sun, Chenghong Wang, and XiaoFeng Wang. Picachv: Formally verified data use policy enforcement for secure data analytics, 2025. [34] Pau-Chen Cheng, Wojciech Ozga, Enriquillo Valdez, Salman Ahmed, Zhongshu Gu, Hani Jamjoom, Hubertus Franke, and James Bottomley. Intel TDX Demystified: A Top-Down Approach, 2023. 
+
+> 13
+
+[35] Pau-Chen Cheng, Wojciech Ozga, Enriquillo Valdez, Salman Ahmed, Zhongshu Gu, Hani Jamjoom, Hubertus Franke, and James Bottomley. Intel TDX Demystified: A Top-Down Approach. ACM Comput. Surv. , mar 2024. [36] CMS: law-tax-future. GDPR Enforcement Tracker. https://www. enforcementtracker.com/, 2025. Last accessed: June, 2025. [37] Confidential Computing Consortium. Confidential Computing: Hardware-Based Trusted Execution for Applications and Data: November 2022, V1.3, 2022. [38] Brian F. Cooper, Adam Silberstein, Erwin Tam, Raghu Ramakrishnan, and Russell Sears. Benchmarking cloud serving systems with YCSB. In Proceedings of the 1st ACM Symposium on Cloud computing (SoCC) , 2010. [39] DB-Engines. DB-Engines Ranking of Key-value Stores. https://db-engines.com/en/ranking/key-value+store, 2025. Last accessed: June, 2025. [40] Sen Deng, Mengyuan Li, Yining Tang, Shuai Wang, Shoumeng Yan, and Yinqian Zhang. CipherH: Automated Detection of Ciphertext Side-channel Vulnerabilities in Cryptographic Implementations. In Proceedings of the 32nd USENIX Security Symposium . USENIX Association, 2023. [41] Tamarin Developers. Tamarin Prover, [n. d.]. Last accessed on 2025-03-27. [42] Bernard Dickens III, Haryadi S. Gunawi, Ariel J. Feldman, and Henry Hoffmann. Strongbox: Confidentiality, integrity, and performance using stream ciphers for full drive encryption. In Proceedings of the Twenty-Third International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) , 2018. [43] Tom Dohrmann. mushroom: Run integrity protected workloads in a hardware based Trusted Execution Environment., 2025. [44] Danny Dolev and Andrew Yao. On the security of public key protocols. IEEE Transactions on Information Theory , 29(2):198–208, 1983. [45] Siying Dong, Andrew Kryczka, Yanqin Jin, and Michael Stumm. RocksDB: Evolution of Development Priorities in a Key-value Store Serving Large-scale Applications. ACM Trans. Storage , 17(4), 2021. [46] Eslam Elnikety, Aastha Mehta, Anjo Vahldiek-oberwagner, Deepak Garg, and Peter Druschel. Thoth : Comprehensive policy compliance in data retrieval systems. In Proceedings of the USENIX Security Symposium , 2016. [47] Eslam Elnogomi, Deepak Garg, and Peter Druschel. Shai: Enforcing data-specific policies with near-zero runtime overhead. 01 2018. [48] EU. Art. 13 Information to be provided where personal data are collected from the data subject. https://gdpr-info.eu/art-13-gdpr/, 2025. Last accessed: December, 2025. [49] EU. Art. 14 Information to be provided where personal data have not been obtained from the data subject. https://gdpr-info.eu/art-14-gdpr/, 2025. Last accessed: December, 2025. [50] EU. Art. 15 Right of access by the data subject. https://gdpr-info.eu/art-15-gdpr/, 2025. Last accessed: December, 2025. [51] EU. Art. 16 Right to rectification. https://gdpr-info.eu/art-16-gdpr/, 2025. Last accessed: December, 2025. [52] EU. Art. 17 GDPR Right to erasure (‘right to be forgotten’). https://gdpr-info.eu/art-17-gdpr/, 2025. Last accessed: May, 2025. [53] EU. Art. 17 GDPR Right to erasure (‘right to be forgotten’). https://gdpr-info.eu/art-17-gdpr/, 2025. Last accessed: May, 2025. [54] EU. Art. 18 GDPR Right to restriction of processing. https://gdpr-info.eu/art-18-gdpr/, 2025. Last accessed: Oct, 2025. [55] EU. Art. 18 GDPR Right to restriction of processing. https://gdpr-info.eu/art-18-gdpr/, 2025. Last accessed: Oct, 2025. [56] EU. Art. 20 Right to data portability. https://gdpr-info.eu/art-20-gdpr/, 2025. Last accessed: December, 2025. [57] EU. Art. 21 Right to object. https://gdpr-info.eu/art-21-gdpr/, 2025. Last accessed: December, 2025. [58] EU. Art. 22 Automated individual decision-making, including profiling. https://gdpr-info.eu/art-22-gdpr/, 2025. Last accessed: December, 2025. [59] EU. Art. 25 Data protection by design and by default. https://gdpr-info.eu/art-25-gdpr/, 2025. Last accessed: December, 2025. [60] EU. Art. 30 Records of processing activities. https://gdpr-info.eu/art-30-gdpr/, 2025. Last accessed: December, 2025. [61] EU. Art. 32 Security of processing. https://gdpr-info.eu/art-32-gdpr/, 2025. Last accessed: December, 2025. [62] EU. Art. 33 Notification of a personal data breach to the supervisory authority. https://gdpr-info.eu/art-33-gdpr/, 2025. Last accessed: December, 2025. [63] EU. Art. 34 Communication of a personal data breach to the data subject. https://gdpr-info.eu/art-34-gdpr/, 2025. Last accessed: December, 2025. [64] EU. Art. 35 Data protection impact assessment. https://gdpr-info.eu/art-35-gdpr/, 2025. Last accessed: December, 2025. [65] EU. Art. 5 Principles relating to processing of personal data. https://gdpr-info.eu/art-5-gdpr/, 2025. Last accessed: December, 2025. [66] EU. Art. 5 Principles relating to processing of personal data. https://gdpr-info.eu/art-5-gdpr/, 2025. Last accessed: December, 2025. [67] EU. Art. 6 Lawfulness of processing. https://gdpr-info.eu/art-6-gdpr/, 2025. Last accessed: December, 2025. [68] Euccas. Understanding zlib. https://www.euccas.me/zlib/. Last accessed: Oct, 2025. [69] Mafalda Ferreira, Tiago Brito, José Fragoso Santos, and Nuno Santos. Rulekeeper: Gdpr-aware personal data compliance for web frameworks. In 2023 IEEE Symposium on Security and Privacy (SP) , pages 2817–2834, 2023. [70] Fio Developers. Flexible I/O Tester. https://github.com/axboe/fio, 2025. Last accessed: Oct, 2025. [71] Jean-loup Gailly and Mark Adler. zlib compression library. 12 2004. [72] Dimitra Giantsidi, Maurice Bailleu, Natacha Crooks, and Pramod Bhatotia. Treaty: Secure distributed transactions. In 2022 52nd Annual IEEE/IFIP International Conference on Dependable Systems and Networks (DSN) , pages 14–27, 2022. [73] Google. Google Cloud Confidential Computing, 2019. Last accessed on 2025-03-27. [74] Google. LevelDB: a fast key-value storage library. https://github.com/google/ leveldb, 2025. Last accessed: Oct, 2025. [75] Haoyang Huang, Fengwei Zhang, Shoumeng Yan, Tao Wei, and Zhengyu He. SoK: A Comparison Study of Arm TrustZone and CCA. In Proceedings of the 2024 In-ternational Symposium on Secure and Private Execution Environment Design , 2024. [76] Intel. Host Firmware Speculative Execution Side Channel Mitigation, 2018. [77] Intel. Guidelines for Mitigating Timing Side Channels Against Cryptographic Implementations, 2022. [78] Intel. Intel ® Trust Domain Extensions (Intel TDX), [n. d.]. [79] Intersoft consulting. General Data Protection Regulation (GDPR). https://gdpr-info.eu/, 2025. Last accessed: June, 2025. [80] iPerf Developers. iPerf - The ultimate speed test tool for TCP, UDP and SCTP, [n. d.]. [81] Zsolt István, Soujanya Ponnapalli, and Vijay Chidambaram. Software-defined data protection: low overhead policy compliance at the storage layer is within reach! Proc. VLDB Endow. , 14(7):1167–1174, March 2021. [82] Farzane Karami, David Basin, and Einar Broch Johnsen. Dpl: A language for gdpr enforcement. In 2022 IEEE 35th Computer Security Foundations Symposium (CSF) , pages 112–129, 2022. [83] Ety Khaitzin, Julian James Stephen, Maya Anderson, Hani Jamjoom, Ronen Kat, Arjun Natarajan, Roger Raphael, Roee Shlomo, and Tomer Solomon. Deep enforcement: Policy-based data transformations for data in the cloud. In 11th USENIX Workshop on Hot Topics in Cloud Computing (HotCloud 19) , Renton, WA, July 2019. USENIX Association. [84] Igjae Kim, J. Hyun Kim, Minu Chung, HyunGon Moon, and Sam H. Noh. A Log-Structured merge tree-aware message authentication scheme for persistent Key-Value stores. In 20th USENIX Conference on File and Storage Technologies (FAST 22) , pages 363–380, Santa Clara, CA, February 2022. USENIX Association. [85] David Klein, Benny Rolle, Thomas Barber, Manuel Karl, and Martin Johns. General data protection runtime: Enforcing transparent gdpr compliance for existing applications. In Proceedings of the 2023 ACM SIGSAC Conference on Computer and Communications Security , CCS ’23, page 3343–3357, New York, NY, USA, 2023. Association for Computing Machinery. [86] Robert Krahn, Bohdan Trach, Anjo Vahldiek-Oberwagner, Thomas Knauth, Pramod Bhatotia, and Christof Fetzer. Pesos: policy enhanced secure object store. In Proceedings of the Thirteenth EuroSys Conference , EuroSys ’18, New York, NY, USA, 2018. Association for Computing Machinery. [87] Tim Kraska, Michael Stonebraker, Michael Brodie, Sacha Servan-Schreiber, and Daniel Weitzner. SchengenDB: A Data Protection Database Proposal , pages 24–38. 10 2019. [88] Mingyu Li, Xuyang Zhao, Le Chen, Cheng Tan, Huorong Li, Sheng Wang, Zeyu Mi, Yubin Xia, Feifei Li, and Haibo Chen. Encrypted databases made secure yet maintainable. In 17th USENIX Symposium on Operating Systems Design and Imple-mentation (OSDI 23) , pages 117–133, Boston, MA, July 2023. USENIX Association. [89] Genome Research Limited. A comparison of Zlib implementations. https://www.htslib.org/benchmarks/zlib.html. Last accessed: Oct, 2025. [90] Linux Kernel Developers. Guest Halt Polling. https://docs.kernel.org/virt/guest-halt-polling.html, 2025. Last accessed: Oct, 2025. [91] Luke Jones. Google Bard is Not Coming to Europe Because of Concerns it Breaches GDPR Rules. https://winbuzzer.com/2023/05/12/google-bard-is-not-coming-to-europe-because-of-concerns-it-breaches-gdpr-rules-xcxwbn/, 2025. Last accessed: June, 2025. [92] LWN. Add Secure TSC support for SNP guests , 2024. [93] Eugenio Pérez Martín. Deep Dive into Virtio-networking and Vhost-net. https: //www.redhat.com/en/blog/deep-dive-virtio-networking-and-vhost-net, 2019. Last accessed: Oct, 2025. [94] Sinisa Matetic, Mansoor Ahmed, Kari Kostiainen, Aritra Dhar, David Sommer, Arthur Gervais, Ari Juels, and Srdjan Capkun. ROTE: Rollback protection for trusted execution. In 26th USENIX Security Symposium (USENIX Security 17) ,pages 1289–1306, Vancouver, BC, August 2017. USENIX Association. [95] Aastha Mehta, Eslam Elnikety, Katura Harvey, Deepak Garg, and Peter Druschel. Qapla: Policy compliance for database-backed systems. In 26th USENIX Security Symposium (USENIX Security 17) , pages 1463–1479, Vancouver, BC, August 2017. USENIX Association. [96] Simon Meier, Benedikt Schmidt, Cas Cremers, and David Basin. The tamarin prover for the symbolic analysis of security protocols. In Proceedings of the 25th International Conference on Computer Aided Verification . Springer-Verlag, 2013. 
+
+> 14
+
+[97] Memcached Developers. Memcached. https://memcached.org/, 2025. Last accessed: Oct, 2025. [98] Ines Messadi, Shivananda Neumann, Nico Weichbrodt, Lennart Almstedt, Mohammad Mahhouk, and Rüdiger Kapitza. Precursor: A fast, client-centric and trusted key-value store using rdma and intel sgx. In Proceedings of the 22nd International Middleware Conference , Middleware ’21, page 1–13, New York, NY, USA, 2021. Association for Computing Machinery. [99] Meta Platforms. RocksDB | A persistent key-value store for fast storage environments. https://rocksdb.org/. Last accessed: June, 2025. [100] Microsoft. Azure Confidential Computing, 2019. Last accessed on 2025-03-27. [101] Masanori Misono, Dimitrios Stavrakakis, Nuno Santos, and Pramod Bhatotia. Confidential VMs Explained: An Empirical Analysis of AMD SEV-SNP and Intel TDX. Proceedings of the ACM on Measurement and Analysis of Computing Systems , 8(3), 2024. [102] Jayashree Mohan, Melissa Wasserman, and Vijay Chidambaram. Analyzing gdpr compliance through the lens of privacy policy, 2019. [103] noyb. noyb: We enforce your right to privacy. https://noyb.eu/en, 2025. Last accessed: June, 2025. [104] noyb. noyb win: € 1.2 billion fine against Meta over EU-US data transfers. https://noyb.eu/en/edpb-decision-facebooks-eu-us-data-transfers-stop-transfers-fine-and-repatriation, 2025. Last accessed: June, 2025. [105] Mitsuhiro Okada, Takayuki Suzuki, Naoya Nishio, Hasitha Muthumala Waidyasooriya, and Masanori Hariyama. Fpga-accelerated searchable encrypted database management systems for cloud services. IEEE Transactions on Cloud Computing , 10(2):1373–1385, 2022. [106] OpenSSL. OpenSSL library. https://openssl-library.org/. Last accessed: Oct, 2025. [107] Vasilis Pappas, Fernando Krell, Binh Vo, Vladimir Kolesnikov, Tal Malkin, Seung Geol Choi, Wesley George, Angelos Keromytis, and Steve Bellovin. Blind seer: A scalable private dbms. In 2014 IEEE Symposium on Security and Privacy ,pages 359–374, 2014. [108] Bryan Parno, Jacob R. Lorch, John R. Douceur, James Mickens, and Jonathan M. McCune. Memoir: Practical state continuity for protected modules. In 2011 IEEE Symposium on Security and Privacy , pages 379–394, 2011. [109] Rishabh Poddar, Tobias Boelter, and Raluca Ada Popa. Arx: an encrypted database using semantically secure encryption. Proc. VLDB Endow. , 12(11):1664–1678, July 2019. [110] Raluca Ada Popa, Catherine M. S. Redfield, Nickolai Zeldovich, and Hari Balakrishnan. Cryptdb: processing queries on an encrypted database. Commun. ACM , 55(9):103–111, September 2012. [111] Christian Priebe, Kapil Vaswani, and Manuel Costa. Enclavedb: A secure database using sgx. In 2018 IEEE Symposium on Security and Privacy (SP) , pages 264–278, 2018. [112] Lina Qiu, Rebecca Taft, Alexander Shraer, and George Kollios. The price of privacy: A performance study of confidential virtual machines for database systems. In Pro-ceedings of the 20th International Workshop on Data Management on New Hardware ,DaMoN ’24, New York, NY, USA, 2024. Association for Computing Machinery. [113] Redis. Redis - The Real-time Data Platform. https://redis.io/, 2025. Last accessed: June, 2025. [114] Francisco Rocha and Miguel Correia. Lucy in the Sky without Diamonds: Stealing Confidential Data in the Cloud. In Proceedings of the IEEE/IFIP 41st International Conference on Dependable Systems and Networks Workshops , 2011. [115] Malte Schwarzkopf, Eddie Kohler, M. Frans Kaashoek, and Robert Morris. Position: Gdpr compliance by construction. In Heterogeneous Data Management, Polystores, and Analytics for Healthcare , page 39–53, Berlin, Heidelberg, 2022. Springer-Verlag. [116] Shayak Sen, Saikat Guha, Anupam Datta, Sriram K. Rajamani, Janice Tsai, and Jeannette M. Wing. Bootstrapping privacy compliance in big data systems. In 
+
+2014 IEEE Symposium on Security and Privacy , pages 327–342, 2014. [117] Aashaka Shah, Vinay Banakar, Supreeth Shastri, Melissa Wasserman, and Vijay Chidambaram. Analyzing the impact of GDPR on storage systems. In 11th USENIX Workshop on Hot Topics in Storage and File Systems (HotStorage 19) ,Renton, WA, July 2019. USENIX Association. [118] Supreeth Shastri, Vinay Banakar, Melissa Wasserman, Arun Kumar, and Vijay Chidambaram. Understanding and benchmarking the impact of gdpr on database systems. Proc. VLDB Endow. , 13(7):1064–1077, March 2020. [119] Supreeth Shastri, Melissa Wasserman, and Vijay Chidambaram. Gdpr anti-patterns: How design and operation of modern cloud-scale systems conflict with gdpr, 2019. [120] Supreeth Shastri, Melissa Wasserman, and Vijay Chidambaram. The seven sins of Personal-Data processing systems under GDPR. In 11th USENIX Workshop on Hot Topics in Cloud Computing (HotCloud 19) , Renton, WA, July 2019. USENIX Association. [121] Chenkai Shen and Lei Fan. Pldb: Protecting lsm-based key-value store using trusted execution environment. In 2023 IEEE 22nd International Conference on Trust, Security and Privacy in Computing and Communications (TrustCom) , pages 762–771, 2023. [122] Juho Snellman. Updated zlib benchmarks. https://www.snellman.net/blog/archive/2015-06-05-updated-zlib-benchmarks/. Last accessed: Oct, 2025. [123] Dimitrios Stavrakakis, Dimitra Giantsidi, Maurice Bailleu, Philip Sändig, Shady Issa, and Pramod Bhatotia. Anchor: A library for building secure persistent memory systems. Proc. ACM Manag. Data , 1(4), December 2023. [124] Chen Sun, Evan Jacobs, Daniel Lehmann, Andrew Crouse, and Supreeth Shastri. Gdprxiv: Establishing the state of the art in gdpr enforcement. Proceedings on Privacy Enhancing Technologies , 2023. [125] Yuanyuan Sun, Sheng Wang, Huorong Li, and Feifei Li. Building enclave-native storage engines for practical encrypted databases. Proc. VLDB Endow. ,14(6):1019–1032, February 2021. [126] Lillian Tsai, Hannah Gross, Eddie Kohler, Frans Kaashoek, and Malte Schwarzkopf. Edna: Disguising and revealing user data in web applications. In Proceedings of the 29th Symposium on Operating Systems Principles , SOSP ’23, page 434–450, New York, NY, USA, 2023. Association for Computing Machinery. [127] Stephen Tu, M. Frans Kaashoek, Samuel Madden, and Nickolai Zeldovich. Processing analytical queries over encrypted data. Proc. VLDB Endow. ,6(5):289–300, March 2013. [128] Harshavardhan Unnibhavi, David Cerdeira, Antonio Barbalace, Nuno Santos, and Pramod Bhatotia. Secure and policy-compliant query processing on heterogeneous computational storage architectures. In Proceedings of the 2022 International Conference on Management of Data (SIGMOD) , 2022. [129] Anjo Vahldiek-Oberwagner, Eslam Elnikety, Aastha Mehta, Deepak Garg, Peter Druschel, Rodrigo Rodrigues, Johannes Gehrke, and Ansley Post. Guardat: enforcing data policies at the storage layer. In Proceedings of the Tenth European Conference on Computer Systems , EuroSys ’15, New York, NY, USA, 2015. Association for Computing Machinery. [130] Virginia. Sec. 18.2-186.6 Breach of personal information notification. https: //law.lis.virginia.gov/vacode/18.2-186.6/, 2025. Last accessed: December, 2025. [131] Virginia. Sec. 59.1-577 Personal data rights; consumers. https: //law.lis.virginia.gov/vacode/59.1-577/, 2025. Last accessed: December, 2025. [132] Virginia. Sec. 59.1-578 Data controller responsibilities; transparency. https: //law.lis.virginia.gov/vacode/59.1-578/, 2025. Last accessed: December, 2025. [133] Virginia. Sec. 59.1-579 Responsibility according to role; de-identified data. https: //law.lis.virginia.gov/vacode/59.1-579/, 2025. Last accessed: December, 2025. [134] Virginia. Sec. 59.1-580 Data protection assessments. https://law.lis.virginia.gov/ vacode/59.1-580/, 2025. Last accessed: December, 2025. [135] Frank Wang, James Mickens, Nickolai Zeldovich, and Vinod Vaikuntanathan. Sieve: Cryptographically Enforced Access Control for User Data in Untrusted Clouds. In Proceedings of the 13th USENIX Symposium on Networked Systems Design and Implementation (NSDI) , 2016. [136] Wubing Wang, Mengyuan Li, Yinqian Zhang, and Zhiqiang Lin. PwrLeak: Exploiting Power Reporting Interface for Side-Channel Attacks on AMD SEV. In Proceedings of the 20th International Conference on Detection of Intrusions and Malware, and Vulnerability Assessment . Springer-Verlag, 2023. [137] Jan Wichelmann, Anna Pätschke, Luca Wilke, and Thomas Eisenbarth. Cipherfix: Mitigating Ciphertext Side-Channel Attacks in Software. In Proceedings of the 32nd USENIX Security Symposium . USENIX Association, 2023. [138] Wen Zhang, Eric Sheng, Michael Chang, Aurojit Panda, Mooly Sagiv, and Scott Shenker. Blockaid: Data access policy enforcement for web applications. In 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22) ,pages 701–718, Carlsbad, CA, July 2022. USENIX Association. [139] Wenchao Zhou, Yifan Cai, Yanqing Peng, Sheng Wang, Ke Ma, and Feifei Li. Veridb: An sgx-based verifiable database. In Proceedings of the 2021 International Conference on Management of Data , SIGMOD ’21, page 2182–2194, New York, NY, USA, 2021. Association for Computing Machinery. [140] zlib. zlib: A Massively Spiffy Yet Delicately Unobtrusive Compression Library. https://zlib.net/. Last accessed: Oct, 2025. 
+
+> 15
+
+Appendix 
+
+We provide supplementary material for GDPRuler that includes: (1) Detailed algorithms for GDPRuler ’s GDPR -aware opera-tions (Appendix A). (2) Formal verification proofs of GDPRuler ’s attestation and logging protocols (Appendix B). (3) Additional experimental results on GDPRuler ’s scalabil-ity, GDPR queries performance and compression efficiency (Appendix C). (4) Legislation framework analysis which confirms that the 
+
+GDPR requirements, enforced in GDPRuler , align with the core body of other major regulations, showcasing GDPRuler ’s adaptability to other/future privacy legislations (Table 11 in Appendix D). 
+
+A Detailed GDPR -Aware Operations 
+
+Algorithm 2: GDPR-Aware Get Operation                                                
+
+> Input :key, session_key, query_policy
+> Output : Value or GDPR violation error
+> get( 𝑘𝑒𝑦 )begin
+> /* Policy compilation and validation */
+> 𝑑𝑒 𝑓 𝑎𝑢𝑙𝑡 _𝑝𝑜𝑙𝑖𝑐𝑦 ←get_session_policy (𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 );
+> 𝑝𝑜𝑙𝑖𝑐𝑦 ←compile_query_policy (𝑑𝑒 𝑓 𝑎𝑢𝑙𝑡 _𝑝𝑜𝑙𝑖𝑐𝑦 ,𝑞𝑢𝑒𝑟 𝑦 _𝑝𝑜𝑙𝑖𝑐𝑦 ); /* Standard KV operation */
+> 𝑣𝑎𝑙𝑢𝑒 ←decrypt (kv_store.get (𝑘𝑒𝑦 );
+> if 𝑣𝑎𝑙𝑢𝑒 == NULL then return GET_FAILED ;
+> end
+> /* Metadata extraction and validation */
+> 𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ←extract_metadata (𝑣𝑎𝑙𝑢𝑒 );
+> 𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 ←validate (𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ,𝑝𝑜𝑙𝑖𝑐𝑦 ,𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 );
+> if ¬𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 then
+> /* Log failed access attempt */
+> monitor_query (𝑘𝑒𝑦 ,“get” ,𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 );
+> return GDPR_VIOLATION_ERROR ;
+> end
+> /* Audit logging if required */
+> if 𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 .monitor == 𝑡𝑟𝑢𝑒 then
+> monitor_query (𝑘𝑒𝑦 ,“get” ,𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 );
+> end
+> /* Return processed value */
+> return remove_gdpr_metadata (𝑣𝑎𝑙𝑢𝑒 );
+> end
+
+A.1 GET Operation 
+
+The GDPR -aware get operation (Algorithm 2) demonstrates how 
+
+GDPRuler transforms simple data retrieval into a comprehensive compliance-checking process. The operation begins by compiling the requesting entity’s session policy with any query-specific over-rides, creating a unified policy framework that captures both default privacy preferences and operation-specific requirements. After re-trieving the encrypted value from the underlying KVS and perform-ing decryption within the secure CVM environment, the system extracts embedded GDPR metadata (e.g., ownership information, processing purposes, retention policies, sharing permissions). The core compliance validation ensures that the requesting entity has legitimate access rights based on GDPR principles: ownership verification (Article 15), purpose limitation checking (Article 5), and objection validation (Article 21). If validation fails, the system logs the unauthorized access attempt for audit purposes and returns a 
+
+GDPR violation error, ensuring that privacy breaches are both pre-vented and documented. For successful operations, audit logging occurs conditionally based on the data’s monitoring requirements, creating tamper-proof records that regulatory authorities can later review. The final step removes GDPR metadata from the returned value, ensuring that clients receive only the actual data while the compliance infrastructure remains transparent. 
+
+Algorithm 3: GDPR-Aware Put Operation                                                                               
+
+> Input :key, value, session_key, query_policy
+> Output : Success or failure status
+> put( 𝑘𝑒𝑦,𝑣𝑎𝑙𝑢𝑒 )begin
+> /* Policy compilation and validation */
+> 𝑑𝑒 𝑓 𝑎𝑢𝑙𝑡 _𝑝𝑜𝑙𝑖𝑐𝑦 ←get_session_policy (𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 );
+> 𝑝𝑜𝑙𝑖𝑐𝑦 ←compile_query_policy (𝑑𝑒 𝑓 𝑎𝑢𝑙𝑡 _𝑝𝑜𝑙𝑖𝑐𝑦 ,𝑞𝑢𝑒𝑟 𝑦 _𝑝𝑜𝑙𝑖𝑐𝑦 ); /* Check metadata cache, fallback to KVS if needed */
+> 𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ←metadata_cache.get (𝑘𝑒𝑦 );
+> if 𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 == NULL then
+> /* Cache miss: retrieve from KV store */
+> 𝑣𝑎𝑙𝑢𝑒 ←decrypt (kv_store.get (𝑘𝑒𝑦 ));
+> if 𝑣𝑎𝑙𝑢𝑒 != NULL then
+> 𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ←extract_metadata (𝑣𝑎𝑙𝑢𝑒 );
+> metadata_cache.put (𝑘𝑒𝑦 ,𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ); // Update cache
+> end end
+> /* Validate modification permissions for existing keys */
+> if 𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 != NULL then
+> 𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 ←validate (𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ,𝑝𝑜𝑙𝑖𝑐𝑦 ,𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 );
+> if ¬𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 then
+> monitor_query (𝑘𝑒𝑦 ,“put” ,𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 );
+> return PUT_FAILED ;
+> end end
+> /* Metadata creation/update via query rewriter */
+> 𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 ←𝑟𝑒𝑤𝑟𝑖𝑡𝑒𝑟 .create_new_value (𝑝𝑜𝑙𝑖𝑐𝑦 ,𝑣𝑎𝑙𝑢𝑒 ); /* Audit logging if required */
+> if 𝑝𝑜𝑙𝑖𝑐𝑦 .monitor == 𝑡𝑟𝑢𝑒 then
+> monitor_query (𝑘𝑒𝑦 ,“put” ,𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 ,𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 );
+> end
+> /* Encryption if required */
+> if 𝑝𝑜𝑙𝑖𝑐𝑦 .encrypt == 𝑡𝑟𝑢𝑒 then
+> 𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 ←encrypt (𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 );
+> end
+> /* Standard KV operation with enhanced value */
+> 𝑟𝑒𝑠𝑢𝑙𝑡 ←kv_store.put (𝑘𝑒𝑦 , ( 𝑒𝑛ℎ𝑎𝑛𝑐𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒 ));
+> return 𝑟𝑒𝑠𝑢𝑙𝑡 ?PUT_SUCCESS :PUT_FAILED ;
+> end
+
+A.2 PUT Operation 
+
+The GDPR -aware put operation (Algorithm 3) extends standard KV storage with comprehensive privacy policy enforcement and metadata management. After compiling session and query-specific policies, the operation checks whether the key already exists by first consulting an in-memory metadata cache. This cache optimization reduces KVS load by avoiding repeated retrievals of frequently ac-cessed metadata. On cache miss, the system retrieves and decrypts the value from the KVS, extracts its metadata, and updates the cache for future requests. For existing keys, the system validates that the requesting entity has modification rights by checking ownership against the cached or retrieved metadata, preventing unauthorized alterations to protected data. The query rewriter component creates an enhanced value that embeds GDPR metadata directly within the stored data, encoding privacy policies, ownership information, processing purposes, and retention settings using efficient metadata representations. This em-bedded approach ensures that compliance information travels with the data throughout its lifecycle while maintaining compatibility with existing KVS implementations. The system performs condi-tional audit logging based on policy requirements, then encrypts and stores the enhanced value. This approach ensures that every write operation respects existing privacy preferences while establishing comprehensive governance for new data entries. 
+
+> 16
+
+Algorithm 4: GDPR-Aware Getm Operation  
+
+> Input :key_prefix, filter_conditions
+> Output : Filtered results or failure
+> getm(
+
+𝑘𝑒𝑦 _𝑝𝑟𝑒 𝑓 𝑖𝑥,𝑓 𝑖𝑙𝑡𝑒𝑟 _𝑐𝑜𝑛𝑑𝑖𝑡𝑖𝑜𝑛𝑠 )begin     
+
+> /* Bulk retrieval from KV store */ /* Query metadata indexes for matching keys */
+
+𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠 ← query_metadata_indexes (𝑓 𝑖𝑙𝑡𝑒𝑟 _𝑐𝑜𝑛𝑑𝑖𝑡𝑖𝑜𝑛𝑠 );  
+
+> if
+
+𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠 .empty() then   
+
+> /* Fallback to full KVS scan if no index available */
+
+𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠 ← get_all_keys (𝑘𝑒𝑦 _𝑝𝑟𝑒 𝑓 𝑖𝑥 ∗); 
+
+> end
+
+𝑒𝑛𝑐𝑟 𝑦𝑝𝑡𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒𝑠 ← kv_store.get (𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠 ); 
+
+𝑣𝑎𝑙𝑢𝑒𝑠 ← decrypt( 𝑒𝑛𝑐𝑟 𝑦𝑝𝑡𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒𝑠 );  
+
+> if
+
+𝑣𝑎𝑙𝑢𝑒𝑠 .empty () then return GETM_FAILED ;  
+
+> end
+> /* Filter and validate each KV pair */
+
+ℎ𝑎𝑠 _𝑟𝑒𝑠𝑢𝑙𝑡𝑠 ← false;  
+
+> foreach
+
+𝑣𝑎𝑙𝑢𝑒 ∈ 𝑣𝑎𝑙𝑢𝑒𝑠 do 
+
+𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ← extract_metadata (𝑣𝑎𝑙𝑢𝑒 ); 
+
+𝑔𝑑𝑝𝑟 _𝑓 𝑖𝑙𝑡𝑒𝑟 ← create_gdpr_filter (𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ); /* Apply filter conditions */  
+
+> if
+
+¬ apply_filter (𝑔𝑑𝑝𝑟 _𝑓 𝑖𝑙𝑡𝑒𝑟 , 𝑓 𝑖𝑙𝑡𝑒𝑟 _𝑐𝑜𝑛𝑑𝑖𝑡𝑖𝑜𝑛𝑠 ) then    
+
+> continue ; // Skip non-matching filter entries
+> end
+> /* Validate access permissions */
+
+𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 ← validate (𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 , 𝑝𝑜𝑙𝑖𝑐𝑦 , 𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 ); 
+
+> monitor_query (
+
+𝑘𝑒𝑦 , “getm” , 𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 );  
+
+> if
+
+𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 then 
+
+𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑡 _𝑒𝑛𝑡𝑟𝑖𝑒𝑠 .append (remove_gdpr_metadata (𝑣𝑎𝑙𝑢𝑒 )); 
+
+ℎ𝑎𝑠 _𝑟𝑒𝑠𝑢𝑙𝑡𝑠 ← true;  
+
+> end end return
+
+ℎ𝑎𝑠 _𝑟𝑒𝑠𝑢𝑙𝑡𝑠 ? 𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑡 _𝑒𝑛𝑡𝑟𝑖𝑒𝑠 : GETM_FAILED ;
+
+> end
+
+A.3 DELETE Operation 
+
+The GDPR -aware delete operation performs the same process as the put but instead of invoking the query rewriter, it submits the request for the deletion of a KV pair directly to the KV engine, after ensuring that the requesting entity has modification rights (ownership and access permissions checks), preventing unauthorized deletions of protected data. 
+
+A.4 GETM Operation 
+
+The GDPR -aware getm operation (Algorithm 4) enables efficient bulk retrieval with privacy-aware filtering, essential for implementing 
+
+GDPR rights like "right of access" or "data portability". After pol-icy compilation, the system performs optimized data retrieval. For improved performance, GDPRuler first queries metadata indexes to identify candidate keys matching the specified filter conditions (e.g., owner, purposes, expiration times). If indexes are available, this dramatically reduces the search space by eliminating non-matching entries early; otherwise, the system falls back to key prefix matching for bulk retrieval. After decryption and metadata extraction, the operation applies a two-stage filtering process: GDPR metadata fil-ters select entries matching specified criteria, followed by individual access validation ensuring the requesting entity has legitimate rights to access each matching entry This dual filtering approach, combined with metadata indexing, optimizes performance by eliminating unauthorized entries early while maintaining strict compliance validation. The operation ag-gregates all qualifying results and logs each successful access indi-vidually for audit purposes, creating detailed trails that show exactly which data was accessed and why. This batch processing capabil-ity with index support is crucial for large-scale privacy operations while ensuring that each data item receives individual compliance validation. 
+
+A.5 PUTM Operation 
+
+The GDPR -aware putm operation (Algorithm 5) provides bulk meta-data updates essential for implementing policy changes across mul-tiple data entries. After policy compilation, the operation uses index queries to efficiently locate entries matching filter conditions before performing bulk retrieval and decryption. This index-accelerated approach significantly reduces the performance overhead of bulk metadata operations compared to full KVS scans. The system applies GDPR metadata filters to the retrieved entries and validates modification permissions individually, ensuring that policy changes respect ownership boundaries. The query rewriter creates updated values by modifying metadata fields while preserv-ing the underlying data values, ensuring that privacy policy changes don’t affect data integrity. Each successful modification is logged, if required by the policy, for audit purposes, providing complete traceability for bulk policy operations. The bulk update operation ensures consistency across all modifications. This approach enables efficient implementation of complex GDPR operations. 
+
+Algorithm 5: GDPR-Aware Putm Operation  
+
+> Input :key_prefix, filter_conditions, new_metadata
+> Output : Update status
+> putm(
+
+𝑘𝑒𝑦 _𝑝𝑟𝑒 𝑓 𝑖𝑥,𝑓 𝑖𝑙𝑡𝑒𝑟 _𝑐𝑜𝑛𝑑𝑖𝑡𝑖𝑜𝑛𝑠,𝑛𝑒𝑤 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 )begin     
+
+> /* Bulk retrieval from KV store */ /* Query metadata indexes for matching keys */
+
+𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠 ← query_metadata_indexes (𝑓 𝑖𝑙𝑡𝑒𝑟 _𝑐𝑜𝑛𝑑𝑖𝑡𝑖𝑜𝑛𝑠 );  
+
+> if
+
+𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠 .empty() then   
+
+> /* Fallback to full KVS scan if no index available */
+
+𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠 ← get_all_keys (𝑘𝑒𝑦 _𝑝𝑟𝑒 𝑓 𝑖𝑥 ∗); 
+
+> end
+
+𝑒𝑛𝑐𝑟 𝑦𝑝𝑡𝑒𝑑 _𝑣𝑎𝑙𝑢𝑒𝑠 ← kv_store.get (𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠 );  
+
+> if
+
+𝑣𝑎𝑙𝑢𝑒𝑠 .empty () then return PUTM_FAILED ;  
+
+> end
+> /* Filter, validate and prepare updates */
+
+𝑓 𝑎𝑖𝑙𝑒𝑑 _𝑐𝑜𝑢𝑛𝑡 ← 0;  
+
+> foreach
+
+(𝑘𝑒𝑦,𝑐𝑢𝑟𝑟𝑒𝑛𝑡 _𝑣𝑎𝑙𝑢𝑒 ) ∈ ( 𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒 _𝑘𝑒𝑦𝑠,𝑣𝑎𝑙𝑢𝑒𝑠 ) do 
+
+𝑐𝑢𝑟𝑟𝑒𝑛𝑡 _𝑣𝑎𝑙𝑢𝑒 ← decrypt (𝑐𝑢𝑟𝑟𝑒𝑛𝑡 _𝑣𝑎𝑙𝑢𝑒 ); 
+
+𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ← extract_metadata (𝑐𝑢𝑟𝑟𝑒𝑛𝑡 _𝑣𝑎𝑙𝑢𝑒 ); 
+
+𝑔𝑑𝑝𝑟 _𝑓 𝑖𝑙𝑡𝑒𝑟 ← create_gdpr_filter (𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ); /* Apply filter conditions */  
+
+> if
+
+¬apply_filter (𝑔𝑑𝑝𝑟 _𝑓 𝑖𝑙𝑡𝑒𝑟 , 𝑓 𝑖𝑙𝑡𝑒𝑟 _𝑐𝑜𝑛𝑑𝑖𝑡𝑖𝑜𝑛𝑠 ) then    
+
+> continue ; // Skip non-matching filter entries
+> end
+> /* Validate modification permissions */
+
+𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 ← validate (𝑔𝑑𝑝𝑟 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 , 𝑝𝑜𝑙𝑖𝑐𝑦 , 𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 );  
+
+> if
+
+𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 then   
+
+> /* Create updated value with new metadata */
+
+𝑛𝑒𝑤 _𝑣𝑎𝑙𝑢𝑒 ← 𝑟𝑒𝑤𝑟𝑖𝑡𝑒𝑟 .create_new_value (𝑐𝑢𝑟𝑟𝑒𝑛𝑡 _𝑣𝑎𝑙𝑢𝑒 ,
+
+𝑛𝑒𝑤 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 ); 
+
+> monitor_query (
+
+𝑘𝑒𝑦 , “putm” , 𝑐𝑜𝑚𝑝𝑙𝑖𝑎𝑛𝑐𝑒 , 𝑛𝑒𝑤 _𝑣𝑎𝑙𝑢𝑒 ); /* Encryption if required */  
+
+> if
+
+𝑛𝑒𝑤 _𝑚𝑒𝑡𝑎𝑑𝑎𝑡𝑎 .encrypt == 𝑡𝑟𝑢𝑒 then 
+
+𝑛𝑒𝑤 _𝑣𝑎𝑙𝑢𝑒 ← encrypt (𝑛𝑒𝑤 _𝑣𝑎𝑙𝑢𝑒 ); 
+
+> end
+
+𝑣𝑎𝑙𝑖𝑑 _𝑢𝑝𝑑𝑎𝑡𝑒𝑠 .append (𝑘𝑒𝑦,𝑛𝑒𝑤 _𝑣𝑎𝑙𝑢𝑒 ); 
+
+> else
+
+𝑓 𝑎𝑖𝑙𝑒𝑑 _𝑐𝑜𝑢𝑛𝑡 ← 𝑓 𝑎𝑖𝑙𝑒𝑑 _𝑐𝑜𝑢𝑛𝑡 + 1;   
+
+> end end
+> /* Bulk update operation */
+
+𝑢𝑝𝑑𝑎𝑡𝑒 _𝑟𝑒𝑠𝑢𝑙𝑡𝑠 ← kv_store.put (𝑣𝑎𝑙𝑖𝑑 _𝑢𝑝𝑑𝑎𝑡𝑒𝑠 ); 
+
+𝑢𝑝𝑑𝑎𝑡𝑒𝑑 _𝑐𝑜𝑢𝑛𝑡 ← count_successes (𝑢𝑝𝑑𝑎𝑡𝑒 _𝑟𝑒𝑠𝑢𝑙𝑡𝑠 );  
+
+> return
+
+𝑢𝑝𝑑𝑎𝑡𝑒𝑑 _𝑐𝑜𝑢𝑛𝑡 > 0 ? PUTM_SUCCESS : PUTM_FAILED ;
+
+> end
+
+A.6 DELETEM Operation 
+
+The GDPR -aware deletem operation performs a similar process with the PUTM. However, instead of creating new values, it locates and 
+
+> 17
+
+Algorithm 6: GDPR Audit Log Access for Regulators                                                  
+
+> Input :key_filter, timestamp_threshold, session_key
+> Output : Audit log entries or access denied
+> getLogs( 𝑘𝑒𝑦 _𝑓 𝑖𝑙𝑡𝑒𝑟,𝑡𝑖𝑚𝑒 _𝑡ℎ𝑟𝑒𝑠,𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 )begin
+> /* Validate regulator authority */
+> 𝑟𝑒𝑔𝑢𝑙𝑎𝑡𝑜𝑟 _𝑣𝑎𝑙𝑖𝑑 ←validate_regulator_key (𝑠𝑒𝑠𝑠𝑖𝑜𝑛 _𝑘𝑒𝑦 );
+> if ¬𝑟𝑒𝑔𝑢𝑙𝑎𝑡𝑜𝑟 _𝑣𝑎𝑙𝑖𝑑 then return ACCESS_DENIED ;
+> end
+> /* Briefly pause logging to ensure consistency */
+> pause_logger_and_flush_logs (); /* Retrieve filtered audit logs */
+> if 𝑘𝑒𝑦 _𝑓 𝑖𝑙𝑡𝑒𝑟 != NULL then
+> /* Get logs for specific key */ /* read_log: decryption, integrity and counter checks */
+> 𝑡𝑜𝑡𝑎𝑙 _𝑙𝑜𝑔 _𝑒𝑛𝑡𝑟𝑖𝑒𝑠 ←read_log (ℎ𝑎𝑠ℎ (𝑘𝑒𝑦 _𝑓 𝑖𝑙𝑡𝑒𝑟 ),𝑡𝑖𝑚𝑒 _𝑡ℎ𝑟𝑒𝑠 );
+> else /* Get all available log files */
+> 𝑙𝑜𝑔 _𝑓 𝑖𝑙𝑒𝑠 ←retrieve_log_names ();
+> foreach 𝑙𝑜𝑔 _𝑓 𝑖𝑙𝑒 ∈𝑙𝑜𝑔 _𝑓 𝑖𝑙𝑒𝑠 do
+> /* read_log: decryption, integrity and counter checks */
+> 𝑒𝑛𝑡𝑟𝑖𝑒𝑠 ←read_log (𝑙𝑜𝑔 _𝑓 𝑖𝑙𝑒 ,𝑡𝑖𝑚𝑒 _𝑡ℎ𝑟𝑒𝑠 );
+> 𝑡𝑜𝑡𝑎𝑙 _𝑙𝑜𝑔 _𝑒𝑛𝑡𝑟𝑖𝑒𝑠 .append (𝑒𝑛𝑡𝑟𝑖𝑒𝑠 );
+> end end
+> /* Format logs for regulatory review */
+> foreach 𝑒𝑛𝑡𝑟 𝑦 ∈𝑡𝑜𝑡𝑎𝑙 _𝑙𝑜𝑔 _𝑒𝑛𝑡𝑟𝑖𝑒𝑠 do
+> 𝑟𝑒𝑎𝑑𝑎𝑏𝑙𝑒 _𝑒𝑛𝑡𝑟 𝑦 ←gdpr_format (𝑒𝑛𝑡𝑟 𝑦 );
+> 𝑓 𝑜𝑟𝑚𝑎𝑡𝑡𝑒𝑑 _𝑙𝑜𝑔𝑠 .append (𝑟𝑒𝑎𝑑𝑎𝑏𝑙𝑒 _𝑒𝑛𝑡𝑟 𝑦 );
+> end return 𝑓 𝑜𝑟𝑚𝑎𝑡𝑡𝑒𝑑 _𝑙𝑜𝑔𝑠 ;
+> end
+
+filters the compliant KV pairs that match the filter conditions and submit deletion requests directly to the KVS while also respecting the KV pairs’ logging requirements. 
+
+A.7 GetLogs Operation 
+
+The GDPR -aware getLogs operation (Algorithm 6) provides regu-latory authorities with secure access to comprehensive audit trails essential for compliance verification and violation investigation. The operation begins with strict authentication to verify that only autho-rized regulatory entities can access sensitive audit information. The system temporarily pauses ongoing logging operations to ensure consistency in the retrieved audit trail, preventing data races that could compromise audit integrity. The flexible retrieval mechanism supports both specific key-based queries and comprehensive audit reviews, with timestamp filtering enabling investigation of specific time periods. Each log entry un-dergoes decryption, integrity verification, and counter validation to ensure authenticity and detect any tampering attempts. The final formatting phase converts technical log entries into human-readable reports that include complete GDPR metadata interpretation, oper-ation histories, and compliance decisions. This comprehensive audit capability enables regulatory authorities to verify compliance, in-vestigate potential violations, and understand the complete lifecycle of personal data processing within the system. 
+
+B Security Protocol Analysis 
+
+We formally verify GDPRuler ’s attestation and logging protocols using the Tamarin Prover [ 41 , 96 ] under the Dolev-Yao [ 44 ] attacker model. We prove that the attestation protocol successfully performs mutual authentication and allows the creation of a secure direct communication channel between any client and the GDPR monitor. Additionally, we prove the correctness of the logging protocol by guaranteeing that after successful log validation, the log is complete with only valid entries. 
+
+B.1 Threat Model 
+
+Tamarin natively incorporates a Dolev-Yao [ 44 ] attacker model for the network, which we extend with additional attacker capabilities depending on the protocol we analyze. The Dolev-Yao attacker model assumes a strong attacker with full control over the network, who is able to read, modify, and drop any messages. For the logging protocol, we strengthen the attacker to be able to delete, modify, and add ar-bitrary log entries directly in untrusted storage. We further consider how an attacker capable of compromising the long-term keys of the 
+
+GDPR monitor or any client affects the security properties we verify. For our models, we assume that any cryptographic primitives (e.g., hashing, signatures) are perfect and cannot be attacked. 
+
+B.2 Protocol Model 
+
+We model our protocols as multiset rewriting rules, one of the sup-ported input formats of the Tamarin Prover. The global system state corresponds to a multiset of facts, where a fact represents some piece of information like a network message, the state of the GDPR 
+
+monitor, attacker knowledge, etc. Next, we explain each protocol’s model in more detail: 
+
+Attestation model. Our attestation model assumes the TEE attesta-tion infrastructure to work correctly, i.e., it does not leak secrets and can not be attacked. Two key properties are shown for the attestation protocol: (i) authenticity , after attestation, the GDPR monitor can trust the identity of the entity making the request and vice-versa; and (ii) perfect-forward-secrecy , the symmetric communication key established during attestation is only known by the monitor or the entity, unless they were compromised before the attestation. More specifically, our attestation model considers an infinite num-ber of agents and protocol executions happening in parallel. Since the multiset is initially empty, we model creation rules for all possible agents (e.g., clients, monitors, TEEs, CAs) to properly initialize their state and generate any long-term keys. To translate the protocol to rules, which operate on a global state, we identify for each protocol step: (i) the necessary inputs from the network, as well as, the persistent states for each agent, (ii) the resulting outputs on the network, as well as, any modifications to the persistent states of each agent, (iii) any checks performed by an agent, which may translate to restrictions of the rule transitions. We assume the initial registration of entities on the GDPR monitor is done over a secure channel. To augment the attacker with capabilities to compromise long-term keys, we model rules that mark an agent as compromised and send all its secrets in plaintext on the network. 
+
+Logging model. Our logging model assumes the correct implemen-tation of secure hardware counters and a secret key to verify log entries. We verify that two properties hold after successful log vali-dation: (i) every batch stabilized before the last counter increase has a valid log entry; and (ii) every log entry with a counter smaller than the current stable counter belongs to a valid batch. We model the logging layer, similarly to the attestation model, including an initialization rule that sets up the hardware counter and secret key. We model the monotonically increasing counter values symbolically and define their comparison function on the timestamps when the counter values were queried. We model the request to persist a batch, counter readout, and stabilization events                           
+
+> 18 Action fact Description
+> K(𝑖 )The attacker knows information 𝑖 .Comp (𝑎 )Actor 𝑎 is compromised and its long-term keys are leaked. AttE (𝑔𝑚,𝑒 )GDPRuler monitor 𝑔𝑚 trusts the entity 𝑒 .AttGM (𝑒,𝑔𝑚 )Entity 𝑒 trusts the GDPRuler monitor 𝑔𝑚 .ReqAtt (𝑒,𝑔𝑚 )Entity 𝑒 initiates an attestation request for the GDPRuler monitor 𝑔𝑚 .SKey (𝑎,𝑏, key )Actor 𝑎 establishes the symmetric key key with actor
+> 𝑏 after successful attestation.
+
+Table 8: Action facts used in the attestation model.                    
+
+> Action fact Description
+> LAdd (id ,𝑒 )Log entry 𝑒 is added to the persisted log, and can be referenced using id .LDel (id )The log entry with id id is deleted. Valid () The persisted log is validated. Store (𝑏 )Batch 𝑏 is requested to be persisted. Stable (𝑏 )Batch 𝑏 receives confirmation that it was stabilized. CtrAtt () The hardware counter increased and attested all software counters.
+
+Table 9: Action facts used in the logging model. 
+
+as separate rules, forcing Tamarin to consider all possible orderings of these for an infinite number of batches. The persisted log state is modeled as a series of add and remove 
+
+operations; an entry is in the log if it was added but not deleted before the readout. To allow the attacker to freely modify the log, we model rules that directly create add or remove operations at any point in time. Additionally, all operations are also shared on the network to make their values accessible to the attacker. 
+
+B.3 Verified Properties 
+
+To verify properties of our models, we label the rules in our mod-els with action facts . These action facts can be used in first-order temporal formulas. We express our desired properties by reason-ing about these action facts and associated time points. We write actionfact (... ) @𝑡 𝑖 to denote that actionfact (... ) occurred at time 𝑡 𝑖 .
+
+B.3.1 Attestation Properties We verify multiple properties of the attestation model, including a set of sanity checks that ensure our model works as expected. To do this, we labeled our rules with a set of action facts, as explained in Table 8. The sanity check property states that it is possible to reach the end of the protocol (successful attesta-tion) with only a single instance of each agent and without compro-mising anything. Tamarin proved this property holds by finding an execution trace that upholds all these constraints. With confidence in our model established, we proved the following security properties: 
+
+Attestation. We split the mutual attestation into two individual properties: (i) the monitor correctly attests any entity, and (ii) the entity correctly attests the monitor. Formally, we verify these two formulas: 
+
+∀ 𝑔𝑚,𝑒,𝑡 𝑖 : AttE (𝑔𝑚,𝑒 ) @𝑡 𝑖 
+
+=⇒ ((∃ 𝑡 𝑗 :𝑡 𝑗 <𝑡 𝑖 ∧ReqAtt (𝑒,𝑔𝑚 ) @𝑡 𝑗 )∨(∃ 𝑡 𝑐 : Comp (𝑔𝑚 ) @𝑡 𝑐 ∨Comp (𝑒 ) @𝑡 𝑐 )) 
+
+(1) and 
+
+∀ 𝑒,𝑔𝑚,𝑡 𝑖 : AttGM (𝑒,𝑔𝑚 ) @𝑡 𝑖 
+
+=⇒ ((∃ 𝑡 𝑗 :𝑡 𝑗 <𝑡 𝑖 ∧AttE (𝑔𝑚,𝑒 ) @𝑡 𝑗 )∨(∃ 𝑡 𝑐 : Comp (𝑔𝑚 ) @𝑡 𝑐 ∨Comp (𝑒 ) @𝑡 𝑐 )) 
+
+(2) 
+
+Perfect forward secrecy (PFS). We verify PFS for all symmetric session keys established after successful attestation. PFS guarantees that the session key, and thus the data encrypted with it, remains secret even if the long-term keys of either party are compromised in the future. Formally, we verify: 
+
+∀ 𝑎,𝑏, key ,𝑡 𝑖 : SKey (𝑎,𝑏, key ) @𝑡 𝑖 =⇒ (( 𝑡 𝑘 : K(key ) @𝑡 𝑘 )∨(∃ 𝑡 𝑐 :𝑡 𝑐 <𝑡 𝑖 ∧ ( Comp (𝑎 ) @𝑡 𝑐 ∨Comp (𝑏 ) @𝑡 𝑐 ))) (3) 
+
+B.3.2 Logging Properties Similar to the attestation properties, we also verify a sanity property of the logging protocol to ensure our model works as expected. For the logging protocol, we ensure that it is possible to create a non-empty log that can be validated without the attacker tampering with the log. Tamarin again successfully finds a valid execution trace that upholds these constraints. We verify that a validated log is complete through two properties using the action facts listed in Table 9. For readability, we use 𝑒 (𝑏 ) as a shorthand for the encapsulation of a batch to create a persisted log entry. Formally, we verify that the log is missing no entries: 
+
+∀ 𝑏,𝑡 stable ,𝑡 ctr ,𝑡 valid : (𝑡 stable <𝑡 ctr <𝑡 valid 
+
+∧Stable (𝑏 ) @𝑡 stable ∧CtrAtt () @𝑡 ctr ∧Valid () @𝑡 valid )
+
+=⇒ ∃ id ,𝑡 𝑎 : (LAdd (id ,𝑒 (𝑏 )) @𝑡 𝑎 
+
+∧( 𝑡 𝑑 :𝑡 𝑑 <𝑡 valid ∧LDel (id ) @𝑡 𝑑 )) 
+
+(4) and that all log entries are valid: 
+
+∀ 𝑒 ′,id ,𝑡 add ,𝑡 ctr ,𝑡 valid : (𝑡 add <𝑡 ctr <𝑡 valid 
+
+∧LAdd (id ,𝑒 ′) @𝑡 add ∧CtrAtt () @𝑡 ctr ∧Valid () @𝑡 valid )
+
+=⇒ ((∃ 𝑏,𝑡 𝑠 :𝑒 ′ =𝑒 (𝑏 ) ∧ 𝑡 𝑠 <𝑡 add ∧Store (𝑏 ) @𝑡 𝑠 )∨(∃ 𝑡 𝑑 :𝑡 𝑑 <𝑡 valid ∧LDel (id ) @𝑡 𝑑 )) 
+
+(5) 
+
+B.3.3 Verification Result We successfully verified all the above properties for the attestation and logging models. Tamarin automat-ically verified that our models do not violate any of these properties. This automated analysis took roughly 90 seconds on an Intel(R) Xeon(R) Gold 6438Y+ processor with 500GB of RAM. 
+
+C Additional Results 
+
+C.1 Scalability Analysis 
+
+We present detailed scalability analysis for the remaining YCSB workloads (B, C, D, F) across Redis and RocksDB. We execute our ex-periments with varying thread counts from 1 to 16. Further, to break down GDPRuler ’s overhead, we first analyze the baseline CVM cost, then examine the incremental GDPR compliance overhead. 
+
+CVM baseline overhead. Deploying KVS engines within CVMs introduces consistent overhead due to memory encryption and I/O costs. Across all workloads, CVM KVS achieves 68-74% of native throughput for RocksDB and 70-76% for Redis, corresponding to 26-32% overhead. This overhead remains stable across thread counts (±2%), confirming that CVM costs scale proportionally with work-load intensity. Importantly, the GDPR compliance layer adds an additional 8-12% overhead on top of this CVM baseline. 
+
+Workload B (95/5 Read/Write). Figure 12 illustrates GDPRuler ’s scaling characteristics under Workload B for Redis and RocksDB. In this workload, the system exhibits similar scaling characteristics to Workload A. For RocksDB, GDPRuler maintains 58-62% of baseline throughput across all thread counts, achieving 80.5 K ops/sec at 16 threads compared to the baseline’s 129.8 K ops/sec. Breaking down              
+
+> 19 124816
+> Threads
+> 0
+> 50
+> 100
+> Throughput (kops/s)  (a) Redis - Workload B (95/5 R/W) (Higher is better↑)
+> 124816
+> Threads
+> 0
+> 100
+> 200
+> Throughput (kops/s)  (b) RocksDB - Workload B (95/5 R/W) (Higher is better↑)
+> Native KVS Native GDPRuler (w/o Encr) Native GDPRuler CVM KVS GDPRuler (w/o Encr) GDPRuler
+
+Figure 12: Scalability analysis: GDPRuler ’s scalability with YCSB’s workload B. 1 2 4 8 16          
+
+> Threads
+> 0
+> 50
+> 100
+> Throughput (kops/s)  (a) Redis - Workload C (100/0 R/W) (Higher is better↑)
+> 124816
+> Threads
+> 0
+> 100
+> 200
+> Throughput (kops/s)  (b) RocksDB - Workload C (100/0 R/W) (Higher is better↑)
+> Native KVS Native GDPRuler (w/o Encr) Native GDPRuler CVM KVS GDPRuler (w/o Encr) GDPRuler
+
+Figure 13: Scalability analysis: GDPRuler ’s scalability with YCSB’s workload C. 1 2 4 8 16          
+
+> Threads
+> 0
+> 50
+> 100
+> Throughput (kops/s)  (a) Redis - Workload D (95/5 R/I) (Higher is better↑)
+> 124816
+> Threads
+> 0
+> 100
+> 200
+> Throughput (kops/s)  (b) RocksDB - Workload D (95/5 R/I) (Higher is better↑)
+> Native KVS Native GDPRuler (w/o Encr) Native GDPRuler CVM KVS GDPRuler (w/o Encr) GDPRuler
+
+Figure 14: Scalability analysis: GDPRuler ’s scalability with YCSB’s workload D. 1 2 4 8 16          
+
+> Threads
+> 0
+> 25
+> 50
+> 75
+> Throughput (kops/s)  (a) Redis - Workload F (100 RMW) (Higher is better↑)
+> 124816
+> Threads
+> 0
+> 50
+> 100
+> Throughput (kops/s)  (b) RocksDB - Workload F (100 RMW) (Higher is better↑)
+> Native KVS Native GDPRuler (w/o Encr) Native GDPRuler CVM KVS GDPRuler (w/o Encr) GDPRuler
+
+Figure 15: Scalability analysis: GDPRuler ’s scalability with YCSB’s workload F. 
+
+the overhead: CVM introduces 27%, while the GDPR layer adds 9%, totaling 36-38% overhead. GDPRuler with Redis shows comparable behavior at lower thread counts (64-66% of baseline) but benefits from Unix socket advantages beyond 8 threads, reaching 89.2 K ops/sec versus the baseline’s 71.4 K ops/sec at 16 threads—a 25% improvement demonstrating that GDPRuler ’s connection handling overcomes Redis’s server TCP bottleneck. 
+
+Workload C (100/0 Read/Write). GDPRuler ’s scalability in the read-only Workload C is shown in Figure 13 for both KVS backends. As the most read-intensive workload, Workload C achieves higher absolute throughputs while maintaining similar relative overheads. 
+
+GDPRuler with RocksDB delivers 97.3 K ops/sec at 16 threads (49.4% of 197.0 K ops/sec baseline), where CVM accounts for 28% overhead and GDPR compliance adds 11%. GDPRuler with Redis achieves 101.0 K ops/sec (119% of 84.7 K ops/sec baseline), with the crossover point occurring at 8 threads. Both databases demonstrate near-linear scaling efficiency (75-80%) up to 16 threads, with GDPRuler ’s over-head remaining constant across scaling, indicating no additional synchronization bottlenecks. 
+
+Workload D (95/5 Read/Insert). Figure 14 depicts GDPRuler ’s scalability results for Workload D on Redis and RocksDB. Work-load D, emphasizing recent data access patterns, shows performance characteristics between Workloads A and C. GDPRuler achieves 56-60% of baseline performance for RocksDB, with CVM contribut-ing 26% overhead and GDPR adding 10% on top of it. At 16 threads, 
+
+GDPRuler with RocksDB reaches 76.8 K ops/sec (58.1% of 132.2 K ops/sec), while with Redis it delivers 95.4 K ops/sec (128% of 74.3 K ops/sec). The stable 9-11% GDPR layer overhead across all thread counts compared to the CVM KVS validates that metadata processing scales efficiently without introducing contention. 
+
+Workload F (100% Read-Modify-Write). Figure 15 presents the scalability results for GDPRuler ’s experiments with Workload F both for Redis and RocksDB. Workload F exercises read-modify-write operations. GDPRuler maintains consistent performance ratios: 59-63% for RocksDB and improved relative performance for Redis at     
+
+> 20 Controller Customer Processor
+> GDPR Workload
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Throughput (ops/s)
+> 12
+> 34 38
+> 714
+> 5769
+> 541
+> 10
+> 26 30
+> 409
+> 3519
+> 317
+> 59.2×
+> 41.5×
+> 167.4×
+> 135.0×
+> 14.3×
+> 10.6×
+> (a) Throughput (Higher is better↑)
+> Native GDPRuler
+> Native GDPRuler (w/ indexes)
+> GDPRuler
+> GDPRuler (w/ indexes)
+> 500
+> 1000
+> 1500
+> (b) Query Latency
+> (Lower is better↓)
+> putm
+> getm
+> deletem 0
+> 100
+> 200
+> 9.17
+> 52.11
+> 48.10
+> Avg Latency (ms)
+
+Figure 16: GDPRuler ’s performance with YCSB workloads for RocksDB backend. 
+
+higher thread counts. GDPRuler with RocksDB achieves 68.9 K ops/sec at 16 threads (60.2% of 114.5 K ops/sec), with CVM overhead at 29% and GDPR at 8% (compared to CVM KVS). GDPRuler with Redis backend reaches 78.3 K ops/sec (131% of 59.7 K ops/sec). The uniform 8-10% GDPR layer overhead across this workload confirms that transactional metadata handling does not introduce additional synchronization costs beyond the base CVM overhead. 
+
+RocksDB GDPR workload performance. RocksDB exhibits sim-ilar indexing benefits to Redis while achieving higher absolute through-put, as shown in Figure 16. Without indexes, GDPRuler must per-form full KVS scans, resulting in performance as low as 9.9, 26.0, and 29.8 ops/sec for Controller, Customer, and Processor workloads respectively. When metadata indexes are enabled, performance im-proves dramatically by 10.6-135 × depending on the workload. Cus-tomer workloads benefit most from indexed ownership lookups (135 × speedup), while Processor workloads achieve 10.6 × faster execution through purpose-based filtering. These improvements translate to absolute throughputs of 408.8, 3,518.9, and 316.8 ops/sec for the three workloads in CVM deployments. 
+
+GDPR -operation-level latencies for RocksDB further confirm the effectiveness of indexing: getm operations improve from 1,164 ms to 52 ms (22.3 × speedup), while putm operations decrease from 1,041 ms to 9 ms (113 × speedup). Standard operations ( get , put , delete )also benefit from reduced contention, showing 21-33% latency im-provements despite not leveraging metadata indexes. The CVM deployment introduces 39-43% overhead compared to native execu-tion with indexes enabled, consistent with the CVM baseline costs observed in YCSB workloads. These results validate that metadata indexing is critical for GDPR compliance queries regardless of the underlying KVS engine, and that the indexing benefits far outweigh confidential computing costs.              
+
+> Entry size Data size Compression ratio (% data size reduction)
+> Level 0 Level 3 Level 6 Level 9 1KB 10GB 0.99 (–0.6%) 2.06 (51.3%) 2.13 (53.1%) 2.15 (53.5%) 4KB 10GB 1.00 (–0.2%) 2.07 (51.8%) 2.17 (53.9%) 2.20 (54.6%)
+
+Table 10: Compression effectiveness across entry sizes. C.2 Compression 
+
+To validate the effectiveness of the utilized compression layer, we perform additional microbenchmarks using realistic GDPR log en-tries containing semi-compressible payloads with common patterns (JSON structures, repeated field names, and random data). Table 10 shows results from processing 10GB of log data across different en-try sizes (1KB, 4KB) and compression levels (0, 3, 6, 9). GDPRuler ’s compression system achieves substantial storage reduction, with compression levels 3-9 providing 51-55% space savings. Larger en-tries (4KB) exhibit slightly better compression ratios (2.20:1 at level 9) due to more repeated patterns within entries. Compression level 3 provides 99% of the space savings achieved by level 9 with sig-nificantly lower CPU consumption, making it GDPRuler ’s default configuration choice. 
+
+D Legislation framework analysis 
+
+To highlight the versatility and applicability of GDPRuler in other regulatory framework, we present Table 11 (next page), which sum-marizes the subset of client rights and controller obligations in Gen-eral Data Protection Regulation ( GDPR ), California Consumer Pri-vacy Act (CCPA), and Virginia’s Consumer Data Protection Act (VCDPA) that are directly actionable at the data-management layer and thus relevant to GDPRuler ’s design. The table highlights the shared structural obligations, such as rights to access, deletion, portability, objection/opt-out, and duties around security, logging, and data retention. The observed alignment supports a regulation-agnostic view of GDPRuler ’s policy language: the same metadata fields (e.g., ownership, retention times, purposes, objection flags) and enforcement hooks can be instantiated under different “profiles” (e.g., GDPR, CCPA, VCDPA), with regulation-specific nuances cap-tured by the choice of predicates and enforcement rules rather than by redesigning the entire underlying system. 
+
+> 21
+
+Table 11: Client rights and controller obligations in GDPR, CCPA, and VCDPA that are relevant for data-management systems. 
+
+Obligation/Right GDPR (EU) CCPA (California) VCDPA (Virginia) Client Rights 
+
+Right to Access Article 15 [50 ] – Full access to personal data held 
+
+§ 1798.110 [ 24 ], § 1798.115 [ 25 ] – Access to categories, data, and sharing information 
+
+§ 59.1-577(A)(1) [131 ] – Confirm processing and access personal data Right to Deletion Article 17 [ 53 ] – Right to be Forgotten (broad grounds) 
+
+§ 1798.105 [ 22 ] – Delete collected data § 59.1-577(A)(3) [131 ] – Delete personal data provided or obtained Right to Portability Article 20 [ 56 ] – Data in a common, machine-readable format and right to transmit 
+
+§ 1798.130 [ 28 ] – Data transmission be-tween organizations and data subjects 
+
+§ 59.1-577(A)(4) [ 131 ] – Copy of data in portable, usable format that allows for transmission to another controller Right to Object/Opt-Out Article 21 [ 57 ] – Object to processing (e.g., marketing) 
+
+§ 1798.120 [ 26 ] – Opt-out of “sale” and “sharing” (cross-context ads) 
+
+§ 59.1-577(A)(5) [ 131 ] – Opt-out of tar-geted advertising, sale, and profiling Right to Rectification Article 16 [ 51 ] – Correct inaccurate data 
+
+§ 1798.106 [ 23 ] – Correct inaccurate personal information 
+
+§ 59.1-577(A)(2) [ 131 ] – Correct inaccuracies in personal data Right to Restrict / Limit Processing Article 18 [ 55 ] – Restrict processing of data for specified purposes 
+
+§ 1798.121 [ 27 ] – Limit use of Sensitive 
+
+Personal Information Not explicitly provided (but consent required for sensitive data § 59.1-578 [132]) Automated Individual Decision-Making Article 22 [ 58 ] – Right not to be subject to solely automated decisions 
+
+§ 1798.185(a)(15) [ 29 ] – No GDPR-style statutory right; rulemaking authority to regulate automated decision making technologies 
+
+§ 59.1-577(A)(5) [ 131 ] – Opt-out of profiling for legal/significant effects 
+
+Controller Obligations 
+
+Legal Basis for Processing Article 6 [ 67 ] – Explicit basis required (consent, contract, legal obligation, legitimate interest, etc.) 
+
+§ 1798.100 [ 21 ], § 1798.115 [ 25 ], §
+
+1798.120 [ 26 ] – Must provide notice on collection & opt-out option 
+
+§ 59.1-578 [ 132 ] – Processing limits based on necessity/purpose; Consent for sensitive data and associated privacy notice Security & Risk Assess-ments Article 32 [ 61 ], 35 [ 64 ] – Technical measures & Data Protection Impact Assessment mandatory for high risk 
+
+§ 1798.185 [ 29 ] – May require annual cybersecurity audits and risk assess-ments for high risk 
+
+§ 59.1-580 [ 134 ] – Data protection assessments required for targeted ads, sale, profiling Audit Logging / Account-ability Article 30 [ 60 ], 33 [62 ], 34 [63 ], 5(1)(f) [ 66 ] – Detailed logging of access, modification, consent, and breach notifications mandatory Implicit in § 1798.185 [ 29 ] (Audits) and in § 1798.105(c) [ 22 ] (Confidential record of deletion requests) 
+
+§ 59.1-580(D) [ 134 ], § 59.1-578 [ 132 ]– Controller must comply and demon-strate compliance Breach Notification Article 33 [ 62 ] – Notify authority within 72 hours 
+
+§ 1798.82 [ 31 ] – Notify “without unreasonable delay” Va. Code § 18.2-186.6 [ 130 ] – Notify “without unreasonable delay” Privacy Notice Require-ments Article 13 [ 48 ], 14 [ 49 ] – Comprehen-sive transparency required 
+
+§ 1798.100 [21] – Notice at collection; 12-month look-back on sharing 
+
+§ 59.1-578(C) [ 132 ] – Reasonably accessible, clear, and meaningful privacy notice Encryption / Data Protec-tion / Data Security Article 5(1)(f) [ 66 ], 25 [ 59 ] – Appro-priate security measures for integrity and confidentiality 
+
+§ 1798.100(e) [ 21 ], § 1798.81.5 [ 30 ] – Reasonable security procedures and practices appropriate to the nature of the personal information 
+
+§ 59.1-578(A)(3,4) [ 132 ] – Adminis-trative, technical, and physical data security practices Data Retention Limits Article 5(1)(e) [ 66 ] – Storage limitation § 1798.100(a)(3) [ 21 ] – Not longer than reasonably necessary for disclosed purpose 
+
+§ 59.1-578 [ 132 ], § 59.1-579(2) [ 133 ]– Not explicitly capped (at the con-troller’s discretion), but limited to what is relevant/necessary

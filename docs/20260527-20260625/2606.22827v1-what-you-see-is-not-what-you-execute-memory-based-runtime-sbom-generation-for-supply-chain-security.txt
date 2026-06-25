@@ -1,0 +1,958 @@
+Title: What You See Is Not What You Execute: Memory-Based Runtime SBOM Generation for Supply Chain Security
+
+URL Source: https://arxiv.org/pdf/2606.22827v1
+
+Published Time: Tue, 23 Jun 2026 02:38:23 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# What You See Is Not What You Execute: Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+## Hala Ali a,∗, Andrew Case b and Irfan Ahmed a
+
+> a
+
+Department of Computer Science, Virginia Commonwealth University, USA 
+
+> b
+
+Volatility Foundation, USA 
+
+A R T I C L E I N F O 
+
+Keywords :Supply Chain Security SBOM Memory Forensics Volatility 3 
+
+A B S T R A C T 
+
+Modern software development relies heavily on third-party components from public repositories, expanding the software supply chain attack surface. In response to these growing risks, federal initiatives have advanced the Software Bill of Materials (SBOM) as a standardized mechanism for improving transparency by describing software components, dependencies, and their relationships. However, SBOMs built from metadata or filesystem artifacts fail to capture the components loaded and executed at runtime, especially in dynamic ecosystems such as Python. Moreover, generating runtime SBOMs through instrumentation requires monitoring to be deployed in advance and the system to remain observable throughout execution. Such conditions are difficult to satisfy in production environments and incident-response scenarios. Volatile memory, in contrast, provides a reliable source for recovering the actual runtime state of a running application without requiring prior instrumentation. Therefore, this paper presents MEM-SBOM, the first memory forensics framework that generates SBOMs directly from the runtime state of Python applications. It recovers the modules from the interpreter’s internal structures, resolves package versions, and analyzes bytecode to build dependency graphs and identify reachable vulnerable functions. We implemented MEM-SBOM as a suite of Volatility 3 plugins and evaluated it against 51 real-world Python applications. It achieves 100% extraction accuracy, identifies Streamlit as the only application that calls the vulnerable routines of the tornado dependency, and recovers all runtime packages missed by existing SBOM tools, providing more accurate dependency graphs and better vulnerability assessment. These capabilities make MEM-SBOM a practical foundation for software supply chain security and incident response by providing a forensically sound runtime view of what is executed on a system. 
+
+## 1. Introduction 
+
+The widespread adoption of third-party libraries and frameworks from public repositories has become integral to modern software development, enabling rapid feature inte-gration while simultaneously expanding the software supply chain attack surface (Nahum et al., 2024; Cybersecurity and Infrastructure Security Agency (CISA), 2021; National Counterintelligence and Security Center (NCSC), 2021). Adversaries are increasingly exploiting these repositories to distribute malicious packages that compromise downstream applications (Vu et al., 2023). In 2024, more than 700,000 malicious packages were discovered in public registries, a 156% increase over the previous year (Sonatype, 2025). The official Python repository, PyPI , has repeatedly faced such incidents, with more than 12,000 malicious packages removed in 2022 alone (Mike Fiedler, 2023), yet malicious uploads persist despite repository-level scanning (Samaana et al., 2025; Kampourakis et al., 2025). Examples include 
+
+zlibxjson v8.2 , which embedded credential-stealing scripts that exfiltrated cookies and authentication tokens (Wang, 2024), and fshec2 , which concealed credential theft and remote command handling within compiled bytecode ( .pyc )to evade detection (Nelson, 2023). In April 2025, addi-tional malicious packages ( bitcoinlibdbfix , bitcoinlib-dev ,
+
+> ∗
+
+Corresponding author  
+
+> alih16@vcu.edu
+
+(H. Ali); andrew@dfir.org (A. Case);  
+
+> iahmed3@vcu.edu
+
+(I. Ahmed) 
+
+> ORCID
+
+(s): 
+
+and disgrasya ) were downloaded more than 39,000 times before being removed, with the latter embedding an auto-mated script for credit-card fraud (Lakshmanan, 2025). Even trusted frameworks can introduce critical vulnerabilities, such as the recent SQL-injection flaw in Django (CVE-2025-64459), with affected versions still publicly available on PyPI (Bidart, 2025) at the time of writing. These recurring incidents have highlighted the urgent need for software supply chain transparency, prompting reg-ulatory and industry efforts to improve visibility into soft-ware composition. In response, initiatives led by the Cy-bersecurity and Infrastructure Security Agency (CISA) and the National Telecommunications and Information Admin-istration (NTIA) have advanced the Software Bill of Ma-terials (SBOM) as a standardized mechanism for software transparency and risk management (Office of the Director of National Intelligence (ODNI) et al., 2023). An SBOM is a structured inventory of software components and de-pendencies, specifying their metadata (e.g., name, version, and license) and relationships (Tooling and Implementation Working Group, 2024). Based on CISA’s guidance, SBOMs have become an increasingly expected requirement of fed-eral software procurement (Cybersecurity and Infrastruc-ture Security Agency (CISA), 2025). As a result, several tools have emerged to automate SBOM generation across ecosystems. However, these tools remain constrained by their reliance on static metadata, such as build manifests and package files (e.g., requirements.txt , pyproject.toml , and 
+
+setup.py ), which describe what was built rather than what 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 1 of 19 
+
+> arXiv:2606.22827v1 [cs.CR] 22 Jun 2026 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security
+
+actually executes. Prior studies show that these metadata-driven tools generate incomplete and inaccurate SBOMs due to inconsistent format support, parser divergence, and weak handling of dynamic or environment-specific dependencies (Yu et al., 2024; Dalia et al., 2024; Cofano et al., 2024; Xia et al., 2023; Stalnaker et al., 2024). Furthermore, meta-data files themselves can be compromised, as attackers may modify dependency specifications to mislead SBOM tools into producing incorrect component and version information (Zahan et al., 2023). Recent efforts have extended SBOM generation to the software deployment phase, including container-level anal-ysis (Kawaguchi and Hart, 2024), package-manager inte-gration (Benedetti et al., 2025), and integrity verification of deployed components (Sharma et al., 2024). Although these approaches improve accuracy compared to static build-phase methods, they still rely on filesystem artifacts and package managers, which reflect the software’s state at in-stall. This limitation becomes even more evident in dynamic, interpreted languages where dependencies are resolved dur-ing execution rather than at build time. Python presents a particularly challenging and representative example of such dynamic ecosystems due to its highly flexible import mechanism, which allows modules to be loaded at runtime through conditional, delayed, or reflective imports (Ali et al., 2025b). This flexibility causes different frameworks and applications to load and retain dependencies in distinct ways. For example, when upgrading shared dependencies such as 
+
+asgiref , Django ’s StatReloader dynamically loads the newer version into memory during execution, whereas Celery lacks an auto-reload mechanism and continues using the older version already loaded at startup. While runtime SBOMs aim to capture the active com-ponents of running applications through system instrumen-tation (Mirakhorli et al., 2024), this approach assumes the system can be safely monitored throughout execution. In production environments, such monitoring introduces op-erational overhead and risks perturbing the runtime state under investigation Beyer et al. (2016); Reichelt et al. (2024). Moreover, in incident-response scenarios, compromised sys-tems cannot be safely paused, debugged, or retroactively instrumented. Volatile memory, in contrast, provides a re-liable source for recovering the actual runtime components and dependencies, and thus for generating accurate runtime SBOMs. Therefore, in this paper, we propose MEM-SBOM, the first memory forensics framework that generates SBOMs directly from the runtime state of Python applications. It tra-verses the interpreter’s internal structures, including module registries, thread contexts, the garbage collector, arenas, and heap regions, to extract all modules resident in memory. This multi-layered architecture ensures completeness and foren-sic soundness even in the presence of evasion techniques, such as module deletion and overwrite, import-hook inter-ception, import-bypassing module creation, sub-interpreter injection, and garbage collector manipulation. Modules re-covered from all layers and application processes are then aggregated, filtered to exclude built-in and standard-library components, and grouped by their top-level packages. To determine the versions of the extracted third-party packages, MEM-SBOM inspects version attributes across all mod-ules, correlates them with installation metadata, and queries PyPI when necessary before serializing these packages into a CycloneDX-compliant SBOM. Beyond generating SBOMs, MEM-SBOM analyzes the Python objects associated with each package and disassembles the bytecode of its functions to construct dependency graphs that capture both direct and transitive runtime relationships. Leveraging the resulting SBOMs and graphs and integrating public vulnerability data, the framework performs fine-grained, function-level reach-ability analysis to distinguish the exploitable code paths at runtime. We implemented MEM-SBOM as a suite of new Volatil-ity 3 plugins (Volatility Foundation, 2025). We then evalu-ated it across 51 real-world Python applications spanning 23 diverse categories, including CLI tools, web frame-works, machine learning platforms, workflow schedulers, and visualization tools. Validated against a dual static and runtime ground truth, MEM-SBOM accurately extracts the metadata cached for installed packages and recovers all application packages, including those dynamically loaded at runtime, across heterogeneous execution environments. It further identifies ten cases where the version embedded in the loaded code differs from the version declared at installation time. In a tornado case study, function-level reachability analysis shows that only Streamlit , among six 
+
+tornado -dependent applications, invokes the vulnerable rou-tines at runtime, eliminating 83.3% of false-positive vulner-ability reports. Finally, our comparison against eight state-of-the-art SBOM tools shows that none of them support all Python metadata configurations or capture dynamically loaded packages, resulting in incomplete SBOMs, partially constructed dependency graphs, and ultimately inaccurate vulnerability reports. Our contributions are as follows: 
+
+• We propose MEM-SBOM, the first framework to generate SBOMs directly from the runtime state of Python applications, providing an execution-grounded view of software components. 
+
+• We characterize evasion techniques that conceal Python modules during execution and design a robust multi-layered extraction architecture capable of detecting and recovering all modules. 
+
+• We construct runtime dependency graphs and per-form function-level vulnerability reachability analy-sis, identifying exploitable code paths. 
+
+• We evaluate MEM-SBOM across 51 real-world Python applications, achieving higher accuracy and vulnera-bility precision than existing SBOM tools. The remainder of this paper is organized as follows. Sec-tion 2 provides the background, and Section 3 summarizes   
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 2 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security
+
+related work. Section 4 outlines the key challenges, while Section 5 explains the methodology. Section 6 presents the evaluation, Section 7 discusses limitations and future directions, and Section 8 concludes the paper. 
+
+## 2. Background 
+
+This section presents SBOM types and standards, fol-lowed by an overview of the import mechanism and memory analysis of the Python runtime. 
+
+2.1. SBOM Fundamentals 
+
+SBOMs can be generated at different stages of the soft-ware lifecycle, each providing a distinct level of visibility into software composition (Cybersecurity and Infrastructure Security Agency (CISA), 2023). Build SBOMs describe the components, dependencies, and build metadata incorporated during compilation or packaging. Deployed SBOMs enu-merate the components installed and configured within op-erational environments. Runtime SBOMs , in turn, capture the components actively loaded during execution, revealing dynamic and environment-specific dependencies that are in-visible to static analysis. SBOMs are commonly represented using two standards. SPDX , maintained by the Linux Foun-dation, focuses on license compliance, copyright attribution, and file-level provenance (Software Package Data Exchange (SPDX), 2025). CycloneDX , developed by OWASP, is a lightweight, security-oriented standard that emphasizes de-pendency relationships, component provenance, and vulner-ability correlation (CycloneDX Project, 2025b). 
+
+2.2. Import Mechanism of Python 
+
+The import mechanism of Python follows a multi-stage resolution process formalized in PEP 451 and PEP 420 
+
+(Snow, 2013; Smith, 2012). When the interpreter encoun-ters an import statement, it first checks its per-interpreter registry ( sys.modules ), which maps module names to loaded  
+
+> PyModuleObject
+
+instances. If the module is not found, the import machinery proceeds through finder objects listed in sys.meta_path . Each finder implements find_spec() to locate the requested module and, upon success, returns a  
+
+> ModuleSpec
+
+that encapsulates the module’s name, origin, loader, and other import metadata. Using this specification, the interpreter calls loader.create_module(spec) if provided, or creates a new module object otherwise, registers it in 
+
+> sys.modules
+
+, and executes it via loader.exec_module(module) 
+
+to populate its namespace. Built-in and frozen modules use non-filesystem origins (e.g., "built-in" or "frozen"), whereas file-based modules populate attributes, such as  
+
+> __file__
+
+and __cached__ . This spec-driven model replaces the legacy load_module() API, separating module discovery (find_spec() ) from execution ( exec_module() ) and exposing import state through the __spec__ attribute for reliable run-time introspection. 
+
+2.3. Memory Analysis of Python 
+
+Python’s runtime architecture consists of interdependent memory management subsystems that control object alloca-tion and persistence in memory. The global _PyRuntime struc-ture, of type _PyRuntimeState , represents the entry point to the runtime, maintaining interpreter registries, thread states, and the configuration of the garbage collector. This structure is located in the dynamic symbol table of ELF binaries on Linux or the export table of PE binaries on Windows (Ali et al., 2025a). Each interpreter instance ( PyInterpreterState )maintains its own registry, import machinery, and a set of thread contexts ( PyThreadState ), where each thread holds a stack of execution frames containing references to active function objects (Ali et al., 2025b). Memory allocation follows a hybrid scheme. Small objects ( ≤512 bytes) are managed by the pymalloc allocator within 256 KB arenas subdivided into 4 KB pools (Golubin, 2019). Larger objects are handled by the system allocator via brk() for the process heap and mmap() for separate anonymous memory mappings, depending on allocation size and system configuration. The garbage collector tracks objects across three generations using doubly-linked lists via gc_prev and gc_next pointers. These mechanisms define the spatial organization of Python objects in memory, enabling the reconstruction of complete runtime SBOMs from memory artifacts. 
+
+## 3. Related Work 
+
+Evaluating Existing SBOM Tools. Prior studies pri-marily evaluated SBOM tools, standardization challenges, and adoption barriers. Dalia et al. (Dalia et al., 2024) evalu-ated Syft , Microsoft SBOM Tool , Tern , and CycloneDX tools in terms of multi-platform support, format compatibility, and usability, demonstrating that these tools remain static, metadata-driven, and lacking operational readiness. Mi-rakhorli et al. (Mirakhorli et al., 2024) analyzed 84 tools and observed heavy reliance on package managers, inconsistent component identification, and limited cross-language cover-age, urging the need for standardized dependency semantics and validation frameworks. Halbritter and Merli (Halbrit-ter and Merli, 2024) further showed that even the most accurate tools ( CycloneDX-Npm and CycloneDX-Conan )fail to meet the NTIA ’s minimum-element requirements, frequently omitting dependencies or misreporting versions. From an adoption perspective, Xia et al. (Xia et al., 2023) found that standardization issues, inadequate validation, and information-sensitivity concerns hinder adoption. Stalnaker 
+
+et al. (Stalnaker et al., 2024) identified specification com-plexity, tooling insufficiency, and verification issues as major barriers, and highlighted the need for language-specific and verifiable SBOM frameworks, particularly for emerging AI/ML domains lacking formal standards. Bi et al. (Bi et al., 2024) analyzed 4,786 SBOM-related GitHub discussions, linking poor SBOM quality to technical debt and gover-nance deficiencies, highlighting the need for continuous assurance integration. Complementary studies by Cofano 
+
+et al. (Cofano et al., 2024) and Yu et al. (Yu et al., 2024)   
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 3 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security
+
+highlighted consistent reliability issues in Trivy , Syft , CDX-Gen , ORT , Microsoft SBOM Tool , and GitHub Dependency Graph , attributing inaccuracies to flawed metadata parsing, ambiguous naming and version-resolution, and incomplete dependency resolution, reflecting the inherent limitations of static, metadata-driven analysis. 
+
+Proposing New SBOM Techniques. Recent efforts have extended SBOM generation to the deployment phase of software. Sharma et al. (Sharma et al., 2024) introduce 
+
+SBOM.EXE , which prevents dynamic code injection in Java by maintaining a Bill of Materials Index (BOMI) of legitimate class checksums. This approach is inherently limited since it requires complete test coverage and cannot handle non-deterministic code generation or hidden classes. Benedetti et al. (Benedetti et al., 2025) propose PIP-SBOM ,which integrates SBOM creation into the Python package manager pip using its native resolver. However, this ap-proach reports versions that would be freshly installed rather than actual deployed versions, and inherits pip’s limitations in failing to capture runtime-only dependencies and dynamic imports. Kawaguchi and Hart (Kawaguchi and Hart, 2024) developed C3DRS , a consumer-side vulnerability manage-ment system that generates SBOMs through dynamic con-tainer inspection. Although it improves detection accuracy, its analysis remains limited to filesystem artifacts. 
+
+## 4. Challenges 
+
+This section identifies six challenges that MEM-SBOM is designed to overcome. 
+
+C1: Evasive manipulation of the Python import sys-tem. The dynamic nature of Python allows introspection and modification of its import system during execution. The same flexibility that enables extensibility, via monkey patching, custom import hooks, or dynamic loaders, can be exploited to conceal or alter modules in memory. Attackers may delete or overwrite entries in the interpreter registry (sys.modules ), replace legitimate modules with malicious substitutes, create modules that never appear in sys.modules 
+
+using the importlib and runpy APIs, inject hidden mod-ules into sub-interpreters, or unlink module objects from the garbage collector by manipulating their pointers di-rectly through ctypes . Such behaviors complicate the re-covery of a complete and trustworthy module set from memory. C2: Fragmented runtime state in multi-process applications. Complex Python applications (e.g., Airflow ,
+
+FastAPI , MLflow ) comprise multiple cooperating processes, each maintaining its own interpreter state and dependency set. These processes may load different or conflicting ver-sions of shared packages depending on the deployment envi-ronment. To generate an accurate, application-level SBOM, these fragmented module views must be merged while re-solving version conflicts and cross-process duplications. C3: Distinguishing third-party packages from internal and standard libraries. When a Python application runs, the interpreter instantiates not only the application’s modules but also a wide range of built-in and standard-library mod-ules required for its own operations. In memory, all of these appear as PyModuleObject instances within the same runtime, making it difficult to isolate third-party components of the application. Differentiating these modules is essen-tial for constructing an accurate SBOM that reflects only third-party dependencies. C4: Incomplete version infor-mation in memory. Accurately resolving package versions from memory poses a major challenge for memory-based SBOM generation. A PyModuleObject may expose version-related attributes, such as __version__ , VERSION , __VERSION__ ,
+
+> version_info
+
+, __version_info__ . However, these attributes lack standardization, exhibit inconsistent naming, and are not guaranteed to be present in memory. This challenge com-plicates the generation of accurate memory-based SBOMs, for which package name and version are essential elements. 
+
+C5: Structural over-approximation of dependency rela-tionships. Python’s eager import mechanism loads entire namespaces into memory, making it difficult to distinguish between modules that are merely loaded and those actu-ally used. When a module imports another, the callee’s modules, classes, and functions are instantiated in mem-ory, even if most remain unreferenced. Recursive imports further amplify this effect by pulling additional transitive dependencies into memory. Traversing these imports re-sults in deep transitive chains that populate memory with modules the application never invokes, leading to inflated SBOMs with high false-positive rates. This, in turn, causes the dependency graph to over-approximate the true runtime state, reporting relationships that are syntactically derived but semantically invalid. Therefore, with such structural over-approximation, constructing precise runtime SBOMs poses another challenge. C6: Identifying exploitable code paths. Beyond C5’s module-level over-approximation, this challenge extends to the internal objects of each module. Once imported, all of a module’s objects, such as functions, classes, and attributes, reside in memory, even though many of them may never be used by the application. Thus, the presence of a vulnerable function in memory does not imply that it is reachable from the application. Determining which portions of a module are affected by a vulnerability requires inspecting all of its objects and enumerating the possible call chains across all application modules, which becomes a core technical challenge. 
+
+## 5. Methodology 
+
+Figure 1 illustrates the MEM-SBOM framework. After identifying the application processes and locating the inter-preter’s internal structures within the memory dump (Ali et al., 2025b), the framework extracts the runtime modules to produce a CycloneDX-compliant SBOM, a dependency graph, and function-level exploitation paths. 
+
+5.1. Module Extraction 
+
+5.1.1. Package Metadata Extraction 
+
+To identify installed packages without filesystem ac-cess, MEM-SBOM inspects the Python import system      
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 4 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security
+> Figure 1: Overview of the MEM-SBOM Framework
+
+cache (i.e., sys.path_importer_cache ), which maps filesys-tem paths to finder objects responsible for module dis-covery (see Section 2.2). Each FileFinder instance main-tains a persistent _path_cache containing all recognized directory entries, including source files ( .py ), bytecode files ( .pyc ), extension modules ( .so , .pyd ), and package-metadata directories ( .dist-info , .egg-info ). This cache is constructed once at import time, providing a stable record of the interpreter’s package environment. MEM-SBOM extracts the package metadata (i.e., name and version) from cached directory entries that match the PEP 427 wheel format ( package_name-version.dist-info ) or legacy egg-info 
+
+naming scheme. It then normalizes the recovered names, associates version numbers, and identifies their installation scope based on the directory paths. 
+
+5.1.2. Multi-Layered Module Extraction 
+
+Python’s runtime structures can be exploited to conceal malicious modules through various evasion techniques, as discussed next. 
+
+A1. Module Deletion. Deletes entries from sys.modules ,hiding modules that remain live through residual references elsewhere in memory. A2. Module Overwrite. Overwrites or aliases legitimate entries in sys.modules (e.g., mapping a benign name to a malicious module object) to hide the module behind a trusted identifier. A3. Import-Hook Interception. Inserts a malicious finder into sys.meta_path 
+
+that redirects a targeted module import to a custom loader, which executes a malicious module during initialization. 
+
+A4. Import-Bypassing Module Creation. Creates modules via importlib and runpy APIs without registering them in 
+
+> sys.modules
+
+. A5. Sub-Interpreter Injection. Injects mali-cious modules into secondary interpreters (sub-interpreters) within the same process, making them invisible to scans of the main interpreter’s registry. A6. Garbage-Collector (GC) Manipulation. Manipulates the pointers of GC-tracked objects (e.g., via ctypes ) to unlink malicious modules from its doubly-linked lists, allowing them to evade detection. To address these evasion techniques, MEM-SBOM em-ploys a robust multi-layered extraction approach that over-comes Challenge C1 by incrementally expanding cover-age from interpreter registries to raw heap regions. Layers 1–3 provide authoritative and context-rich evidence with minimal false positives, ideal for benign module recov-ery. Layers 4–5 extend extraction to raw memory arenas and heap regions. Although these layers require object-type validation, they are essential for achieving completeness, as all modules with active references remain allocated in memory. L1. Interpreter Registry. Traverses sys.modules 
+
+of each interpreter, providing the fastest extraction mech-anism. L2. Thread Execution States. Inspects the global namespace and local variables of the stack frames to identify their modules that might be hidden from the interpreter registry. L3. Garbage Collector Traversal. Traverses the doubly-linked lists of objects managed by the process-level garbage collector, which is shared across all interpreters. 
+
+L4. Arena-Aware Analysis. Scans arena pools to identify valid module objects within allocated blocks by verifying their reference count ( ob_refcnt ) and type ( ob_type ). L5. Heap Areas Scanning. Recovers large module objects in 8-byte aligned increments, interpreting 16-byte sequences as ob_refcnt and ob_type , validating the PyObject header,   
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 5 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security
+
+dereferencing the type pointer if it corresponds to a module type, and confirming module identity. 
+
+Module Aggregation. To address Challenge C2 , MEM-SBOM implements two levels of aggregation. First, within each application process, it deduplicates modules discovered across all five extraction layers by name. Second, for multi-process applications, per-process module sets are merged to generate the application’s complete module set. 
+
+5.2. SBOM Generation 
+
+After module extraction, MEM-SBOM retains only the application packages for version resolution, excluding built-in and standard-library components from the SBOM. These packages are then serialized into a CycloneDX-compliant SBOM for further analysis. 
+
+5.2.1. Module Filtering 
+
+A Python process includes the application’s own mod-ules, standard-library modules, and a set of built-in modules that are compiled directly into the interpreter. The applica-tion itself is structured as a main package with its dependent packages, each composed of one or more .py files repre-sented in memory as PyModuleObject instances (Snow, 2013; Smith, 2012). The main package corresponds to the distri-bution’s top-level package (e.g., streamlit , Django , Pelican )while all other imported packages are treated as dependen-cies. Addressing Challenge C3 , MEM-SBOM first filters out the built-in modules (e.g., _signal , marshal , and _imp ) that are identified through the interpreter’s sys.builtin_module_names 
+
+registry. It further excludes the compiled extension modules (e.g., .so , .pyd ) that represent native C extensions. The remaining modules (i.e., standard-library and third-party) are retained for grouping and top-level package mapping in the next stage. 
+
+5.2.2. Module Grouping 
+
+Each module is identified by its fully qualified name (FQN), which specifies its position within the package hierarchy. For example, the package requests with its mod-ules ( adapters , models , and sessions ) are represented in memory as requests , requests.adapters , requests.models ,and requests.sessions . MEM-SBOM groups modules by their top-level package, defined as the substring preceding the first dot ( .) in the module name. This grouping re-covers a one-to-many relationship between a package and the modules that compose it, enabling accurate package-level representation in the resulting SBOM. Among these top-level packages, the application’s main package appears as one of them and is grouped in the same way as all other packages. After grouping, the framework classifies each package as standard-library or third-party based on its installation path and excludes the standard-library pack-ages. Third-party packages are identified by paths such as site-packages , dist-packages , or environment-specific vendor directories (e.g., vendor-packages , local-packages ). Standard-library packages are recognized through name-based heuristics and path patterns corresponding to the in-terpreter’s installation directories (e.g., /usr/lib/python3.x/ ,
+
+> /lib/python3.x/
+
+). Some packaging tools bundle their own dependencies to ensure version consistency, creating namespace-isolated copies of third-party packages. For instance, pip embeds its dependencies under pip._vendor (e.g., pip._vendor.requests ), while setuptools uses setuptools._vendor . MEM-SBOM identifies and excludes these bundled copies by matching common namespace conventions (e.g., ._vendor. , .extern. )and directory patterns (e.g., /_vendor/ , /extern/ ). Internal utility packages, such as _distutils_hack , are similarly omitted to ensure the SBOM reflects only the application packages. 
+
+5.2.3. Version Resolution 
+
+To identify the version of the resulting packages from the previous stage, MEM-SBOM analyzes their PyModuleObject 
+
+structures to inspect their version attributes (e.g., __version__ ,
+
+> VERSION
+
+, version_info ). As noted in Challenge C4 , these at-tributes are not mandatory and therefore might not appear in memory. When version fields cannot be located, the frame-work attempts to map each import name to its installation record in sys.path_importer_cache to retrieve the associated version (see Section 5.1.1). However, distribution names in installation records differ from their import counterparts due to the normalization rules defined in PEP 503 (Stufft, 2015). For example, the distribution email-validator corresponds to the import name email_validator . Such discrepancies are resolved by applying PEP 503 normalization (i.e., case folding and hyphen-to-underscore transformation) before matching import and installation names. A more complex case arises when normalization fails to establish a correspondence between the import names observed in memory and the installation names in the local cache ( sys.path_importer_cache ). For instance, sys.modules 
+
+may contain cv2 , while the cache lists opencv-contrib-python ,and opencv-python-headless . Although these distributions originate from the same upstream OpenCV project, they install distinct packages that all expose the same import name ( cv2 ), making it impossible to infer from the local cache alone which distribution provided the loaded module. To resolve such ambiguity, and given that the PyPI API operates on distribution identifiers rather than im-port names, MEM-SBOM queries PyPI using the previ-ously unmatched installation names discovered in the local cache. The framework retrieves package metadata through the public JSON API, extracting import names from the  
+
+> .dist-info/top_level.txt
+
+file for wheel distributions and from the .egg-info/top_level.txt file for source distribu-tions. This file enumerates the top-level importable names defined by each distribution. This process allows the recov-ery ofing the complete set of import names corresponding to the locally installed distributions. MEM-SBOM then matches these recovered import names against the modules   
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 6 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security
+
+observed in memory to determine their originating distri-butions. Once a match is found, the version information is obtained from the local cache, ensuring that the gen-erated SBOM reflects the actual environment state. Ulti-mately, when the version attribute remains indeterminate, MEM-SBOM records its value as "unknown" , consistent with CISA’s SBOM minimum-element specification (Cybersecu-rity and Infrastructure Security Agency (CISA), 2025). 
+
+5.2.4. SBOM Serialization 
+
+After resolving package versions, MEM-SBOM serial-izes the package information into a CycloneDX-compliant SBOM in JSON format. We selected this standard due to its security-oriented design and support for vulnerabil-ity correlation, which aligns with the cybersecurity and digital forensics support objectives of our work. Follow-ing CISA’s guidance (Tooling and Implementation Working Group, 2024), we focus on attributes essential to incident response (e.g., component identity, version, and dependency relationships) rather than licensing or copyright metadata. The generated SBOM consists of four primary sections. 
+
+Metadata. Defines SBOM provenance using a UUID-based serial number, extraction timestamp, and tool identifier to ensure extraction traceability. Components. Lists each pack-age with fields name , version , and package URL (PURL) following ( pkg:pypi/package@version ) format, enabling di-rect mapping to vulnerability databases such as National Vulnerability Database (NVD), Open Source Vulnerabilities (OSV), and GitHub Security Advisories (GHSA). Com-ponent hashes are omitted because memory-resident mod-ules lack stable file artifacts, consistent with CISA’s al-lowance for inaccessible sources. Additional forensic meta-data, such as extracted_from: memory to distinguish runtime from manifest-based SBOMs, and file_path for filesystem correlation, are preserved in the properties of the compo-nent. Dependencies. Lists the direct dependencies of the application packages. Annotations. Includes the annotator identity, creation timestamp, extraction source, and package count, allowing analysts to assess completeness and main-tain provenance across multiple SBOMs. 
+
+5.3. Dependency Graph Construction 
+
+This section addresses Challenge C5 by describing how MEM-SBOM constructs the dependency graph that captures the relationships among the recovered application packages. 
+
+5.3.1. Module Structure Analysis 
+
+The namespace dictionary (__dict__ ) of each  
+
+> PyModuleObject
+
+contains references to the module’s own objects as well as those imported from other modules. For module objects, the defining module is identified through the md_name attribute; for class objects, through the  
+
+> __module__
+
+attribute; and for callable objects (e.g., functions, generators, coroutines, asynchronous generators, instance methods, class methods, and static methods), through the  
+
+> func_module
+
+attribute. The analysis is applied recursively to capture dependencies within nested classes and inner functions. 
+
+5.3.2. Bytecode Analysis 
+
+To extract import statements embedded within the func-tion body, we disassemble its compiled bytecode and apply a stride-1 sliding window of width four over the opcode sequence to capture the complete instruction patterns asso-ciated with import variants. During traversal, non-semantic scaffolding instructions (e.g., RESUME , prologue assignments, and constant initializations) are excluded to reduce noise. Each window is then compared against the opcode patterns summarized in Table 1. 
+
+Standard Import Patterns (P1-P3). Direct import state-ments ( import module ) generate an IMPORT_NAME instruc-tion, followed by a scope-dependent storage instruction (STORE_FAST for function scope or STORE_NAME for module/-class scope). Aliased imports yield equivalent opcode se-quences repeated per module, with the module name ex-tracted from IMPORT_NAME.argval field. 
+
+From-Import Patterns (P4-P8). The from module import item statement generates an IMPORT_NAME followed by one or more IMPORT_FROM instructions and concluding with POP_TOP .The analysis extracts only the base module name, as im-ported symbols do not influence dependency relationships. The star-import variant ( from module import *) replaces  
+
+> IMPORT_FROM
+
+with IMPORT_STAR and omits POP_TOP .
+
+Dynamic Import Patterns (P9-P11). Function-based imports, called via exec() , importlib.import_module() , or 
+
+> __import__()
+
+, are detected by recognizing their characteristic opcode call sequences rather than dedicated import op-codes. For exec() , the analysis inspects the LOAD_CONST string operand and applies regular expressions to extract embedded import statements. In contrast, importlib and __import__() 
+
+embed the target module name as a string constant within the LOAD_CONST instruction. 
+
+Note. The bytecode analysis maintains cross-version compatibility by handling instruction-set variations across Python releases. Bound-method calls compiled as  
+
+> LOAD_METHOD
+
+→ CALL_METHOD in Python 3.6–3.10 are replaced in Python 3.11 by LOAD_ATTR → CALL , optionally followed by KW_NAMES to handle keyword arguments. For name resolution, module-level code uses LOAD_NAME → STORE_NAME ,while function scopes use LOAD_GLOBAL → STORE_GLOBAL for global variables, LOAD_FAST → STORE_FAST for local variables, and LOAD_DEREF → STORE_DEREF for closure variables. When  
+
+> LOAD_CONST
+
+instructions have a code object as their argument value, the analysis recursively inspects them to recover imports from all inner scopes. 
+
+5.3.3. Dependency Extraction 
+
+Algorithm 1 constructs the dependency graph by inte-grating namespace analysis and bytecode inspection. For each application package 𝑝 ∈ , let 𝑝 denote the set of modules belonging to 𝑝 . For each module 𝑚 ∈ 𝑝 , the algorithm initializes an empty import set 𝑚 and traverses the module’s dictionary. For each object 𝑜 in the dictionary,   
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 7 of 19
+
+What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Table 1 
+
+Bytecode patterns corresponding to Python import constructs. 
+
+Pattern Python Code Example Bytecode Sequence Pattern 
+
+P1: Direct Import import math IMPORT_NAME(math) → STORE_FAST(math) / STORE_NAME(math) 
+
+P2: Multiple Direct Imports  
+
+> import os, sys
+
+Repeat: ( IMPORT_NAME → STORE_FAST / STORE_NAME ) for each module P3: Direct Import with Alias   
+
+> import math as m IMPORT_NAME(math)
+
+→ STORE_FAST(m)/ STORE_NAME(m) 
+
+P4: From Import (Single Module)   
+
+> from math import sqrt IMPORT_NAME(math)
+
+→ IMPORT_FROM(sqrt) → STORE_FAST(sqrt)/ STORE_NAME(sqrt) → POP_TOP 
+
+P5: From Import (Multiple Modules)   
+
+> from math import sqrt, pi, cos IMPORT_NAME(math)
+
+→ Repeat: ( IMPORT_FROM → STORE_FAST /STORE_NAME ) for each item → POP_TOP 
+
+P6: From Import with Alias   
+
+> from math import sqrt as sq IMPORT_NAME(math)
+
+→ IMPORT_FROM(sqrt) → STORE_FAST(sq) /STORE_NAME(sq) → POP_TOP 
+
+P7: From Import Star from math import * IMPORT_NAME(math) → IMPORT_STAR 
+
+P8: From Import (Submodules)   
+
+> from os.path import join IMPORT_NAME(os.path)
+
+→ IMPORT_FROM(join) → STORE_FAST(join) / STORE_NAME(join) → POP_TOP 
+
+P9: Dynamic Import via exec() exec(’import math’) LOAD_GLOBAL/LOAD_NAME (exec) → LOAD_CONST(string) →
+
+> CALL_FUNCTION/CALL
+
+P10: Dynamic Import via importlib import importlib m = importlib. import_module(’math’) IMPORT_NAME(importlib) → ... →   
+
+> STORE_FAST(importlib) /STORE_NAME(importlib)
+
+→ 
+
+> LOAD_METHOD/LOAD_ATTR(import_module)
+
+→ LOAD_CONST(’math’) 
+
+→ CALL_METHOD/CALL 
+
+P11: Dynamic Import via __import__() m = __import__(’math’) LOAD_GLOBAL/LOAD_NAME(__import__) → LOAD_CONST(’math’) →
+
+> CALL_FUNCTION/CALL
+
+it determines the object type 𝜏 through the ob_type field. When 𝜏 is module and the referenced module name belongs to a different package than 𝑝 , it is identified as an external dependency and appended to 𝑚 . For class objects, it ex-tracts the __module__ attribute and recursively processes the class dictionary to capture nested dependencies. For callable objects, it extracts the func_module reference, validates it as an external dependency, analyzes its bytecode, and merges the results into 𝑚 . After computing 𝑚 for all modules of package 𝑝 , the algorithm aggregates and deduplicates imports across 𝑝 , and creates a directed edge 𝐸 (𝑝, 𝑞 ) for each distinct imported package 𝑞 , yielding a package-level dependency graph. 
+
+5.4. Vulnerability Detection 
+
+To address Challenge C6 , MEM-SBOM integrates the SBOM, dependency graph, and public vulnerability data to identify vulnerable packages within the application, deter-mine their impact scope, and trace all reachable paths to them. To identify vulnerabilities, we use Grype (v0.100.0) as the vulnerability scanner due to its accuracy, ecosystem cov-erage, and competitive performance compared to alternative scanners (Anchore, 2025a; Benedetti et al., 2025; Bufalino et al., 2025). This tool maps SBOM components (via their PURLs) to known CVEs using aggregated advisory feeds (e.g., NVD, OSV, and GitHub Security Advisories). For each SBOM component, it produces a structured set of matching vulnerabilities, including identifiers, affected version ranges, and severities, which MEM-SBOM attaches to the corre-sponding packages as input to the function-level analysis. 
+
+5.4.1. Function-Level Enrichment 
+
+Given the over-approximation inherent in package-level vulnerability detection, as discussed in Challenges C5 and 
+
+C6 , MEM-SBOM augments CVE matches with function-level metadata extracted from public vulnerability advi-sories. This enrichment enables us to distinguish vulnerable code paths within the application. For each CVE reported by Grype , we query NVD and GitHub Security Advisories to obtain additional context. From NVD, we retain entries whose CPE configurations match the affected package and apply heuristics over the free-text CVE description to extract function identifiers. From GitHub advisories, when reme-diation commits or pull requests are available, we analyze the corresponding diffs to identify updated function defi-nitions. When function-level attribution cannot be reliably determined, either due to incomplete advisory descriptions or genuinely package-wide impact, we label the CVE with package-wide scope and leave finer-grained localization to manual analysis. 
+
+5.5. Reachability Analysis 
+
+MEM-SBOM determines which parts of the application are exposed to identified CVEs by tracing exploitation paths 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 8 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Algorithm 1 Dependency Graph Construction  
+
+> 1:
+
+Input:  (application packages)  
+
+> 2:
+
+Output: 𝑔𝑟𝑎𝑝ℎ (dependency graph)  
+
+> 3:
+
+Initialize 𝑔𝑟𝑎𝑝ℎ ← ∅ 
+
+> 4:
+
+for each package 𝑝 ∈  do  
+
+> 5:
+
+Initialize 𝑝 ← ∅ {Imports observed for package 𝑝 } 
+
+> 6:
+
+for each module 𝑚 ∈ 𝑝 do  
+
+> 7:
+
+Initialize 𝑚 ← ∅ 
+
+> 8:
+
+PROCESS DICT (𝑝, 𝑚. __ 𝑑𝑖𝑐𝑡 __ , 𝑚 ) 
+
+> 9:
+
+𝑝 ← 𝑝 ∪ 𝑚  
+
+> 10:
+
+end for  
+
+> 11:
+
+for each imported package 𝑞 ∈ 𝑝 do  
+
+> 12:
+
+𝑔𝑟𝑎𝑝ℎ ← 𝑔𝑟𝑎𝑝ℎ ∪ { 𝐸 (𝑝, 𝑞 )}  
+
+> 13:
+
+end for  
+
+> 14:
+
+end for  
+
+> 15: 16:
+
+Procedure PROCESS DICT (𝑝, 𝑑𝑖𝑐𝑡, 𝑚 ) 
+
+> 17:
+
+for each object 𝑜 ∈ 𝑑𝑖𝑐𝑡 do  
+
+> 18:
+
+𝜏 ← 𝑜. ob_type .tp_name  
+
+> 19:
+
+if 𝜏 = module then  
+
+> 20:
+
+𝑚𝑜𝑑 _𝑛𝑎𝑚𝑒 ← 𝑜. __ 𝑛𝑎𝑚𝑒 __  
+
+> 21:
+
+if 𝑝𝑘𝑔 (𝑚𝑜𝑑 _𝑛𝑎𝑚𝑒 ) ≠ 𝑝 then  
+
+> 22:
+
+𝑚 ← 𝑚 ∪ { 𝑚𝑜𝑑 _𝑛𝑎𝑚𝑒 } 
+
+> 23:
+
+end if  
+
+> 24:
+
+else if 𝜏 = class then  
+
+> 25:
+
+𝑐𝑙𝑎𝑠𝑠 _𝑚𝑜𝑑 ← 𝑜. __ 𝑚𝑜𝑑𝑢𝑙𝑒 __  
+
+> 26:
+
+if 𝑝𝑘𝑔 (𝑐𝑙𝑎𝑠𝑠 _𝑚𝑜𝑑 ) ≠ 𝑝 then  
+
+> 27:
+
+𝑚 ← 𝑚 ∪ { 𝑐𝑙𝑎𝑠𝑠 _𝑚𝑜𝑑 } 
+
+> 28:
+
+end if  
+
+> 29:
+
+PROCESS DICT (𝑝, 𝑜. __ 𝑑𝑖𝑐𝑡 __ , 𝑚 ) {Recurse into class}  
+
+> 30:
+
+else if 𝜏 ∈ 𝐶𝑎𝑙𝑙𝑎𝑏𝑙𝑒 _𝑇 𝑦𝑝𝑒𝑠 then  
+
+> 31:
+
+𝑓 𝑢𝑛𝑐 _𝑚𝑜𝑑 ← 𝑜. func_module  
+
+> 32:
+
+if 𝑝𝑘𝑔 (𝑓 𝑢𝑛𝑐 _𝑚𝑜𝑑 ) ≠ 𝑝 then  
+
+> 33:
+
+𝑚 ← 𝑚 ∪ { 𝑓 𝑢𝑛𝑐 _𝑚𝑜𝑑 } 
+
+> 34:
+
+end if  
+
+> 35:
+
+𝑏𝑦𝑡𝑒𝑐𝑜𝑑𝑒 ← BYTECODE ANALYSIS (𝑜. func_code ) 
+
+> 36:
+
+𝑚 ← 𝑚 ∪ 𝑏𝑦𝑡𝑒𝑐𝑜𝑑𝑒  
+
+> 37:
+
+end if  
+
+> 38:
+
+end for 
+
+through backward taint propagation. Given a vulnerability sink  = ( 𝑝, 𝑚, 𝑓 ), where 𝑝 denotes the vulnerable package, 
+
+𝑚 the module, and 𝑓 the function, it traces backward from 
+
+𝑓 to identify all callers that eventually reach the applica-tion’s main package. This produces taint propagation paths 
+
+⟨𝑓 1, 𝑓 2, … , 𝑓 𝑛 ⟩, where 𝑓 𝑛 = 𝑓 is the vulnerable function and 𝑓 1 belongs to the application’s main package. The sink is considered reachable if at least one such path exists. The analysis proceeds in two stages. First, within the vulnerable package, we inspect all modules, classes, and functions to identify local callers of 𝑓 . Any function that invokes 𝑓 , either directly or through an internal call chain within the same package, is added to the sink set. Second, for each package that imports the vulnerable package, we detect functions that directly call any element of the current sink set and mark them as vulnerable. We then apply the same intra-package analysis to these caller packages to identify internal call chains that reach those functions. The resulting set of direct and internal callers forms the sink set for the next iteration. This recursive expansion continues until the pro-cess reaches the application’s main package. At that point, we perform the same intra-package analysis on the main package to enumerate all application functions involved in the call chain. A vulnerability is considered reachable if any backward traversal originating in the main package reaches the vulnerable function. This process requires analyzing function bytecode to extract call relationships. Therefore, we extend the bytecode analysis introduced in Section 5.3.2 to detect the call patterns shown in Table 2, including inner-function calls, closure and nonlocal calls, decorator-wrapper patterns, and instance, class, and module-level function calls. 
+
+## 6. Evaluation 
+
+This section first validates the capabilities of MEM-SBOM in generating accurate runtime SBOMs across het-erogeneous installation environments, constructing depen-dency relationships, and enabling precise vulnerability im-pact assessment. It also demonstrates its superiority over existing state-of-the-art tools through a set of experiments in terms of runtime package recovery, dependency-graph completeness, and vulnerability correlation. 
+
+6.1. Experimental Setup 
+
+We implemented MEM-SBOM as a suite of Volatility 3 (v2.26.2) plugins running on Ubuntu 20.04.6 LTS with 8 GB of RAM and Python 3.8.10. Application processes were identified using Volatility’s pslist and pstree plugins. The reachability analysis plugin takes as input the applica-tion’s process ID, main package (source), vulnerable pack-age (target), vulnerable function, and the dependency graph, returning all runtime paths leading to the vulnerable code as output. The evaluated applications use Python versions ranging from 3.6 to 3.12. While the memory architecture remains stable across these versions, performance-oriented refinements introduce variations in internal offsets (e.g., the addresses of _PyRuntime and arenas ). MEM-SBOM consid-ers these version-specific offsets to maintain compatibility across all supported Python versions. 
+
+6.1.1. Application Deployment 
+
+We installed each of the applications using pip install 
+
+into an isolated Python virtual environment created on Ubuntu 20.04 LTS virtual machines with 4 vCPUs and 4 GB RAM. This isolation ensures that each application is evaluated with its own dependency set, preventing any cross-application interference and guaranteeing that all modules recovered by MEM-SBOM belong solely to the target application. Memory dumps were captured by snapshotting the virtual machine immediately after the application com-pleted its initialization phase, allowing sufficient time for it to complete startup and reach a steady execution state in   
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 9 of 19
+
+What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Table 2 
+
+Bytecode patterns corresponding to Python function call constructs. 
+
+Pattern Python Code Example Bytecode Sequence Pattern 
+
+F1: Inner Function Call 
+
+> def outer(): def inner(): ... inner()
+
+Definition: LOAD_CONST(inner code object) → MAKE_FUNCTION 
+
+→ STORE_FAST(inner) 
+
+Call: LOAD_FAST(inner) → CALL_FUNCTION / CALL /CALL_FUNCTION_KW / CALL_FUNCTION_EX 
+
+F2: Closure Function Call 
+
+> def outer(): x = 10 def inner(): return x inner()
+
+Definition: LOAD_CLOSURE(x) → LOAD_CONST(inner code object) 
+
+→ MAKE_FUNCTION(closure) → STORE_FAST(inner) 
+
+Call: LOAD_FAST(inner) → CALL_FUNCTION / CALL /CALL_FUNCTION_KW / CALL_FUNCTION_EX 
+
+F3: Closure/Nonlocal Call  
+
+> def outer(): def helper(): ... def inner(): helper() LOAD_DEREF(helper)
+
+→ CALL_FUNCTION / CALL / CALL_FUNCTION_KW / CALL_FUNCTION_EX 
+
+F4: Decorator Wrap-per Pattern Call 
+
+> def wrapper(*args, **kwargs): return func(*args, **kwargs)
+
+Definition: LOAD_CONST(inner code object) →
+
+> MAKE_FUNCTION
+
+(closure) → STORE_FAST(wrapper) 
+
+Inside wrapper - calling original: LOAD_DEREF(func) → 
+
+> LOAD_FAST(args)
+
+→ LOAD_FAST(kwargs) → CALL_FUNCTION_EX 
+
+F5: Function Call (in-stance/class/module) 
+
+> obj = MyClass()
+
+, obj.method() module.func() LOAD_METHOD() / LOAD_ATTR() → ... → CALL_METHOD/ CALL /CALL_FUNCTION_KW / CALL_FUNCTION_EX 
+
+which all the packages used by the application were resident in memory. Modules related to environment management and packaging utilities (e.g., pip , pkg_resources , setuptools ,
+
+> wheel
+
+, distlib , and virtualenv ) as well as application-specific configuration files were excluded from comparisons to ensure fair comparison between the MEM-SBOM and SBOM tools. 
+
+6.1.2. Dataset 
+
+We evaluated 51 open-source Python applications from the Awesome-Python repository (Chen, 2025). Each selected application constitutes a standalone system with its own dependency tree, metadata configuration, and runtime con-text, thereby capturing the diversity of Python packaging and execution models observed in practice. The dataset covers a wide range of 23 categories, including CLI tools (e.g., iRedis , LiteCLI ), web frameworks (e.g., Django , Flask ,
+
+FastAPI ), machine learning platforms (e.g., MLflow , Ben-toML , Rasa ), task schedulers (e.g., Apache Airflow , Celery ,
+
+Prefect ), and data visualization tools (e.g., Apache Superset ,
+
+Orange ). This diversity reflects the heterogeneity of real-world Python deployments and enables evaluating MEM-SBOM under realistic operational conditions. The complete dataset is presented in Table 12 of Appendix A. 
+
+Note. The versions installed for each application and its dependencies are determined by the underlying operating system and environment configuration. Consequently, the versions resolved by pip may not correspond to the most recent releases available on PyPI. Our dataset, therefore, reflects realistic deployment environments rather than en-forcing the latest releases. 
+
+6.1.3. Ground-Truth Generation 
+
+To evaluate the correctness of MEM-SBOM in recov-ering both installed package metadata and packages actively used at runtime, we constructed two complementary forms of ground truth: a static ground truth and a runtime ground truth. The static ground truth captures the set of packages installed in each application environment. We obtained this information using pip freeze , which enumerates all installed distributions and their resolved versions. This dataset serves as the reference for validating MEM-SBOM’s ability to re-construct package names and versions directly from memory without filesystem access. The runtime ground truth reflects the set of modules loaded by the Python interpreter during application execu-tion. It is derived from the interpreter registry ( sys.modules ), which provides the authoritative record of legitimately imported modules in benign, non-adversarial deployments (see Section 5.1.2). Each application is instrumented using Python’s sitecustomize module, a built-in startup mecha-nism that the interpreter automatically imports before any application-level code (Python Software Foundation, 2024), ensuring that our monitoring logic executes at interpreter initialization. The instrumentation captures the complete contents of sys.modules after the application reaches a steady execution state. It also reinitializes automatically in child processes spawned at runtime, providing complete coverage for multi-process applications. When triggered, each process serializes its modules into a process-specific JSON file. Memory snapshots were acquired immediately thereafter, ensuring temporal alignment between the live module state and its in-memory representation. The same processing steps described in Sections 5.2.1 and 5.2.2 (i.e., module 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 10 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+filtering and module grouping) are applied to the runtime ground-truth data to isolate the application modules. This dual-ground-truth strategy provides complementary visibil-ity into installed distributions and actively used packages, enabling accurate assessment of MEM-SBOM’s module-extraction accuracy. After validating MEM-SBOM against both views, we used it as the authoritative runtime baseline to evaluate the SBOM tools, while the static ground truth continues to serve as the reference for installed-package accuracy comparisons. 
+
+6.1.4. SBOM Tools 
+
+We evaluated widely used SBOM tools: Syft (v1.27.1) (Anchore, 2025b), Trivy (v0.65.0) (Aqua Security, 2025), CDXGen (v11.4.4) (CycloneDX Project, 2025a), 
+
+CycloneDX-Python (v7.1.0) (CycloneDX Project, 2025c), 
+
+SBOM4Python (v0.12.4) (Harrison, 2025), ORT (v68.2.0) (OSS Review Toolkit, 2025), Jake (v3.0.14) (Sonatype Nexus Community, 2025), and PIP-SBOM (Benedetti et al., 2025). For metadata-based evaluation, all eight tools were assessed. For deployment-based evaluation, we restricted the comparison to Syft , CDXGen , CycloneDX-Python ,and PIP-SBOM , as these tools can analyze an existing installed environment or construct a synthetic one for SBOM generation. Syft and CycloneDX-Python directly inspect the evaluated environment by enumerating installed distributions from the site-packages directory. CDXGen , in contrast, simulates an installation environment by creating a temporary virtual environment, resolving and installing all dependencies declared in the application’s manifests, and enumerating the resulting site-packages directory. 
+
+PIP-SBOM does not inspect installed environments; instead, it downloads the application’s distribution into a temporary directory, extracts its metadata, and resolves dependencies using PIP’s native logic. As a result, it reports the versions PIP would install, not the exact versions present in the evaluated environment. 
+
+6.2. Evaluation Research Questions 
+
+Our evaluation addresses the following research ques-tions: 
+
+RQ1: How accurately can MEM-SBOM recover the runtime state of Python applications, including installed, imported, and dynamically loaded packages? 
+
+RQ2: Can MEM-SBOM determine the actual reacha-bility of known vulnerabilities within running applications? 
+
+RQ3: How do existing SBOM generation tools perform across diverse metadata configurations and real deployment environments, and how do their SBOMs impact the vulner-ability detection accuracy compared to MEM-SBOM? 
+
+6.2.1. Evaluation Metrics 
+
+We evaluate MEM-SBOM and existing SBOM tools using four complementary categories of metrics that capture the package identification, dependency graph construction, vulnerability detection accuracy, as well as vulnerability impact and reachability. All metrics described in this section are computed per application, and their mean values are calculated across the full evaluation dataset to summarize the aggregate performance of the tools and MEM-SBOM. 
+
+Package Identification. Let 𝑃 𝑆 , 𝑃 𝑇 , and 𝑃 𝑀 denote the sets of packages obtained from the static ground truth ( pip freeze ), the evaluated SBOM tool, and MEM-SBOM, re-spectively. We compute:                            
+
+> 𝐶 𝑃 =|𝑃 𝑇 ∩𝑃 𝑀 ||𝑃 𝑀 |× 100% ,𝑀 𝑃 =|(𝑃 𝑆 ∩𝑃 𝑀 )⧵𝑃 𝑇 ||𝑃 𝑀 |× 100% ,𝑅 𝑃 =|𝑃 𝑀 ⧵(𝑃 𝑆 ∪𝑃 𝑇 )||𝑃 𝑀 |× 100%
+
+𝐶 𝑃 (Coverage ) measures the proportion of runtime packages correctly detected by the tool, 𝑀 𝑃 (Missing ) quantifies packages that exist in both static and runtime environments but are missing from the tool output, and 𝑅 𝑃 (Runtime-Only ) captures runtime-only dependencies invisible to static analysis. 
+
+Version accuracy. For each package present in all of the static ground truth ( 𝑃 𝑆 ), the tool output ( 𝑃 𝑇 ), and the runtime set recovered by MEM-SBOM ( 𝑃 𝑀 ), we evaluate whether the version reported by the tool ( 𝑣 𝑇 (𝑝 )) or by MEM-SBOM ( 𝑣 𝑀 (𝑝 )) matches the static ground-truth version (𝑣 𝑆 (𝑝 )). Version accuracy is the proportion of such matched versions and is defined as follows:                      
+
+> 𝑉 𝑎𝑐𝑐 =|{𝑝 ∈ ( 𝑃 𝑆 ∩𝑃 𝑇 ∩𝑃 𝑀 ) ∣ 𝑣 𝑋 (𝑝 ) = 𝑣 𝑆 (𝑝 ) } ||𝑃 𝑆 ∩𝑃 𝑇 ∩𝑃 𝑀 |× 100% 𝑋 ∈ { 𝑇 , 𝑀 }
+
+Dependency Graph Construction. For each package 𝑝 ,let 𝐷 𝑇 (𝑝 ) and 𝐷 𝑀 (𝑝 ) denote its direct dependencies in the graphs generated by the evaluated SBOM tool and MEM-SBOM, respectively, and let 𝐸 𝑇 and 𝐸 𝑀 be the correspond-ing sets of directed edges. We define the common-edge domain ( 𝐸 𝑐𝑜𝑚𝑚 ) as: 
+
+𝐸 comm = { ( 𝑢 → 𝑣 ) ∈ 𝐸 𝑀 ∶ 𝑢, 𝑣 ∈ 𝑉 𝑇 ∩ 𝑉 𝑀 }
+
+where 𝑉 𝑇 and 𝑉 𝑀 are the node sets of the tool and MEM-SBOM graphs, respectively. Using these definitions, we evaluate structural accuracy through three metrics defined as follows:                       
+
+> 𝐷 𝑎𝑐𝑐 =
+> ∑𝑝 ∈𝑃 𝑀 |𝐷 𝑇 (𝑝 ) ∩ 𝐷 𝑀 (𝑝 )|∑𝑝 ∈𝑃 𝑀 |𝐷 𝑀 (𝑝 )|× 100% ,𝐸 𝑎𝑐𝑐 =|𝐸 𝑇 ∩𝐸 𝑀 ||𝐸 comm |× 100% ,𝐺 𝑐𝑜𝑚𝑝𝑙𝑒𝑡𝑒 =|𝐸 𝑇 ∩𝐸 𝑀 ||𝐸 𝑀 |× 100%
+
+𝐷 𝑎𝑐𝑐 (Dependency Accuracy ) measures how precisely a tool recovers direct runtime dependencies for packages observed in memory. 𝐸 𝑎𝑐𝑐 (Edge Accuracy ) measures how accurately the tool identifies runtime dependency edges for the pack-ages that both the tool and MEM-SBOM have in common (𝐸 𝑐𝑜𝑚𝑚 ), while 𝐺 𝑐𝑜𝑚𝑝𝑙𝑒𝑡𝑒 (Graph Completeness ) evaluates global coverage by comparing all runtime edges in memory with those reconstructed by the tool, regardless of node presence.   
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 11 of 19
+
+What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Vulnerability Detection. Let 𝑉 𝑆 , 𝑉 𝑇 , and 𝑉 𝑀 denote the sets of vulnerabilities reported by Grype when analyzing SBOMs generated using pip-audit (static ground truth), the evaluated tool, and MEM-SBOM, respectively. The static vulnerability baseline is obtained by executing pip-audit on the packages reported by pip freeze .
+
+𝐶 𝑉 = |𝑉 𝑇 ∩ 𝑉 𝑀 ||𝑉 𝑀 | × 100% , 𝑃 𝑉 = |𝑉 𝑇 ∩ 𝑉 𝑀 ||𝑉 𝑇 | × 100% ,𝐹 𝑉 = 2 ⋅ 𝐶 𝑉 ⋅ 𝑃 𝑉 
+
+𝐶 𝑉 + 𝑃 𝑉 
+
+, 𝑀 𝑉 = |(𝑉 𝑆 ∩ 𝑉 𝑀 ) ⧵ 𝑉 𝑇 ||𝑉 𝑀 | × 100% ,𝑅 𝑉 = |𝑉 𝑀 ⧵ (𝑉 𝑆 ∪ 𝑉 𝑇 )||𝑉 𝑀 | × 100% .
+
+𝐶 𝑉 (Coverage) measures the proportion of runtime vulner-abilities (i.e., those identified by MEM-SBOM) that are correctly identified by the tool. 𝑃 𝑉 (Precision ) measures the proportion of tool-reported vulnerabilities that are present at runtime. 𝐹 𝑉 (F1 Score) provides the harmonic mean of precision and recall, capturing the overall balance between detection completeness and correctness. 𝑀 𝑉 (Missing ) mea-sures vulnerabilities that appear in both the static ground truth and memory but are missing from the tool’s output. Finally, 𝑅 𝑉 (Runtime-Only ) represents the fraction of vul-nerabilities associated with runtime-only packages. 
+
+Vulnerability Impact and Reachability. To measure how a vulnerable dependency propagates through the ap-plication’s runtime graph, we employ three metrics. DEC (Direct Exposure Count) measures the number of packages that directly depend on the vulnerable package, indicat-ing the extent of immediate exposure. RP (Reachability Percentage) quantifies the fraction of all packages in the runtime graph that have a direct or transitive path to the vulnerable package, capturing the scope of potential im-pact. MDD (Minimum Dependency Distance) reports the shortest path from the application’s main package (source) to the vulnerable package (target), representing the depth of remediation required. 
+
+6.3. Evaluation Results 
+
+This section presents and discusses the experimental results that answer the evaluation research questions. 
+
+6.3.1. RQ1: Package Recovery 
+
+Table 3 summarizes the evaluation results of MEM-SBOM’s extraction accuracy using 23 representative appli-cations, each chosen to illustrate a distinct category from the complete set of 51 applications. The results show the exact matching between the package metadata recovered from memory by inspecting the _path_cache structure and the static ground truth obtained from pip freeze . This validates the ability of MEM-SBOM to accurately reconstruct the name and version of the packages installed in the deploy-ment environment without relying on filesystem artifacts. Similarly, the comparison between the runtime ground truth and the modules recovered from sys.modules yields a perfect 
+
+Table 3 
+
+Accuracy of MEM-SBOM in recovering installed, imported, and dynamically loaded packages.                                                                                                                              
+
+> Static Packages Imported Packages Dynamic Application Static Memory Runtime Memory Modules Ground Truth (_path_cache ) Ground Truth (sys.modules)
+> Ajenti-Panel 50 50 40 40 0Apache Superset 136 136 102 102 2APScheduler 10 10 990Beets 21 21 20 20 1Daphne 21 21 16 16 0Datasette 27 27 21 21 1DevPi-Server 66 66 45 45 0Django 55550Errbot 33 33 30 30 0FScociety 14 14 12 12 0Glances 5535 35 31 iRedis 14 14 14 14 0JupyterLab 91 91 69 69 0Lektor 24 24 23 23 0Locust 30 30 26 26 0Mayan-EDMS 146 146 110 110 2MLflow 64 64 29 29 0Modoboa 86 86 60 60 2RPyC 44220RQ 44440Scapy 11110Scrapy 37 37 28 28 1Trytond 15 15 14 14 0
+
+match, demonstrating the accuracy of MEM-SBOM in cap-turing the subset of installed packages that the application actually imports during execution. As anticipated, not all installed packages are imported at runtime. This discrep-ancy arises from optional and conditional dependencies, platform-specific packages, and build-time utilities that are never used during execution. For instance, in system-wide installations, the Python environment includes numerous OS-bundled packages that are present on the filesystem but never imported by the application. The results also illustrate a set of dynamic pack-age modules that appear only at runtime. Such mod-ules typically originate from packages dynamically loaded via importlib.import_module() or __import__() , side-loaded packages bundled directly within the application direc-tory, or plugin frameworks that introduce additional mod-ules during execution. Glances shows the largest run-time expansion (31 modules) due to its plugin architec-ture, which dynamically imports monitoring extensions from glances/plugins/*.py as independent top-level mod-ules (e.g., glances_cpu , glances_network ) via importlib ,rather than hierarchical modules. Meanwhile, Errbot ,
+
+Apache Superset , and Modoboa inject deployment-specific configurations through direct imports; Datasette , Scapy ,and Mayan-EDMS expose backward-compatibility wrap-pers that create duplicated namespaces at runtime (e.g., 
+
+multipart /python_multipart , attr /attrs ). Table 4 highlights the robustness of MEM-SBOM across six heterogeneous installation environments for the 
+
+Flask web framework, representing diverse packaging ecosys-tems. Despite substantial variation in dependency resolu-tion and metadata formats (e.g., .dist-info and .egg-info )across pip , Conda , Poetry , and system-level package man-agers, MEM-SBOM consistently enumerated the same eight imported packages of the application (i.e., Flask ,
+
+Itsdangerous , Jinja2 , Blinker , click , Markupsafe , zipp , and 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 12 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Table 4 
+
+Accuracy of MEM-SBOM in recovering the Flask ’s packages across heterogeneous installation environments.                                        
+
+> Install Environment Static Packages Imported Flask Method Type Env. System Packages Version
+> pip (wheel, PyPI) venv 12 083.0.3 pip (source, PyPI) venv 13 083.0.3 pip (GitHub) venv 12 083.0.3 Conda (user inherit) Conda + user scope 078 83.0.3 Poetry poetry venv 12 093.0.3 System (APT) System-wide 0146 91.1.1
+
+Werkzeug ), demonstrating environment-independent extrac-tion accuracy. However, the small differences in package counts reflect expected installation artifacts. Source-based installations introduce build tools (e.g., wheel ) as a result of compiling the source archives using the package man-ager pip . Conda inherits 78 user-scope packages unless 
+
+PYTHONNOUSERSITE=1 is set. Poetry introduces a virtual in-frastructure module ( _virtualenv ) for environment isolation while APT -based installations injects apport_python_hook ,a system-level crash-reporting module. However, APT -based installations show the highest heterogeneity, com-bining 76 user-level and 70 system-wide packages across 
+
+site-packages and dist-packages . When Flask is installed system-wide, its version and dependency set depend on the operating system’s bundled Python packages. As a result, the application inherits legacy builds and distribution-specific variants (e.g., Flask 1.1.1 ) as distributed with Ubuntu 20.04, illustrating version divergence and mixed provenance that MEM-SBOM effectively exposes. Beyond reconstructing an accurate runtime state from memory, MEM-SBOM identifies inconsistencies between the declared package version at installation and the version embedded in the loaded code. Table 5 highlights ten rep-resentative cases in our evaluation set where MEM-SBOM revealed such mismatches that metadata-based tools failed to detect. These inconsistencies arise for several reasons. First, version attributes embedded in the source code may remain unchanged across releases, leading to incorrect version val-ues in memory. Second, development builds may contain prerelease identifiers that are not reflected in the package manifests. Third, wrapper or alias artifacts may expose im-ported module names that diverge from the identifiers of the underlying distribution packages. The Ajenti-Panel case exemplifies the third category, where beautifulsoup4==4.13.4 provides the bs4 import names-pace, while a separate compatibility package bs4==0.0.2 
+
+is installed in the same environment. This results in two distribution packages mapping to a single runtime names-pace. Such mismatches can conceal vulnerable versions or enable dependency confusion, misleading tools that rely solely on static metadata. By validating version information directly from memory, MEM-SBOM can prove whether the installed packages align with their declared provenance, a critical capability for generating accurate SBOMs. 
+
+Table 5 
+
+Version inconsistencies between package metadata and embed-ded code as detected by MEM-SBOM .                                 
+
+> Application Dependency Installed Version Recovered Version
+> Ajenti-Panel beautifulsoup4 0.0.2 4.13.4 DevPi-Server strictyaml 1.7.3 1.6.2 Jet-Bridge regex 2024.11.6 2.5.148 Lektor lazy_object_proxy 1.11.0 1.10.0 Mayan-EDMS regex 2025.7.34 2.5.159 Modoboa oath 1.4.4 1.4.0 MyCLI pymysql 1.1.2 1.4.6 Prefect regex 2025.9.1 2.5.161 Rasa terminaltables 3.1.10 3.1.0 Spyder textdistance 4.6.3 4.6.2
+
+Answer to RQ1 
+
+MEM-SBOM achieves 100% coverage of the in-stalled, imported, and dynamically loaded packages across heterogeneous deployment environments. 
+
+6.3.2. RQ2: Vulnerability Reachability 
+
+Using Grype , MEM-SBOM identifies all known vulner-abilities present in the evaluated applications and their de-pendent packages, including urllib3 , tornado , and werkzeug 
+
+as illustrated in Table 13 of Appendix A. As a representative case study, we focused on the tornado dependency, which is used by multiple applications and contains vulnerable routines located in the tornado.httputil module, namely 
+
+_unquote_cookie() , parse_cookie() , parse_body_arguments() ,and parse_multipart_form_data() . These functions are af-fected by CVE-2024-52804 (unsafe HTTP header parsing) and CVE-2025-47287 (unsafe multipart parsing). Despite the availability of patched releases, several applications con-tinue to rely on outdated versions. We found that BentoML ,
+
+Flower , JupyterLabJet-Bridge , Spyder , and Streamlit embed 
+
+tornado 6.4.2, while Jet-Bridge bundles tornado 5.1.1. To illustrate how this vulnerable dependency propagates through each application, Table 6 reports the DEC (Direct Exposure Count), RP (Reachability Percentage), and MDD (Minimum Dependency Distance). All applications except 
+
+BentoML and Spyder depend on tornado directly (MDD=1). 
+
+JupyterLab exhibits the widest reach, with eight of its packages linked to tornado (DEC=8, RP=14.3%), whereas smaller frameworks such as Streamlit and Jet-Bridge show limited propagation (RP=2.9% and 5.9%, respectively). These variations illustrate how an application’s architecture determines the extent to which a vulnerable dependency propagates through its components. However, the presence of a vulnerable package does not necessarily imply that its vulnerable functionality is reachable from the application. Package-level scanning, therefore, overestimates risk. Figure 2 illustrates that although spyder has a transitive dependency path to tornado.ioloop module via the zmq 
+
+package, none of the vulnerable httputil functions are used. In contrast, Figure 3 shows how streamlit reaches the vulnerable parse_body_arguments() function through its 
+
+UploadFileRequestHandler.put() method, traversing the web ,
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 13 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Figure 2: Transitive dependency path from spyder to the vulnerable tornado package via zmq , showing that no vulnerable functions are reached 
+
+Figure 3: Direct call path from streamlit to the vulnerable tornado.httputil.parse_body_arguments() function via the put() method, showing that the vulnerable function is reached 
+
+> server
+
+, and upload_file_request_handler modules. The byte-code of put() confirms a direct call to the vulnerable function. Table 7 summarizes the function-level reachability re-sults. While all six applications are flagged as vulnerable at the package level, the detailed inspection reveals that five of them never call the affected routines. For instance, 
+
+Flower imports several tornado modules (e.g., web , ioloop ,
+
+> httpserver
+
+), yet none originate from tornado.httputil .
+
+JupyterLab imports httputil but only uses benign routines such as url_concat() and HTTPHeaders.parse_line() , neither of which transitively invoke any vulnerable function. Only 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 14 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security                                             
+
+> Table 6
+> Evaluation of vulnerability propagation for the tornado package across the evaluated applications.
+> Application Version #Pkgs DEC RP (%) MDD Dep. Type
+> BentoML 1.3.5 54 27.4 2Transitive Flower 2.0.1 19 15.3 1Direct Jet-Bridge 1.12.1 35 12.9 1Direct JupyterLab 4.3.8 70 814.3 1Direct Spyder 6.0.8 105 36.7 2Transitive Streamlit 1.40.1 17 15.9 1Direct
+
+Streamlit demonstrates a verifiable exploitation path, mak-ing it the only application where the vulnerability is reach-able in memory. Thus, while package-based scanners flag 6/6 applications (100%), function-level validation identifies only one true exposure (16.67%), eliminating 83.3% of false positives. This granularity shows that only Streamlit ’s upload handler requires remediation rather than upgrading 
+
+tornado across all dependent projects. 
+
+Answer to RQ2 
+
+MEM-SBOM accurately identifies which applica-tions reach vulnerable routines at runtime, reveal-ing that only Streamlit invokes the affected tornado 
+
+functions associated with CVE-2025-47287 , demon-strating precise vulnerability reachability at runtime. 
+
+6.3.3. RQ3: Comparison with SBOM Tools 
+
+This section first analyzes the limitations of existing SBOM tools in parsing and supporting heterogeneous meta-data formats across the evaluated applications. It then com-pares the runtime package coverage, dependency-graph ac-curacy, and vulnerability detection effectiveness of tools capable of analyzing deployed environments, using MEM-SBOM as the runtime ground truth. 
+
+Metadata-Based Analysis. We collected applications from both PyPI and GitHub repositories. We observed that 30 GitHub projects have a requirements.txt file, a format supported by all tools, which explains the higher success rates observed in the GitHub dataset. The applications are grouped by metadata files into PEP 621-compliant projects (pyproject.toml ), Poetry-managed projects ( pyproject.toml 
+
++ poetry.lock ), and legacy or hybrid builds relying on  
+
+> setup.py
+
+and setup.cfg . The final group, requirements.txt 
+
+(combined metadata), denotes projects that include a 
+
+> requirements.txt
+
+file alongside other metadata files. Ta-bles 8 and 9 highlight systematic weaknesses in metadata parsing across all tools. For PEP 621 projects, six tools (Syft , Trivy , CDXGen , CycloneDX-Python , ORT , and Jake )fail completely in both datasets, while only PIP-SBOM 
+
+and SBOM4Python succeed (100%). In Poetry-managed projects, reliability depends almost entirely on the pres-ence of a lock file. without poetry.lock , all tools except 
+
+PIP-SBOM fail to resolve dependencies; with it, most suc-ceed except SBOM4Python , which lacks native support for 
+
+> [tool.poetry.dependencies]
+
+. ORT achieves partial success (66.7%) owing to an outdated Poetry runtime that cannot parse the priority field introduced in version 1.2. For legacy setup.py –based projects, success rates vary widely due to the imperative and non-standard nature of de-pendency declarations. Trivy , CycloneDX-Python , and Jake 
+
+provide no setup.py support (0%). Among regex-based tools, 
+
+Syft captures only pinned dependencies (35.71% PyPI, 20% GitHub), while CDXGen performs slightly better (42.86% / 80%) but fails on multiline or variable-defined lists and  
+
+> extras_require
+
+fields. SBOM4Python gives the highest cov-erage among pattern-matching tools (57.14 % / 60%) yet remains limited to single-line install_requires , producing empty SBOMs when absent (e.g., Glances ). ORT achieves comparable rates (42.86% / 80%) by executing setup.py and resolving dependencies through PyPI queries, a more flexi-ble but nondeterministic strategy. Only SBOM4Python and 
+
+PIP-SBOM correctly interpret auxiliary setup.cfg config-urations, yielding complete outputs for hybrid declarative-imperative builds. Although all evaluated tools support the requirements.txt 
+
+file, they differ significantly in version handling and com-pleteness. Syft and Trivy ignore unpinned dependencies ( == ), omitting over half of declared packages. CDXGen retains all constraints, while SBOM4Python and ORT include un-pinned entries but assign versions as none , relying respec-tively on regex parsing and the pip-requirements-parser 
+
+library (nexB, 2025). Jake and CycloneDX-Python exhibit inconsistent behavior due to API divergence; older parser versions in Jake omit unpinned entries, while newer releases used by CycloneDX-Python include them unconditionally. None of the tools correctly interpret pip-specific directives such as -r (recursive inclusion) or -e (editable installations), resulting in systematically incomplete SBOMs. Notably, MEM-SBOM is not affected by metadata configuration, producing precise runtime SBOMs that reflect actual exe-cution. These metadata-parsing limitations raise the question of whether SBOM tools can more accurately represent the de-ployed software state when analyzing installed environments rather than source metadata. To address this, we evaluate their performance in real runtime deployments. Notably, all subsequent runtime experiments are conducted on the PyPI-deployed versions of the applications. 
+
+Deployment-Based Analysis. We evaluated how Syft ,
+
+CycloneDX-Python , CDXGen , and PIP-SBOM tools per-form in real deployment environments, where dependencies are installed, version-resolved, and dynamically loaded. This analysis verifies whether these tools can accurately represent the runtime software state and produce accurate dependency graphs, using MEM-SBOM as the runtime ground truth. Given that these tools enumerate only direct dependencies, our comparison focuses on first-order dependency relation-ships, excluding transitive dependencies inferred through indirect imports.   
+
+> Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 15 of 19
+
+What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Table 7 
+
+Function-level reachability analysis for the tornado vulnerabilities. Only Streamlit reaches a vulnerable function at runtime, while all other applications import only safe components. 
+
+Application Tornado Usage Summary Vulnerable Module Imported? Vulnerable Function Reached? Result BentoML ioloop , gen , concurrent No No Safe Flower web , ioloop , httpserver , escape , log No No Safe Jet-Bridge ioloop , gen , web , iostream No No Safe JupyterLab httputil , url_concat() , HTTPHeaders.parse_line() Yes No Review Spyder ioloop , httpclient No No Safe Streamlit httputil.parse_body_arguments() Yes Yes (CVE-2025-47287) Vulnerable Summary: Package-level scanning flag 6/6 (100%), function-level scanning flags 1/6 (16.67%). 
+
+Table 8 
+
+Success rates (%) of SBOM tools across various metadata configurations for 51 Python applications (PyPI dataset).                           
+
+> Metadata Configuration #Apps Syft Trivy CDXGen CycloneDX-Python SBOM4Python ORT Jake PIP-SBOM MEM-SBOM
+> pyproject.toml (PEP 621 / setuptools) 80/8 (0%) 0/8 (0%) 0/8 (0%) 0/8 (0%) 8/8 (100%) 0/8 (0%) 0/8 (0%) 8/8 (100%) 8/8 (100%) pyproject.toml (Poetry-managed) 40/4 (0%) 0/4 (0%) 0/4 (0%) 0/4 (0%) 0/4 (0%) 0/4 (0%) 0/4 (0%) 4/4 (100%) 4/4 (100%) setup.py
+> ±setup.cfg 14 5/14 (35.71%) 0/14 (0%) 6/14 (42.86%) 0/14 (0%) 8/14 (57.14%) 6/14 (42.86%) 0/14 (0%) 13/14 (92.86%) 14/14 (100%) pyproject.toml + setup.cfg 40/4 (0%) 0/4 (0%) 0/4 (0%) 0/4 (0%) 4/4 (100%) 0/4 (0%) 0/4 (0%) 4/4 (100%) 4/4 (100%) pyproject.toml + setup.py ±setup.cfg 71/7 (14.29%) 0/7 (0%) 3/7 (42.86%) 0/7 (0%) 5/7 (71.43%) 2/7 (28.57%) 0/7 (0%) 5/7 (71.43%) 7/7 (100%) requirements.txt
+> ±(combined metadata) 14 10/14 (71.43%) 6/14 (42.86%) 10/14 (41.43%) 14/14 (100%) 14/14 (100%) 7/14 (50%) 13/14 (92.86%) 14/14 (100%) 14/14 (100%)
+
+As shown in Table 10, both Syft and CycloneDX-Python 
+
+demonstrate stable behavior with high coverage (94.81% and 90.9%) and near-perfect version accuracy (>99.9%) by directly inspecting installed distributions and parsing metadata from the site-packages directory of the active virtual environment. Consequently, they construct realistic dependency graphs that closely reflect the deployed state, achieving the highest dependency accuracy, edge accuracy, and overall graph completeness. In contrast, the predictive behavior of CDXGen and 
+
+PIP-SBOM leads to the lowest performance across all met-rics. Although CDXGen infers dependencies by creating a temporary virtual environment and installing dependencies using the –install-deps flag, it still relies on static meta-data analysis to construct its SBOM rather than observing actual runtime imports. PIP-SBOM instead resolves con-straints in metadata files by predicting what dependencies 
+
+would be installed rather than those actually present. This predictive strategy introduces false positives, omits con-ditional or optional dependencies, and frequently misre-ports versions when resolution assumptions diverge from the real deployment, resulting in substantially lower de-pendency accuracy ( 𝐷 𝑎𝑐𝑐 < 50% ) and incomplete graphs (𝐺 𝑐𝑜𝑚𝑝𝑙𝑒𝑡𝑒 < 50% ), consistent with their weaker runtime coverage. MEM-SBOM , by directly enumerating the inter-preter’s loaded modules, eliminates these limitations and achieves complete coverage (100%) with 99.3% version ac-curacy due to inconsistencies between the declared package version at installation and the version embedded in the 
+
+Table 9 
+
+Success rates (%) of SBOM tools across various metadata configurations for 51 Python applications (GitHub dataset).                           
+
+> Metadata Configuration #Apps Syft Trivy CDXGen CycloneDX-Python SBOM4Python ORT Jake PIP-SBOM MEM-SBOM
+> pyproject.toml (PEP 621 / setuptools) 40/4 (0%) 0/4 (0%) 0/4 (0%) 0/4 (0%) 4/4 (100%) 0/4 (0%) 0/4 (0%) 4/4 (100%) 4/4 (100%) pyproject.toml (Poetry-managed) 33/3 (100%) 3/3 (100%) 3/3 (100%) 3/3 (100%) 0/3 (0%) 2/3 (66.67%) 3/3 (100%) 3/3 (100%) 3/3 (100%) setup.py
+> ±setup.cfg 51/5 (20%) 0/5 (0%) 4/5 (80%) 0/5 (0%) 3/5 (60%) 4/5 (80%) 0/5 (0%) 5/5 (100%) 5/5 (100%) pyproject.toml + setup.cfg 20/2 (0%) 0/2 (0%) 0/2 (0%) 0/2 (0%) 1/2 (50%) 0/2 (0%) 0/2 (0%) 2/2 (100%) 2/2 (100%) pyproject.toml + setup.py ±setup.cfg 70/7 (0%) 1/7 (14.29%) 2/7 (28.57%) 0/7 (0%) 5/7 (71.43%) 3/7 (42.86%) 0/7 (0%) 7/7 (100%) 7/7 (100%) requirements.txt
+> ±(combined metadata) 30 23/30 (76.67%) 17/30 (73.91%) 27/30 (90%) 29/30 (96.67%) 30/30 (100%) 18/30 (60%) 30/30 (100%) 25/30 (83.33%) 30/30 (100%)
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 16 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Table 10 
+
+Performance of SBOM tools in deployment environments                                                 
+
+> Tool 𝐶 𝑃 𝑀 𝑃 𝑅 𝑃 𝑉 𝑎𝑐𝑐 𝐷 𝑎𝑐𝑐 𝐸 𝑎𝑐𝑐 𝐺 𝑐𝑜𝑚𝑝𝑙𝑒𝑡𝑒
+> (%) (%) (%) (%) (%) (%) (%) Syft 94.81 0.90 4.29 99.96 73.81 71.76 62.24 CDXGen 76.55 17.69 5.76 52.11 48.05 54.89 49.63 CycloneDX-Python 90.90 4.45 4.65 99.98 72.23 75.52 71.66 PIP-SBOM 73.42 21.96 4.61 65.22 27.90 34.15 20.09 MEM-SBOM 100.00 0.00 0.00 99.32 100.00 100.00 100.00
+
+Table 11 
+
+The impact of SBOM tools on vulnerability detection.                                   
+
+> Tool Coverage Missing Runtime_Only Precision F1 Score (%) (%) (%) (%) (%)
+> Syft 100.00 0.00 0.00 75.07 80.00 CDXGen 27.48 0.00 72.52 23.58 23.70 CycloneDX-Python 96.30 0.00 3.70 88.49 91.35 PIP-SBOM 37.37 0.00 62.63 33.80 34.67 MEM-SBOM 100.00 0.00 0.00 100.00 100.00
+
+loaded code (see Table 5). However, all these tools are inher-ently static, missing packages that are dynamically loaded or generated at runtime. Since Grype relies on the generated SBOMs, any in-accuracies in these SBOMs directly affect the reported vulnerability set, as illustrated in Table 11. Syft achieves full coverage ( 𝐶 𝑉 = 100% ) equivalent to MEM-SBOM ,while CycloneDX-Python provides near-complete detection (96.3%), missing only 3.7% of runtime vulnerabilities. In contrast, CDXGen and PIP-SBOM exhibit coverage below 40% and high omission ratios ( 𝑅 𝑉 > 60% ), consistent with their incomplete runtime visibility. Notably, 𝑀 𝑉 is zero for all tools, indicating that vulnerabilities reported by both pip audit and MEM-SBOM are consistently detected; the missed vulnerabilities arise entirely from runtime-only packages. Finally, 𝑃 𝑉 decreases when tools report vulnera-bilities associated with packages listed in metadata but never imported at runtime, thereby introducing false positives and reducing the overall F1 score ( 𝐹 𝑉 ). By restricting analysis to modules observed in memory, MEM-SBOM eliminates such false positives and achieves perfect precision, recall, and F1 (𝑃 𝑉 = 𝑅 𝑉 = 𝐹 𝑉 = 100% ). 
+
+Answer to RQ3 
+
+Across heterogeneous metadata configurations and deployed environments, existing SBOM tools re-main constrained by the metadata they parse, pro-viding only partial visibility into the application runtime state. As a result, they generate incomplete SBOMs and dependency graphs, which in turn im-pact the accuracy of vulnerability detection. 
+
+## 7. Limitations and Future Work 
+
+This work focuses primarily on the Python runtime, excluding native C/C++ extensions that operate outside Python’s managed memory. Such extensions introduce ad-ditional attack surfaces through language boundary transi-tions and type conversions (Scholtes et al., 2025). Extend-ing MEM-SBOM to support polyglot correlation between Python objects and native components would enhance cross-language visibility. MEM-SBOM currently analyzes only components resident in process memory at the time of acquisition. Therefore, attacks that occur solely during in-stallation remain unobserved. Integrating installation-phase monitoring or provenance tracing could capture such tran-sient artifacts produced during setup routines and extend visibility beyond the runtime state. Vulnerability assessment depends on Grype’s aggregation of public databases (e.g., NVD, OSV, and GitHub Security Advisories), which limits detection to known CVEs. Future work may incorporate se-mantic pattern analysis and anomaly detection over memory-derived artifacts to identify previously unseen vulnerabil-ities. Finally, this work assumes that the Python runtime environment itself is not malicious or compromised. Prior work (Park et al., 2018) showed that memory-safety flaws in interpreters can corrupt bytecode while preserving valid metadata. Deep inspection of opcode sequences and Python-to-native wrapper transitions could further expose such tam-pering and injected behaviors. 
+
+## 8. Conclusion 
+
+In this paper, we introduced MEM-SBOM , the first mem-ory forensics framework that generates accurate SBOMs directly from the runtime state of Python applications. By traversing the interpreter registries, thread states, garbage collector, arenas, and heap regions, the framework recovers all resident modules, even under evasive conditions. The extracted modules are then filtered and grouped by their parent packages to isolate the application packages, whose versions are determined through a multi-source resolution process. The resulting packages are then analyzed at the object level to construct dependency graphs and perform fine-grained reachability analysis. Evaluation across 51 real-world Python applications demonstrated that MEM-SBOM 
+
+achieves 100% extraction accuracy and detects ten incon-sistency cases between the declared package version at in-stallation and the version embedded in the loaded code. In a detailed analysis of six tornado -dependent applications, 
+
+MEM-SBOM identifies Streamlit as the only application that executes the vulnerable routines at runtime, eliminating 83.3% of package-level false positives. It also recovers all runtime-only dependencies, 4–6% of which are consistently missed by existing tools, resulting in more complete depen-dency graphs and more accurate vulnerability correlation. These results show that memory-based SBOMs provide the runtime visibility essential for software supply chain security and for effective incident response, particularly in dynamic language ecosystems where metadata and filesys-tem artifacts fail to reveal the actual runtime state. 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 17 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+## 9. Code availability 
+
+MEM-SBOM is implemented as a suite of open-source Volatility 3 plugins, publicly available at https://github. com/HalaAli198/MEM-SBOM .
+
+## References 
+
+Ali, H., Case, A., Ahmed, I., 2025a. Leveraging memory forensics to investigate and detect illegal 3d printing activities. Forensic Science International: Digital Investigation 53, 301925. doi: 10.1016/j.fsidi. 2025.301925 .Ali, H., Case, A., Ahmed, I., 2025b. Memory analysis of the python runtime environment. Forensic Science International: Digital Investigation 53, 301920. doi: 10.1016/j.fsidi.2025.301920 .Anchore, 2025a. Grype: Vulnerability scanner for container images and filesystems. https://github.com/anchore/grype . GitHub repository. Accessed: 2025-11-15. Anchore, 2025b. Syft: A cli tool and library for generating sboms. https: //github.com/anchore/syft . GitHub repository. Accessed: 2025-03-11. Aqua Security, 2025. Trivy: A comprehensive and versatile security scanner. https://github.com/aquasecurity/trivy . GitHub repository. Accessed: 2025-03-11. Benedetti, G., Cofano, S., Brighente, A., Conti, M., 2025. The impact of sbom generators on vulnerability assessment in python: A comparison and a novel approach, in: International Conference on Applied Cryp-tography and Network Security, Springer. pp. 487–509. doi: 10.1007/ 978-3-031-95764-2_19 .Beyer, B., Jones, C., Petoff, J., Murphy, N.R., 2016. Site reliability engineering: how Google runs production systems. " O’Reilly Media, Inc.". Bi, T., Xia, B., Xing, Z., Lu, Q., Zhu, L., 2024. On the way to sboms: Investigating design issues and solutions in practice. ACM Transactions on Software Engineering and Methodology 33, 1–25. doi: 10.1145/ 3654442 .Bidart, N., 2025. Django security releases issued: 5.2.8, 5.1.14, and 4.2.26. https://www.djangoproject.com/weblog/2025/nov/05/ security-releases/ . Accessed: 2025-11-11. Bufalino, J., Di Francesco, M., Blaise, A., Secci, S., 2025. Sbomproof: Beyond alleged sbom compliance for supply chain security of container images. arXiv preprint arXiv:2510.05798 doi: 10.48550/arXiv.2510. 05798 . preprint. Chen, V., 2025. Awesome python. https://github.com/vinta/ awesome-python . GitHub repository. Accessed: 2025-10-02. Cofano, S., Benedetti, G., Dell’Amico, M., 2024. Sbom generation tools in the python ecosystem: An in-detail analysis, in: 2024 IEEE 23rd International Conference on Trust, Security and Privacy in Computing and Communications (TrustCom), IEEE. pp. 427–434. doi: 10.1109/ TrustCom63139.2024.00077 .Cybersecurity and Infrastructure Security Agency (CISA), 2021. Defending Against Software Supply Chain Attacks. Technical Report. U.S. Depart-ment of Homeland Security. TLP:WHITE. Accessed: 2025-02-15. Cybersecurity and Infrastructure Security Agency (CISA), 2023. Types of software bill of material (sbom) documents. https://www.cisa. gov/sites/default/files/2023-04/sbom-types-document-508c.pdf . Ac-cessed: 2025-03-11. Cybersecurity and Infrastructure Security Agency (CISA), 2025. 2025 Minimum Elements for a Software Bill of Materials (SBOM): Public Comment Draft. Technical Report. U.S. Department of Homeland Security. Draft for public comment. CycloneDX Project, 2025a. cdxgen: Universal polyglot sbom generator. 
+
+> https://github.com/CycloneDX/cdxgen
+
+. GitHub repository. Accessed: 2025-04-26. CycloneDX Project, 2025b. Cyclonedx: A standard for software bill of materials (sbom). https://cyclonedx.org/ . Accessed: 2025-03-12. CycloneDX Project, 2025c. cyclonedx-python: Sbom generator for python projects. https://github.com/CycloneDX/cyclonedx-python . GitHub repository. Accessed: 2025-04-26. Dalia, G., Visaggio, C.A., Di Sorbo, A., Canfora, G., 2024. Sbom ouverture: What we need and what we have, in: Proceedings of the 19th Interna-tional Conference on Availability, Reliability and Security, Association for Computing Machinery. pp. 1–9. doi: 10.1145/3664476.3669975 .Golubin, A., 2019. Memory management in python. https://rushter.com/ blog/python-memory-managment/ . Last updated July 8, 2019. Accessed: 2025-11-15. Halbritter, A., Merli, D., 2024. Accuracy evaluation of sbom tools for web applications and system-level software, in: Proceedings of the 19th International Conference on Availability, Reliability and Security, Asso-ciation for Computing Machinery. pp. 1–9. doi: 10.1145/3664476.3670926 .Harrison, A., 2025. Sbom4python: Open-source tool to generate an sbom for installed python modules. https://github.com/anthonyharrison/ sbom4python . GitHub repository. Accessed: 2025-04-26. Kampourakis, V., Kavallieratios, G., Gkioulos, V., Katsikas, S., 2025. Cracks in the chain: A technical analysis of real-life supply chain security incidents. Computers & Security 159, 104673. doi: 10.1016/j.cose.2025. 104673 .Kawaguchi, N., Hart, C., 2024. On the deployment control and runtime monitoring of containers based on consumer side sboms, in: 2024 IEEE 21st Consumer Communications & Networking Conference (CCNC), IEEE. pp. 1022–1025. doi: 10.1109/CCNC51664.2024.10454654 .Lakshmanan, R., 2025. Malicious python packages on pypi downloaded 39,000+ times, steal sensitive data. https://thehackernews.com/2025/ 04/malicious-python-packages-on-pypi.html . Accessed: 2025-11-10. Mike Fiedler, 2023. Inbound malware volume report. https://blog.pypi. org/posts/2023-09-18-inbound-malware-reporting/ . Accessed: 2025-11-10. Mirakhorli, M., Garcia, D., Dillon, S., Laporte, K., Morrison, M., Lu, H., Koscinski, V., Enoch, C., 2024. A landscape study of open source and proprietary tools for software bill of materials (sbom). arXiv preprint arXiv:2402.11151 doi: 10.48550/arXiv.2402.11151 . preprint. Nahum, M., Grolman, E., Maimon, I., Mimran, D., Brodt, O., Elyashar, A., Elovici, Y., Shabtai, A., 2024. Ossintegrity: Collaborative open-source code integrity verification. Computers & Security 144, 103977. doi: 10.1016/j.cose.2024.103977 .National Counterintelligence and Security Center (NCSC), 2021. Software Supply Chain Attacks. Technical Report. Office of the Director of National Intelligence (ODNI). Accessed: 2025-11-15. Nelson, N., 2023. Novel pypi malware uses compiled python bytecode to evade detection. https://www.darkreading.com/application-security/ novel-pypi-malware-compiled-python-bytecode-evade-detection . Ac-cessed: 2025-01-06. nexB, 2025. pip-requirements-parser. https://github.com/nexB/ pip-requirements-parser . GitHub repository. Accessed: 2025-10-05. Office of the Director of National Intelligence (ODNI), National Security Agency (NSA), Cybersecurity and Infrastructure Security Agency (CISA), 2023. Securing the software supply chain: Recommended practices for software bill of materials consumption. 
+
+> https://www.cisa.gov/sites/default/files/2024-08/SECURING_THE_ SOFTWARE_SUPPLY_CHAIN_RECOMMENDED_PRACTICES_FOR_SOFTWARE_BILL_OF_ MATERIALS_CONSUMPTION-508.pdf
+
+. Accessed: 2025-03-11. OSS Review Toolkit, 2025. Oss review toolkit (ort): Foss policy automation and sbom generation framework. https://github.com/ oss-review-toolkit/ort . GitHub repository. Accessed: 2025-04-27. Park, T., Lettner, J., Na, Y., Volckaert, S., Franz, M., 2018. Byte-code corruption attacks are real—and how to defend against them, in: International Conference on Detection of Intrusions and Malware, and Vulnerability Assessment, Springer. pp. 326–348. doi: 10.1007/ 978-3-319-93411-2_15 .Python Software Foundation, 2024. Python Documentation: site — Site-specific configuration hook. https://docs.python.org/3/library/site. html . Accessed: 2025-01-09. Reichelt, D.G., Bulej, L., Jung, R., Van Hoorn, A., 2024. Overhead comparison of instrumentation frameworks, in: Companion of the 15th ACM/SPEC International Conference on Performance Engineering, pp. 249–256. 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 18 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Samaana, H., Costa, D.E., Shihab, E., Abdellatif, A., 2025. A Machine Learning-Based Approach For Detecting Malicious PyPI Packages. Association for Computing Machinery. p. 1617–1626. doi: 10.1145/ 3672608.3707756 .Scholtes, R., Khodayari, S., Staicu, C.A., Pellegrino, G., 2025. Charon: Polyglot code analysis for detecting vulnerabilities in scripting languages native extensions, in: 2025 IEEE 10th European Symposium on Security and Privacy (EuroS&P), IEEE. pp. 153–168. doi: 10.1109/EuroSP63326. 2025.00018 .Sharma, A., Wittlinger, M., Baudry, B., Monperrus, M., 2024. Sbom.exe: Countering dynamic code injection based on software bill of materials in java. arXiv preprint arXiv:2407.00246 doi: 10.48550/arXiv.2407.00246 .preprint. Smith, E.V., 2012. PEP 420: Implicit Namespace Packages. https://peps. python.org/pep-0420/ . Accessed: 2025-10-30. Snow, E., 2013. PEP 451: A ModuleSpec Type for the Import System. 
+
+> https://peps.python.org/pep-0451/
+
+. Accessed: 2025-10-30. Software Package Data Exchange (SPDX), 2025. Spdx: Open standard for software bill of materials (sbom). https://spdx.dev/ . Accessed: 2025-03-12. Sonatype, 2025. 10th annual state of the software supply chain. https:// www.sonatype.com/state-of-the-software-supply-chain/introduction .Accessed: 2025-03-10. Sonatype Nexus Community, 2025. Jake: Dependency analysis and sbom generation tool. https://github.com/sonatype-nexus-community/jake/ tree/803ec4f63e2c117352463065cf69d12a69f38450 . GitHub repository. Accessed: 2025-10-02. Stalnaker, T., Wintersgill, N., Chaparro, O., Di Penta, M., German, D.M., Poshyvanyk, D., 2024. Boms away! inside the minds of stakeholders: A comprehensive study of bills of materials for software systems, in: Proceedings of the 46th IEEE/ACM International Conference on Software Engineering, Association for Computing Machinery. pp. 1–13. doi: 10.1145/3597503.3623347 .Stufft, D., 2015. PEP 503: Simple Repository API. https://peps.python. org/pep-0503/ . Accessed: 2025-11-12. Tooling and Implementation Working Group, 2024. Framing software component transparency: Establishing a common software bill of materials (sbom), third edition. https://www.cisa.gov/sites/ default/files/2024-10/SBOM%20Framing%20Software%20Component% 20Transparency%202024.pdf . Third Edition. Volatility Foundation, 2025. Volatility 3: The volatile memory extrac-tion framework. https://github.com/volatilityfoundation/volatility3 .GitHub repository. Accessed: 2024-12-01. Vu, D.L., Newman, Z., Meyers, J.S., 2023. Bad snakes: Understanding and improving python package index malware scanning, in: Proceedings of the 45th International Conference on Software Engineering (ICSE), IEEE. pp. 499–511. doi: 10.1109/ICSE48619.2023.00052 .Wang, J., 2024. Malicious pypi package zlibxjson targets browser data and credentials. https://www.fortinet.com/blog/threat-research/ malicious-pypi-package-zlibxjson-steals-browser-data . Accessed: 2025-11-10. Xia, B., Bi, T., Xing, Z., Lu, Q., Zhu, L., 2023. An empirical study on software bill of materials: Where we stand and the road ahead, in: 2023 IEEE/ACM 45th International Conference on Software Engineering (ICSE), IEEE. pp. 2630–2642. doi: 10.1109/ICSE48619.2023.00219 .Yu, S., Song, W., Hu, X., Yin, H., 2024. On the correctness of metadata-based sbom generation: A differential analysis approach, in: 2024 54th Annual IEEE/IFIP International Conference on Dependable Systems and Networks (DSN), IEEE. pp. 29–36. doi: 10.1109/DSN58291.2024. 00018 .Zahan, N., Lin, E., Tamanna, M., Enck, W., Williams, L., 2023. Software bills of materials are required. are we there yet? IEEE Security & Privacy 21, 82–88. doi: 10.1109/MSEC.2023.3237100 .
+
+## A. Appendix 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 19 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Table 12 
+
+Evaluation dataset of 51 Python applications spanning 23 categories. 
+
+Application Category Application Name (Version) 
+
+Web Frameworks Django (v4.2.23), Flask (v3.0.3), FastAPI (v0.116.1) Web-based Environments Jupyter Notebook (v7.4.5), JupyterLab (v4.3.8) Task Scheduling Systems Apache Airflow (v3.0.0), Celery (v5.5.3), APScheduler (v4.0.0a5), Prefect (v3.4.17) Machine Learning Platforms MLflow (v2.17.2), BentoML (v1.3.5), Seldon Core (v1.18.2), Rasa (v3.6.21), Gradio (v4.44.1) Data Visualization Apache Superset (v2.1.3), Orange (v3.38.1) ASGI Servers Daphne (v4.1.2), Uvicorn (v0.33.0), Hypercorn (v0.17.3) Admin Panels Ajenti-Panel (v2.2.11), Flower (v2.0.1), Jet-Bridge (v1.12.1), Wooey (v0.13.3), Streamlit (v1.40.1) CLI Tools iRedis (v1.15.2), LiteCLI (v1.13.2), MyCLI (v1.30.0) Static Site Generators Lektor (v3.3.12), MkDocs (v1.6.1), Pelican (v4.10.2), Nikola (v8.3.3) Email Servers Modoboa (v2.3.6), Salmon (v3.3.0) Development Tools Supervisor (v4.3.0), DevPi-Server (v6.15.0), Spyder (v6.0.8) Database Tools SQLite-Web (v0.6.4), Datasette (v0.64.3) RPC Servers RPyC (v6.0.2), Zerorpc (v0.6.3) System Monitoring Glances (v3.4.0.3) Penetration Testing FSociety (v3.2.9) Network Tools Mininet (v2.3.0.dev6), Scapy (v2.6.1) Web Scraping Scrapy (v2.11.2) Audio Management Beets (v2.2.0) Chatbots Errbot (v6.2.0) Business Software Trytond (v6.6.1) Document Management Mayan-EDMS (v4.9.2) Task Queues RQ (v2.3.3) Testing Tools Locust (v2.25.0) 
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 20 of 19 What You See Is Not What You Execute Memory-Based Runtime SBOM Generation for Supply Chain Security 
+
+Table 13 
+
+Detected vulnerable packages across the evaluated Python applications. 
+
+Project Version Affected Package Package Version Critical High Medium Low 
+
+Ajenti-Panel 2.2.11 urllib3 2.2.3 – – 2 –BentoML 1.3.5 bentoml 1.3.5 3 2 1 –tornado 6.4.2 – 1 – –starlette 0.44.0 – – 1 –DevPi-Server 6.15.0 waitress 3.0.0 1 1 – –urllib3 2.2.3 – – 2 –Django 4.2.23 django 4.2.23 – 1 – –Errbot 6.2.0 cryptography 41.0.7 – 2 2 –jinja2 3.1.2 – – 5 –requests 2.31.0 – – 2 –FastAPI 0.116.1 starlette 0.44.0 – – 1 –urllib3 2.2.3 – – 2 –Flower 2.0.1 tornado 6.4.2 – 1 – –Fsociety 3.2.9 urllib3 2.2.3 – – 2 –Gradio 4.44.1 gradio 4.44.1 1 7 7 –starlette 0.44.0 – – 1 –urllib3 2.2.3 – – 2 –Hypercorn 0.17.3 h2 4.1.0 – – 1 –Jet-Bridge 1.12.1 tornado 5.1.1 – 2 4 –pymongo 4.1.1 – – 1 –urllib3 2.2.3 – – 2 –JupyterLab 4.3.8 tornado 6.4.2 – 1 – –urllib3 2.2.3 – – 2 –Jupyter Notebook 7.4.5 jupyterlab 4.4.5 – – – 1Lektor 3.3.12 werkzeug 2.3.8 – 1 2 –urllib3 2.2.3 – – 2 –Locust 2.25.0 flask_cors 5.0.0 – – 3 –urllib3 2.2.3 – – 2 –Mayan-EDMS 4.9.2 django 4.2.23 – 1 – –pypdf 5.1.0 – – 1 –urllib3 1.26.20 – – 1 –MLflow 2.17.2 mlflow 2.17.2 – – 3 –urllib3 2.2.3 – – 2 –MyCLI 1.30.0 sqlparse 0.4.4 – 1 – –paramiko 2.11.0 – – 1 –Nikola 8.3.3 urllib3 2.2.3 – – 2 –Rasa 3.6.21 keras 2.12.0 1 1 1 –tensorflow 2.12.0 – 1 – –future 1.0.0 – 1 – –aiohttp 3.9.5 – – 1 –pymongo 4.3.3 – – 1 –urllib3 1.26.20 – – 1 –Scrapy 2.11.2 urllib3 2.2.3 – – 2 –Seldon Core 1.18.2 flask_cors 3.0.10 – 1 4 –gunicorn 20.1.0 – 2 – –werkzeug 2.2.3 – 1 3 –Spyder 6.0.8 tornado 6.4.2 – 1 – –urllib3 2.2.3 – – 2 –aiohttp 3.10.11 – – – 1Streamlit 1.40.1 tornado 6.4.2 – 1 – –urllib3 2.2.3 – – 2 –Superset 2.1.3 pyarrow 10.0.1 1 – – –cryptography 39.0.2 – 2 3 3sqlparse 0.4.4 – 1 – –werkzeug 2.3.3 – 1 3 –flask_caching – – – 1 –urllib3 2.2.3 – – 2 –Zerorpc 0.6.3 future 1.0.0 – 1 – –
+
+Hala Ali, Andrew Case, Irfan Ahmed: Preprint submitted to Elsevier Page 21 of 19

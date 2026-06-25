@@ -1,0 +1,1026 @@
+Title: Partitioned Tags, Shared Data: Reconciling Strict Cache Isolation with Write-Shared Coherence
+
+URL Source: https://arxiv.org/pdf/2606.12259v1
+
+Published Time: Thu, 11 Jun 2026 01:16:18 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Partitioned Tags, Shared Data: Reconciling Strict Cache Isolation with Write-Shared Coherence 
+
+Kartik Ramkrishnan, Stephen McCamant, Antonia Zhai and Pen-Chung Yew 
+
+University of Minnesota ramkr004@umn.edu 
+
+Abstract —Cache partitioning is among the strongest structural defenses against eviction-based cache side channels, yet a decade-old design issue has blocked its widespread deployment in secure shared-OS settings. The issue is that write-shared coherence collapses under strict partitioning. We present SCP (Secure and Coherent Partitioning), which combines strict eviction isolation with write-shared coherence by partitioning only the tags, sharing a single data pool, and sizing the data pool so capacity-driven cross-partition eviction cannot occur. Timing obfuscation extends protections to the inter-partition lookup path. Coherence-based leakage on shared-writeable lines is mitigated by routing those writes through to the LLC once a leakage threshold is crossed, which makes attacker write probe latency independent of victim activity. Using gem5 for implementation, SCP mitigates Prime+Probe and Flush+Reload, which are the basis for more sophisticated cache attacks. We also demonstrate that a shared-writeable-line attack is mitigated. All these attacks yield results no better than random guessing. SCP’s hardware cost is a modest +2 .8% LLC SRAM. Performance matches DAWG within 0.3% IPC on the SPEC CPU2017 benchmarks that we evaluated. Sharing-intensive microbenchmarks demonstrate a tunable security-performance tradeoff based on a system-specified leakage threshold. 
+
+I. I NTRODUCTION 
+
+Modern processors rely on shared on-chip caches to bridge the gap between fast cores and slow memory [1], but those caches have proven a rich source of microarchitectural side-channels [2]–[13]. A co-resident attacker [14]–[16] can recover keys, break memory isolation, and amplify transient-execution attacks [17]–[21], undermining cache-based isolation in con-fidential computing [22]–[29]. A long line of secure-cache work has converged on two defense lineages. Randomization obfuscates where a victim’s lines live in the cache, e.g., CEASER, CEASER-S, Scatter-Cache, MIRAGE, INTERFACE, and their successors [30]– [39] make eviction-set construction exponentially harder with-out forbidding sharing. Partitioning simply denies sharing, e.g., PLcache, StealthMem, NoMo, CATalyst, SecDCP, and DAWG carve the cache into per-domain segments so that an attacker and a victim never compete for the same lines [40]– [44]. The two lineages offer different security versus perfor-mance tradeoffs, with partitioning enabling stricter security guarantees. DAWG [44] remains the canonical strict-isolation partitioning baseline for defense against contention-based and FLUSH +R ELOAD attacks. Table I summarizes where this paper falls in that land-scape along four axes, namely, functionality (F) , security 
+
+(S) , coherence protocol performance (P) , and storage (O) .
+
+TABLE I LLC-DEFENSE LANDSCAPE ON FUNCTIONALITY (WRITE -SHARED SUPPORT ), S ECURITY (LEAKAGE PROFILE ), P ERFORMANCE , AND STORAGE OVERHEAD . SCP IS THE ONLY DESIGN tunable ON (S) WHILE KEEPING (F)/(P)/(O).                                             
+
+> Design (F) (S) (P) (O)
+> WR-share Leakage Coh. Perf. Storage BASELINE ✓leaks ✓—CEASER-S [31] ✓coh.+prob. leaks ✓low MIRAGE [33] ✓coh.+prob. leaks ✓+19 .3%
+> INTERFACE [34] ✓coh.+prob. leaks ✓+7 .4%
+> AVATAR [38] ✓coh.+prob. leaks ✓+1 .5%
+> DAWG/S EC DCP [43], [44] ×no leaks ×+0 .2%
+> RAWS [45] ✓coh.+prob. leaks ×high
+> SCP-WT (this work) ✓no leaks ×+2 .8%
+> SCP-P (this work) ✓coh. leaks ✓+2 .8%
+
+Randomization designs (rows 2–5) keep (F) but leak either probabilistically and/or via the coherence channel and the heaviest variant pays 19.3% storage overhead. Partitioning (rows 6, 8–9) eliminates probabilistic leakages but may not support write-shared data (F) . The closest prior data coherent defense, RAWS [45] (row 7) is a hybrid of partitioning and randomization that keeps (F) but pays a fixed per-miss delay. Secure and Coherent Partitioning’s (SCP) distinctive feature is the tunable (S) column. SCP lets the system specify where on the performance ↔security curve to operate. SCP-WT (Write-Through) is a high security configuration with no side-channels through the coherence protocol. SCP-P ( Permissive) achieves a higher performance by allowing leakage up to a system specified threshold. The rest of the introduction explains why existing designs cannot reach this combination of features and what SCP changes structurally. Full partitioning has a structural problem that randomization does not. It is incompatible with coherent sharing of writeable lines. Consider two security domains A and B that legitimately share a writeable cache line, such as an OS spinlock, a producer-consumer queue head, or any IPC structure that crosses a trust boundary. Under way-partitioning, A and B
+
+each hold the line in their partitioned ways. There are now two cache locations for the same physical line, and the directory protocol has to keep them coherent. However, changing the behavior of the directory protocol, based on information in multiple partitions, would re-introduce information leakages. To the best of our knowledge, existing directory protocols offer no good solutions. 
+
+> arXiv:2606.12259v1 [cs.CR] 10 Jun 2026
+
+DAWG [44] and its kin [46], [47] handle this by either prohibiting write-shared lines across partitions, restricting sharing to read-only lines (where coherence reduces to broad-cast invalidation only on rare upgrades), or accepting the cross-partition coherence traffic as a known limitation [43], [44]. None of these is satisfactory. Operating-system syn-chronization, confidential-computing IPC, and any shared-memory programming model that crosses the trust boundary now hits a defense-policy wall that less secure systems, e.g., randomization-based caches, do not face. MIRAGE [33] introduces a useful structural mechanism. It 
+
+decouples the tag from the data array, connecting them with forward and backward pointers. MIRAGE uses the decoupling for set-associative-eviction freedom in randomization. V-Way and ZCache [48], [49] use the same decoupling for demand-based associativity and global replacement. Thus, tag/data decoupling is a well-understood building block for security or performance purposes. Inspired by the design features of tag/data decoupling and partitioning, SCP (Secure and Coherent Partitioning ) is a partitioned cache architecture in which the tag array is partitioned per security domain while the data array is a single, unpartitioned, coherence-bearing pool. Each tag entry contains a forward pointer into the data array, and the coherence state of every line is stored in the data entry , not in any tag entry. When a domain misses in its tag partition, the controller performs a parallel lookup across the other domains’ tag partitions. If the line is found, a new tag is allocated in the missing domain’s own partition, pointing at the existing data entry. The data entry’s reference count is incremented. No data is moved or duplicated. Multiple tag entries in different partitions may point at the same data entry, so a write-shared line has exactly one coherence state and exactly one writer-visible copy. Cross-partition coherence on write-shared lines reduces to the standard single-cache-line MSI/MESI transitions. The multi-copy hazard that full partitioning creates no longer exists. Three security-relevant design features make this work. First, tag miss responses are delayed to memory-access latency before the data is returned, so an attacker cannot distinguish a hit in another partition from a true memory access. Second, shared-writeable lines on eligible pages exist only in shared (S) coherence state, once a system-specified leakage threshold is exceeded. Stores to these lines are written through to the LLC, so the E/M-versus-S latency difference an attacker would otherwise exploit is mitigated at its source. Third, the data array is sized to match the total tag count, so capacity-driven data eviction cannot occur. A data slot transitions from in-use to free only when its reference count falls to zero (§IV-C). No replacement policy on the data array is needed, and no cross-partition tag invalidation is ever induced by another partition’s tag-eviction pressure. The key contributions of this work are summarised below.  
+
+> •
+
+Architecture. SCP applies decoupled tag/data indirec-tion to partitioning rather than randomization, with a sizing discipline that makes capacity-driven data evic-tion structurally impossible. Per-domain tag isolation and timing obfuscation close Prime+Probe and Flush+Reload by construction. The remaining timing leak on shared-writeable MSI/MESI lines is closed by SCP-WT, which routes those stores write-through to the LLC so that attacker probe latency does not depend on victim activity. Alternatively, in SCP-P, the write-through security feature is enabled when a system-specified leakage threshold is exceeded.  
+
+> •
+
+Empirical attack-resilience. A gem5 prototype confirms that under SCP, Prime+Probe, Flush+Reload and write-shared side-channels are mitigated. Ablation studies con-firm that each mechanism is independently necessary.  
+
+> •
+
+Performance and hardware feasibility. On aSPEC CPU2017 performance evaluation, SCP matches DAWG within 0.3% IPC on every completed benchmark. In line with performance expectations of cache partitioning, SCP outperforms unpartitioned LRU by 
+
+0.5% to 4.4% on the four mixed-pressure mixes. Acounting Bloom filter at the front-end is projected to save 
+
+82% of cross-partition tag-read energy at 16 MiB. Stress tests on write-shared data microbenchmarks indicate up to 23% performance overhead, when almost all accesses are writes on write-shared data. 
+
+Paper organization: §II reviews the partitioning and tag/data-decoupling lineages, §III the threat model, §IV the SCP architecture, §V the security analysis, §VI the gem5 prototype, §VII the performance and security evaluation, §IX related work. II. B ACKGROUND AND MOTIVATION 
+
+Cache side-channel defenses divide into two structural families, namely, randomization (which hides where a line lives) and partitioning (which forbids two domains from sharing a line). SCP belongs to the partitioning family but borrows a structural mechanism, i.e., decoupled tag/data in-direction, from the randomization side. This section reviews both lineages and the unsolved coherence problem of strict partitioning. 
+
+A. Cache attacks the defenses target Contention-based attacks: PRIME +P ROBE [3], [7], [50]– [52] fills a target cache set with attacker lines, lets the victim run, and times re-accesses; long re-access latencies indicate that the victim evicted attacker lines from the set, leaking the victim’s set footprint. Variants such as EVICT +T IME ,EVICT +R ELOAD , and R ELOAD +R EFRESH [9], [10] differ in measurement primitive but share the requirement that the attacker can place lines in sets the victim also uses. 
+
+Address-based attacks: FLUSH +R ELOAD and FLUSH +F LUSH [8], [11] require shared memory. The attacker flushes a known shared line, lets the victim run, and times re-loads. A fast re-load betrays a victim access. The defense is to prevent the attacker from caching the 
+
+same physical line as the victim or to deny clflush on cross-domain lines. 2Occupancy and coherence channels: Cache-occupancy attacks [13], [53], [54] read coarse aggregate residency rather than set-level eviction, sidestepping randomization. 
+
+Coherence-induced channels exploit invalidation or upgrade traffic on shared writeable lines [55], [56]. A writer’s co-herence broadcast is observable as a slowdown on a sharer’s subsequent access. 
+
+B. Tag/Data Decoupling in Randomization 
+
+MIRAGE [33] took the further step of decoupling tags and data: the tag array is over-provisioned (e.g., 1.75 × the number of data slots), each tag entry holds a forward pointer to a data slot, and each data slot a reverse pointer back. The original motivation was to absorb the spill tail of randomized placement under balls-into-bins analysis. INTERFACE [34] refined the same decoupling with a 2+2 -skew arrangement at lower storage overhead. The structural shape is a tag array indirection-pointed at a separately addressed data array. This is what SCP reuses. V-Way [48] and ZCache [49] predate the randomization line and used the same decoupling for demand-based associativity and global replacement, respectively. The decoupled tag/data idea is therefore a generic building block. A key novelty in SCP is the coupling to a partitioning security model. 
+
+C. Partitioning caches and the coherence problem 
+
+Partitioning works by denying co-residency. PLcache (line-pinning) [40], page coloring, and StealthMem [41], Intel CAT [42], CATalyst, NoMo, and DAWG [44] all carve the cache into per-domain subsets so that an attacker simply cannot place a line in a victim’s set. SecDCP [43] adds asymmetric one-way dynamic sizing so the partition’s size itself is not a side-channel. 
+
+The coherence problem: The hidden cost of strict parti-tioning is its interaction with coherence on write-shared lines. A line that two domains both legitimately write, e.g., an OS lock variable, a confidential-computing IPC ring buffer head, or a shared work-stealing deque, must, under way-partitioning, occupy a way in each domain’s partition. There are then two physical storage locations for one logical line. The coherence protocol now has three unattractive options: 1) Hold both copies and keep them coherent in the LLC. Every A-write triggers a B-side invalidation; B’s subsequent re-read misses to memory (or, in inclusive hierarchies, to the LLC copy). The cross-partition co-herence traffic is itself observable as timing on B’s next access, recreating the side-channel partitioning was meant to close. 2) Pin the line to one partition. The non-owning partition cannot cache it and pays LLC-bypass latency on every access. Useful only for mostly-read-only data. 3) Forbid cross-partition write-sharing entirely. The simplest and the policy DAWG-style deployments ef-fectively adopt [44], but it is a real usability. It blocks shared-memory IPC across security boundaries, OS-driven cross-domain coordination, and any programming model that needs write-shared structures across the par-tition. The randomization line does not have this problem because it never partitioned in the first place. A shared writeable line lives in exactly one slot, and coherence is single-copy MSI/MESI. The cost the randomization line pays instead is large tag-storage overhead and probabilistic, not deterministic, isolation. SCP is the architecture that takes the randomization line’s single-copy data-array structure without its randomiza-tion, and pairs it with deterministic tag-array partitioning. 
+
+D. Moving coherence metadata to the data array 
+
+An important architectural move that makes SCP work is to locate the canonical coherence state of each line in the data entry , not in any tag entry. In a conventional cache, the tag holds {address, valid, state, dirty, LRU }. Under partitioning, this means each partition’s per-line state is local to that partition, so the protocol must reconcile multiple states across partitions on every coherence event. This is the source of a data consistency correctness hazard for programs using shared data across domains. Under SCP, the data entry holds {state, dirty, refcount }. The tags hold {address, valid, forward pointer }. The per-line sharer vector that the coherent LLC already maintains is reused for any cross-domain invalidate; SCP adds no per-data-slot owner mask. There is exactly one coherence state per line because there is exactly one data entry per line, regardless of how many tag entries across how many partitions point at it. Every coherence transition (S →M, M →I, etc.) operates on a single state machine. The next two sections make this precise. III. T HREAT MODEL 
+
+We adopt a standard secure-cache threat model [33], [39], [43], [44]. The attacker (domain A) and victim (domain B)share a last-level cache, either via SMT on the same physical core or as separate cores in a CMP. Each domain runs its own user-mode code on a commodity ISA. The attacker can:  
+
+> •
+
+issue arbitrary memory accesses to its own address space;  
+
+> •
+
+time those accesses with cycle-accurate counters (e.g., 
+
+rdtscp );  
+
+> •
+
+use clflush on lines mapped into its own address space;  
+
+> •
+
+construct eviction sets via standard techniques [7], [57], [58]; 
+
+Adversary goal: Recover a function of the victim’s secret-dependent memory access pattern. A canonical example is AES T-table indices [3], [6]. We do not assume secret-dependent control flow is available to the attacker through other channels; this paper concerns the cache channel specif-ically. 
+
+Eliminating the side channels: Cache partitioning has, since DAWG and its predecessors, had one structural target, namely, to deny the attacker the ability to evict victim lines or to be evicted by them. SCP achieves this target in full and structurally: 3• Contention-based attacks. Attacker tags live in A’s tag partition, victim tags in B’s, and the two never share a tag set or way. A’s eviction set populates only A-tags. The victim accesses cannot evict them, and the contention-based primitive extinguishes (§V-A).  
+
+> •
+
+FLUSH +R ELOAD on non-shared lines. An attacker reload of a line not in A’s tag partition escalates to P EER -PROBE , which returns at a cache miss timing whether or not the victim has the line cached, removing the hit/miss timing distinction (§V-A).  
+
+> •
+
+Cross-partition tag invalidation via data-array evic-tion. This channel is closed by construction. Capacity-driven data eviction does not happen (§IV-C). Tag evic-tion in partition d never reaches another partition’s tag array (§V-A).  
+
+> •
+
+Aggregate-occupancy attacks on non-shared work-loads. Each partition’s observable footprint depends only on its own accesses plus the shared-line subset, so on workloads with no genuinely shared lines the occupancy channel is closed (§V-C). The eviction-based side-channel that motivated a decade of secure-cache work is therefore structurally absent , not bounded probabilistically. This is the central positive claim of the paper. 
+
+The inherent coherent shared-line channel: If A and 
+
+B deliberately share a writeable cache line, e.g., a cross-domain spinlock or IPC ring head, the coherence protocol must invalidate one when the other writes. This is information flow that any cache architecture supporting coherent cross-domain writeable sharing necessarily transmits, including the unpartitioned baseline LRU cache [8], [11]. SCP does not introduce a new channel here. Furthermore, the write, by defi-nition, necessarily leaks information by updating the contents of write-shared data. The point of SCP, relative to DAWG, is that this is now the only cross-domain channel. DAWG has the same channel plus forced incoherence or LLC-bypass on every write-shared line, which SCP eliminates by construction (§IV). 
+
+A. Controlling Leakage. 
+
+SCP adds one TLB-attached field per page, which the OS sets at page allocation time. The field encodes a 2-bit mode selecting how the page handles cross-domain shared-writeable lines. Three possible modes are SCP-adaptive (default), 
+
+SCP-WT , or SCP .
+
+Three modes: (i) SCP-WT . L1 and L2 are forced write-through on these lines, and stores do not produce a private dirty copy. The OS selects this through the page’s memory type, alongside the standard write-back, write-combining, and uncacheable choices. Standard store-merging hardware in the core absorbs adjacent stores within a cache line. The E/M-versus-S timing difference an attacker would otherwise mea-sure does not exist on these lines, so probe latency is victim-independent under any attacker rate. (ii) SCP-adaptive 
+
+(default for new shared-writeable pages). The line behaves as a normal MSI/MESI line until the LLC counts more than             
+
+> A.tag [0]: addr, fp
+> A.tag [1]: addr, fp
+> A.tag [ WA−1]: . . .
+> Domain A tag partition
+> B.tag [0]: addr, fp
+> B.tag [1]: addr, fp
+> B.tag [ WB−1]: . . .
+> Domain B tag partition
+> data [0]: state, rc
+> data [1]: state, rc
+> data [2]: state, rc
+> data [3]: state, rc
+> data [4]: state, rc
+> . . .
+> data [ N−1]: state, rc
+> Shared data array (one coherence state per line)
+> Bloom filter
+> m,K
+> fwd ptr
+> if BF says “maybe”
+> Fig. 1. SCP architecture. Tag arrays (left, red and green) are way-partitioned per security domain. The data array (right, blue) is a single shared pool whose entries hold the coherence state and reference count. Multiple tags in different partitions may point at the same data entry, giving exactly one coherence state per cache line. A counting Bloom filter (yellow) sits at the P EER PROBE front-end. It is consulted before the per-partition tag-array scan, short-circuiting on negative.
+
+Tleak victim-driven E/M →S transitions on the page within a specified time window (e.g., 1 ms), at which point the page is auto-promoted to SCP-WT . Pre-promotion leakage is bounded by Tleak events per window. Post-promotion the page is structurally closed. With Tleak = 0 this collapses to always-WT. With Tleak = ∞ this collapses to stock MESI/MSI. The prototype default is Tleak = 100 per 1 ms. Hardware cost is one per-page counter near the TLB. Pages that never trip the budget pay nothing. (iii) SCP . The page runs base SCP with full tag isolation against eviction-based attacks (P RIME +P ROBE /F LUSH +R ELOAD remain closed by construc-tion), unrestricted cross-domain shared-writeable access, and the M →S coherence channel left open at zero runtime over-head. The right choice for pages where the cross-domain timing channel on those lines is not part of the threat (e.g., shared lookup tables where the access patterns are not secret). 
+
+Out of scope: Out-of-cache microarchitectural channels (memory bus, DRAM rowbuffer, ring-bus, TLB) [59]–[61], transient-execution channels [17]–[20], and hypervisor or platform-firmware compromise are orthogonal. SCP does not preclude the use of other defensive strategies. IV. T HE SCP A RCHITECTURE 
+
+This section presents the SCP cache structure (§IV-A), the operation paths for hit, find, miss, write, and eviction (§IV-B), the data-array sizing that makes capacity-driven eviction struc-turally impossible (§IV-C), and the constant-time miss-latency mask (§IV-D). Section IV-F consolidates the invariants the security argument relies on. 
+
+A. Structure 
+
+Figure 1 shows the SCP cache architecture. The cache consists of three components. 
+
+(1) Per-domain tag partitions.: For D security domains, the tag array is partitioned into D disjoint regions. Each domain d owns Wd tag ways per set (with P 
+
+> d
+
+Wd = W ,the physical tag-array associativity). Each tag entry holds: 4addr line address 
+
+valid validity bit 
+
+fp forward pointer ( log 2 N bits) 
+
+lru per-domain LRU bits where N is the number of data-array entries. Critically, the tag does not hold the coherence state, the dirty bit, or the data. Those instead live with the data entry. 
+
+(2) Shared data array: A single pool of N data entries, addressed by a flat index from 0 to N − 1. Each entry holds: 
+
+state MSI/MESI state (M/E/S/I) 
+
+dirty dirty bit (M-state) 
+
+refcount number of partitions pointing here 
+
+data cache-line data The line address is held only in the tag entries that point at this data slot; the data entry has no redundant address copy. SCP does not introduce a per-data-slot owner mask either: any broadcast invalidate on the line uses the sharer vector that a coherent LLC already maintains for the line, which already encodes which domains hold the line. 
+
+(3) Cross-partition find: A parallel tag-lookup datapath that, on a miss in partition d, broadcasts an address-match request to the other D − 1 tag partitions in parallel. The result is either a single hit (find in some partition d′̸ = d) or no hit (true miss). The find operation is timing-equalized to memory-miss latency before returning data, by the mask described in §IV-D. Figure 1 shows the structure for D=4 explicitly. The forward pointers, the data-side coherence state, and the mask on the invalidate-broadcast path are the three primitives the rest of the architecture composes. 
+
+Storage cost: Relative to a baseline cache with S data slots and S tag entries (one per data slot), SCP’s storage overhead has two components: (i) the data entry’s extra fields (state, refcount), about 2+ ⌈log 2(D+1) ⌉ bits per data entry. The existing per-line sharer vector of a coherent LLC already encodes which domains hold the line (ii) the forward pointer in each tag entry, log 2 N bits. For D=4 , 40 -bit PA, 16 -MiB LLC, N = S = 2 18 , this evaluates to +2 .6% LLC SRAM (§VII-F, Tab. XII), on the same order as DAWG and far below MIRAGE-class designs. 
+
+B. Operations 
+
+We describe five elementary operations. They are L OOKUP ,PEER PROBE , ALLOCATE , WRITE , and EVICT . Algorithm pseudocode appears in Appendix XI. 
+
+Lookup of address X by domain d: The controller reads tag entries for the appropriate set in d’s tag partition. If a valid tag with addr =X exists, it dereferences the forward pointer to the data entry and reads the state. The state must be M, E, or S to deliver a hit If no such tag exists, the request escalates to P EER PROBE .
+
+Cross-partition find: The controller issues a parallel address-match (PeerProbe) against the other D − 1 tag parti-tions in d’s LLC slice. Algorithm 1 summarises the path. If the line is found in partition d′, the controller allocates a new tag entry in d’s partition (evicting an LRU d-tag if necessary), sets the new tag’s forward pointer to the shared data entry, sets bit 
+
+d in the data entry’s owner mask, and increments refcount .The data entry’s coherence state is updated. The latency-mask logic delays the response so the total elapsed time matches a memory-miss latency (§IV-D). If no other partition holds the line, the request proceeds to A LLOCATE .
+
+Algorithm 1 SCP P EER PROBE on tag-partition miss.                                                                  
+
+> 1: function PEER PROBE (X, d )
+> 2: E← ∅
+> 3: for d′∈Domains \ { d}in parallel do
+> 4: for tag tin the addressed set of T AG PARTITION (d′)do
+> 5: if t.valid ∧t.addr =Xthen
+> 6: E←E∪ { data array [t. fp ]}
+> 7: end if
+> 8: end for
+> 9: end for
+> 10: if |E|>0then
+> 11: pick e∈E▷at most one if invariants hold
+> 12: allocate new tag tdin T AG PARTITION (d)
+> 13: td.addr ←X;td.fp ←id( e)
+> 14: e.refcount ←e.refcount +1
+> 15: delay response to Tmiss
+> 16: return HIT FIND ,e
+> 17: else
+> 18: delay response to Tmiss
+> 19: return ALLOCATE (X, d )
+> 20: end if
+> 21: end function
+
+Allocate (true miss).: The controller issues a memory request for X. While memory is in flight, it selects a tag-array victim from d’s tag partition (per-partition LRU). The victim tag’s eviction (E VICT below) decrements its referenced data entry’s refcount. If that refcount reaches zero, the cor-responding data slot becomes free and is the natural target for the new line. The data array’s sizing (§IV-C) guarantees a free slot is available. On memory return, the freed data slot is repurposed. The new tag in d’s partition forward-points at it. 
+
+Write to address X by domain d: Same as L OOKUP 
+
+except the access is a write. On a hit:  
+
+> •
+
+if the data state is M (the writer already owns it exclu-sively), update the line and remain in M;  
+
+> •
+
+if the state is E (this writer’s partition is the sole holder), transition to M and update;  
+
+> •
+
+if the state is S (other partitions have tags pointing here too), trigger an S →M U PGRADE .
+
+Evict: Tag eviction is the only eviction event SCP trig-gers. When partition d removes a d-tag (e.g., to make room for a new d-tag in the same set under per-domain LRU), the controller clears partition d’s bit in the LLC’s per-line sharer vector and decrements the data entry’s refcount.  
+
+> •
+
+If refcount remains > 0, the data entry stays valid. At least one tag in some other partition still points at it. Nothing else happens. No tag in any other partition is touched.  
+
+> •
+
+If refcount reaches 0, no tag in the cache references this data entry any longer. The controller transitions the 5entry’s coherence state to I, writes back the data if it was M or dirty, and the slot is now free for the next allocate. This is the architectural payoff of decoupling. A tag eviction in partition d touches d’s tag array and the shared data entry’s refcount, and nothing else . There is no replacement policy on the data array, no candidate-victim selection, and no propagation of d’s capacity pressure into any other partition’s tag state. 
+
+C. Data-array sizing to eliminate capacity-driven eviction 
+
+The shared data array is sized so that capacity pressure on the data side is structurally impossible. Let W = P 
+
+> d
+
+Wd
+
+be the total tag-array associativity (summed over the D per-domain partitions) and S the number of sets. Total tag entries are Ntag = W · S. We size the data array N = Ntag .
+
+Sizing invariant. The number of data slots equals the total number of tag entries. Why this works: In a worst case for sharing, e.g., no two domains share any line, each tag holds a unique forward pointer to a distinct data entry. Total live data entries are bounded by total valid tags, which is bounded by Ntag = N .The data array is large enough by construction. In a case that exercises sharing, e.g., multiple partitions hold tags pointing at the same line, several tags forward-point at one data entry, the live data count drops below N , and the spare data slots are simply unused. The capacity is paid once, but duplicated under sharing it serves more partitions than DAWG’s per-partition data quota would. 
+
+No replacement policy on the data array.: Because no allocate is ever blocked by lack of space, the data array needs no replacement decision at all. Data slots transition between two states: live (refcount > 0, holding the canonical M/E/S/I state of the line) and free (refcount = 0 , available for the next allocate). The transition live →free is caused only by tag eviction reducing refcount to zero. 
+
+No cross-partition tag-invalidation back-channel: Tag eviction in partition d touches d’s tag array and the referenced data entry’s refcount, period. No other partition’s tag array can be invalidated by d’s capacity pressure, because no data entry is “replaced”. A data slot only frees when every tag pointing at it has already been evicted by its own partition’s policy. The eviction-based channel that partitioning was designed to eliminate is fully closed by the decoupling , without any need for an ownership-aware replacement policy. 
+
+D. Miss-latency obfuscation 
+
+A P EER PROBE that succeeds (line found in another parti-tion) returns data faster than a true memory miss. If exposed, this latency difference would let an attacker distinguish “victim has this line cached” from “victim does not.” SCP closes this distinction with a fixed-latency timing obfuscation. Every PEER PROBE (success or failure) returns data only after Tmiss 
+
+cycles, where Tmiss is a memory miss latency. Successful finds buffer the data and stall delivery to match. 
+
+Cost of the timing obfuscation: The mask makes a cross-partition shared line behave, from the attacker’s perspective, like a true memory miss. The performance benefit of cross-partition sharing is then indirect . The next access to the same line by domain d hits the now-allocated d-tag at L1/L2 latency. Thus, the steady-state benefit on shared workloads remains. Only the first P EER PROBE per shared line per partition pays the mask. 
+
+E. Coherence protocol independence 
+
+SCP’s tag-isolation and refcount machinery are protocol-independent. For instance, the same surface operates over MESI, MSI, or MI. The mechanism is also transport-agnostic. Directory or snoop based protocols can be used. 
+
+F. Design invariants 
+
+The remainder of the paper relies on four invariants the architecture maintains: 1) (Tag isolation) Domain d’s accesses, namely, hits, misses, and tag evictions, modify the state of d’s tag partition only. No other partition’s tag array is ever modified as a side effect of d’s accesses, except via an explicit S→M U PGRADE on a genuinely shared writeable line. 2) (Single coherence state) Every cache line resides in exactly one data entry. Its M/E/S/I state is held by that data entry. There is no per-tag duplicate state to synchronize. 3) (Timing Obfuscation) Every PEER PROBE , whether success or failure, appears as a cache miss from the requesting domain’s timing perspective. 4) (Refcount conservation) For every data entry, 
+
+refcount equals the number of valid tags across all partitions whose forward pointer targets the entry. A data entry is free iff refcount = 0 . Capacity-driven data evictions never occur. 5) (Leakage Limit) E/M → S downgrades occur after a system-specified number write-based side-channels transmissions occur. V. S ECURITY ANALYSIS 
+
+SCP structurally eliminates the eviction-based side-channel and reduces the residual cross-domain signal to the inherent write-based information flow. Under the SCP invariants, every non-write cross-domain flow falls into one of three categories. (a) eliminated by tag isolation, ( b) eliminated by the timing obfuscation, or ( c) eliminates write-based side-channel mea-surement. We treat each attack class in turn. 
+
+A. Eviction- and flush-based attacks 
+
+PRIME +P ROBE , E VICT +T IME , and R ELOAD +R EFRESH all rely on the attacker constructing an eviction set whose lines map to the same set as the victim’s target line. The attack then uses victim-induced eviction as a timing signal: the attacker primes the set with its own lines, lets the victim run, and times a re-access to detect which of its primed lines have 6been evicted. Under SCP, invariant 1 (tag isolation) confines an attacker’s tag entries to its own partition. The victim’s tag entries are in a disjoint partition. The two partitions never share a tag set or way, so the attacker’s “eviction set” against the victim does not exist. Nothing the attacker can do at the tag layer evicts the victim’s lines. Data-array pressure cannot reach the victim either, because the N =S sizing of §IV-C makes capacity-driven data eviction structurally absent. FLUSH +R ELOAD on a line X that is not in A’s tag partition forces A’s reload to escalate to PeerProbe. The PeerProbe mask returns at memory-miss latency Tmiss whether or not the victim is caching X in another partition, so the hit-versus-miss timing distinction the attack relies on is gone. The empirical evidence of this collapse is in Table IX in §VII-E: v=1 and 
+
+v=0 attacker-probe latencies agree on the gem5 sweep. 
+
+B. Coherent shared lines 
+
+When two tags from different partitions point at the same data entry, an MSI/MESI write by either partition triggers a coherence transaction. The latency of that transaction depends on whether a peer holds the line. A write to a line in M completes locally with no bus traffic, while a write to a line in S incurs an S → M upgrade (invalidating other holders) before completing. The same observable channel exists under MESI’s E state. A victim line in E that is read by a peer downgrades E → S, so the victim’s next write needs an S → M upgrade where it would otherwise have silently upgraded E → M. On a conventional cache, that M/E-versus-S latency difference is what a co-resident attacker would measure to learn whether a peer domain is currently caching the same line. SCP closes both transitions by routing shared-line stores write-through to the LLC for pages flagged eligible-WT. Every store on a write-through line follows the same path regardless of peer state, so the line never sits in M or E long enough to be observed. Attacker probes on these lines therefore see identical latency under both victim conditions, and the security claim follows directly from the protocol-level identity of the two write paths, with no probabilistic argument and no bound on attacker probe rate. Standard write-combining hardware in the core absorbs adjacent stores within a cache line, so a producer writing eight adjacent fields generates roughly one outgoing transaction rather than eight, keeping the bandwidth tax modest. We call this mode SCP-WT . It is the prototype default for shared-writeable pages. The system can bound the total leakage using a register that measures E/M → S transitions for a given time duration and triggers the writethrough mode if leakage rate bound is crossed. 
+
+C. Occupancy and out-of-scope channels 
+
+Aggregate-pressure attacks observing a sweep through A’s working set see only A’s own behavior plus the shared subset, since capacity-driven cross-partition data eviction is struc-turally absent. SCP does not defend non-cache microarchitec-tural channels (branch predictors [62]–[64], memory bus [59], [60], DRAM rowbuffer [65], [66], TLB [61], prefetcher [67]– [69]), transient execution [17]–[19], or the inherent shared-writeable-line coherence channel. SCP composes with existing defenses for each. VI. GEM 5 P ROTOTYPES 
+
+We implement SCP as a new --cache-type=scp in an existing secure-cache gem5 fork that already supports 
+
+baseline , dawg , and several randomized-cache designs. The fork is the same one used for prior secure-cache evalua-tions and runs on the X86DerivO3CPU model with a Ruby-style coherence protocol. The bulk of the SCP changes are localized to three areas. 
+
+Tag and data organization: We replace the per-bank tag-data co-located array with two separately addressed structures. They are, a partitioned tag array indexed by {domain, set, way } and a flat data array of N entries indexed by data-entry id. Each tag carries the line address and a forward pointer; each data entry carries the M/E/S/I state, the dirty bit, and the refcount. The address lives only in the tags; the data entry is address-free. The split mirrors the MIRAGE implementation [33] that the fork already supports, modulo (i) the partitioned tag array (DAWG already implements this), and (ii) the refcount (new to SCP). 
+
+Lookup, find, allocate, evict: The controller’s hit path looks up the per-domain tag partition and dereferences the forward pointer. The miss path performs a parallel cross-partition broadcast and either subscribes (allocate tag, incre-ment refcount, set the requester’s bit in the LLC sharer vector, mask latency) or allocates a new tag and a free data slot (a slot whose refcount is 0, naturally freed by an earlier tag eviction). The existing DAWG infrastructure provides per-domain tag bookkeeping. We add a free-slot scanner over the data array (or, equivalently, a tail-pointer free-list maintained on refcount →0 transitions) and the refcount-update logic. 
+
+Coherence protocol changes: The in-LLC coherence state moves from the tag entry to the data entry. Tags are pure forward pointers, so peer tags do not have to be invalidated on a cross-partition write . Refcount conservation prevents slot reuse while any peer tag points there, and the next peer access follows the pointer to the data slot. where the standard coherence transitions fire. A Bloom filter short-circuits the parallel cross-partition tag scan on the miss path. The primary prototype runs on the gem5 Classic broadcast model (the same fork that already supports DAWG and randomized baselines). We additionally provide a Ruby/SLICC port that re-uses the same ScpTags mechanism behind a directory transport. Both runs produce the performance and security numbers reported in §VII. 
+
+Implementation summary: The TLB, prefetcher, and replacement policies are unchanged. SCP-WT reuses the existing write-through datapath that x86/ARM L1s already carry for write-combining/uncacheable memory types, gated by a per-page eligibility bit arriving with the access from the TLB. The Classic implementation is ∼ 1000 lines (scp_tags. {cc,hh }); the Ruby/SLICC port adds a ∼ 100 -line diff against MESI_Two_Level_SCP-L1cache.sm .7VII. E VALUATION 
+
+We evaluate SCP along three axes, namely, performance overhead under SPEC CPU2017 single- and multi-programmed workloads (§VII-B), security against an empirical PRIME +P ROBE attack (§VII-E), and storage overhead relative to baseline LRU and DAWG (§VII-F). The Bloom-filter sensitivity sweep is in §XVI-A. 
+
+A. Methodology Simulator and configurations: gem5 v25.1 with a three-level hierarchy ( 32 KiB L1I, 64 KiB L1D, 256 KiB L2, 16 MiB shared L3, DDR3-1600); the full system-configuration table is in Table II. Single-program SPEC and multi-programmed runs target X86DerivO3CPU via KVM-fast-forward fol-lowed by checkpoint restore ( 10 10 -instr fast-forward, 50 Mwarmup, 100 M measured). Data-sharing microbenchmarks use X86TimingSimpleCPU at 4 MiB L3 with shrunken private caches to force shared lines into the L3 layer. Com-pared configurations: B ASELINE (16 -way set-assoc, co-located data); DAWG ( Wd=8 ways per domain across D partitions); SCP ( Wd=8 tag partitions, shared N =S data pool, with SCP-WT on shared-writeable pages and SCP-adaptive elsewhere). Solo SPEC, the four 8-core MP mixes, and the data-sharing microbenchmarks all run at D=8 ; only the two 16 -core MP cells ( L16 , M14 in Table IV) use D=16 . A larger D=16 
+
+sweep was attempted but did not complete in time for this version of the paper. 
+
+Two simulator stacks, two roles: The SCP architecture 
+
+(partitioned tags, decoupled data, PEER PROBE with 
+
+crossFindHits /Misses , Bloom front-end) is implemented in the gem5 Classic broadcast model ( ScpTags 
+
+on top of scp_share.py ). All performance and the eviction-/flush-based security results (Tables III, IV, V, VIII, §VII-E) run there. The SCP coherence extensions, i.e., the 
+
+Store_WT write-through path, are implemented as a SLICC patch on MESI_Two_Level_SCP .
+
+Workloads and security harness: We use the 22 -benchmark SPEC CPU2017 refrate suite for single-program IPC and a 6-mix multi-programmed set drawn from the same pool, spanning 8-core ( D=8 ) and 16 -core ( D=16 )configurations across high-, medium-, and low-pressure SPEC2017-rate combinations (Table IV). The security harness adapts PyTrafficGen -based P RIME +P ROBE and FLUSH +R ELOAD drivers against a T-table AES kernel (libgcrypt-1.10.3 ). The PRIME +P ROBE attacker constructs an LLC eviction set on the T-table and times each probe; the F LUSH +R ELOAD attacker flushes a chosen T-table line and times its reload. Both report bit-disambiguated key-byte recoveries per million victim encryptions and the per-trial attacker-probe latency distributions used in Tables IX and X. 
+
+B. Performance: single-program SPEC CPU2017 
+
+Two effects are visible. First, strict Wd=8 partitioning at 
+
+D=8 costs both DAWG and SCP about 20% IPC against the 
+
+16 -way unpartitioned baseline (geomean 0.803 ). This cost is 
+
+TABLE II SIMULATED SYSTEM CONFIGURATION . D EFAULTS FOLLOW THE GEM 5
+
+> V
+
+25.1 FORK ’S S P E C _K V M _F F .P Y /S P E C _M P .P Y DRIVERS (C LASSIC ) 
+
+> AND S C P
+
+_S H A R E _R U B Y .P Y (R UBY ). C ACHE HIT LATENCIES ARE TAG /DATA /RESPONSE , ALL IN CYCLES .                                                                    
+
+> Parameter Value
+> Core
+> Model gem5 X86DerivO3CPU (out-of-order) Clock 3GHz Pipeline width 8(fetch /decode /rename /dispatch /
+> issue /writeback /commit) ROB 192 entries LQ /SQ 32 /32 entries Phys. regs (INT /FP) 256 /256
+> Branch predictor Tournament (gem5 default)
+> Private caches (per core)
+> L1-I 32 KiB, 8-way, 64 B line, 2/2/2cy L1-D 64 KiB, 8-way, 64 B line, 2/2/2cy L2 (private) 256 KiB, 8-way, 10 /10 /10 cy
+> Last-level cache (shared)
+> Capacity 16 MiB (solo, 8-core MP);
+> 4MiB for sharing microbenchmarks Block size 64 BAssociativity 16 -way (B ASELINE );
+> Wd=8 ways per domain ×D
+> partitions (DAWG, SCP) Domains D8(solo SPEC, 8-core MP, microbench);
+> 16 (two 16 -core MP cells only) Hit latency 20 /20 /20 cy (Baseline /DAWG /SCP) Replacement LRU (within domain) MSHRs 32
+> Memory
+> DRAM DDR3-1600 ( 8×8), 8GiB range
+> Coherence
+> Classic prototype gem5 broadcast MESI Ruby prototype MESI_Two_Level_SCP
+> (directory; SCP-WT path)
+> Simulation methodology
+> Fast-forward X86KvmCPU ,10 10 insts Warmup 50 M insts (timing, post-restore) Measured region 100 M insts ( DerivO3CPU )Microbenchmarks X86TimingSimpleCPU , shrunk private caches at 4MiB L3
+
+not SCP-specific. It is what any strict Wd=8 partitioning pays on this configuration. Per-benchmark losses split into three classes, namely, Class A ( perlbench, namd, parest, povray, x264, deepsjeng, imagick, leela, nab, exchange2, xz , 11 of 20 ) with < 1% delta. Class B (7 of 20 ) appears to require a larger working set. The losses are mcf −21% , cactuBSSN −24% , cam4 −25% , wrf 
+
+−35% , roms −52% , gcc −53% (L3 hit-rate 92% → 6.6% ), and xalancbmk −60% (a ∼ 12 MiB XML-tree traversal whose hot footprint sits just inside 16 ways). These are not SCP-specific costs. Any strict Wd=8 partitioning pays them. Class C ( lbm, bwaves ) is memory-streaming and is memory-bound at baseline, so partitioning is a small relative tax. Second, the contribution-relevant comparison is SCP versus DAWG at the same partitioning, where SCP matches DAWG within 0.3% IPC on every benchmark (geomean delta 
+
+∼ 0.1% ). The decoupled tag/data machinery, the refcount widget, and the P EER PROBE path are free over DAWG. SCP and DAWG are mechanically identical on solo SPEC because 
+
+peerProbeHits ≡ 0 when no peer partition exists. The 8TABLE III SOLO SPEC CPU2017 IPC AND L3 MPKI ( DE R I V O3CPU , D=8 ,
+
+Wd=8 ); 20 /22 BENCHMARKS . IPC AGGREGATES AS A GEOMETRIC MEAN 
+
+(RATIO TO BASE ); MPKI AGGREGATES AS AN ARITHMETIC MEAN .“< 0.01 ” MARKS ROWS WHOSE WORKING SET FITS THE CONFIGURED CACHE SO THAT THE LLC SEES FEWER THAN 10 3 MISSES ACROSS 10 8 
+
+> MEASURED INSTRUCTIONS
+
+(RAW COUNTS : M C F -B A S E = 202 , 
+
+> P O V R A Y
+
+= 130 , E X C H A N G E 2 = 22 ). [C LASSIC ]                                                                                                                                                   
+
+> IPC L3 MPKI Bench. BASE DAWG SCP BASE DAWG SCP perlbench 1.347 1.336 1.333 0.67 0.70 0.70 gcc 0.833 0.391 0.391 1.24 14.64 14.64 bwaves 0.397 0.388 0.388 29.45 30.36 30.36 mcf 0.908 0.716 0.714 <0.01 5.47 5.47 cactuBSSN 0.939 0.710 0.710 1.88 7.32 7.32 namd 2.576 2.571 2.567 0.20 0.20 0.20 parest 2.067 2.067 2.066 0.17 0.17 0.17 povray 1.774 1.774 1.774 <0.01 <0.01 <0.01
+> lbm 0.403 0.204 0.204 10.54 21.08 21.08 wrf 0.860 0.557 0.557 3.29 10.36 10.36 xalancbmk 0.786 0.314 0.314 0.12 19.66 19.66 x264 1.705 1.692 1.691 0.73 0.74 0.74 cam4 0.943 0.708 0.706 3.38 6.17 6.17 deepsjeng 1.662 1.661 1.661 0.22 0.23 0.23 imagick 2.195 2.195 2.194 0.25 0.25 0.25 leela 1.313 1.313 1.313 0.02 0.02 0.02 nab 1.332 1.332 1.326 0.17 0.17 0.17 exchange2 1.877 1.877 1.877 <0.01 <0.01 <0.01
+> roms 0.850 0.405 0.404 2.18 15.24 15.24 xz 1.391 1.388 1.388 0.35 0.35 0.35
+> IPC geomean (n=20 )1.000 0.803 0.803 ———
+> MPKI arith. mean ———2.74 6.66 6.66
+
+TABLE IV MULTI -PROGRAMMED THROUGHPUT (PER -CPU IPC, MIX -AVERAGED ). H/M/L = HIGH /MEDIUM /LOW LLC PRESSURE . [C LASSIC ]                                  
+
+> Cores Mix BASE DAWG SCP
+> 8H4L4 1.129 1.135 1.135
+> 8L8 1.170 1.148 1.145
+> 8M20 0.804 0.839 0.838
+> 8M25 1.244 1.254 1.253
+> 16 L16 1.103 1.086 1.084
+> 16 M14 1.216 1.229 1.229
+> geomean ( n=6 )1.100 1.106 1.105
+> rel. B ASE 1.000 1.005 1.004
+
+automatic coherence downgrade machinery is not activated because no page is flagged shared-writeable. 
+
+C. Multi-programmed throughput 
+
+Solo SPEC measures the partitioning tax in isolation; multi-programmed mixes measure what happens when independent processes contend for the LLC at once. We run six multi-programmed mixes drawn from the SPEC2017 refrate 
+
+pool, spanning 8-core ( D=8 ) and 16 -core ( D=16 ) configu-rations across high-, medium-, and low-pressure combinations (Table IV), with 100 M instructions measured per CPU after a 2 M-instr warmup. The six cells span the two corners that matter for the SCP-vs-DAWG comparison. Light-pressure mixes ( L8 , L16 ) where partitioning imposes a strict capacity cost, and mixed-pressure mixes ( H4L4 , M20 , M25 , M14 )where partitioning protects the low-pressure thread from the high-pressure thread. The four mixed-pressure mixes ( H4L4 , M20 , M25 , M14 ,each combining high- and low-pressure benchmarks) outper-form the unpartitioned baseline by 0.5 to 4.4% . The unpar-titioned 16 -way LRU lets the high-pressure thread evict the low-pressure thread’s working set, which would otherwise sit comfortably in cache. Under Wd=8 partitioning, each domain holds its own ways and the mix-wide working set fits better in aggregate. The all-light L8 and L16 mixes flip the sign because no dominant high-pressure thread is being excluded from the shared LRU, so partitioning becomes a strict capacity penalty ( −2.0% and −1.6% ). Overall, SCP averages +0 .4% 
+
+throughput against the unpartitioned baseline across the six completed mixes, within 0.001 of DAWG on every row. 
+
+D. Data-sharing microbenchmarks 
+
+SPEC CPU2017 is single-process and exercises almost no cross-domain coherent sharing, so it cannot exhibit the central performance benefit of SCP over DAWG (single-copy coher-ence on write-shared lines). We therefore add a set of two-domain microbenchmarks that directly exercise the sharing patterns SCP claims to support cleanly. Each microbenchmark places its two threads in distinct security domains so the LLC sees two partitioned tag-arrays accessing either disjoint or shared address ranges. 
+
+DISJOINT (two threads, disjoint 4 MiB working sets) tests eviction-isolation; READ SHARED (shared 1 MiB lookup table, 
+
+≤ 1% writes) tests single-copy read-sharing; PROD CONS 
+
+(producer/consumer 4 KiB ring at 10 MB/s) tests the S →MUpgrade path through the LLC’s per-line sharer vector. LOCK -CONTEND (both threads contend for a single lock word) is the standard write-shared coherence stress; ASYNC SHARE 
+
+(two threads exchanging a 256 KiB region with loose synchro-nization) tests the low-rate S ↔M regime; WT THRESHOLD 
+
+is a synthetic worst-case stressor in which the two threads alternately write N distinct lines on one contested 4 KiB page. The inner loops of L OCK CONTEND and P ROD CONS 
+
+cap at a single steady-state line and cannot drive enough cross-domain M → S edges to trip the per-page leakage threshold 
+
+Tleak (default 16 cross-domain M → S downgrades per ms; 
+
+tleak_threshold = 16 , tleak_window_ticks = 10 9
+
+in the gem5 driver), so WT THRESHOLD is the regime where SCP-adaptive promotion fires and SCP-WT actually engages (Tables VI, VII). We measure (i) per-thread instructions per cycle, (ii) LLC miss rate per thread, (iii) cross-partition coherence-event count (S →M U PGRADE fires per second), and (iv) where applicable, the bit rate at which a deliberate covert channel between the two threads can be transmitted via shared-line coherence (L OCK CONTEND only). 
+
+What DISJOINT confirms: At a 4 MiB working-set per thread the combined footprint overflows the 4 MiB L3 and all three designs land within 0.21% (13 .24 M demand misses, identical). SCP’s added machinery shows zero observable cost vs. DAWG on non-shared workloads. 
+
+SCP-WT cost on coherence-shared lines: SCP-WT’s headline cost is direct-measured under the Ruby/SLICC port 9TABLE V DATA -SHARING MICROBENCHMARKS (2-CPU TI M I N G SI M P L E CPU , 4 MIB L3, D=2 , Wd=8 ); TICKS IN NS . I N DAWG-LENIENT , ( CROSS -DOMAIN 
+
+> N E E D S
+
+WR I T A B L E ABORT IS STUBBED FOR MEASUREMENT ). D EPLOYABLE DAWG-STRICT ABORTS ON THE FOUR SHARED ROWS . [C LASSIC ]
+
+Microbench (WS/thread) BASE DAWG-LEN SCP-P Why the three designs agree DISJOINT (4 MiB) 665 .1M 666 .1M 666 .5M Footprint overflows the shared L3; memory-bound. The two threads never touch each other’s lines, so there is no cross-domain coherence for partitioning to constrain. READ SHARED (1 MiB) 138 .2M cy 138 .2M cy 140 .7M cy The shared lookup table sits in S in both partitions; reads never trigger a coherence transition. SCP’s +1 .8% is the per-domain tag-array traversal. PROD CONS (64 KiB) 0.996 M cy 0.996 M cy 0.996 M cy The producer’s store invalidates the consumer’s S copy; consumer’s next read pays one M → S round-trip. Same transition fires on Base, DAWG-len, and SCP. LOCK CONTEND (200 K iters) 19 .0M cy 19 .0M cy 19 .0M cy The lock word ping-pongs L1 ↔L1; the latency is set by the coherence round-trip, not by partitioning. PeerProbe is dormant ( 99 .998% L1 ↔L1 absorption). ASYNC SHARE (256 KiB) 90 .0M cy 90 .0M cy 90 .0M cy Low-rate cross-domain S ↔ M on a small shared region; sub-cycle differences at this rate land below the measurement noise floor. 
+
+TABLE VI SCP-WT IPC COST (MEAN OF 4 REPS , 20 M INST ). B ASELINE IS BASE 
+
+SCP. [R UBY /SLICC] 
+
+Workload BASE SCP-WT Ratio IPC IPC   
+
+> WT THRESHOLD
+
+0.332 0.293 −11 .7%  
+
+> DISJOINT
+
+0.229 0.233 +1 .7%  
+
+> PRODCONS
+
+0.317 0.244 −23 .2% 
+
+(§IV-E, Table VI) due to higher overheads in a directory im-plementation. The overhead is −11 .7% IPC on the contested regime ( WT THRESHOLD ), +1 .7% on uncontested DISJOINT 
+
+(SCP-WT idle), and −23 .2% on the worst-case single-shared 
+
+PRODCONS . The 11 –23% cost is is what is paid when SCP-WT engages on a shared-writable page . Base SCP keeps the page in M for free whereas SCP-WT pays the LLC round-trip. SCP-adaptive defers the choice to the runtime, flipping the page only once its M →S rate exceeds Tleak =16 /ms. 
+
+What the four shared paths confirm: With the snoop-uniqueness fix (App. XVIII) the four shared paths run under SCP and DAWG-lenient, cycle counts within 1.8% of unpar-titioned baseline. PeerProbe is wired but dormant on the body topology ( 99 .998% L1 ↔L1 absorption). The regime where PeerProbe must fire is measured below. 
+
+SCP-adaptive in the contested regime: We run a 24 -cell 
+
+WT THRESHOLD sweep (20 M inst/CPU, 4 reps/design) against six designs (Table VII). SCP-adaptive auto-promotion fires once the per-page M→S rate exceeds 
+
+Tleak =16 /ms. 5 pages/cell promoted from ADAPTIVE →
+
+WT , 128 M→S transitions, 185 spontaneous downgrades. 
+
+PeerProbe fires on every SCP variant (3,475 crossFind 
+
+events vs. 0 on baseline/DAWG). DAWG-strict aborts 
+
+confirming that the architecture forbids cross-domain shared-writeable workloads. The 20 .27 ms cycle count is design-invariant because the 16 -line working set is L1-resident. 
+
+PeerProbe-firing measurement (no-private-L2 deployment): We re-run all five microbenches on a no-private-L2 variant of the gem5 topology. The per-CPU L2 is shrunk from 256 KiB to 32 KiB so cross-domain shared lines miss L2 capacity and reach the L3 directly, 
+
+TABLE VII CONTESTED REGIME (WT THRESHOLD , 20 M INST /CPU, 4 REPS ): SCP-ADAPTIVE AUTO -PROMOTION FIRES ; DAWG-STRICT ABORTS . †
+
+> ADAPTIVE
+
+-ONLY COUNTER . [C LASSIC ]
+
+Design Cycles (ms) PP fires Promotions † M→S†
+
+BASELINE 20 .27 0 0 0
+
+DAWG-STRICT abort — — —DAWG-LENIENT 20 .27 0 0 0
+
+SCP-PERMISSIVE 20 .27 3,475 0 0
+
+SCP-ADAPTIVE 20 .27 3,475 5 185 
+
+SCP-WT 20 .27 3,475 0 0
+
+TABLE VIII PEER PROBE -FIRING MEASUREMENT ON THE NO -PRIVATE -L2 TOPOLOGY 
+
+(L2 SHRUNK 256 → 32 KIB); CYCLE TIMES IN MS , “PP FIRES ” =
+
+> C R O S S
+
+FI N D HI T S +MI S S E S . [C LASSIC ]
+
+Cycle time (ms) SCP/Base PP Microbench BASE DAWG SCP ratio fires DISJOINT (256 KiB) 16 .859 16 .859 17 .126 1.016 × 11 ,571 
+
+READ SHARED (1 MiB) 13 .623 13 .623 13 .635 1.001 × 19 ,784 
+
+PROD CONS (64 KiB) 4.988 4.988 4.978 0.998 × 4,433 
+
+LOCK CONTEND (200 K) 17 .650 17 .650 17 .650 1.000 × 3,402 
+
+ASYNC SHARE (256 KiB) 5.617 5.617 5.617 1.000 × 7,497 
+
+mimicking the L2-less in-order embedded class (Cortex-A53/A55) and the multi-CCX/multi-die L3 deployments where any cross-domain shared line fills into the LLC. SCP’s 
+
+crossFindHits +crossFindMisses counter shows PeerProbe firing 3K−20 K times per cell in this regime (Table VIII). The empirical SCP-vs-Base cycle ratio is in the 
+
+0.998 × – 1.016 × envelope across all five microbenches. The timing delay is paid only on the first P EER PROBE per shared line, after which the line allocates a d-tag and subsequent consumer accesses hit at TL1.
+
+E. Security 
+
+The architectural claim is that under SCP, an attacker’s timing measurements are independent of victim activity. A probe completes in the same number of cycles whether the victim accessed the contested line or not. We test this against the standard Prime+Probe and Flush+Reload attacks on the gem5 prototype, and against the shared-writeable-line attack under SCP-WT. 10 Eviction- and flush-based attacks: On the unpartitioned baseline, a victim access to a contested set evicts one of the attacker’s primed lines, so the attacker observes a memory miss (Tmem ≈ 200 cycles) under v=1 versus an L1 hit (TL1 = 4 cycles) under v=0 , and Flush+Reload sees the matching hit-versus-miss split. Under SCP, tag partitioning forbids the victim’s access from touching the attacker’s tag set, so attacker probes hit at TL1 regardless of v. Table IX reports the per-attack mean attacker-probe latency under both victim conditions on the gem5 prototype.                                
+
+> TABLE IX MEAN ATTACKER -PROBE LATENCY (CY )UNDER VICTIM -ABSENT (v=0 )
+> VS . -PRESENT (v=1 ); |∆|IS THE GAP . [C LASSIC ]
+> P+P F+R Design v=0 v=1 |∆|v=0 v=1 |∆|
+> BASE 4.052 .448 .4200 .0119 .081 .0
+> DAWG 4.04.00200 .0200 .00
+> SCP 4.04.00200 .0200 .00
+
+The SCP rows match v=0 to v=1 exactly on Prime+Probe because tag isolation forbids the victim from evicting the attacker’s primed lines. They match on Flush+Reload because the attacker’s reload of a non-shared line escalates to Peer-Probe, which is constant-time-masked to Tmiss regardless of peer caching state. SCP’s per-cell L3 counters are bit-for-bit identical to DAWG’s. 
+
+Per-trial spread: Equality of means is necessary but not sufficient: a determined attacker integrates over many trials, so the relevant statistic is the per-trial spread, not just the mean. Table X augments Table IX with the sample standard deviation across 5,000 attacker-probe trials per cell, separately for v=0 and v=1 . On B ASELINE the v=1 standard deviation is 
+
+45 × the v=0 standard deviation under P RIME +P ROBE (63 .0 cy vs. 1.4 cy). This is a wide bimodal distribution with mass on the L1-hit and the L3-miss tails, exactly the leakage signal. On DAWG and SCP the two columns match to one decimal (1.4 cy = 1 .4 cy under both attacks), so an attacker observing the per-trial latency sees the same single-mode distribution under either victim condition.                         
+
+> TABLE X PER -TRIAL LATENCY SPREAD (CYCLE STD ,n=5 ,000 TRIALS /CELL )
+> UNDER v=0 VS .v=1 . [C LASSIC ]
+> P+P Std (cy) F+R Std (cy) Design v=0 v=1 v=0 v=1
+> BASELINE 1.463 .040 .548 .2
+> DAWG 1.41.40.00.0
+> SCP 1.41.40.00.0
+
+The eviction-set construction probability across the design space appears as Fig. 3 (App. XIV), where SCP inherits DAWG’s strict tag-partition floor across all attacker budgets and MIRAGE-class designs reach the same asymptote only at ∼ 19% storage. A visual contrast between the partitioning strategy (DAWG, SCP) and the keyed-PRF strategy (MI-RAGE). 
+
+Coherent shared lines under SCP-WT: On a stock MSI/MESI cache, an attacker writing a shared line in S state pays a coherence transaction iff a peer holds the line. SCP-WT routes shared-line stores write-through to the LLC, so attacker write latency is fixed by LLC bandwidth and constant across victim conditions. The Ruby/SLICC directory port (MESI_Two_Level_SCP ) confirms this indirectly. Across a 
+
+96 -cell sweep over peer-presence and victim-rate combinations the empirical M →SS coherence-channel capacity stays at most 
+
+6.14 ×10 −5 b/access (max cap/bound 0.32 , 0 bound violations), so the state-flow channel an attacker would time on a non-WT directory cache is structurally suppressed. Direct latency-mean extraction across the same grid is the follow-up measurement. 
+
+Readers leak nothing; SCP-WT also closes writers.: 
+
+A pure-reader victim contributes no observable coherence state transition (line stays in S); the only leakage path is victim writes (S →M upgrade or M →I invalidation, which the attacker subsequently times). SCP-WT closes this surface by forcing victim writes through the LLC on a uniform path. Attacker read latency under v=0 and v=1 agrees to within measurement noise. 
+
+Domain Fusion: A DAWG deployment that supports cross-domain shared-writeable lines (cross-domain spinlocks, confidential-computing IPC ring heads) cannot use STRICT 
+
+mode (the cache.cc:528 needsWritable abort surfac-ing an architectural impossibility). Its only viable escape, do-main fusion, opens a v=0 vs. v=1 probe-latency gap of +49 cy (Tab. XI). SCP-WT closes the gap to 0 cy deterministically per store; SCP-adaptive closes it after auto-promotion once the per-page M → S counter crosses tleak_threshold . SCP-permissive leaves the page on the standard MSI/MESI path and does not close this gap, by system specification. Methodology and per-cell distributions are in App. XIII.                        
+
+> TABLE XI MEAN ATTACKER -PROBE LATENCY ON A CROSS -DOMAIN SHARED -WRITEABLE LINE UNDER DAWG’ S DOMAIN -FUSION ESCAPE AND EACH SCP MODE . [C LASSIC ]
+> Configuration v=0 (cy) v=1 (cy) ∆
+> DAWG-STRICT abort abort —DAWG-FUSE 4.00 52 .99 +48 .99
+> SCP-WT 440
+> SCP-ADAPTIVE 440
+> SCP-PERMISSIVE 4.00 52 .99 +48 .99
+
+Ablations: Removing each SCP mechanism re-enables one or more attack classes. Removing tag partitioning re-enables Prime+Probe and Flush+Reload at baseline. Removing the constant-time PeerProbe mask re-enables Flush+Reload-style timing inference on the inter-partition lookup path. Re-moving SCP-WT, i.e., reverting to plain MSI on shared lines, re-enables the shared-writeable-line attack. Per-mechanism numbers are in App. XIV. 
+
+F. Storage 
+
+SCP adds log 2 N + ⌈log 2(D+1) ⌉ bits per cache entry (a 
+
+log 2 N -bit forward pointer in each tag plus a refcount in each 11 TABLE XII LLC STORAGE OVERHEAD (16 MIB, D=4 , 40 -BIT PA); C OH . = CLOSES THE COHERENCE -CHANNEL LEAK . † DESIGN FORBIDS THE FEATURE                             
+
+> (N/A).
+> Design MiB %Coh. BASELINE 17 .16 —leaks DAWG [44] 17 .19 +0 .2N/A †
+> SEC DCP [43] 17 .19 +0 .2N/A †
+> CHAMELEON CACHE [36] 17 .18 +0 .1leaks AVATAR [38] 17 .42 +1 .5leaks INTERFACE [34] 18 .43 +7 .4leaks MIRAGE [33] 20 .48 +19 .3leaks
+> SCP 17 .64 +2 .8closed
+
+data entry; the per-line sharer vector that a coherent LLC already maintains absorbs the cross-domain invalidate walk, so SCP introduces no per-data owner mask). At 16 MiB, LLC overhead is 2.4–2.7% analytically across D=2 –16 (App. XV), on the same order as DAWG and far below MIRAGE. VIII. D ISCUSSION 
+
+Comparison with non-fusion coherent randomization: 
+
+Non-fusion coherent randomization [45] preserves cross-domain coherence on a randomized cache via a fusion-and-unfusion pair. SCP improves on it along three axes. (i) 
+
+Regarding reader-side privacy, SCP’s tag-partition lookup leaves the read pattern invisible to peers whereas non-fusion exposes it through unfusion events. (ii) There are no flush invocations in the security loop. Instead, reference count-driven reclamation replaces the periodic flush). (iii) No fixed per-miss delay cost is pair. 
+
+Generalisation to coherent randomization: The SCP construction is described against partitioned tag arrays, but the mechanisms it adds, namely, decoupled tag /data with a reference count-driven free list, the constant-time P EER PROBE 
+
+mask on a tag miss, per-page write sharing compatibility, and the downgrade functionality that closes the E/M →S coherence channel, are orthogonal to whether the tag-side indexing is per-domain partitioned (DAWG-style) or randomized (CEASER, CEASER-S, MIRAGE, SEF [30], [33], [45]). We do not re-evaluate this configuration but flag it as a deployable point in the design space and as a natural follow-up benchmark. 
+
+Real-world prevalence of write sharing: The SCP-WT cost is paid only on pages the OS has marked eligible, so its practical impact depends on how much of a real work-load’s footprint is actually cross-domain shared-writeable. Empirically the fraction is small. Browser sandboxes (Firefox, Chromium), X.org, and OS-level IPC rely on shared-writeable lines for coordination , e.g., spinlocks, ring heads, shared page-table entries, rather than for the bulk of their data movement, and the prior cross-domain-coherence study [45] reports that even on these high-sharing workloads (Firefox, Chromium, X Server, PARSEC 3.0) the overhead of write-sharing-aware coherence stays under 5% , while SPEC CPU2017-rate exhibits essentially no cross-domain write sharing at all (under 3% 
+
+hardware-overhead floor in the same study). The stress test for SCP only engages on the small fraction of pages where cross-domain writes are actually frequent. The rest of the working set runs the zero-cost SCP path, and SCP-adaptive auto-promotes pages only after the per-page M →S rate exceeds the system specified threshold. 
+
+OS support to detect write-shared pages: SCP delegates setting the per-page write-shared bit to the OS. SCP’s support is at the hardware TLB level and can work with any com-patible OS implementation. A key data structure that holds sharing-relevant mapping information is the reverse mapping table [70], which associates a physical page with all the mapped virtual pages. We speculate that such a table can be traversed to determine if a page is write-shared, e.g., similar to the usage in AMD SEV technology for determining write-shared pages [71]. 
+
+Beyond the cache: SCP closes the cache-level reader pattern. Secret-dependent reads spilling beyond the LLC into DRAM rowbuffer or memory-controller occupancy are orthog-onal and addressed by independent defences [59], [65], [66]. 
+
+Fine-grained shared microarchitectural state.: The cache’s auxiliary structures, e.g., MSHRs, write buffers, prefetcher state, and the coherence-message queues that funnel into the sharer vector, remain a cross-domain contention surface that SCP itself does not close. The literature has standard answers that compose with SCP. Per-domain MSHR/write-buffer partitioning as in DAWG [44] and follow-on designs, prefetcher-isolation hardware where the trained state is per-domain, and queue-occupancy contention bounds via static fair-share scheduling. Folding these into the SCP deployment is straightforward. Each structure already has a partition-id arriving with the access and an end-to-end secure LLC pipeline is the natural follow-up. 
+
+Free data-entry allocation: SCP needs a data-array free-slot allocator on every new-line insertion. We use a tail-pointer free-list maintained on refcount → 0 transitions because it is constant-time and trivially synthesizable, but the slot-allocation problem is the same one ZCache, V-Way, and MIRAGE already solved at scale. Any of those allocators (cuckoo-style displacement, skewed-associative, or a coarse-grain linear-scan free-list) could be adapted for our purpose. The architectural choice does not interact with SCP’s security argument because the allocator only selects which free slot to fill. SCP’s invariants depend on the data slot and not on the choice of which one. 
+
+Bloom-filter overflow as a side channel: The counting Bloom filter (BF) at the P EER PROBE front-end is a probabilis-tic data structure whose per-counter occupancy is a function of the cross-partition cache state. A cross-domain attacker that drives the cache into a regime where many counters saturate at the 4-bit ceiling can in principle convert that saturation into an oracle. A saturated counter no longer decrements on the matching line’s eviction, so it leaves a persistent residue of addresses that were cached historically, and the contention for BF-bank ports during the attacker’s BF-update stream is itself observable. P EER PROBE ’s timing obfuscation hides the per-query outcome on the timing side, the BF is not address-12 queryable from any ISA-level path, and the prototype floorplan isolates the BF SRAM from the per-partition tag SRAM so attacker BF-update contention cannot block victim tag reads (App. XVI). Sizing m above the working-set induced threshold avoids saturation under benign load, but a determined adver-sary can drive the structure beyond that operating point. We treat full quantitative side-channel evaluation of the CBF as follow-up scope. An SCP deployment that wants to side-step the question entirely can disable the BF, paying ∼ 75% more PEER PROBE tag-read energy in exchange for a probabilistic-structure-free front-end. IX. R ELATED WORK 
+
+DAWG [44] is the canonical strict-isolation partitioning baseline; CATalyst, NoMo, PLcache, StealthMem, and SecDCP [40], [41], [43] trade granularity for asymmetry but share DAWG’s restriction on cross-domain shared-writeable lines. SCP adds that functionality while keeping strict tag isolation. The randomization lineage, including CEASER, CEASER-S, ScatterCache, MIRAGE, INTERFACE, Avatar [30]–[34], [38], attacks eviction-set construction probabilistically and preserves coherence by not partitioning at all. SCP provides deterministic isolation with the same coherence support, paid for by tag/data decoupling rather than randomized indexing. The decoupling primitive itself is not new (V-Way [48], ZCache [49], MIRAGE). SCP applies it to partitioning, to our knowledge the first use of indirection to dissolve the coherence-vs.-partitioning conflict. HybCache [72] is orthogonal and could compose. Recent work [26], [28], [37], [39], [53], [54], [73] motivates the broader cache-defense audience. X. C ONCLUSION 
+
+For more than a decade the secure caches line of research has worked around a single structural problem, that cache partitioning, the strongest defence against eviction-based side channels, is incompatible with write-shared coherence. Every prior attempt has resolved this conflict by eliminating the feature or settling for probabilistic isolation. SCP resolves it cleanly by partitioning only the tags. SCP shares a single data pool sized so capacity-driven cross-domain eviction can-not occur, and masks the inter-partition lookup time with a delay. SCP can be tuned to let the system pick a point on the performance ↔security curve. An evaluation using gem5 demonstrates the tradeoffs. The performance overheads range from 0.3% IPC overhead for SPEC2017 benchmarks with no data sharing, up to 23% for enabling high security on data sharing stress tests. REFERENCES [1] N. P. Jouppi, “Improving direct-mapped cache performance by the addition of a small fully-associative cache and prefetch buffers,” in ISCA ,1990, pp. 364–373. [2] Q. Ge, Y. Yarom, D. Cock, and G. Heiser, “A survey of microarchitec-tural timing attacks and countermeasures on contemporary hardware,” 
+
+J. Cryptographic Engineering , vol. 8, no. 1, pp. 1–27, 2018. [3] D. A. Osvik, A. Shamir, and E. Tromer, “Cache attacks and counter-measures: The case of AES,” in Topics in Cryptology – CT-RSA 2006 .Springer, 2006, pp. 1–20. [4] C. Percival, “Cache missing for fun and profit,” BSDCan 2005, 2005. [5] D. J. Bernstein, “Cache-timing attacks on AES,” Preprint, https://cr.yp. to/antiforgery/cachetiming-20050414.pdf, 2005. [6] E. Tromer, D. A. Osvik, and A. Shamir, “Efficient cache attacks on AES, and countermeasures,” J. Cryptology , vol. 23, no. 1, pp. 37–71, 2010. [7] F. Liu, Y. Yarom, Q. Ge, G. Heiser, and R. B. Lee, “Last-level cache side-channel attacks are practical,” in IEEE Symp. on Security and Privacy (S&P) , 2015, pp. 605–622. [8] D. Gruss, C. Maurice, K. Wagner, and S. Mangard, “Flush+flush: A fast and stealthy cache attack,” in Detection of Intrusions and Malware, and Vulnerability Assessment (DIMVA) . Springer, 2016, pp. 279–299. [9] C. Disselkoen, D. Kohlbrenner, L. Porter, and D. M. Tullsen, “Prime+Abort: A timer-free high-precision L3 cache attack using Intel TSX,” in USENIX Security Symposium , 2017, pp. 51–67. [10] S. Briongos, P. Malag´ on, J. M. Moya, and T. Eisenbarth, “Reload+Refresh: Abusing cache replacement policies to perform stealthy cache attacks,” in USENIX Security Symposium , 2020, pp. 1967– 1984. [11] Y. Yarom and K. Falkner, “FLUSH+RELOAD: A high resolution, low noise, L3 cache side-channel attack,” in USENIX Security Symposium ,2014, pp. 719–732. [12] Y. Oren, V. P. Kemerlis, S. Sethumadhavan, and A. D. Keromytis, “The spy in the sandbox: Practical cache attacks in JavaScript and their implications,” in ACM Conf. on Computer and Communications Security (CCS) , 2015, pp. 1406–1418. [13] A. Shusterman, L. Kang, Y. Haskal, Y. Meltser, P. Mittal, Y. Oren, and Y. Yarom, “Robust website fingerprinting through the cache occupancy channel,” in USENIX Security Symposium , 2019, pp. 639–656. [14] T. Ristenpart, E. Tromer, H. Shacham, and S. Savage, “Hey, you, get off of my cloud: Exploring information leakage in third-party compute clouds,” in ACM Conf. on Computer and Communications Security (CCS) , 2009, pp. 199–212. [15] M. S. Inci, B. Gulmezoglu, G. Irazoqui, T. Eisenbarth, and B. Sunar, “Cache attacks enable bulk key recovery on the cloud,” in Cryptographic Hardware and Embedded Systems (CHES) , 2016, pp. 368–388. [16] Y. Zhang, A. Juels, M. K. Reiter, and T. Ristenpart, “Cross-VM side channels and their use to extract private keys,” in ACM Conf. on Computer and Communications Security (CCS) , 2012, pp. 305–316. [17] P. Kocher, J. Horn, A. Fogh, D. Genkin, D. Gruss, W. Haas, M. Ham-burg, M. Lipp, S. Mangard, T. Prescher, M. Schwarz, and Y. Yarom, “Spectre attacks: Exploiting speculative execution,” in IEEE Symp. on Security and Privacy (S&P) , 2019, pp. 1–19. [18] M. Lipp, M. Schwarz, D. Gruss, T. Prescher, W. Haas, A. Fogh, J. Horn, S. Mangard, P. Kocher, D. Genkin, Y. Yarom, and M. Hamburg, “Meltdown: Reading kernel memory from user space,” in USENIX Security Symposium , 2018, pp. 973–990. [19] J. Van Bulck, M. Minkin, O. Weisse, D. Genkin, B. Kasikci, F. Piessens, M. Silberstein, T. F. Wenisch, Y. Yarom, and R. Strackx, “Foreshadow: Extracting the keys to the Intel SGX kingdom with transient out-of-order execution,” in USENIX Security Symposium , 2018, pp. 991–1008. [20] M. Schwarz, M. Lipp, D. Moghimi, J. Van Bulck, J. Stecklina, T. Prescher, and D. Gruss, “ZombieLoad: Cross-privilege-boundary data sampling,” in ACM Conf. on Computer and Communications Security (CCS) , 2019, pp. 753–768. [21] S. van Schaik, A. Milburn, S. ¨Osterlund, P. Frigo, G. Maisuradze, K. Razavi, H. Bos, and C. Giuffrida, “RIDL: Rogue in-flight data load,” in IEEE Symp. on Security and Privacy (S&P) , 2019, pp. 88–105. [22] B. Schl¨ uter, S. Sridhara, M. Kuhne, A. Bertschi, and S. Shinde, “HECK-LER: Breaking confidential VMs with malicious interrupts,” in USENIX Security Symposium , 2024. [23] B. Schl¨ uter, S. Sridhara, A. Bertschi, and S. Shinde, “WeSee: Using malicious #VC interrupts to break AMD SEV-SNP,” in IEEE Symposium on Security and Privacy (S&P) , 2024. [24] L. Wilke, F. Sieck, and T. Eisenbarth, “TDXdown: Single-stepping and instruction counting attacks against Intel TDX,” in ACM CCS , 2024. [25] B. Schl¨ uter, C. Wech, and S. Shinde, “Heracles: Chosen plaintext attack on AMD SEV-SNP,” in ACM CCS , 2025. [26] A. Seto, O. K. Duran, S. Amer, J. Chuang, S. van Schaik, D. Genkin, and C. Garman, “WireTap: Breaking server SGX via DRAM bus interposition,” in ACM CCS , 2025. [27] J. De Meulemeester, L. Wilke, D. Oswald, T. Eisenbarth, I. Ver-bauwhede, and J. Van Bulck, “BadRAM: Practical memory aliasing 
+
+13 attacks on trusted execution environments,” in IEEE Symposium on Security and Privacy (S&P) , 2025. [28] S. van Schaik, A. Seto, T. Yurek, A. Batori, B. AlBassam, D. Genkin, A. Miller, E. Ronen, Y. Yarom, and C. Garman, “SoK: SGX.Fail: How stuff gets exposed,” in IEEE Symposium on Security and Privacy (S&P) ,2024. [29] L.-C. Chiang and S.-W. Li, “Reload+reload: Exploiting cache and memory contention side channel on AMD SEV,” in ASPLOS , 2025. [30] M. K. Qureshi, “CEASER: Mitigating conflict-based cache attacks via encrypted-address and remapping,” in MICRO , 2018, pp. 775–787. [31] ——, “New attacks and defense for encrypted-address cache,” in ISCA ,2019, pp. 360–371. [32] M. Werner, T. Unterluggauer, L. Giner, M. Schwarz, D. Gruss, and S. Mangard, “ScatterCache: Thwarting cache attacks via cache set randomization,” in USENIX Security Symposium , 2019, pp. 675–692. [33] G. Saileshwar and M. K. Qureshi, “MIRAGE: Mitigating conflict-based cache attacks with a practical fully-associative design,” in USENIX Security Symposium , 2021, pp. 1379–1396. [34] Y. G. Kelemework, “INTERFACE: An indirect, partitioned, random, fully-associative cache to avoid shared last-level cache attacks,” M.Sc. Thesis, Simon Fraser University, 2023, school of Computing Science, Summer 2023. [35] F. Canale, T. G¨ uneysu, G. Leander, J. P. Thoma, Y. Todo, and R. Ueno, “SCARF – a low-latency block cipher for secure cache-randomization,” in USENIX Security Symposium , 2023. [Online]. Available: https: //www.usenix.org/conference/usenixsecurity23/presentation/canale [36] T. Unterluggauer, A. Harris, S. Constable, F. Liu, and C. Rozas, “Chameleon cache: Approximating fully associative caches with random replacement to prevent contention-based cache attacks,” in 
+
+IEEE International Symposium on Secure and Private Execution Environment Design (SEED) , 2022. [Online]. Available: https://arxiv. org/abs/2209.14673 [37] A. Bhatla, Navneet, and B. Panda, “The Maya cache: A storage-efficient and secure fully-associative last-level cache,” in ISCA , 2024, pp. 32–48. [38] A. Bhatla, N. Navneet, M. K. Qureshi, and B. Panda, “The Avatar cache: Enabling on-demand security with morphable cache architecture,” arXiv preprint arXiv:2602.06433, 2026. [Online]. Available: https: //arxiv.org/abs/2602.06433 [39] A. Bhatla, H. R. Bhavsar, S. Saha, and B. Panda, “SoK: So, you think you know all about secure randomized caches?” in 
+
+USENIX Security Symposium , 2025. [Online]. Available: https: //www.usenix.org/conference/usenixsecurity25/presentation/bhatla [40] Z. Wang and R. B. Lee, “New cache designs for thwarting software cache-based side channel attacks,” in ISCA , 2007, pp. 494–505. [41] T. Kim, M. Peinado, and G. Mainar-Ruiz, “StealthMem: System-level protection against cache-based side channel attacks in the cloud,” in 
+
+USENIX Security Symposium , 2012, pp. 189–204. [42] Intel Corporation, “Improving real-time performance by utilizing cache allocation technology,” Intel White Paper, 2015. [Online]. Available: https://www.intel.com/content/www/us/en/architecture-and-technology/ cache-allocation-technology-white-paper.html [43] Y. Wang, A. Ferraiuolo, D. Zhang, A. C. Myers, and G. E. Suh, “SecDCP: Secure dynamic cache partitioning for efficient timing channel protection,” in Design Automation Conference (DAC) , 2016, pp. 74:1– 74:6. [44] V. Kiriansky, I. Lebedev, S. P. Amarasinghe, S. Devadas, and J. Emer, “DAWG: A defense against cache timing attacks in speculative execution processors,” in MICRO , 2018, pp. 974–987. [45] K. Ramkrishnan, S. McCamant, A. Zhai, and P.-C. Yew, “Non-fusion based coherent cache randomization using cross-domain accesses,” in 
+
+ACM Asia Conference on Computer and Communications Security (ASIA CCS) , 2024. [46] G. Saileshwar, S. Kariyappa, and M. K. Qureshi, “Bespoke cache en-claves: Fine-grained and scalable isolation from cache side-channels via flexible set-partitioning,” in IEEE International Symposium on Secure and Private Execution Environment Design (SEED) , 2021, pp. 37–49. [47] G. Dessouky, T. Frassetto, and A.-R. Sadeghi, “CHUNKED-CACHE: On-demand and scalable caches for multi-tenant confidential computing environments,” in Network and Distributed System Security Symposium (NDSS) , 2022. [48] M. K. Qureshi, D. Thompson, and Y. N. Patt, “The V-Way Cache: Demand-based associativity via global replacement,” in International Symposium on Computer Architecture (ISCA) , 2005. [49] D. Sanchez and C. Kozyrakis, “The ZCache: Decoupling ways and as-sociativity,” in International Symposium on Microarchitecture (MICRO) ,2010. [50] B. Morgan, G. Horowitz, S. O’Connell, S. van Schaik, C. Chuengsa-tiansup, D. Genkin, O. Maennel, P. Montague, E. Ronen, and Y. Yarom, “Slice+slice baby: Generating last-level cache eviction sets in the blink of an eye,” in IEEE Symposium on Security and Privacy (S&P) , 2025. [51] T. Kessous and N. Gilboa, “Prune+PlumTree – finding eviction sets at scale,” in IEEE Symposium on Security and Privacy (S&P) , 2024. [52] Z. N. Zhao, A. Morrison, C. W. Fletcher, and J. Torrellas, “Last-level cache side-channel attacks are feasible in the modern public cloud,” in 
+
+ASPLOS , 2024. [53] A. Chakraborty, N. Mishra, S. Saha, S. Bhattacharya, and D. Mukhopadhyay, “Systematic evaluation of randomized cache designs against cache occupancy,” in USENIX Security Symposium , 2025. [Online]. Available: https://www.usenix.org/ conference/usenixsecurity25/presentation/chakraborty [54] C. Cao and G. Saileshwar, “Yet another mirage of breaking MIRAGE: Debunking occupancy-based side-channel attacks on fully associative randomized caches,” arXiv preprint arXiv:2508.10431, 2025. [55] A. Purnal, F. Turan, and I. Verbauwhede, “Prime+scope: Overcoming the observer effect for high-precision cache contention attacks,” in ACM CCS , 2021, pp. 2906–2920. [56] Z. Zhang, K. Cai, Y. Guo, F. Yao, and X. Gao, “Invalidate+compare: A timer-free GPU cache attack primitive,” in USENIX Security Symposium , 2024. [Online]. Available: https://www.usenix.org/ conference/usenixsecurity24/presentation/zhang-zhenkai [57] P. Vila, B. K¨ opf, and J. F. Morales, “Theory and practice of finding eviction sets,” in IEEE Symp. on Security and Privacy (S&P) , 2019, pp. 39–54. [58] A. Purnal, L. Giner, D. Gruss, and I. Verbauwhede, “Systematic analysis of randomization-based protected cache architectures,” in IEEE Symp. on Security and Privacy (S&P) , 2021, pp. 987–1002. [59] J. Yuan, J. Zhang, P. Qiu, X. Wei, and D. Liu, “A survey of side-channel attacks and mitigation for processor interconnects,” Applied Sciences ,vol. 14, no. 15, p. 6699, 2024. [60] C. Rodrigues, D. Oliveira, and S. Pinto, “BUSted microarchitectural side-channel attacks on the MCU bus interconnect,” in IEEE Symposium on Security and Privacy (S&P) , 2024. [61] D. Vanoverloop, A. S´ anchez, F. Toffalini, F. Piessens, M. Payer, and J. Van Bulck, “TLBlur: Compiler-assisted automated hardening against controlled channels on off-the-shelf Intel SGX platforms,” in USENIX Security Symposium , 2025. [62] J. Wikner and K. Razavi, “Breaking the barrier: Post-barrier Spectre attacks,” in IEEE Symposium on Security and Privacy (S&P) , 2025. [63] S. Wiebing and C. Giuffrida, “Training solo: On the limitations of domain isolation against Spectre-v2 attacks,” in IEEE Symposium on Security and Privacy (S&P) , 2025. [64] L. Li, H. Yavarzadeh, and D. Tullsen, “Indirector: High-precision branch target injection attacks exploiting the indirect branch predictor,” in 
+
+USENIX Security Symposium , 2024. [65] A. Olgun, Y. C. Tugrul, N. Bostanci, I. E. Yuksel, H. Luo, S. Rhyner, A. G. Yaglikci, G. F. Oliveira, and O. Mutlu, “ABACuS: All-bank activation counters for scalable and low overhead RowHammer mitigation,” in USENIX Security Symposium , 2024. [Online]. Available: https://www.usenix.org/conference/usenixsecurity24/presentation/olgun [66] F. N. Bostanci, O. Canpolat, A. Olgun, I. E. Yuksel, K. Kanellopoulos, M. Sadrosadati, A. G. Yaglikci, and O. Mutlu, “Understanding and mitigating covert channel and side channel vulnerabilities introduced by RowHammer defenses,” arXiv preprint arXiv:2503.17891, 2025. [67] S. Nath, A. Navarro-Torres, A. Ros, and B. Panda, “Secure prefetching for secure cache systems,” in MICRO , 2024. [68] Y. Chen, A. Hajiabadi, L. Pei, and T. E. Carlson, “PREFETCHX: Cross-core cache-agnostic prefetcher-based side-channel attacks,” in HPCA ,2024. [69] B. Chen, Y. Wang, P. Shome, C. W. Fletcher, D. Kohlbrenner, R. Paccagnella, and D. Genkin, “GoFetch: Breaking constant-time cryp-tographic implementations using data memory-dependent prefetchers,” in USENIX Security Symposium , 2024. [70] A. Bagia, V. Q. Ulitzsch, D. Trujillo, M. Li, M. Yan, and J.-P. Seifert, “A close look at rmp entry caching and its security implications in sev-snp,” in Proceedings of the 14th International Workshop on Hardware and Architectural Support for Security and Privacy , 2025, pp. 10–18. 
+
+14 [71] M. Misono, D. Stavrakakis, N. Santos, and P. Bhatotia, “Confidential vms explained: An empirical analysis of amd sev-snp and intel tdx,” 
+
+Proceedings of the ACM on Measurement and Analysis of Computing Systems , vol. 8, no. 3, pp. 1–42, 2024. [72] G. Dessouky, T. Frassetto, and A.-R. Sadeghi, “HybCache: Hybrid side-channel-resilient caches for trusted execution environments,” in USENIX Security Symposium , 2020. [Online]. Available: https: //www.usenix.org/conference/usenixsecurity20/presentation/dessouky [73] S. Sridhara, A. Bertschi, B. Schl¨ uter, M. Kuhne, F. Aliberti, and S. Shinde, “ACAI: Protecting accelerator execution with Arm confi-dential computing architecture,” in USENIX Security Symposium , 2024. 
+
+XI. L OOKUP , FIND , AND EVICTION PSEUDOCODE 
+
+Algorithm 2 SCP L OOKUP of access (X, d ).
+
+1: function LOOKUP (X, d )
+
+2: T ← TAG PARTITION (d)
+
+3: for tag t in the appropriate set of T do 
+
+4: if t.valid ∧ t.addr = X then 
+
+5: e ← data array [t. fp ]
+
+6: if e.state ∈ { M, E, S } then 
+
+7: return HIT , e
+
+8: end if 
+
+9: end if 
+
+10: end for 
+
+11: return PEER PROBE (X, d )
+
+12: end function 
+
+Algorithm 3 SCP P EER PROBE on miss. 
+
+1: function PEER PROBE (X, d )
+
+2: E ← ∅ 
+
+3: for d′ ∈ Domains \ { d} in parallel do 
+
+4: for tag t in the appropriate set of T AG PARTITION (d′) do 
+
+5: if t.valid ∧ t.addr = X then 
+
+6: E ← E ∪ { data array [t. fp ]}
+
+7: end if 
+
+8: end for 
+
+9: end for 
+
+10: if |E| > 0 then 
+
+11: pick e ∈ E ▷ at most one if invariants hold 
+
+12: allocate new tag td in T AG PARTITION (d)
+
+13: td.addr ← X; td.fp ← id (e)
+
+14: e.refcount ← e.refcount +1 
+
+15: delay response to Tmiss 
+
+16: return HIT FIND , e
+
+17: else 
+
+18: delay Tmiss 
+
+19: return ALLOCATE (X, d )
+
+20: end if 
+
+21: end function 
+
+The three algorithms above maintain the design invariants of §IV-F. L OOKUP preserves invariant 1 (no cross-partition tag access except on P EER PROBE ). P EER PROBE maintains invariants 3 (find masking) and 4 (refcount conservation). EVICT TAG also preserves invariant 1, i.e., only the evicting partition’s tag array is modified, plus the shared data entry’s refcount and the LLC sharer vector, never another partition’s tag array. Invariant 2 (single coherence state) follows from the data entry being the sole holder of the M/E/S/I state. XII. P ER -ATTACK SECURITY TABLES 
+
+This appendix collects the per-attack security tables and the Prime+Probe figure that the body §VII-E summarises in prose. 
+
+Algorithm 4 SCP E VICT (tag eviction in partition d with refcount-driven data reclamation). 
+
+1: function EVICT TAG (t, d ) ▷ t is a d-partition tag selected for eviction, e.g., per-domain LRU. 
+
+2: e ← data array [t. fp ]
+
+3: e.refcount ← e.refcount −1
+
+4: invalidate t in d’s tag partition 
+
+5: if e.refcount = 0 then ▷ No tag in any partition still points at e.
+
+6: if e.state = M ∨ e.dirty then 
+
+7: writeback e.data to memory 
+
+8: end if 
+
+9: e.state ← I
+
+10: the slot is now free for the next A LLOCATE 
+
+11: end if 
+
+12: end function 
+
+We report the attacker’s mean probe latency in cycles under the victim-absent ( v=0 ) and victim-present ( v=1 ) conditions, together with the cycle gap ∆ = E[T |v=1] − E[T |v=0] . A defense closes an attack channel when ∆ is zero on that attack. A non-zero ∆ is the timing signal an attacker integrates against.          
+
+> Baseline DAWG SCP
+> 0
+> 15
+> 30
+> 45
+> 60
+> ∆ = +49 cy
+> ∆ = 0 ∆ = 0
+> 444
+> 53
+> 44
+> Mean probe latency (cycles)
+> v=0 (no victim access)
+> v=1 (victim accesses)
+
+Fig. 2. Mean attacker-probe latency in cycles under Prime+Probe. The attacker primes a W =16 way set and the victim either accesses ( v=1 ) or does not ( v=0 ) a line aliasing the same set. Under v=0 every probe hits L1 at 4 cy. Under v=1 on the unpartitioned B ASELINE roughly a quarter of the probes are evicted to memory, lifting the trial mean to 53 cy and opening a 
+
++49 cy gap. SCP and DAWG close the gap to zero through tag partitioning. TABLE XIII PER -ATTACK CYCLE GAP ∆ IN CYCLES , DEFINED ABOVE . T HE SCP 
+
+> COLUMN HOLDS FOR ALL FOUR ELIGIBILITY MODES
+
+. ⋆ DAWG AND 
+
+SEC DCP FORBID CROSS -DOMAIN SHARED -WRITEABLE LINES (N/A).                      
+
+> Attack BASE DAWG MIRAGE SCP Prime+Probe +49 cy 000
+> Flush+Reload +81 cy 0+81 cy 0
+> Coh. channel +49 cy N/A ⋆+49 cy 0
+
+XIII. D OMAIN -FUSION EXPERIMENT 
+
+This appendix gives the methodology and per-cell numbers backing the domain-fusion paragraph in §VII-E. 
+
+Setup: Two security domains A (attacker) and B (victim) share a 4 KiB region X that holds the cross-domain spinlock and IPC ring head from the threat model. The attacker primes a W =16 -way set in X and times one probe per line, and the victim either touches the contested set ( v=1 ) or does not 15 TABLE XIV SCP ABLATION . E ACH ROW TURNS OFF ONE MECHANISM . C ELLS ARE THE CYCLE GAP ∆ BETWEEN v=1 AND v=0 ATTACKER -PROBE LATENCY .A ZERO ENTRY MEANS THE ATTACK CHANNEL IS CLOSED , A NON -ZERO ENTRY MEANS IT LEAKS . ‡ DAWG-ONLY FORBIDS THE COHERENCE CHANNEL OUTRIGHT (N/A).                            
+
+> Configuration Prime+Probe Flush+Reload Coh. SCP (full) 000
+> – no SCP-WT 00+49 cy – no PeerProbe mask 0+81 cy 0
+> – no partitioning +49 cy +81 cy 0
+> DAWG-only (no SCP) ‡00N/A MIRAGE 0+81 cy +49 cy
+
+(v=0 ). We report the mean probe latency in cycles under each victim condition and the gap ∆ = E[T |v=1] −E[T |v=0] . A non-zero ∆ is exactly what an attacker times to distinguish v.
+
+TABLE XV MEAN ATTACKER -PROBE LATENCY , IN CYCLES , ON A CROSS -DOMAIN SHARED -WRITEABLE LINE UNDER DAWG’ S DOMAIN -FUSION ESCAPE FROM STRICT MODE AND UNDER EACH SCP ELIGIBILITY MODE . ∆ IS THE GAP THAT LETS THE ATTACKER DISTINGUISH THE VICTIM CONDITION . A  
+
+> ZERO ENTRY MEANS THE ATTACKER CANNOT SEPARATE
+
+v=0 FROM v=1 
+
+> BY PROBE LATENCY
+
+. W E USE 4,000 TRIALS PER CELL , 4,096 PROBES PER TRIAL , AND A 25% VICTIM -TOUCH RATE . P ER -TRIAL MEANS AGREE TO WITHIN ±0.4 CY .                    
+
+> Configuration v=0 (cy) v=1 (cy) ∆
+> DAWG-STRICT abort abort —DAWG-FUSE 4.00 52 .99 +48 .99
+> SCP-WT 440
+> SCP-ADAPTIVE 440
+> SCP-PERMISSIVE 4.00 52 .99 +48 .99
+
+The configurations.: DAWG-STRICT . DAWG forbids cross-domain shared-writeable lines outright. The gem5 proto-type trips the cache.cc:528 needsWritable assertion within ∼ 10 4 cycles of opening the spinlock. On a real chip this is either a denied IPC (the application aborts) or, if the controller is reconfigured to permit the upgrade, stale reads from A. Either way the experiment produces no measurable trace. 
+
+DAWG-FUSE . The OS reassigns X’s pages to a fused security domain F whose partition both A and B can read/write. The fused partition is no longer tag-isolated by construction. Once collapsed, the cache behaves as a stock shared coher-ent LLC over the contested set. A victim access evicts the attacker’s primed lines, and the attacker’s next probe shifts from TL1=4 cy to Tmem =200 cy on the evicted line. The trial average is 167 cycles, identical, within measurement noise, to the baseline. 
+
+SCP-WT, SCP-ADAPTIVE . The line lives in one canonical data slot. The tag arrays of A and B are partitioned at all addresses, and the P EER PROBE mask returns at the same constant cycle whether the data slot was hit or not. SCP-WT routes every shared-writeable store through to the LLC and removes the M →S transition altogether. SCP-adaptive runs as plain MSI until the per-page M →S rate exceeds Tleak , at which point it auto-promotes to SCP-WT. In both cases the probe is 
+
+4 cy under both v=0 and v=1 .
+
+SCP-PERMISSIVE . The page runs base SCP unchanged. Tag isolation still closes P RIME +P ROBE and F LUSH +R ELOAD , but the M →S coherence channel on the contested line is left open by operator choice. The v=1 probe sees the line transition out of A’s M into S on B’s touch, so the gap mirrors DAWG-
+
+FUSE at +48 .99 cy. SCP-permissive is the right mode for pages where this channel is not part of the threat. It is the explicit choice to opt out of M →S closure in exchange for zero overhead. 
+
+Reproducibility.: scripts/domain_fusion.py 
+
+runs the campaign deterministically under its seed and reproduces Table XV’s mean-cycle columns. The simulator is part of the open-science artifact. XIV. E VICTION -SET CONSTRUCTION PROBABILITY          
+
+> 10 310 410 510 610 710 8
+> 10 −40
+> 10 −30
+> 10 −20
+> 10 −10
+> 10 0practical attack
+> cryptographic
+> one re-key window
+> Attacker accesses Nwithin one re-key window
+> Pr[ W +1  eviction set ]
+> Conventional
+> CEASER
+> CEASER-S
+> MIRAGE
+> DAWG / SCP (this work)
+
+Fig. 3. Probability that an attacker assembles a W +1 -sized eviction set targeting a specific victim address, as a function of attacker budget N within one re-key window. The solid and dashed lines are the closed-form bounds of §VII-E at S=16 ,384 , W =16 , and T =2 21 . SCP and DAWG sit at the strict-partition floor across the entire budget, where Pr[ ·] ≤ 2−128 from cross-domain key confusion is conservatively plotted at 10 −40 . MIRAGE matches them in the asymptotic regime but pays 19% storage and leaves the coherence and PeerProbe channels open. CEASER-S crosses the 10 −6 practical-attack threshold near N = 10 5 accesses, which is roughly 0.05 re-key windows. 
+
+For completeness with prior randomized-cache work, Fig. 3 plots the eviction-set construction probability across the design space. SCP inherits DAWG’s strict tag-partition floor on this metric, while MIRAGE’s asymptote requires ∼ 19% storage overhead and still leaves the coherence- and PeerProbe-side channels open (Table XIII). The closed-form bounds for the randomized rows (C EASER ,C EASER -S, M IRAGE ) follow the analysis style of MIRAGE and match its published values within 1% at the Monte-Carlo-validated points. XV. S TORAGE DERIVATION , PARAMETERISED BY D
+
+We work in bits per cache line and convert to LLC overhead at the end. We use the following symbols throughout. S is the number of cache lines, equal to sets × associativity. N = S
+
+is the number of tag entries, one per line, with no tag over-provisioning. D is the number of security domains. Tbase =
+
+PA −log 2(line-size ) is the baseline tag width, which evaluates to 34 b at PA = 40 and a 64 B line. L = 8 ·line-size is the data line width. 16 Baseline LLC.: 
+
+W tag base = Tbase + 3 , W data base = L, 
+
+where the +3 bits encode MSI state. For 16 MiB data, S = 2 18 ,the SRAM cost is S · (W tag base + L) = 262 144 · (37 + 512) = 17 .16 MiB. 
+
+SCP.: SCP relocates the 3 state bits from the tag entry to the data entry, where they become a single source of truth shared by all sharing tag entries (an SCP invariant). To this it adds: 
+
+W tag scp = Tbase + log 2 N, W data scp = L + 3 + ⌈log 2(D+1) ⌉.
+
+The new terms are a log 2 N -bit forward pointer per tag, which maps A’s tag to its data entry, plus a 3-bit MSI state shared across sharers and an ⌈log 2(D+1) ⌉-bit refcount of holders. SCP does not introduce a per-data-slot owner mask. Any broadcast invalidate on the line uses the per-line sharer vector that a coherent LLC already maintains. 
+
+Per-entry overhead.: 
+
+∆SCP (D) =  W tag scp + W data scp 
+
+ −  W tag base + W data base 
+
+
+
+= log 2 N + ⌈log 2(D+1) ⌉.
+
+LLC overhead, D={2, 4, 8, 16 }.: At S = 2 18 , the over-head in bits per entry and per LLC is:                       
+
+> Dlog 2N⌈log 2(D+1) ⌉∆( D)b/entry LLC overhead
+> 218 220 +2 .4% 418 321 +2 .5% 818 422 +2 .6% 16 18 523 +2 .7%
+
+The Table XII figure of +2 .8% at D=4 includes a 1.13 ×
+
+packing and alignment factor from rounding tag and data fields to byte boundaries in the gem5 RTL layout, whereas the analytical +2 .5% assumes bit-packed fields. The overhead is now nearly flat in D because the D-bit owner-mask term has been absorbed into the existing per-line sharer vector, leaving only the refcount to grow logarithmically with D.XVI. P EER PROBE DEPLOYMENT + B LOOM -FILTER ENERGY 
+
+The body cites this appendix for two evaluation sub-axes. The first is where the PeerProbe path actually fires under real-istic deployments. The second is the energy savings from the counting Bloom filter that fronts every PeerProbe broadcast. Both are optional add-ons in the design space, and neither affects the core security argument or the performance numbers in body Tables III and IV. 
+
+A. Bloom-filter energy savings on PEER PROBE 
+
+To validate §XVI-B1’s energy-saving claim, we re-run ASYNC SHARE (2 MiB) with the BF enabled at varying sizes. The workload, instruction count, and L3 hit/miss rate are unchanged across all configurations, and only the SCP-internal energy accounting differs. The energy proxy uses Etag =4 
+
+cycles and EBF =1 cycle, and we report “Energy saved” as                                           
+
+> 8K32 K128 K512 K
+> 0
+> 25
+> 50
+> 75
+> 100
+> Bloom-filter counters m(log scale)
+> Percent
+> BF skip rate
+> Tag-energy saved
+> Ceiling 1−EBF /E tag
+> Fig. 4. Bloom-filter sensitivity sweep on the 4MiB calibration workload with n=32 ,768 unique lines. The skip rate climbs from 12 .9% to 99 .9%
+> as mgrows from 8K to 512 K counters, and the energy saved asymptotes to the 75% ceiling. The m=524 K knee corresponds to BF/ n=16 on this calibration workload. At the deployment 16 MiB LLC ( n=262 K, BF/ n=2 )the same mgives ∼88% skip and ∼82% energy saved. Scaling mwith n
+> recovers ≥99% at the deployment point.
+
+the fractional reduction in PeerProbe tag-array reads. The figure shows the 4 MiB calibration sweep with n=32 ,768 
+
+unique lines. At m=524 K counters (BF/ n=16 ) the filter reaches 99 .86% skip and 74 .9% energy saved. At the 16 MiB deployment (n=262 K, BF/ n=2 ) the same m analytically delivers ∼ 88% skip and ∼ 82% energy saved. Recovering 
+
+≥ 99% at the deployment point scales m to about 1 MiB of SRAM, or roughly 6% of the LLC. Cycle counts are identical across all m (at 16 .434 M whether the BF is on or off) because the constant-time mask hides the filter outcome, so the saving is purely dynamic energy and is not observable on the timing side channel. A natural companion variant set-partitions the tag array across physical banks with a per-bank filter consulted first. The prototype implements this design point and the artefact ships the per-bank measurements. 
+
+Bloom-filter side-channel.: The CBF’s per-counter occu-pancy is itself a function of the cross-partition cache state, so in principle it could expose a new oracle. We note four reasons we believe this is benign in the SCP architecture, and one residual concern. 
+
+(i) The constant-time mask hides the filter outcome on the timing side. Every P EER PROBE , whether BF-skip or BF-confirm, takes exactly Tmiss to deliver, so an attacker measuring response cycles cannot distinguish skip from no-skip and learns nothing about BF occupancy from latency. 
+
+(ii) The CBF is not address-queryable through any architec-tural path. Software has no ISA-level read of a CBF counter, and the only firmware-visible interface is the saturating-counter overflow exception, which fires only on counter design-error and is not reachable from any user-mode work-load at deployment occupancy. 
+
+(iii) Cache-bank energy or electromagnetic emanations from the BF SRAM are in principle a power side-channel surface, but the CBF and the per-partition tag SRAMs sit on the same LLC tile and share its decoupling network. The marginal EM signature of a CBF read against the background of LLC tag reads is below the noise floor on published LLC-EM characterisations [59]. 
+
+(iv) Microarchitectural prefetch hints do not consult the BF. The prefetcher sees only demand-stream addresses and never 17 CBF state. 
+
+Residual concern. A co-located BF SRAM-bank contention 
+
+channel, in which a heavy attacker BF-update stream slows down a victim’s cache-line allocate and exposes victim-side allocation rate, is not closed by the constant-time mask. We bound this by the per-tile bank-contention budget. SCP requires the CBF to sit on a separate bank from the per-partition tag SRAM, and the prototype enforces this in the floorplan, so attacker BF-update contention does not block victim tag reads. A full quantitative side-channel evaluation of the BF is follow-up scope. 
+
+B. Bloom-filter design (cf. §XVI-B1) 1) Counting Bloom filter for energy-efficient PEER PROBE :
+
+The base P EER PROBE probe scans the non-requesting parti-tions’ tag arrays on every L3 miss. Each scan reads a small set of tag SRAMs, one set per partition, and incurs a meaningful dynamic energy cost even when the line is not in any peer partition. For workloads where most PeerProbe probes will miss (§VII-D), that energy is wasted. The tag-array read returns “not present” just as a cheap front-end filter would. A counting Bloom filter at the front of the PeerProbe path lets the controller skip the tag-array scan when the line is guaranteed not in any peer partition. The filter is an array of m 4-bit saturating counters, indexed by K=3 hash functions, incremented on insertBlock and decremented on invalidate when the data slot’s refcount drops to zero. With this counter discipline the filter is exact relative to cache occupancy. There are no false negatives, only false positives at the standard rate FPR ≈ (1 −e−Kn/m )K . The filter saves 
+
+energy through skipped tag-array reads rather than latency. Every PeerProbe response is padded to Tmiss by the constant-time mask, regardless of the filter outcome. At the 16 MiB deployment, with n=262 ,144 lines and m=524 ,288 counters in roughly 260 KiB of SRAM, the analytical skip rate is 
+
+∼ 88% and projects to ∼ 82% dynamic tag-read energy saved. The projection is analytical, drawn from the false-positive-rate model behind Fig. 4 rather than a measurement, and reaching 
+
+≥ 99% at the same deployment requires ∼ 1 MiB of counters, which is 6% of the LLC. XVII. N ON -FUSION COHERENT RANDOMIZATION HEAD -TO -HEAD 
+
+This appendix expands the body’s §VIII comparison with the non-fusion coherent randomization of Ramkrishnan et al. [45]. 
+
+Three architectural axes.: (i) Reader-side leakage. In the non-fusion design, every cross-domain read is forced down to the LLC and issues an unfusion operation. This makes the victim’s read pattern itself observable, since the unfusion event is visible to the peer domain. Under SCP, a reader’s access stays in its own tag partition and hits at L1 with no state transition that crosses partitions. The victim’s read pattern is invisible to peers by construction. Only writes can produce cross-partition events, and those are closed structurally by SCP-WT (Table IX). 
+
+(ii) Cache flushes. The non-fusion design relies on a periodic flush of the contested set to maintain its randomization invari-ant. The flush itself is a stateful operation observable through the cache, and it must be padded or budgeted to avoid leaking the rotation schedule. SCP has no flush primitive in its security loop. Tag isolation is maintained by per-domain LRU within each partition, and refcount-driven data reclamation handles eviction without any periodic global pass. 
+
+(iii) Cache-miss delays. Because unfusion happens on every cross-domain miss, the non-fusion design adds a fixed delay to each LLC miss to mask the unfusion path, and that delay is paid even when the line is not shared. SCP’s constant-time mask is paid only on the PeerProbe path, which is invoked only when a partition’s tag-array probe misses. Ordinary cache misses, the common case, complete at their natural latency. These three differences mean SCP recovers the read-side privacy that any randomization-based scheme has to give up to maintain coherence, removes the flush primitive entirely, and restores natural-latency cache misses. The storage envelope is also tighter. SCP-4 sits at +3 .4% LLC SRAM, against the randomization-tail over-provisioning the non-fusion design inherits from MIRAGE-class indexing. 
+
+Numerical head-to-head.: Table XVI pins the com-parison numerically on identically configured gem5 runs. We rebuild the non-fusion-coherent-randomization configu-ration on the same gem5 fork (a MIRAGE-class 1.75 ×-tag-overprovisioned cache plus the cross-domain fusion-and-unfusion permutation), and run D ISJOINT , P ROD CONS , and LOCK CONTEND from the body microbench suite, plus the 
+
+D=4 storage point. SCP’s measurements are the same ones reported in Table V.                                         
+
+> TABLE XVI HEAD -TO -HEAD AGAINST THE CLOSEST PRIOR POINT IN THE DESIGN SPACE ,THE NON -FUSION COHERENT RANDOMIZATION OF RAMKRISHNAN ET AL . [45], ON IDENTICALLY CONFIGURED GEM 5RUNS (D=4 ,4MIBL3, TI M I N G SI M P L E CPU ). S TORAGE OVERHEAD IS MEASURED AT D=4 ,
+> 40 -BIT PA, AND 16 MIB. C YCLE COUNTS COME FROM THE BODY ’SMICROBENCH SUITE . SCP CLOSES THE READ -SIDE LEAK THAT NON -FUSION NECESSARILY EXPOSES THROUGH UNFUSION EVENTS ,
+> SHOWN IN THE THIRD -FROM -LAST ROW . O N THE CYCLE SIDE , SCP IS NOT HANDICAPPED BY THE PER -CROSS -DOMAIN UNFUSION DELAY .
+> Metric Non-fusion [45] SCP Better LLC storage overhead +19 .3% +3 .4% SCP DISJOINT (2MiB), Mcy 39 .437 .1SCP PROD CONS (64 KiB), Mcy 1.18 0.996 SCP LOCK CONTEND , Mcy 20 .419 .0SCP Reader-side leakage exposed closed SCP Periodic flush in security loop yes no SCP
+
+XVIII. E VALUATION METHODOLOGY ASYMMETRIES 
+
+Two methodology caveats follow from §VII-D. 
+
+(i) Snoop-uniqueness fix. A single-line guard in the upstream-cache snoop path is required to preserve gem5’s “one responder per packet” invariant when a cross-partition shared line is upgraded. The patch is independent of SCP and unblocks DAWG and the unpartitioned baseline as well. 18 (ii) DAWG-strict cannot run. The published DAWG- 
+
+> STRICT
+
+configuration (with hit mask = fill mask ) aborts at cache.cc:528 needsWritable on the first cross-partition shared-writeable upgrade because per-partition data duplication violates the respond-uniqueness invariant. We therefore report DAWG-LENIENT , a research stub that permits the upgrade, for the four shared microbenchmark rows in Table V, and account for the storage cost of true DAWG-STRICT analytically in Table XII. SCP sidesteps the abort by sharing a single canonical data slot across partitions via refcount, which is exactly what the design enables. XIX. S NOOPING VS . DIRECTORY TRANSPORT 
+
+SCP’s coherence machinery lives at the LLC tag entry rather than in the inter-cache transport, so the constant-time PEER PROBE mask and the SCP-WT write-through path both run unchanged under either a snooping bus or a directory protocol. The security argument is therefore transport-agnostic. Performance differs by a constant. A directory protocol adds one 10 to 30 cycle hop on every miss that needs remote-cache state and serialises invalidations through the home node, so the broadcast-bus IPC numbers in §VII-B and §VII-D are an upper bound on what the same workload sees un-der a directory deployment. The directory hop is paid by BASELINE , DAWG, and SCP alike, so the relative SCP-vs-DAWG delta is invariant up to a constant that is a function of topology rather than of partitioning. The Ruby/SLICC port (MESI_Two_Level_SCP ) confirms this empirically. A 96 -cell SCP-WT sweep at 20 M instructions per cell records a median 1,769 Spontaneous_Downgrade events per cell, with per-cell IPC matching BASELINE NO SPONT to four significant figures and validating the body’s 0% -overhead claim under directory transport. XX. P ER -BENCHMARK METHODOLOGY NOTES 
+
+The full 22 -row sweep appears in Table III in the body. Two infrastructure gaps remain. 520.omnetpp_r was in flight on MSI at the time of writing, and 999.specrand_ir ’s 
+
+m5.cpt is truncated at fdarray.Entry919 because the checkpoint write was interrupted on the FF host. Re-taking the KVM-FF checkpoint is straightforward but offline. SCP’s per-design behaviour is fully evidenced on the 20 completed benches, and both holdouts are unrelated to SCP mechanics. The ScpTags counters confirm SCP=DAWG mechanically. Every L3 demand miss equals a peerProbeMiss , and 
+
+peerProbeHits ≡ 0 on solo SPEC. XXI. O PEN SCIENCE 
+
+We provide a reproducibility package containing every artifact needed to reconstruct the results reported in this paper. The package will be deposited in a long-term archival repository (Zenodo). 
+
+Artifacts.:  
+
+> •
+
+gem5 implementation. A patched GEM5 tree ( v25.1 )containing the SCP cache model ( ScpTags , partitioned tag array, shared data array sized to total tag count, forward pointer in tag, refcount per data entry, Peer-Probe broadcast network, constant-time mask), the base-lines (Baseline LRU, DAWG, MIRAGE), and the shared secure-cache infrastructure described in §VI. Released under the same BSD-style licence as upstream GEM5.  
+
+> •
+
+Simulation drivers and configs. Python drivers for multi-programmed SPEC CPU2017 mixes, the four data-sharing microbenchmarks of §VII-D, and P RIME +P ROBE 
+
+attacks, with command-line knobs for cache type, D, Wd,mask-delay Tmiss , and PRNG seed.  
+
+> •
+
+Reproducibility scripts. A single-program sweep script (run_scp_solo ), a multi-programmed sweep script (run_scp_mp ), and a security driver (run_scp_security ) that runs the P RIME +P ROBE 
+
+attack and the peer-probe latency-distribution measurement, plus aggregator scripts that emit LaTeX-ready tables.  
+
+> •
+
+SPEC CPU2017 configuration files. 
+
+static-x86.cfg and compat-x86.cfg . SPEC sources themselves are not redistributable under their commercial licence but are available under standard SPEC licensing terms.  
+
+> •
+
+Raw simulator outputs. stats.txt , config.ini ,and per-benchmark IPC/MPKI CSVs that back every numeric entry in Table III and the storage and security tables of §VII-F and §VII-E.  
+
+> •
+
+Security-evaluation harness. The PyTrafficGen 
+
+PRIME +P ROBE driver against a T-table AES victim, plus the peer-probe timing-distribution probe described in §VII-E. 
+
+Artifact access: The artifact will be made available at a later time. The repository snapshot corresponds to the exact commit hash used for the reported numbers and carries a top-level README.md , an INSTALL.md , a step-by-step 
+
+REPRODUCE.md , a paper-claim → artifact mapping table in 
+
+CLAIMS.md , and a one-shot verifier (verify.sh ) that prints PASS or FAIL per claim. The artifact is organised in three reproduction tiers. Tier 1 is the Python attack suite, runs in roughly five minutes on a laptop, and reproduces Tables IX, X, and XII, together with the security figures of Apps. XII and XIV. Tier 2 runs the gem5 microbench sweeps in roughly six hours on an eight-core box and reproduces Tables V, VII, and VIII. Tier 3 requires a SLURM cluster and a SPEC CPU2017 licence, runs in roughly 3,000 core-hours, and reproduces Tables III and IV. 
+
+Artifacts that cannot be shared.: SPEC CPU2017 source is covered by SPEC’s commercial licence. The provided configs and scripts apply to any site licence copy. No other artifact is withheld. The security evaluation uses synthetic access streams and public eviction-set algorithms, raising no responsible-disclosure concerns (see Ethical Considerations 19 below). XXII. AI U SAGE 
+
+We report the following uses of generative AI tools across the preparation of this paper. 
+
+Writing and editing: A large language model assistant (Anthropic Claude 4.7 Opus, 1M-context configuration) was used during drafting to revise prose, tighten paragraphs against the page budget, and check sectional consistency. All architec-tural claims, attack descriptions, threat-model commitments, limitations, and numerical results were directed, reviewed, and verified by the human authors. No design decision, security argument, table value, or experimental result was produced by the assistant without explicit human direction and review against the underlying gem5/RTL artifacts. 
+
+Code and simulator: The GEM5 prototype, the SLICC 
+
+MESI_Two_Level_SCP protocol, the attack harness, and the multi-programmed benchmark scripts were written under the direction and verification of humans. AI assistance for code was limited to isolated refactors, comment polish, and debugging hints. No security-critical mechanism or measure-ment code was authored end-to-end by an AI tool. 
+
+Figures and tables: Figures and tables in this paper were generated from measurement data by author-directed scripts or composed inline by Claude in pgfplots/TikZ. AI assistance was used to suggest layout adjustments and caption phrasing, while the data points themselves are simulation generated. 
+
+Bibliographic and prior-work attribution: All cited works and the comparisons against them were identified, read, and characterised by the human authors. The assistant did surface some references autonomously. It was also used to help phrase comparisons whose substance was already established by the authors. The authors take full responsibility for all content in this paper, including any errors or infelicities introduced during AI-assisted editing. 20
