@@ -1,0 +1,273 @@
+Title: Evidence-Bound Gateway-Path Provenance for Third-Party LLM Inference
+
+URL Source: https://arxiv.org/pdf/2606.22560v1
+
+Published Time: Tue, 23 Jun 2026 02:18:03 GMT
+
+Number of Pages: 9
+
+Markdown Content:
+# Evidence-Bound Gateway-Path Provenance for Third-Party LLM Inference 
+
+# Fei Wang 
+
+research@wangfei.dev 
+
+# Zebai Tian ∗
+
+seven0709@foxmail.com 
+
+## Abstract 
+
+Third-party LLM gateways have become a critical infrastructure layer between applications and external LLM providers. Conven-tional gateways do more than forward traffic: they decide which provider and model are called, whether fallback occurred, which stream is delivered, and what usage record should be billed. Be-cause these decisions and records are authored inside the operator-controlled service, clients cannot independently distinguish honest mediation from route substitution, hidden fallback, stream manipu-lation, or forged provenance. We present an evidence-bound LLM gateway architecture that separates the operator control plane from an attested execution plane. Within the gateway, a measured Attested Gateway Run-time (AGR) is the only component allowed to decrypt requests, enforce path policy, construct upstream calls, and sign evidence. Clients verify signed release metadata and fresh attestation before encrypting requests to keys bound to the AGR measurement. AGR enforces request-scoped routing, fallback, and endpoint constraints, invokes admitted providers, returns encrypted response streams, and signs evidence binding the policy, selected route, endpoint identity, stream commitments, and completion metadata to the at-tested runtime. An initial Rust prototype on AWS Nitro Enclaves shows modest mechanism overhead and fail-closed detection of policy, routing, endpoint, and stream-evidence tampering outside the attested runtime. 
+
+## Keywords 
+
+Confidential computing, remote attestation, LLM gateway, infer-ence evidence, trusted execution environments 
+
+## Version Note 
+
+This arXiv version is a preliminary technical report. It establishes the evidence-bound gateway design and reports mechanism results: local mock capacity measurements, live-provider probes, a same-host Nitro Enclave path, and fail-closed validation. It does not claim a complete production capacity study or full provider/workload coverage. 
+
+## 1 Introduction 
+
+Third-party LLM gateways have become common middleware for applications that use multiple external LLM providers. Commer-cial and open-source systems expose unified APIs, route requests across LLM providers and models, perform fallback, enforce quotas, track spend, and reconcile operational records across upstream services [ 7 , 15 , 18 ]. Recent work similarly treats routing across multiple LLM providers as a production gateway concern over qual-ity, latency, and cost signals [ 39 ]. This consolidation is useful, but it also creates a security-critical trust boundary. In conventional 
+
+> ∗Corresponding author.
+
+deployments, Transport Layer Security (TLS) protects individual network hops while the gateway terminates client requests in plain-text and initiates its own LLM provider connection. The gateway can therefore read prompts, rewrite upstream requests, substitute endpoints or models, alter streaming responses, and issue usage, billing, or provenance records that clients cannot independently verify. The central issue is not only who can read the prompt, but who can author the gateway path record. Third-party LLM gateways often choose the external provider, model, fallback route, endpoint, stream shape, and usage record, then later author the record de-scribing what happened. A client that receives only an answer and a gateway-authored log cannot distinguish honest mediation from hidden model substitution, undeclared fallback, endpoint rewriting, stream manipulation, or post hoc billing/provenance fabrication. Recent evidence makes this operational rather than hypothetical. Third-party LLM access markets can obscure which model or end-point actually served a request, and recent work reports deceptive model claims, behavioral divergence from official APIs, grey-market access paths, and prompt-harvesting risks [ 20 , 23 , 38 ]. The risk is amplified when gateway outputs drive agentic systems, where re-turned text may be parsed into tool calls, workflow decisions, code edits, or other side-effecting actions [ 9, 12 , 16 ]. In this setting, the gateway is not merely a privacy-sensitive proxy; it is part of the LLM inference supply chain. We treat third-party LLM inference as a gateway-path prove-nance problem. Clients should not have to trust the operator control plane to both mediate the inference path and author the records describing that path. Instead, clients should receive cryptographic evidence about the runtime that decrypted the request, the policy under which routing and fallback were admitted, the upstream end-point observed by the runtime, and the encrypted stream transcript delivered through the gateway. We present an evidence-bound gateway architecture that sepa-rates the business plane from a remotely attested execution plane. The gateway continues to authenticate clients, enforce quota, for-ward traffic, and store operational records, but path-critical medi-ation occurs inside an Attested Gateway Runtime (AGR). Before releasing request material, a client verifies signed release metadata and fresh attestation binding the measured AGR to encryption and evidence-signing keys. The client then sends an encrypted request through the gateway. The AGR enforces request-scoped routing and fallback constraints, constructs the upstream request only after route and endpoint admission, encrypts streamed responses, and signs inference evidence over the accepted route, fallback decision, observed endpoint, encrypted stream transcript, and completion metadata. The client and gateway can verify the same runtime-signed evidence, so acceptance does not rely on gateway-authored database entries. Section 4 describes the resulting split-plane proto-col. 
+
+> arXiv:2606.22560v1 [cs.CR] 21 Jun 2026 Fei Wang and Zebai Tian
+
+This paper makes four contributions: (1) We identify the multi-authority trust-boundary problem in third-party LLM gateways, where provider/model rout-ing, fallback, endpoint admission, stream integrity, usage-relevant records, and evidence authorship are concentrated in an operator-controlled service. (2) We present an attestation-bound split-plane gateway ar-chitecture that preserves business-plane functions while moving request decryption, policy enforcement, upstream request construction, stream encryption, and evidence sign-ing into an AGR. (3) We introduce policy-carrying inference contracts and infer-ence evidence chains that bind runtime attestation, request-scoped policy, route and fallback decisions, endpoint ob-servation, and encrypted stream transcripts into verifiable gateway-path provenance. (4) We implement a Rust prototype and evaluate mechanism overheads, route, fallback, endpoint enforcement, StreamEv verification, fail-closed behavior, and mock/Nitro attesta-tion paths. 
+
+## 2 System Model and Goals 2.1 Actors 
+
+The architecture has five principal actors. The client is the user’s local verifier and encryption endpoint. The Gateway Service is the business-plane service that authenticates API keys, admits re-quests, routes ciphertext to attested runtimes, forwards stream-ing responses, and records verified inference evidence. The release authority signs the registry of approved runtime measurements and policies, which clients authenticate before accepting a run-time. The Attested Gateway Runtime (AGR) runs inside a remotely attestable confidential-computing environment and forms the gate-way’s security-critical execution plane. It terminates the client encrypted session, applies route, fallback, and endpoint policy, calls the upstream LLM provider endpoint, encrypts the response stream, and signs evidence over the request context and endpoint/stream transcript. The upstream LLM provider endpoint is external to the trusted computing base. The AGR calls it after route and endpoint admission succeeds, but this paper does not prove model execution by the LLM provider. 
+
+## 2.2 Security Goals 
+
+The architecture targets the following goals: 
+
+Runtime-confined gateway mediation. Request material enters only an attested AGR with quote-bound encryp-tion and evidence-signing keys; provider calls, fallback handling, endpoint admission, stream construction, and evidence signing occur inside that runtime. 
+
+Policy-bound path selection. Upstream selection, fallback, and endpoint admission are enforced under 𝑃 eff = 𝑃 ∩ IC .
+
+Stream-bound inference evidence. The AGR signs an in-ference evidence chain (IEC), a structured evidence object that binds runtime, policy, contract, route, fallback, end-point observation, encrypted stream transcript, and com-pletion state. 
+
+Fail-closed verification. Tampered registries, stale attesta-tion, key substitution, route downgrade, unauthorized fall-back, endpoint mismatch, stream tampering, and evidence transfer are rejected. 
+
+## 2.3 Non-goals 
+
+The architecture does not attempt to hide timing, packet size, re-quest frequency, selected high-level endpoint, or denial-of-service behavior from the gateway. It does not make the upstream LLM provider endpoint trustworthy; the LLM provider still sees the final prompt and can serve an incorrect model unless it offers verifi-able execution evidence or signed responses. The design also does not eliminate the need to trust the TEE platform, attestation root, release-signing process, verifier implementation, and dependency supply chain [27, 30, 31]. 
+
+## 3 Threat Model 
+
+We consider a gateway operator or compromised gateway host that can observe and modify gateway-controlled software, databases, logs, routing tables, and network forwarding behavior outside the AGR. The adversary can delay, drop, replay, or reorder gateway messages; attempt to substitute runtime endpoints; provide a stale or modified measurement registry; tamper with encrypted request and response chunks; alter evidence sideband data; and attempt to misstate the gateway-side execution path. The adversary may control the host operating system around the AGR and the gateway business plane. The adversary may also run an unauthenticated runtime process that implements the same API but lacks valid attestation for an approved measurement. We assume the adversary cannot break standard cryptographic primi-tives, compromise the client’s pinned registry-verification public key, forge the hardware attestation signature chain, extract runtime private keys from a correctly functioning TEE, or break upstream TLS. We also include an honest-but-curious gateway that performs le-gitimate authentication and quota functions but should not receive plaintext or be the sole origin of inference evidence. The upstream LLM provider endpoint remains outside the trusted computing base; the protocol records endpoint observation, not execution correct-ness by the LLM provider. We also consider gateway-side poisoning attacks. The adversar-ial gateway may try to inject hidden instructions, tool-call JSON, code snippets, or agent-control payloads into prompts or response streams, possibly conditioned on account identity, requested model, request pattern, or observed metadata. In an agentic client, such payloads may cause unauthorized tool invocation, secret exfiltra-tion, data deletion, or persistence of attacker-controlled instruc-tions [ 9, 12 , 13 , 34 ]. The architecture prevents the gateway from modifying plaintext prompts or response chunks, detaching ev-idence from the stream transcript, forging evidence, or transfer-ring evidence across requests. It does not prevent a malicious LLM provider or poisoned external content from producing malicious text before it reaches the AGR. Evidence-Bound Gateway-Path Provenance for Third-Party LLM Inference 
+
+## 4 Protocol and Design 
+
+The design separates an operator-controlled business plane from an attested execution plane. The gateway remains on the authenti-cation, quota, forwarding, and logging path, but it only forwards opaque ciphertext; request decryption, policy admission, upstream request construction, stream encryption, and IEC signing occur in-side the AGR. Figure 1 shows the request-processing and evidence-verification flow. 
+
+## 4.1 Release Registry 
+
+The release authority builds or reproducibly verifies a runtime image 𝐼 , computes a TEE-specific measurement 𝑚 , and defines a canonical routing and egress policy 𝑃 [24 ]. It signs a registry entry: 
+
+Reg = (𝑣, 𝑚, H(𝐼 ), H(𝑃 ), tee , expiry ,
+
+upstreams , revoked ),𝜎 𝑅 = Sign 𝑠𝑘 𝑅 (H(Reg )) .
+
+Clients pin the release-verification public key 𝑝𝑘 𝑅 and treat any gateway-served registry artifact as untrusted distribution. A reg-istry is accepted only if its signature verifies, the entry is fresh and not below the client’s minimum version, the measurement is not revoked, and the upstream set and policy hash match local expecta-tions. Since these fields are signed, gateway-side changes to runtime measurements, policy, expiry, upstreams, or revocation state are ei-ther signature failures or pinned-policy mismatches. If the gateway operator also controls 𝑠𝑘 𝑅 , the guarantee reduces to conformance with the operator’s signed release rather than independence from the operator [17, 27, 31]. The policy 𝑃 names admitted upstreams, models, HTTPS end-points, fallback edges, and a version. Canonicalization rejects aliases outside the policy table, and fallback is valid only when the client accepted a policy hash containing the corresponding edge. Let 
+
+canon 𝑃 (𝑥 ) return the unique canonical identifier for an upstream, model, or endpoint in 𝑃 , and ⊥ otherwise. For a requested upstream, model, and endpoint (𝑝, 𝑚, 𝑒 ), let 𝑟 be the canonical route; for a fallback target 𝑓 , let 𝑟 𝑓 be the corresponding canonical route or ⊥.Under the effective per-request policy 𝑃 eff defined in Section 4.3, the AGR admits a route only if 
+
+AdmRoute 𝑃 eff (𝑟, 𝑟 𝑓 ) = 1 ⇔ 𝑟 ∈ 𝑃 eff .allow ∧(𝑟 𝑓 = ⊥ ∨ 𝑟 𝑓 ∈ 𝑃 eff .allow ) ∧ (𝑟 𝑓 = ⊥ ∨ ( 𝑟, 𝑟 𝑓 ) ∈ 𝑃 eff .fallback ).
+
+Route selection is deterministic: Route 𝑃 eff (req , 𝑐 ) canonicalizes the requested route and any admitted fallback edge, yielding an effec-tive route 𝑟 ★ = 𝑟 𝑓 when fallback is taken and 𝑟 ★ = 𝑟 otherwise. Endpoint admission uses canonical HTTPS endpoints, SNI and certificate-name constraints, TLS service-identity validation [ 26 ], and bounded redirect checks under HTTP semantics [ 11 ]. The request-bound 𝐸 req records the endpoint id, path prefix, redirect policy, SNI constraint, and certificate-name constraint; the runtime-observed transcript 𝐸 obs records the admitted endpoint, TLS name, certificate-chain hash, and redirect-chain hash. Aliases, ambiguous URI parses, unlisted endpoints, undeclared fallback edges, policy downgrades, registry expiry, redirect-policy violations, and end-point mismatches fail closed. 
+
+## 4.2 Fresh Attestation and Key Binding 
+
+For each setup flow, the client samples a fresh nonce 𝑛 𝐶 and requests runtime attestation [ 6 , 8 ]. The AGR generates or holds a process-local Noise key pair (𝑠𝑘 𝐸 , 𝑝𝑘 𝐸 ) and an epoch-scoped evidence-signing pair (𝑠𝑘 𝑈 , 𝑝𝑘 𝑈 ), and asks the TEE attestation device to quote 
+
+𝑄 = Attest HW (𝑚, 𝑛 𝐶 , 𝑝𝑘 𝐸 , 𝑝𝑘 𝑈 , H(𝑃 ), agr , key _epoch , expiry , 𝑡 ).
+
+The client verifies the hardware attestation chain, nonce, time win-dow, runtime measurement membership in Reg , and quote bindings for 𝑝𝑘 𝐸 , 𝑝𝑘 𝑈 , H(𝑃 ), runtime identity, key epoch, and expiry. Our Ni-tro verifier checks the COSE Sign1 document [ 28 ], AWS Nitro root chain, PCR policy, bound keys, policy hash, runtime id, key epoch, and freshness window; local development uses mock attestation behind the same verifier interface. 
+
+## 4.3 Policy-Carrying Inference Contract 
+
+Each encrypted request carries an inference contract IC that nar-rows the signed release policy for one inference. It is a client-supplied, request-scoped object describing the upstreams, models, fallback edges, endpoint constraints, evidence level, and optional retention or logging constraints that the client accepts. Before route selection, endpoint admission, or upstream request construction, the AGR evaluates 
+
+𝑃 eff = 𝑃 ∩ IC 
+
+by intersecting sets, conjoining endpoint constraints, intersecting fallback edges, and strengthening evidence requirements. Empty or inconsistent required fields reject the request. Thus 𝑃 bounds what the measured runtime may ever do, while IC bounds what this client accepts for this request. The quote binds H(𝑃 ); the encrypted request and IEC bind H(IC ), allowing one measured runtime to serve many client contracts without per-request attestation. 
+
+## 4.4 Encrypted Request and Streaming Response 
+
+After attestation succeeds, the client uses the attested runtime en-cryption key to start a Noise NK session [ 21 ]; HPKE gives an equiv-alent one-shot construction for the same key-binding goal [ 4]. The Noise prologue includes the registry hash, policy hash, client nonce, runtime id, 𝑝𝑘 𝐸 , and 𝑝𝑘 𝑈 . The first encrypted payload contains the request body and associated context: 
+
+𝐶 0 = Seal 𝑘 0 (sid , 𝑛 𝐶 , reqid , 𝑣, H(𝑃 ), H(IC ), CanonReq (request ),
+
+req _route , 𝐸 req , agr , 𝑢, tenant , acct , 𝑎 ℎ,𝑝𝑘 𝑈 , request ).
+
+req _route is the client-authenticated requested-route constraint, not the runtime-selected route. The AGR computes (𝑟, 𝑟 𝑓 ), the ef-fective route 𝑟 ★, and the fallback transcript only after decrypting 
+
+𝐶 0 and applying 𝑃 eff . The value 𝑎 ℎ hashes a canonical gateway-admission transcript covering the gateway principal, decision, se-lected runtime, policy version, tenant/account, request id, times-tamp, and nonce. The gateway forwards 𝐶 0 and later encrypted frames. It may authenticate the outer API key and enforce quotas, but the security-relevant reqid is a client-generated high-entropy idempotency key fixed before encryption. The AGR rejects frames whose associated data does not match the attested session context. Response frames Fei Wang and Zebai Tian Client Gateway                                         
+
+> auth / quota / forwarding logging
+> AGR (inside TEE)
+> decrypt / enforce Peff / route call provider / sign IEC
+> Provider
+> LLM API
+> ①Fetch signed registry Reg
+> Reg, σ R
+> ②Verify registry signature, freshness, H(I), H(P), policy
+> ③Challenge AGR for attestation nC
+> ⑤Verify attestation m, nonce, freshness, pk E/pk Ubinding
+> ⑥[E2E] Encrypted request C0
+> bound to pk E,Peff , nonce Opaque forwarding only no plaintext or stream keys
+> ⑦Decrypt, verify policy + nonce enforce Peff
+> select route
+> ⑧[TLS] Upstream model request
+> ⑨[TLS] Upstream response stream ⑩[E2E] Encrypted response stream
+> ⑪[SIG] IEC evidence object ⑪[SIG] Build StreamEv
+> transcript; sign final IEC AGR-local step ⑫[E2E+SIG] Deliver stream + signed IEC
+> ⑫Verify evidence recompute Sn;verify IEC + policy
+> Legend request / control response / stream [E2E] client-AGR encrypted opaque to Gateway
+> [TLS] AGR-provider TLS [SIG] AGR-signed evidence object, not a channel
+> ④Quote Q, pk E, pk U, σ AGR
+
+Figure 1: Request processing and evidence verification. Solid and dashed arrows show request and response paths; [E2E], [TLS], and [SIG] mark client–AGR encryption, upstream TLS, and AGR-signed evidence. 
+
+bind sid , reqid , stream id, route context, and monotonic sequence numbers; the AGR maintains a rolling commitment over the en-crypted frames, and the client recomputes this commitment before accepting the final evidence. After decryption, the AGR checks that ctx = CanonReq (request )
+
+matches the authenticated context, canonicalizes route and end-point constraints, and evaluates 
+
+(𝑟, 𝑟 𝑓 ) = Route 𝑃 eff (request , IC ).
+
+It constructs the upstream request only after route admission and endpoint admission succeed. Redirects re-run endpoint admission before any forwarded request body is sent. The admitted route, fall-back transcript, and observed endpoint transcript 𝐸 obs are recorded in the signed evidence, while upstream output is returned as en-crypted chunks through the gateway. 
+
+## 4.5 Inference Evidence Chain 
+
+Definition. An inference evidence chain is a signed, privacy-preserving provenance object for a third-party LLM request. It binds runtime, policy, contract, route, fallback, endpoint observa-tion, encrypted stream transcript, and observational completion metadata without exposing prompt or response plaintext: 
+
+IEC = (GatewayEv , AttestEv , PolicyEv , RouteEv , FallbackEv ,
+
+EndpointEv , StreamEv , MetaEv ).
+
+The chain is fresh in the session, request, key epoch, and issue time; bound to tenant/account, runtime, policy, contract, endpoint, and stream contexts; and privacy preserving because prompt and response material appear only through transcript-keyed commit-ments. MetaEv covers observations such as HTTP status, finish reason, chunk count, and completion marker. These fields are signed by 𝑠𝑘 𝑈 , but their semantics remain observational: they authenti-cate what the AGR recorded at the admitted endpoint and stream boundary, not execution correctness by the LLM provider. For the base construction, the AGR computes request and re-sponse commitments under the client-runtime transcript key 𝑘 𝐶 :
+
+𝑐 req = HMAC 𝑘 𝐶 (sid , reqid , “req” , req up ),𝑐 resp = HMAC 𝑘 𝐶 (sid , reqid , “resp” , resp ).Evidence-Bound Gateway-Path Provenance for Third-Party LLM Inference 
+
+For streaming output, it also maintains a rolling stream commitment 
+
+𝑆 𝑖 = H(𝑆 𝑖 −1, sid , reqid , stream , 𝑖, 𝐶 𝑖 , metadata 𝑖 ),
+
+where 𝐶 𝑖 is the encrypted chunk and metadata 𝑖 is non-secret LLM provider or transport metadata. The client maintains the same rolling commitment over the ciphertext frames it receives and ac-cepts evidence only when the signed 𝑆 𝑛 , chunk count, sequence range, and completion marker match its observed stream. The mandatory client target is StreamEv over encrypted frames; 𝑐 req and 
+
+𝑐 resp are transcript-keyed AGR observations, not public plaintext hashes that the gateway can validate. The AGR signs: 
+
+Ev = (sid , reqid , 𝑢, tenant , acct , agr , 𝑣, H(𝑃 ),
+
+H(IC ), ctx , 𝑟, 𝑟 𝑓 , 𝑟 ★, fb ℎ, 𝑎 ℎ,𝐸 req , 𝐸 obs , meta , 𝑐 req , 𝑐 resp , 𝑆 𝑛 ,
+
+chunk _count , seqrange , completion , 𝑝𝑘 𝑈 , 𝑡 ),
+
+as 𝜎 𝑈 = Sign 𝑠𝑘 𝑈 (H(Ev )) . The fallback transcript hash fb ℎ commits to whether fallback occurred, the original and effective routes, the fallback edge and reason, an upstream error-code hash, retry count, and decision time. The same evidence is returned encrypted to the client and as gateway-visible sideband evidence. Since 𝑝𝑘 𝑈 is quote-bound, both parties verify evidence against the measured runtime identity. The gateway records only verified evidence matching the admitted user, tenant, account, upstream, model, runtime, endpoint, and admission hash, and verifiers reject duplicate evidence for an accepted (tenant , acct , reqid ) pair. This provides authenticity and idempotency, not fairness: the gateway may still withhold evidence, truncate the client stream, or decline to record evidence. Such truncation is denial of service, but it cannot make a truncated stream pass client evidence verification. Nor does the IEC prove that the LLM provider executed a particular internal model. 
+
+## 5 Security Claims 
+
+The claims are scoped to gateway-side behavior. The architecture establishes properties about the runtime that mediates the request and authors endpoint- and stream-bound evidence; it does not prove that the upstream LLM provider internally served the claimed model. 
+
+## 5.1 Assumptions and Leakage 
+
+For a session sid , Accept 𝐶 (sid ) = 1 means the client has veri-fied the signed registry, runtime measurement, attestation fresh-ness, and quote bindings for 𝑝𝑘 𝐸 , 𝑝𝑘 𝑈 , H(𝑃 ), runtime identity, key epoch, and expiry before sending request material. Client and gateway evidence acceptance both require a valid AGR signature under the quote-bound 𝑝𝑘 𝑈 , matching session/request context, policy and contract hashes, route/fallback fields, endpoint tran-script, stream commitment, completion marker, and a non-duplicate 
+
+(tenant , acct , reqid ).We assume unforgeable release and evidence signatures, an un-forgeable hardware attestation chain, secure Noise channels, AEAD integrity, TEE key protection, and a measured runtime that cor-rectly implements policy interpretation, endpoint admission, and upstream TLS validation [ 8 , 25 , 29 ]. Leakage is limited to public metadata such as user, tenant, account, runtime id, policy hash, admitted route, endpoint identifiers, status, completion metadata, timing, frame count, and ciphertext lengths. The claims below con-cern a gateway-side adversary outside this TCB; they do not prove LLM provider honesty or absence of runtime bugs. 
+
+## 5.2 Security Argument 
+
+Lemma 1: Registry, runtime, and key binding. Assuming unforge-able release signatures and hardware attestation, a client with pinned 𝑝𝑘 𝑅 accepts only quote-bound encryption and evidence keys for an approved runtime measurement and policy hash. Re-plays fail nonce freshness; any change to the binary, policy, runtime identity, epoch, expiry, 𝑝𝑘 𝐸 , or 𝑝𝑘 𝑈 changes the quoted tuple or violates the signed registry. 
+
+Lemma 2: Payload confidentiality. Under Lemma 1, channel se-curity, and TEE isolation, the gateway learns only public setup material, ciphertext frames, leakage metadata, and signed evidence. Prompts, responses, and tool-call contents cross the business plane only as ciphertext; distinguishing equal-length payloads therefore requires breaking the channel, extracting runtime secrets, or ex-ploiting leakage outside the claim. 
+
+Lemma 3: Policy, route, fallback, and endpoint binding. Under Lemma 1, AEAD integrity, and correct measured-runtime enforce-ment, a gateway cannot make an accepted session use a route, fallback, or endpoint outside 𝑃 eff . The encrypted request authen-ticates the canonical request, contract hash, requested route con-straint, 𝐸 req , user/tenant/account context, admission hash, and 𝑝𝑘 𝑈 .The AGR computes routes and fallback only after decrypting that context, validates upstream TLS against the admitted endpoint transcript, and records the outcome in signed evidence. Gateway rewrites therefore cause AEAD, policy, endpoint, TLS, stream, or evidence-context verification failure. 
+
+Lemma 4: Evidence binding. Under Lemma 1, TEE key protection, signature unforgeability, AEAD integrity, and collision resistance of H, a gateway cannot forge evidence, transfer evidence across request contexts, or bind evidence to a different client-observed stream. The IEC signs request id, tenant/account, runtime, policy and contract hashes, route/fallback transcript, endpoint observa-tion, request and response commitments, final StreamEv value 𝑆 𝑛 ,chunk count, sequence range, completion marker, and metadata. Changing a signed evidence field changes the signature input; re-playing evidence breaks the request context idempotency check; and deleting, reordering, duplicating, truncating, appending, or substituting chunks changes the client recomputed StreamEv or violates AEAD/sequence checks. 
+
+Theorem: Gateway-path provenance authenticity. Under Lem-mas 1–4 and the assumptions above, any client-accepted response authenticates the measured AGR execution path: release registry, runtime and keys, effective policy, request context, route/fallback decision, endpoint observation, encrypted stream transcript, and observational metadata. Gateway substitution of registry state, run-time endpoints, keys, route/fallback fields, endpoint observations, stream frames, or evidence objects changes authenticated data or violates signed-policy checks and is rejected. This does not assert LLM provider model correctness or safety of upstream content. Fei Wang and Zebai Tian 
+
+Table 1: Evidence-chain fields checked by the client, AGR, and gateway. 
+
+Object Bound fields Verifier Registry Runtime measurement, policy hash, upstream allowlist, expiry Client Attestation Nonce, measurement, 𝑝𝑘 𝐸 , 𝑝𝑘 𝑈 , policy hash, time window Client Encrypted request Session id, registry version, policy hash, contract hash, context, requested route constraint, 𝐸 req , runtime, tenant/account, 𝑎 ℎ ,
+
+𝑝𝑘 𝑈 
+
+AGR Encrypted stream Sequence number, stream id, route context, completion marker, rolling stream commitment Client Inference evidence Request id, user, tenant/account, runtime, policy, contract, route, fallback transcript, 𝐸 req ,
+
+𝐸 obs , 𝑎 ℎ , metadata, commitments, final stream commitment, 𝑝𝑘 𝑈 , time Client and gateway 
+
+Table 2: Claims and non-claims of evidence-bound gateways.                         
+
+> Claim Covered Evidence Gateway injects into user prompt Yes Request encrypted to AGR; ciphertext tampering fails Gateway makes a modified or truncated stream verify Yes AEAD, sequence checks, StreamEv, signed 𝑆 𝑛
+> Gateway-side route, model/provider identifier, fallback, or endpoint substitution Yes 𝑃 eff , RouteEv, FallbackEv, EndpointEv Gateway forges or transfers inference evidence Yes Attested evidence key, context binding, idempotency Gateway rewrites endpoint or completion metadata after evidence Yes Signature and context verification fail LLM provider truly served the claimed model No Requires LLM provider evidence LLM provider returns malicious text No LLM provider behavior RAG corpus, webpage, tool, or model is poisoned No Outside gateway mediation path Agent grants excessive tool permissions No Application-level policy issue Traffic timing and length are hidden No Explicit leakage
+
+## 5.3 Out-of-Scope Failures 
+
+The gateway and host can still deny service, delay streams, count bytes, and infer traffic timing. Side channels, compromised clients, release-key compromise, verifier bugs, runtime vulnerabilities, TEE bugs, interpreter bugs, and malicious LLM providers remain outside these claims [ 33 , 35 ]. The fail-closed validation in Section 7 mutates one security-relevant field at a time and records the verifier, runtime, client, or gateway boundary that rejects the request. 
+
+## 6 Prototype 
+
+We implement a Rust workspace with client, gateway, AGR, and verifier crates. The client verifies the registry and runtime attes-tation, opens a Noise NK encrypted session, decrypts streaming chunks, recomputes StreamEv, and verifies AGR-signed inference evidence. The gateway exposes a chat/SSE endpoint subset, for-wards ciphertext to runtime instances over gRPC, mirrors registry artifacts, and records only verified evidence. The AGR owns the session and evidence-signing keys, produces mock or Nitro-format attestation evidence, decrypts requests, calls a chat-completions-style upstream or deterministic mock, and emits encrypted chunks plus signed evidence. The prototype covers the security-critical mediation path and omits full SDK parity, multimodal requests, embeddings, file APIs, and complete error-envelope compatibility. The Nitro-document verifier parses COSE Sign1 attestation doc-uments [ 28 ] and checks the AWS root chain, nonce, PCR pol-icy, bound Noise and evidence-signing keys, and freshness win-dow [ 1 , 2]. The implementation uses the same verifier interface for local mock attestation and Nitro-format attestation documents. 
+
+## 7 Evaluation 7.1 Experimental Setup 
+
+We evaluate four mechanism questions: end-to-end overhead, evi-dence operation cost, Nitro attestation cost, and fail-closed detec-tion. B0 is direct access to a deterministic HTTP/SSE mock LLM provider, B1 is a plaintext gateway over the same mock provider, and B2 is the evidence-bound gateway with a local runtime and mock at-testation. Each local mode runs at concurrency 1, 4, 8, 16 ; Fig. 2 uses the 1000-request-per-concurrency matrix. B3 is the same evidence-bound gateway path with the runtime placed inside a same-host EC2 Nitro Enclave using a non-debug EIF, 16 vCPUs, 30720 MiB memory, Nitro-format attestation documents, and a parent-host TCP-to-vsock bridge. The paired B2/B3 Nitro matrix uses the same built-in deterministic response in both paths: 50 upstream content deltas, 128 B per delta, no artificial delay, 20 warm-up requests, and 100 measured requests per concurrency level. The runtime uses a small stream coalescing policy (up to four content deltas or 1024 B per encrypted frame) so that the zero-delay mock does not exag-gerate Nitro/vsock costs by forcing every 128 B delta across the enclave boundary. Chunk-level payload tracing is disabled at the default info level so the benchmark measures the encrypted stream-ing path rather than debug telemetry; the runtime still encrypts every emitted frame and emits the same sideband usage evidence. We also run a B2 live-upstream compatibility benchmark against a live GPT streaming endpoint with 2 warm-up requests and 30 measured requests at concurrency 1; it includes external service time, network conditions, and account state. Evidence-Bound Gateway-Path Provenance for Third-Party LLM Inference Latency p50 (ms) Latency p95 (ms) First chunk p50 (ms)              
+
+> 14816 14816 14816
+> 0.0 2.0 4.0 6.0 8.0
+> 0.0 10.0 20.0 30.0 40.0
+> 0.0 2.5 5.0 7.5 10.0 12.5
+> concurrent clients
+> B0 Direct B1 Plain gateway B2 Evidence−bound gateway
+
+Figure 2: Local deterministic mock mechanism probe across concurrency levels. The figure isolates latency and first-content overhead under a synthetic streaming workload; it is not a production-capacity benchmark. All panels use the same 1000-request-per-concurrency run and exclude 50 unmeasured warm-up requests per path and concurrency. 
+
+## 7.2 Mechanism Overhead 
+
+The capacity matrix completed 12000 measured requests without errors after 50 unmeasured warm-up requests per path and con-currency. At concurrency 8, B2 reports 10.13 ms p95 latency. At concurrency 16, B2 remains error-free with 38.72 ms p95 latency. These measurements are mechanism probes that isolate local over-heads under a deterministic mock workload, not production capac-ity estimates. In the live-upstream compatibility run, all 30 measured B2 re-quests against the GPT streaming endpoint succeeded. End-to-end latency was 1.19/2.55 s p50/p95, first decrypted content arrived at 1.09/2.47 s p50/p95, sequential throughput was 0.56 requests/s, and evidence signing, client verification, and gateway verification cost 48, 86, and 60 us at p95. These values are not LLM provider capacity claims; they show that the evidence-bound path operates against a live GPT streaming endpoint while cryptographic evidence opera-tions remain in the tens of microseconds. 
+
+Table 3: Evidence-operation costs for a 100-chunk, 512 B transcript over 1000 iterations.                                           
+
+> Operation Mean p50 p95 p99 Request commitment 0.22 0.21 0.25 0.25 Route check 0.02 <0.01 0.04 0.04 Endpoint admission 0.02 <0.01 0.04 0.04 StreamEv construction 115.27 112.12 130.75 140.62 StreamEv recomputation 113.23 111.46 120.79 131.46 IEC signing 10.88 10.54 12.38 19.04 IEC verification 22.76 22.58 24.42 27.62 Receipt signing 10.26 10.21 10.46 12.71 Receipt verification 21.83 21.33 22.38 29.25
+
+The evidence-cost benchmark runs 1000 iterations per compo-nent. StreamEv construction and verification-by-recomputation cost 130.75 us and 120.79 us at p95 for a 100-chunk, 512 B transcript. IEC verification costs 24.42 us at p95, and metadata-evidence verifi-cation costs 22.38 us at p95. These costs are below the end-to-end streaming overhead in B2 and isolate where optimization should focus. 
+
+## 7.3 Nitro Enclave Path and StreamEv 
+
+The paired Nitro matrix compares B2 and B3 on the same EC2 instance under the same deterministic streaming workload. Both use the evidence-bound gateway; B2 uses a local runtime with mock attestation, while B3 places the runtime inside a Nitro Enclave and reaches it through the parent-host TCP-to-vsock bridge. Both paths complete all 400 measured requests without errors. Across concurrency 1–16, the Nitro path remains close to the local runtime: B2 reports 42.4, 42.4, 42.3, and 42.5 ms p95 latency at concurrency 1, 4, 8, and 16, while B3 reports 45.0, 44.8, 44.5, and 46.2 ms. B3 is within 1.1× of B2 p95 latency and retains 0.95 × of B2 throughput at concurrency 8, with 187.9 versus 198.3 requests/s and zero errors in both paths. The coalescing policy reduces the median stream shape from 51 decrypted chunks and 52 encrypted gRPC/SSE messages to 15 decrypted chunks and 16 encrypted messages while preserving the same 6400 B response payload. Worker-side teleme-try shows the enclave emits the first encrypted payload within 0.6 ms p95 at concurrency 16; the remaining latency is dominated by the same HTTP/SSE transport baseline observed in the local path, not StreamEv construction or evidence verification. The Nitro path verifies COSE Sign1 attestation documents, AWS Nitro certificate chain, nonce, PCR policy, and attested public-key bindings. In a separate setup benchmark, Nitro attestation setup at concurrency 1 costs 47.81 ms p50 and 53.77 ms p95; client-side Nitro-document verification costs 3.18 ms p50 and 3.26 ms p95. The paired matrix excludes enclave boot, EIF loading, service startup, and third-party LLM provider serving time. The attestation setup result is a one-time session setup cost; it is not paid on every streamed chunk. StreamEv scales linearly with transcript size in the measured range. Across 15 transcript shapes ( 10 –1000 chunks and 64 B–4 KiB chunks), the largest case is 1000 chunks of 4 KiB each; p95 construc-tion and verification are 7.63 ms and 7.67 ms, respectively. 
+
+## 7.4 Fail-Closed Validation 
+
+Table 4: Fail-closed validation matrix. Positive controls for approved runtime, attested keys, declared routes, admitted endpoints, valid IECs, and ordered streams were accepted.               
+
+> Scenario Negative controls Result Attestation and registry PCR, nonce, registry tamper 4/4 rejected Channel integrity Key or ciphertext tamper 2/2 rejected Route and fallback Model swap, omitted fallback 2/2 accepted; 3/3 rejected Endpoint admission Endpoint constraint violation 1/1 accepted; 3/3 rejected Evidence metadata IEC or metadata rewrite 3/3 rejected Stream transcript Delete, duplicate, reorder, append, substitute, replay 6/6 rejected Gateway poisoning Injected tool call rejected on evidence-bound path Expected behavior Fei Wang and Zebai Tian
+
+The validation suite passes deterministic positive controls for de-clared primary and fallback routes and admitted endpoints. It also passes negative controls for attestation, registry, encrypted chan-nels, route changes, fallback, endpoint admission, evidence meta-data, StreamEv, and gateway poisoning. This validation does not solve prompt injection generally or make agent tool use safe. It isolates the gateway as the attacker: modifying encrypted response chunks, rewriting evidence, hiding fallback, swapping models, or violating endpoint admission causes verification failure. Malicious LLM-provider output, poisoned RAG context, installed tools, model backdoors, and excessive agent permissions remain outside the gateway-side evidence boundary. 
+
+## 8 Related Work 
+
+LLM gateways and shadow-API risks. Commercial and open-source AI gateways provide routing, fallback, spend tracking, API unification, and observability across LLM providers [ 7, 15 , 18 , 22 ]. Reports on shadow APIs, model fingerprints, and cache isolation show that third-party AI access can misrepresent model identity, diverge from official APIs, rely on grey-market paths, or expose path failures only after the fact [ 10 , 20 , 23 , 38 , 40 ]. These works motivate gateway-path evidence but do not provide per-request cryptographic evidence that the accepted route, fallback, endpoint, and stream were followed. 
+
+Adjacent confidential-computing systems. Confidential-inference systems place model serving or sensitive preprocessing in trusted hardware so that prompts, features, or model execution remain within an attested compute boundary [ 5, 14 , 32 , 37 ]. That line of work protects data-in-use or model-execution privacy. Evidence-bound gateway-path provenance addresses a different trust bound-ary: a third-party aggregation gateway that selects providers, per-forms fallback, observes endpoints, streams responses, and authors usage records. Portcullis applies attested confidential execution to third-party LLM inference by masking sensitive entities before the provider call and reconstructing responses afterward [ 36 ]. It protects sensitive prompt content from the upstream provider, which our system does not attempt; the LLM provider still sees the final prompt sent by the AGR. Conversely, Portcullis does not bind gateway routing, fallback, endpoint observation, streaming transcript, and billing/provenance evidence into a client-verifiable chain. Our focus is gateway-path provenance: detecting model substitution, hidden fallback changes, endpoint rewriting, stream manipulation, and detached evidence. 
+
+Attestation, verifiable serving, and agentic injection. Remote attes-tation and RATS establish measured-runtime claims before secret release [ 6 , 19 ], and confidential cloud systems protect applications from untrusted hosts [ 3 , 5 ]. TEEs still have side-channel and “mea-sured versus secure” limits [ 25 , 33 , 35 ]; we use attestation to bind gateway-specific claims: keys, policy hashes, routes, endpoints, and StreamEv. Verifiable ML serving proves model-computation claims [ 32 ]; our mechanism verifies the mediation path before and after the provider call. Prompt-injection, AgentDojo, and RAG-poisoning work show why instruction manipulation is dangerous in agentic settings [ 9, 12 , 41 ]; our design prevents business-plane plaintext rewriting and evidence detachment. 
+
+## 9 Limitations and Conclusion 
+
+Evidence-bound gateways make third-party LLM access verifiable at the gateway path. Instead of trusting gateway mediation and self-authored records, clients verify signed releases, fresh attes-tation, quote-bound keys, request-scoped policy, StreamEv, and runtime-signed IECs. Thus unauthorized routing or hidden fall-back, gateway-side prompt rewriting, response-stream tampering, and forged billing-relevant usage records fail verification rather than appearing as valid inference results. This narrows but does not eliminate trust: the design does not hide traffic metadata, pre-vent denial of service, prove upstream model execution, or remove reliance on registry keys, verifier correctness, TEE isolation, release discipline, and reproducible packaging [24, 30]. Evidence-Bound Gateway-Path Provenance for Third-Party LLM Inference 
+
+## References 
+
+[1] Amazon Web Services. 2023. Validating Attestation Documents Produced by AWS Nitro Enclaves. https://aws.amazon.com/blogs/compute/validating-attestation-documents-produced-by-aws-nitro-enclaves/. Accessed 2026-06-02. [2] Amazon Web Services. 2026. Cryptographic Attestation. https://docs.aws.amazo n.com/enclaves/latest/user/set-up-attestation.html. Accessed 2026-06-02. [3] Sergei Arnautov, Bohdan Trach, Franz Gregor, Thomas Knauth, Andre Martin, Christian Priebe, Joshua Lind, Divya Muthukumaran, Dan O’Keeffe, Mark L. Stillwell, David Goltzsche, David Eyers, Rüdiger Kapitza, Peter Pietzuch, and Christof Fetzer. 2016. SCONE: Secure Linux Containers with Intel SGX. In 12th USENIX Symposium on Operating Systems Design and Implementation . USENIX Association, 689–703. [4] Richard Barnes, Karthikeyan Bhargavan, Benjamin Lipp, and Christopher A. Wood. 2022. Hybrid Public Key Encryption. RFC 9180. doi:10.17487/RFC9180 [5] Andrew Baumann, Marcus Peinado, and Galen Hunt. 2014. Shielding Appli-cations from an Untrusted Cloud with Haven. In 11th USENIX Symposium on Operating Systems Design and Implementation . USENIX Association, 267–283. [6] Henk Birkholz, Dave Thaler, Michael Richardson, Ned Smith, and Wei Pan. 2023. Remote ATtestation procedureS (RATS) Architecture. RFC 9334. doi:10.17487/R FC9334 [7] Cloudflare. 2026. Cloudflare AI Gateway. https://developers.cloudflare.com/ai-gateway/. Accessed 2026-06-19. [8] George Coker, Joshua Guttman, Peter Loscocco, Amy Herzog, Jonathan Millen, Brian O’Hanlon, John Ramsdell, Ariel Segall, Justin Sheehy, and Brian Sniffen. 2011. Principles of Remote Attestation. International Journal of Information Security 10, 2 (2011), 63–81. doi:10.1007/s10207-011-0124-7 [9] Edoardo Debenedetti, Jie Zhang, Mislav Balunović, Luca Beurer-Kellner, Marc Fischer, and Florian Tramèr. 2024. AgentDojo: A Dynamic Environment to Evaluate Prompt Injection Attacks and Defenses for LLM Agents. https://arxiv. org/abs/2406.13352. arXiv:2406.13352 [cs.CR] [10] Ryan Fahey. 2026. CacheProbe: Auditing Prompt Cache Isolation in Gateway APIs. https://arxiv.org/abs/2605.30613. arXiv:2605.30613 [cs.CR] doi:10.48550/a rXiv.2605.30613 [11] Roy T. Fielding, Mark Nottingham, and Julian Reschke. 2022. HTTP Semantics. RFC 9110. doi:10.17487/RFC9110 [12] Kai Greshake, Sahar Abdelnabi, Shailesh Mishra, Christoph Endres, Thorsten Holz, and Mario Fritz. 2023. Not What You’ve Signed Up For: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection. In 
+
+Proceedings of the 16th ACM Workshop on Artificial Intelligence and Security .ACM, 79–90. doi:10.1145/3605764.3623985 [13] Yuepeng Hu, Yuqi Jia, Mengyuan Li, Dawn Song, and Neil Gong. 2026. MalTool: Malicious Tool Attacks on LLM Agents. https://arxiv.org/abs/2602.12194. arXiv:2602.12194 [cs.CR] [14] Tyler Hunt, Congzheng Song, Reza Shokri, Vitaly Shmatikov, and Emmett Witchel. 2018. Chiron: Privacy-preserving Machine Learning as a Service. https://arxiv.org/abs/1803.05961. arXiv:1803.05961 [15] LiteLLM. 2026. LiteLLM: AI Gateway for Model Access, Fallbacks, and Spend Tracking. https://www.litellm.ai/. Accessed 2026-06-19. [16] Hanzhi Liu, Chaofan Shou, Hongbo Wen, Yanju Chen, Ryan Jingyang Fang, and Yu Feng. 2026. Your Agent Is Mine: Measuring Malicious Intermedi-ary Attacks on the LLM Supply Chain. https://arxiv.org/abs/2604.08407. arXiv:2604.08407 [cs.CR] [17] Zachary Newman, John Speed Meyers, and Santiago Torres-Arias. 2022. Sig-store: Software Signing for Everybody. In Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communications Security . ACM, 2353–2367. doi:10 .1145/3548606.3560596 [18] OpenRouter. 2026. Model Fallbacks: Reliable AI with Automatic Failover. https: //openrouter.ai/docs/guides/routing/model-fallbacks. Accessed 2026-06-19. [19] Bryan Parno. 2008. Bootstrapping Trust in a “Trusted” Platform. In 3rd USENIX Workshop on Hot Topics in Security (HotSec 08) . USENIX Association, San Jose, CA. [20] Dario Pasquini, Evgenios M. Kornaropoulos, and Giuseppe Ateniese. 2025. LLMmap: Fingerprinting for Large Language Models. https://arxiv.org/ abs/2407.15847. In 34th USENIX Security Symposium . USENIX Association. arXiv:2407.15847 [cs.CR] [21] Trevor Perrin. 2018. The Noise Protocol Framework. https://noiseprotocol.org/ noise.html. [22] Portkey. 2026. Portkey AI Gateway Documentation. https://portkey.ai/docs. Accessed 2026-06-19. [23] Zilan Qian. 2026. How to Buy Cheap Claude Tokens in China. https://www.chin atalk.media/p/how-to-buy-cheap-claude-tokens-in. Accessed 2026-05-21. [24] Reproducible Builds Project. 2026. Reproducible Builds. https://reproducible-builds.org/. Accessed 2026-06-02. [25] Mohamed Sabt, Mohammed Achemlal, and Abdelmadjid Bouabdallah. 2015. Trusted Execution Environment: What It is, and What It is Not. 2015 IEEE Trustcom/BigDataSE/ISPA. doi:10.1109/Trustcom.2015.357 [26] Peter Saint-Andre and Rich Salz. 2023. Service Identity in TLS. RFC 9525. doi:10.17487/RFC9525 [27] Justin Samuel, Nick Mathewson, Justin Cappos, and Roger Dingledine. 2010. Survivable Key Compromise in Software Update Systems. In Proceedings of the 17th ACM Conference on Computer and Communications Security . ACM, 61–72. doi:10.1145/1866307.1866315 [28] Jim Schaad. 2022. CBOR Object Signing and Encryption (COSE): Structures and Process. RFC 9052. doi:10.17487/RFC9052 [29] Moritz Schneider, Ramya Jayaram Masti, Shweta Shinde, Srdjan Capkun, and Ronald Perez. 2022. SoK: Hardware-supported Trusted Execution Environments. https://arxiv.org/abs/2205.12742. arXiv:2205.12742 [cs.CR] [30] SLSA Framework. 2026. SLSA: Supply-chain Levels for Software Artifacts Speci-fication. https://slsa.dev/spec/. Accessed 2026-06-02. [31] Santiago Torres-Arias, Hammad Afzali, Trishank Karthik Kuppusamy, Reza Curtmola, and Justin Cappos. 2019. in-toto: Providing Farm-to-Table Guarantees for Bits and Bytes. In 28th USENIX Security Symposium . USENIX Association, 1393–1410. [32] Florian Tramèr and Dan Boneh. 2019. Slalom: Fast, Verifiable and Private Execu-tion of Neural Networks in Trusted Hardware. https://arxiv.org/abs/1806.03287. In International Conference on Learning Representations .[33] Jo Van Bulck, Marina Minkin, Ofir Weisse, Daniel Genkin, Baris Kasikci, Frank Piessens, Mark Silberstein, Thomas F. Wenisch, Yuval Yarom, and Raoul Strackx. 2018. Foreshadow: Extracting the Keys to the Intel SGX Kingdom with Tran-sient Out-of-Order Execution. In 27th USENIX Security Symposium . USENIX Association, 991–1008. [34] Yifei Wang, Dizhan Xue, Shengjie Zhang, and Shengsheng Qian. 2024. BadAgent: Inserting and Activating Backdoor Attacks in LLM Agents. https://arxiv.org/ab s/2406.03007. arXiv:2406.03007 [cs.CL] [35] Yuanzhong Xu, Weidong Cui, and Marcus Peinado. 2015. Controlled-Channel Attacks: Deterministic Side Channels for Untrusted Operating Systems. In 2015 IEEE Symposium on Security and Privacy . 640–656. doi:10.1109/SP.2015.45 [36] Jiangou Zhan, Wenhui Zhang, Zheng Zhang, Huanran Xue, Yao Zhang, and Ye Wu. 2025. Portcullis: A Scalable and Verifiable Privacy Gateway for Third-Party LLM Inference. Proceedings of the AAAI Conference on Artificial Intelligence. doi:10.1609/aaai.v39i1.32088 [37] Chengliang Zhang, Shuang Li, Junzhe Xia, Wei Wang, Feng Yan, and Yang Liu. 2021. Confidential Machine Learning Computation in Untrusted Environments: A Systems Security Perspective. IEEE Access 9 (2021), 168656–168706. doi:10.110 9/ACCESS.2021.3136889 [38] Yage Zhang, Yukun Jiang, Zeyuan Chen, Michael Backes, Xinyue Shen, and Yang Zhang. 2026. Real Money, Fake Models: Deceptive Model Claims in Shadow APIs. https://arxiv.org/abs/2603.01919. arXiv:2603.01919 [cs.CR] doi:10.48550/a rXiv.2603.01919 [39] Zecheng Zhang, Han Zheng, and Yue Xu. 2026. SEAR: Schema-Based Eval-uation and Routing for LLM Gateways. https://arxiv.org/abs/2603.26728. arXiv:2603.26728 [cs.DB] doi:10.48550/arXiv.2603.26728 [40] Xiaoyuan Zhu, Yaowen Ye, Tianyi Qiu, Hanlin Zhu, Sijun Tan, Ajraf Mannan, Jonathan Michala, Raluca Ada Popa, and Willie Neiswanger. 2025. Auditing Black-Box LLM APIs with a Rank-Based Uniformity Test. https://arxiv.org/abs/ 2506.06975. arXiv:2506.06975 [cs.CR] [41] Wei Zou, Runpeng Geng, Binghui Wang, and Jinyuan Jia. 2025. PoisonedRAG: Knowledge Corruption Attacks to Retrieval-Augmented Generation of Large Language Models. https://arxiv.org/abs/2402.07867. arXiv:2402.07867 [cs.CR]
