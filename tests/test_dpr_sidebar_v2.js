@@ -190,9 +190,34 @@ function testAxisTabsRenderUnreadCounts() {
   });
 
   assert.ok(html.includes('data-axis-key="20260624"'));
+  assert.ok(html.includes('data-axis-key="20260624" data-unread="1"'));
   assert.ok(html.includes('<span class="dpr-sidebar-axis-tab-unread">1</span>/<span class="dpr-sidebar-axis-tab-total">2</span>'));
   assert.ok(html.includes('data-axis-key="neurips-2024"'));
+  assert.ok(html.includes('data-axis-key="neurips-2024" data-unread="0"'));
   assert.ok(html.includes('<span class="dpr-sidebar-axis-tab-unread">0</span>/<span class="dpr-sidebar-axis-tab-total">1</span>'));
+  assert.ok(html.includes('data-axis-section-toggle="daily:date:20260624" aria-expanded="true" data-unread="1"'));
+
+  assert.equal(typeof tools.buildAxisViewForMode, 'function');
+  const updatedDateView = tools.buildAxisViewForMode(model, 'daily', 'date', {
+    dailyViewMode: 'date',
+    activeDailyDate: '20260624',
+  }, {
+    '202606/24/paper-a': 'read',
+    '202606/24/paper-b': 'blue',
+  });
+  const updatedDateTab = updatedDateView.tabs.find((tab) => tab.key === '20260624');
+  assert.equal(updatedDateTab.unreadCount, 0);
+  assert.equal(updatedDateView.groups[0].unreadCount, 0);
+
+  const updatedConferenceView = tools.buildAxisViewForMode(model, 'conference', 'conf', {
+    conferenceViewMode: 'conf',
+    activeConference: 'neurips-2024',
+  }, {
+    'conference/neurips-2024/paper-c': 'good',
+  });
+  const updatedConferenceTab = updatedConferenceView.tabs.find((tab) => tab.key === 'neurips-2024');
+  assert.equal(updatedConferenceTab.unreadCount, 0);
+  assert.equal(updatedConferenceView.groups[0].unreadCount, 0);
 }
 
 function testPaperEvidenceAndActionButtonsRender() {
@@ -313,16 +338,21 @@ function testSidebarPaperVisualStateCssContract() {
   assert.ok(/body\.dpr-dark \.dpr-sidebar-paper\.is-active\s*{[^}]*background:\s*#334155/i.test(css));
   assert.ok(/\.dpr-sidebar-paper\[data-read="0"\]::after\s*{[^}]*background:\s*#ef4444/i.test(css));
   assert.ok(/\.dpr-sidebar-paper\[data-read="1"\]::after\s*{[^}]*display:\s*none/i.test(css));
+  assert.ok(/\.dpr-sidebar-axis-tab\[data-unread="1"\]::after\s*{[^}]*background:\s*#ef4444/i.test(css));
+  assert.ok(/\.dpr-sidebar-axis-section-header\[data-unread="1"\] \.dpr-sidebar-axis-section-label::after\s*{[^}]*background:\s*#ef4444/i.test(css));
 
-  ['read', 'good', 'bad', 'blue', 'orange'].forEach((status) => {
-    const rowRule = new RegExp(`\\\\.dpr-sidebar-paper\\\\[data-read-status="${status}"\\\\]\\\\s*{[^}]*background:`, 'i');
-    assert.ok(!rowRule.test(css), `${status} should not paint the whole row`);
-  });
+  const readRowRule = /\.dpr-sidebar-paper\[data-read-status="read"\]\s*{[^}]*background:/i;
+  assert.ok(!readRowRule.test(css), 'read should not paint the whole row');
 
-  assert.ok(/\.dpr-sidebar-paper-status-good\.is-active\s*{[^}]*background:\s*#15803d/i.test(css));
-  assert.ok(/\.dpr-sidebar-paper-status-blue\.is-active\s*{[^}]*background:\s*#1d4ed8/i.test(css));
-  assert.ok(/\.dpr-sidebar-paper-status-orange\.is-active\s*{[^}]*background:\s*#6d28d9/i.test(css));
-  assert.ok(/\.dpr-sidebar-paper-status-bad\.is-active\s*{[^}]*background:\s*#b91c1c/i.test(css));
+  assert.ok(/\.dpr-sidebar-paper\[data-read-status="good"\]\s*{[^}]*background:\s*#f0fdf4/i.test(css));
+  assert.ok(/\.dpr-sidebar-paper\[data-read-status="bad"\]\s*{[^}]*background:\s*#fef2f2/i.test(css));
+  assert.ok(/\.dpr-sidebar-paper\[data-read-status="blue"\]\s*{[^}]*background:\s*#eff6ff/i.test(css));
+  assert.ok(/\.dpr-sidebar-paper\[data-read-status="orange"\]\s*{[^}]*background:\s*#faf5ff/i.test(css));
+
+  assert.ok(/\.dpr-sidebar-paper-status-good\.is-active\s*{[^}]*background:\s*#22c55e/i.test(css));
+  assert.ok(/\.dpr-sidebar-paper-status-blue\.is-active\s*{[^}]*background:\s*#3b82f6/i.test(css));
+  assert.ok(/\.dpr-sidebar-paper-status-orange\.is-active\s*{[^}]*background:\s*#8b5cf6/i.test(css));
+  assert.ok(/\.dpr-sidebar-paper-status-bad\.is-active\s*{[^}]*background:\s*#ef4444/i.test(css));
 }
 
 function testRenderBodyPutsConferenceAboveDaily() {

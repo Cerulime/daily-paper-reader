@@ -1103,6 +1103,28 @@
     };
   }
 
+  function buildAxisViewForMode(model, group, mode, viewState, readMap) {
+    var vs = resolveViewState(viewState);
+    var map = readMap || vs.readMap || {};
+    var axisMode = mode || '';
+    var resultMode = axisMode === 'results' || !!vs.search.trim() || vs.filter === 'unread';
+    var resultOptions = {
+      keyword: vs.search.trim(),
+      readMap: map,
+      unreadOnly: vs.filter === 'unread',
+    };
+    if (group === 'conference') {
+      if (resultMode) return buildConferenceResultView(model, resultOptions);
+      return axisMode === 'tag'
+        ? buildConferenceTagView(model, vs.activeConferenceTag, map)
+        : buildConferenceConfView(model, vs.activeConference, map);
+    }
+    if (resultMode) return buildDailyResultView(model, resultOptions);
+    return axisMode === 'tag'
+      ? buildDailyTagView(model, vs.activeDailyTag, map)
+      : buildDailyDateView(model, vs.activeDailyDate, map);
+  }
+
   function renderBodyHtml(model, viewState) {
     var html = [];
     var vs = resolveViewState(viewState);
@@ -1188,6 +1210,31 @@
     syncResolvedAxisState();
   }
 
+  function updateAxisTabUnreadMarks(readMap) {
+    if (!state.bodyEl) return;
+    $$('.dpr-sidebar-axis-row', state.bodyEl).forEach(function (row) {
+      var group = row.getAttribute('data-axis-group') || '';
+      var mode = row.getAttribute('data-axis-mode') || '';
+      var view = buildAxisViewForMode(state.model, group, mode, state, readMap || {});
+      var tabsByKey = {};
+      (view.tabs || []).forEach(function (tab) {
+        tabsByKey[tab.key] = tab;
+      });
+      $$('.dpr-sidebar-axis-tab', row).forEach(function (tabEl) {
+        var key = tabEl.getAttribute('data-axis-key') || '';
+        var tab = tabsByKey[key];
+        if (!tab) return;
+        var unread = typeof tab.unreadCount === 'number' ? tab.unreadCount : tab.count;
+        var total = typeof tab.count === 'number' ? tab.count : 0;
+        var unreadEl = $('.dpr-sidebar-axis-tab-unread', tabEl);
+        var totalEl = $('.dpr-sidebar-axis-tab-total', tabEl);
+        tabEl.setAttribute('data-unread', unread > 0 ? '1' : '0');
+        if (unreadEl) unreadEl.textContent = String(unread);
+        if (totalEl) totalEl.textContent = String(total);
+      });
+    });
+  }
+
   function syncResolvedAxisState() {
     var dailyDate = buildDailyDateView(state.model, state.activeDailyDate);
     var dailyTag = buildDailyTagView(state.model, state.activeDailyTag);
@@ -1233,7 +1280,8 @@
     (view.tabs || []).forEach(function (tab) {
       var active = tab.key === view.activeKey ? ' is-active' : '';
       var unread = typeof tab.unreadCount === 'number' ? tab.unreadCount : tab.count;
-      html.push('    <button type="button" class="dpr-sidebar-axis-tab' + active + '" data-axis-tab="' + safeAttr(group) + '" data-axis-key="' + safeAttr(tab.key) + '" title="' + safeAttr(tab.label) + '">');
+      var unreadFlag = unread > 0 ? '1' : '0';
+      html.push('    <button type="button" class="dpr-sidebar-axis-tab' + active + '" data-axis-tab="' + safeAttr(group) + '" data-axis-key="' + safeAttr(tab.key) + '" data-unread="' + unreadFlag + '" title="' + safeAttr(tab.label) + '">');
       html.push('      <span class="dpr-sidebar-axis-tab-label">' + safeText(tab.label) + '</span>');
       html.push('      <span class="dpr-sidebar-axis-tab-count"><span class="dpr-sidebar-axis-tab-unread">' + safeText(unread) + '</span>/<span class="dpr-sidebar-axis-tab-total">' + safeText(tab.count) + '</span></span>');
       html.push('    </button>');
@@ -1255,8 +1303,9 @@
       var isExpanded = !collapsed.has(stateKey);
       var expandedClass = isExpanded ? ' is-expanded' : '';
       var unread = typeof item.unreadCount === 'number' ? item.unreadCount : (item.papers || []).length;
+      var unreadFlag = unread > 0 ? '1' : '0';
       html.push('<section class="dpr-sidebar-axis-section' + sectionClass + expandedClass + '" data-axis-section="' + safeAttr(item.key) + '" data-axis-section-key="' + safeAttr(stateKey) + '">');
-      html.push('  <button type="button" class="dpr-sidebar-axis-section-header" data-axis-section-toggle="' + safeAttr(stateKey) + '" aria-expanded="' + (isExpanded ? 'true' : 'false') + '">');
+      html.push('  <button type="button" class="dpr-sidebar-axis-section-header" data-axis-section-toggle="' + safeAttr(stateKey) + '" aria-expanded="' + (isExpanded ? 'true' : 'false') + '" data-unread="' + unreadFlag + '">');
       html.push('    <span class="dpr-sidebar-day-arrow" aria-hidden="true">▸</span>');
       html.push('    <span class="dpr-sidebar-axis-section-label">' + safeText(item.label) + ' <span class="dpr-sidebar-day-counts"><span class="dpr-sidebar-day-unread">' + safeText(unread) + '</span>/<span class="dpr-sidebar-day-total">' + safeText((item.papers || []).length) + '</span></span></span>');
       html.push('  </button>');
@@ -1355,14 +1404,17 @@
       });
       var totalEl = $('.dpr-sidebar-day-total', group);
       var unreadEl = $('.dpr-sidebar-day-unread', group);
+      var header = $('.dpr-sidebar-axis-section-header', group);
       if (totalEl) totalEl.textContent = String(papers.length);
       if (unreadEl) unreadEl.textContent = String(unread);
+      if (header) header.setAttribute('data-unread', unread > 0 ? '1' : '0');
       if (unread === 0) {
         group.classList.add('is-all-read');
       } else {
         group.classList.remove('is-all-read');
       }
     });
+    updateAxisTabUnreadMarks(readMap);
     if (state.unreadCountEl) {
       state.unreadCountEl.textContent = String(summary.total.unread);
       state.unreadCountEl.setAttribute('data-count', String(summary.total.unread));
@@ -1744,6 +1796,7 @@
         buildConferenceConfView: buildConferenceConfView,
         buildConferenceTagView: buildConferenceTagView,
         buildConferenceResultView: buildConferenceResultView,
+        buildAxisViewForMode: buildAxisViewForMode,
         computeModelReadSummary: computeModelReadSummary,
         axisSectionStateKey: axisSectionStateKey,
         renderBodyHtml: renderBodyHtml,
