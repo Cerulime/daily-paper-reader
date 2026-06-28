@@ -6,34 +6,29 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-06-27
-- 运行时间：2026-06-27 19:13:55 UTC
+- 最新运行日期：2026-06-28
+- 运行时间：2026-06-28 19:30:36 UTC
 - 运行状态：成功
-- 本次总论文数：4
-- 精读区：1
-- 速读区：3
+- 本次总论文数：2
+- 精读区：2
+- 速读区：0
 
 ### 今日简报（AI）
-今天评估了大模型在真实 Web 漏洞检测中的水平，并速览了恶意 Go 模块持久化、氛围式编程安全及微调引发的隐蔽逃逸风险。  
-精读研究发现：LLM 在现实漏洞发现任务中效果有限，但作为审计辅助能显著提效。  
-下一步建议：别让 AI“氛围编程”代码未经审查直接上线，尤其是安全敏感场景。
-- 详情：[/202606/27/README](/202606/27/README)
+今日精读两篇顶会论文，聚焦云GPU可信认证与eBPF编译安全扩展。  
+值得关注的方向：非特权拓扑证书实现云GPU高效远程验证，以及通过原生操作安全增强eBPF编译器管道。  
+建议进一步阅读云GPU安全机制及eBPF在可观测性中的落地实践。
+- 详情：[/202606/28/README](/202606/28/README)
 
 ### 精读区论文标签
-1. [Evaluating LLMs for Real-World Web Vulnerability Detection](/202606/27/2606.21397v1-evaluating-llms-for-real-world-web-vulnerability-detection)  
+1. [Unprivileged Topology Certificates for Cloud GPU Attestation](/202606/28/2606.24934v1-unprivileged-topology-certificates-for-cloud-gpu-attestation)  
+   标签：评分：9.0/10、query:sys-security
+   evidence：提出基于延迟拓扑指纹的纯软件GPU证明原语，使云租户能验证物理加速器。
+2. [Kops: Safely Extending the eBPF Compilation Pipeline with Native Operations](/202606/28/2606.24213v1-kops-safely-extending-the-ebpf-compilation-pipeline-with-native-operations)  
    标签：评分：8.0/10、query:sys-security
-   evidence：基准测试LLM对Web漏洞的静态检测
+   evidence：通过原生操作安全扩展eBPF以增强内核防御
 
 ### 速读区论文标签
-1. [Beyond Takedown: Measuring Malicious Go Module Persistence in the Wild](/202606/27/2606.26291v1-beyond-takedown-measuring-malicious-go-module-persistence-in-the-wild)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：反混淆AST扫描器用于识别大规模供应链攻击中的恶意Go模块
-2. [Understanding the (In)Security of Vibe-Coded Applications](/202606/27/2606.23130v2-understanding-the-insecurity-of-vibe-coded-applications)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：对通过Vibe编码（大模型驱动开发）生成的应用进行系统性安全研究
-3. [Inherited Circuits, Learned Semantics: How Fine-Tuning Creates Evasion Vulnerabilities Invisible to Standard Evaluation](/202606/27/2606.27091v1-inherited-circuits-learned-semantics-how-fine-tuning-creates-evasion-vulnerabilities-invisible-to-standard-evaluation)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：微调导致安全分类器产生规避漏洞
+- 本次无速读推荐。
 
 
 <div class="dpr-home-promo-card">
