@@ -6,40 +6,37 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-01
-- 运行时间：2026-07-01 20:13:36 UTC
+- 最新运行日期：2026-07-02
+- 运行时间：2026-07-02 19:22:04 UTC
 - 运行状态：成功
-- 本次总论文数：6
-- 精读区：2
-- 速读区：4
+- 本次总论文数：5
+- 精读区：3
+- 速读区：2
 
 ### 今日简报（AI）
-今日精读两篇高影响力安全研究，聚焦机密AI与勒索软件检测。  
-EnclaveX（9.0分）利用CPU/GPU TEE实现端到端机密AI，混合框架（8.0分）有效检测企业共享存储中的勒索软件。  
-建议读者重点关注可信执行环境在AI安全中的落地，以及融合行为特征的存储威胁检测新思路。
-- 详情：[/202607/01/README](/202607/01/README)
+今日聚焦可信执行环境与AI赋能的安全分析，精读两篇高分论文，速读两项漏洞发现与代码安全研究。  
+最值得关注的是跨TEE互认证机制与LLM驱动的深度学习框架缺陷静态分析，两项工作均取得突破性进展。  
+建议开发者深入理解新型安全边界设计，并尝试将大模型用于静态分析工具链的增强。
+- 详情：[/202607/02/README](/202607/02/README)
 
 ### 精读区论文标签
-1. [EnclaveX: End-to-End Confidential AI with CPU/GPU TEEs](/202607/01/2606.31408v1-enclavex-end-to-end-confidential-ai-with-cpugpu-tees)  
+1. [Know Thy Neighbor: Cross-TEE Mutual Attestation](/202607/02/2607.00695v1-know-thy-neighbor-cross-tee-mutual-attestation)  
+   标签：评分：10.0/10、query:sys-security
+   evidence：异构TEE中可信应用的跨TEE互证明
+2. [Rise From The Ashes: LLM-based Static Analysis for Deep Learning Framework Bugs](/202607/02/2607.00555v1-rise-from-the-ashes-llm-based-static-analysis-for-deep-learning-framework-bugs)  
    标签：评分：9.0/10、query:sys-security
-   evidence：利用CPU和GPU可信执行环境进行端到端机密AI
-2. [A Hybrid Framework For Crypto-Ransomware Detection In Enterprise Shared Storage](/202607/01/2606.30586v1-a-hybrid-framework-for-crypto-ransomware-detection-in-enterprise-shared-storage)  
+   evidence：基于LLM的静态分析技术，用于检测深度学习框架中的安全缺陷
+3. [Knowledge-Enhanced Agentic Vulnerability Repair](/202607/02/2607.00820v1-knowledge-enhanced-agentic-vulnerability-repair)  
    标签：评分：8.0/10、query:sys-security
-   evidence：通过分析文件服务器上运行时的行为检测加密勒索软件的混合检测框架
+   evidence：利用知识增强的智能体方法自动修复漏洞
 
 ### 速读区论文标签
-1. [Type-based information flow analysis for $π$-calculus with a dynamically extensible security lattice](/202607/01/2606.27059v1-type-based-information-flow-analysis-for--calculus-with-a-dynamically-extensible-security-lattice)  
+1. [Antaeus: Hunting Repository-Level Logic Vulnerabilities via Context-Grounded LLM Reasoning](/202607/02/2607.01138v1-antaeus-hunting-repository-level-logic-vulnerabilities-via-context-grounded-llm-reasoning)  
    标签：评分：7.0/10、query:sys-security
-   evidence：基于类型系统的安全信息流静态分析
-2. [CVE-TTP KG: Knowledge Graph Linking Software Vulnerabilities to Attack Behaviors](/202607/01/2606.31557v1-cve-ttp-kg-knowledge-graph-linking-software-vulnerabilities-to-attack-behaviors)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：构建CVE与ATT&CK技术映射的知识图谱，助力漏洞检测与防御
-3. [AdvScan: Black-Box Adversarial Example Detection at Runtime through Power Analysis](/202607/01/2606.27704v1-advscan-black-box-adversarial-example-detection-at-runtime-through-power-analysis)  
+   evidence：基于大语言模型的逻辑漏洞检测
+2. [The Illusion of Safety: Multi-Tier Verification of AI vs. Human C++ Code](/202607/02/2607.00107v1-the-illusion-of-safety-multi-tier-verification-of-ai-vs-human-c-code)  
    标签：评分：6.0/10、query:sys-security
-   evidence：基于功耗分析的运行时对抗样本检测，属于动态分析技术。
-4. [Between Zeros and Ones: Behavioral Characterization Beyond Binary Labeling Across Public ICS Datasets](/202607/01/2606.30493v1-between-zeros-and-ones-behavioral-characterization-beyond-binary-labeling-across-public-ics-datasets)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：使用运行时过程轨迹对ICS攻击进行行为表征
+   evidence：多层级验证基准评估AI生成代码相对于人类代码的漏洞风险
 
 
 <div class="dpr-home-promo-card">
