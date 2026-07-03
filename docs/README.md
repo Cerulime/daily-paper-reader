@@ -6,37 +6,49 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-02
-- 运行时间：2026-07-02 19:22:04 UTC
+- 最新运行日期：2026-07-03
+- 运行时间：2026-07-03 21:45:39 UTC
 - 运行状态：成功
-- 本次总论文数：5
+- 本次总论文数：9
 - 精读区：3
-- 速读区：2
+- 速读区：6
 
 ### 今日简报（AI）
-今日聚焦可信执行环境与AI赋能的安全分析，精读两篇高分论文，速读两项漏洞发现与代码安全研究。  
-最值得关注的是跨TEE互认证机制与LLM驱动的深度学习框架缺陷静态分析，两项工作均取得突破性进展。  
-建议开发者深入理解新型安全边界设计，并尝试将大模型用于静态分析工具链的增强。
-- 详情：[/202607/02/README](/202607/02/README)
+智能合约漏洞检测与利用自动化双线突破，硬件安全防护同步展开。  
+最值得看：知识增强型合约漏洞检测（9分）与代码代理驱动的漏洞利用自动构建（8分）构成攻防闭环。  
+建议从业者跟进AI在漏洞利用自动化与抗量子硬件侧信道防护的落地动态。
+- 详情：[/202607/03/README](/202607/03/README)
 
 ### 精读区论文标签
-1. [Know Thy Neighbor: Cross-TEE Mutual Attestation](/202607/02/2607.00695v1-know-thy-neighbor-cross-tee-mutual-attestation)  
-   标签：评分：10.0/10、query:sys-security
-   evidence：异构TEE中可信应用的跨TEE互证明
-2. [Rise From The Ashes: LLM-based Static Analysis for Deep Learning Framework Bugs](/202607/02/2607.00555v1-rise-from-the-ashes-llm-based-static-analysis-for-deep-learning-framework-bugs)  
+1. [Knowledge Over Parameters: Evolving Smart Contract Vulnerability Detection](/202607/03/2607.01742v1-knowledge-over-parameters-evolving-smart-contract-vulnerability-detection)  
    标签：评分：9.0/10、query:sys-security
-   evidence：基于LLM的静态分析技术，用于检测深度学习框架中的安全缺陷
-3. [Knowledge-Enhanced Agentic Vulnerability Repair](/202607/02/2607.00820v1-knowledge-enhanced-agentic-vulnerability-repair)  
+   evidence：通过程序性知识演化实现自动化智能合约漏洞检测，对应于高级软件漏洞检测要求。
+2. [Refploit: Facilitating Exploit Construction via Code-Agent Trajectory Repair](/202607/03/2607.01760v1-refploit-facilitating-exploit-construction-via-code-agent-trajectory-repair)  
    标签：评分：8.0/10、query:sys-security
-   evidence：利用知识增强的智能体方法自动修复漏洞
+   evidence：利用基于LLM的轨迹修复自动从漏洞引用构建利用，助力漏洞研究。
+3. [Cloak and Detonate: Scanner Evasion and Dynamic Detection of Agent Skill Malware](/202607/03/2607.02357v1-cloak-and-detonate-scanner-evasion-and-dynamic-detection-of-agent-skill-malware)  
+   标签：评分：8.0/10、query:sys-security
+   evidence：动态检测代理技能中的恶意软件以防止利用，应对软件供应链安全。
 
 ### 速读区论文标签
-1. [Antaeus: Hunting Repository-Level Logic Vulnerabilities via Context-Grounded LLM Reasoning](/202607/02/2607.01138v1-antaeus-hunting-repository-level-logic-vulnerabilities-via-context-grounded-llm-reasoning)  
+1. [Exploring Side-Channel Protections in Hardware Implementations of PQC ML-KEM Verification](/202607/03/2606.31681v1-exploring-side-channel-protections-in-hardware-implementations-of-pqc-ml-kem-verification)  
    标签：评分：7.0/10、query:sys-security
-   evidence：基于大语言模型的逻辑漏洞检测
-2. [The Illusion of Safety: Multi-Tier Verification of AI vs. Human C++ Code](/202607/02/2607.00107v1-the-illusion-of-safety-multi-tier-verification-of-ai-vs-human-c-code)  
+   evidence：评估后量子密码硬件的侧信道防护，涉及TEE安全基础
+2. [LIB-TRAP: Standard Cell Library Hardware Trojan Risk Assessment and Prevention](/202607/03/2607.01526v1-lib-trap-standard-cell-library-hardware-trojan-risk-assessment-and-prevention)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：标准单元库硬件木马风险评估，属于系统安全中的硬件安全问题
+3. [HTTP REST API Structure Learning](/202607/03/2607.02442v1-http-rest-api-structure-learning)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：对API流量的无监督异常检测，一种运行时安全监控的动态分析技术
+4. [DroidBreaker: Practical and Functional Problem-Space Attacks on Machine-Learning Android Malware Detectors](/202607/03/2606.26707v1-droidbreaker-practical-and-functional-problem-space-attacks-on-machine-learning-android-malware-detectors)  
    标签：评分：6.0/10、query:sys-security
-   evidence：多层级验证基准评估AI生成代码相对于人类代码的漏洞风险
+   evidence：针对ML恶意软件检测器的对抗样本生成，涉及恶意软件分析与安全测试
+5. [Your Space is My Zone: Demystifying the Security Risks of AI-Powered Applications on Pre-Trained Model Hubs](/202607/03/2606.30373v1-your-space-is-my-zone-demystifying-the-security-risks-of-ai-powered-applications-on-pre-trained-model-hubs)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：系统安全分析识别AI应用中的攻击向量
+6. [Chameleon: Recovering Cyber-Physical Systems from Memory Corruption Attacks via ML Surrogates](/202607/03/2607.01356v1-chameleon-recovering-cyber-physical-systems-from-memory-corruption-attacks-via-ml-surrogates)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：提出基于ML的内存损坏攻击恢复方法，防止安全关键CPS系统失效。
 
 
 <div class="dpr-home-promo-card">
