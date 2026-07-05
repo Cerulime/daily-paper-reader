@@ -1,0 +1,564 @@
+Title: Trustworthy Runtime Verification via Bisimulation (Extended Experience Report)
+
+URL Source: https://arxiv.org/pdf/2607.01363v1
+
+Published Time: Fri, 03 Jul 2026 00:06:46 GMT
+
+Number of Pages: 31
+
+Markdown Content:
+# Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 
+
+RYA N G . S C O T T 
+
+Galois, Inc., USA (email: rscott@galois.com )
+
+I VA N P E R E Z 
+
+KBR @ NASA Ames Research Center, USA (email: ivan.perezdominguez@nasa.gov )
+
+A LW Y N E . G O O D L O E 
+
+NASA Langley Research Center, USA (email: a.goodloe@nasa.gov )
+
+M I K E D O D D S 
+
+Galois, Inc., USA (email: miked@galois.com )
+
+R O B E R T D O C K I N S ∗
+
+Amazon, USA (email: rdoc@amazon.com )
+
+Abstract 
+
+When runtime verification is used to monitor safety-critical systems, it is essential that monitoring code behaves correctly. The Copilot runtime verification framework pursues this goal by automatically generating C monitor programs from a high-level DSL embedded in Haskell. In safety-critical domains, every piece of deployed code must be accompanied by an assurance argument that is convincing to human auditors. However, it is difficult for auditors to determine with confidence that a compiled monitor cannot crash and implements the behavior required by the Copilot semantics. In this paper we describe CopilotVerifier , which runs alongside the Copilot compiler, generating a proof of correctness for the compiled output. The proof establishes that a given Copilot monitor and its compiled form produce equivalent outputs on equivalent inputs, and that they either crash in identical circumstances or cannot crash. The proof takes the form of a bisimulation broken down into a set of verification conditions. We leverage two pieces of SMT-backed technology: the Crucible 
+
+symbolic execution library for LLVM and the What4 solver interface library. Our results demonstrate that dramatically increased compiler assurance can be achieved at moderate cost by building on existing tools. This paves the way to our ultimate goal of generating formal assurance arguments that are convincing to human auditors. 
+
+1 Introduction 
+
+Safety-critical cyber-physical systems (CPSs) are subject to strict regulation to ensure public safety. Historically, such systems are constructed using conservative requirements-driven practices, yielding predictable systems that are amenable to verification by testing [ 66 , 68 ]. 
+
+> ∗
+
+Author’s paper contributions were made while working at Galois, Inc. 
+
+© 2025 Copyright held by the owner/author(s). This work is licensed under a Creative Commons Attribution 4.0 International License. 
+
+DRAFT PAPER UNDER REVIEW  
+
+> arXiv:2607.01363v1 [cs.PL] 1 Jul 2026 2Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins
+
+There is increasingly a desire to use off-the-shelf components and employ techniques like machine learning to build autonomous systems, but these cannot be assured using traditional approaches [18, 19, 21, 51]. Runtime verification (RV) [ 27 , 40 ] addresses this problem by monitoring a system under observation and responding to property violations during the mission. For example, an RV system might monitor engine heat levels, aircraft location within an authorized airspace, or autopilot changes between flight modes. While not static formal verification, RV provides a significant improvement in assurance for systems over testing alone. Copilot [ 58 , 60 , 62 ] is a language and toolchain for writing RV monitors. Monitors are written in a high-level, stream-based domain-specific language (DSL) that is embedded in Haskell. Copilot is equipped with a compiler that generates C code, which can then be linked against other application code for use in production. Among others, Copilot is used at NASA to write both programs and runtime monitors for experimental vehicles (e.g., drones, rovers). When used in safety-critical applications, Copilot monitors also form part of the safety case that justifies the system’s mission readiness. As a result, monitors must be trustworthy, and trust must be based on systematic and rigorous evidence that can be audited. Specifically, Copilot monitors must be trustworthy in two regards. First, the monitor must be validated ,meaning that the monitor enforces the higher-level properties that were intended. Second, the C implementation of the monitor must be verified , meaning that the compiled code correctly realizes the expected semantics of the monitor. The problem of validation is about establishing properties of the monitor program itself, and the problem of verification is about the correctness of the Copilot compiler. Several mechanisms can be used to validate and verify the monitors. In recent years, formal methods have been increasingly accepted as a means of evidence in domains such as civil aerospace. For example, DO-333 [ 65 ] gives official guidance on the use of formal methods in certification practice. Specifically, with regards to verification, there are generally three main approaches that can be used to formally verify the correctness of the generated code: (1) Verifying the entire compiler end to end, such as in CompCert [ 47 ] or V ´elus [ 8–10 ]. (2) Proof-carrying code [55 ], where the compiler can produce Hoare-style annotations in the compiled code, allowing the proofs to be checked independently. (3) Translation validation [63 ], where the code is compiled first, and a proof of correctness for the particular program is produced afterwards. This paper presents CopilotVerifier , which addresses the problem of verification using the translation validation approach. 1 CopilotVerifier proves that the Copilot monitor and the C program are extensionally equal according to each language’s executable semantics: given a stream of inputs, the monitor and its compiled form produce equivalent outputs. We also prove that either (1) both are memory safe, i.e. they cannot crash, or (2) that they crash exactly on equivalent inputs (the tool supports either mode). To prove the equivalence between a Copilot specification and the generated C program, 
+
+CopilotVerifier establishes a bisimulation between them. More precisely, at each program point, CopilotVerifier proves that the state of the Copilot monitor corresponds to the state of the C program. Our verifier is designed to be push-button: given a Copilot monitor as input, the verifier automates the steps needed to construct a proof.  
+
+> 1For validation, Copilot supports reasoning about monitor specs using theorem provers [39, 46]. Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 3
+
+This problem of compiler correctness is familiar from research projects such as CompCert and CakeML [ 45 ], but these have tended to be multi-year multi-person efforts. This level of effort was not available to us as an industry project operating under budget constraints. Our objective was more pragmatic: to maximize our confidence in the Copilot compiler using off-the-shelf formal methods tools and libraries. We make several design choices that reduce the cost of building CopilotVerifier but, in some cases, reduce the power of our results (see Section 7). We judge these to be low-cost tradeoffs relative to the large increase in confidence achieved by successfully completing the CopilotVerifier project in just under one year. Overall, our results have been heartening: through careful design, CopilotVerifier shows that it is possible to apply formal assurance to a DSL compiler with modest levels of effort. Our ultimate goal, of which this project is the first step, is to automatically generate formal evidence that is convincing to human auditors. By providing a proof of equivalence between the monitor implementation and the original specification as supporting evidence, we aim to build a certification argument that strongly relies on formal methods, rather than being based mostly on software engineering practices. The rest of the paper is structured as follows. In Section 2, we describe the Copilot language and illustrate the problem that CopilotVerifier addresses. In Section 3, we give a high-level description of CopilotVerifier , and we illustrate our work by showing bugs in Copilot that CopilotVerifier helped identify. Section 4 discusses the bisimulation relation between Copilot and C programs. Section 5 presents an example of evidence that the verifier produces for assurance cases. Section 6 showcases case studies involving verification of aerospace-related monitors. In Section 7 we elaborate on the design trade-offs made in 
+
+CopilotVerifier . Section 8 describes the implementation of the verifier. We close the paper with a discussion on related work (Section 9) and conclusions (Section 10). 
+
+2 Copilot overview 
+
+Copilot is an embedded domain-specific language (EDSL) implemented as a Haskell library. This section provides a brief overview of the Copilot language and the aspects of its semantics relevant to our verification task. Readers interested in further details should consult Perez et al . [58] . Readers familiar with Copilot can skip to Section 2.4 for a discussion of the challenge of verifying Copilot compilation. Note that we generally refer to programs written in the Copilot DSL as monitors , but they are also often called specs or specifications ,reflecting their role in runtime verification. 
+
+2.1 Copilot streams 
+
+The main programming abstraction in Copilot is the stream , which represents a discrete, infinite sequence of values over time. Values include integers, floating-point numbers, booleans, and compound types like structs and arrays. Copilot programs are evaluated one step at a time, either at regular intervals or as new data becomes available. The time between each value in a stream is abstract and application-dependent; it can be thought of as a constant corresponding to a unit of real time. To interact with the system being monitored, Copilot programs may reference external 
+
+streams, which generally represent values obtained from the system being monitored (e.g., sensor data). From these external streams, other intermediate streams of data are computed, eventually resulting in boolean streams that capture the conditions being monitored. At 4 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+execution time, an external handler function is called whenever a trigger stream evaluates to true, which allows the execution environment to take action. Figure 1 shows a complete Copilot program implementing a simple thermostat. The program monitors an external stream ( temp ) representing data from a temperature probe, firing a trigger whenever the temperature ( avgTemp ) is sufficiently above or below a fixed setpoint, each captured by a boolean stream in the spec . To guard against noisy data, the probe input data is smoothed by computing a sliding window average of the last 5 samples. This program demonstrates how to construct streams of constant values using constant , as well as how to cast from a stream of Word8 s to a stream of Float s using unsafeCast .2 The thermostat program also demonstrates some operations on streams whose implementations differ from the Haskell functions of the same name. Operations such as multiplication (*) ,subtraction (-) , and comparison (>) work pointwise over the elements of a stream. The 
+
+(++) operator prepends a list containing a fixed number of samples to the front of a stream. Invoking sum n s will compute a stream where the 𝑖 th element of the stream consists of the sum of the elements in s from indices 𝑖 through 𝑖 + (n − 1).
+
+-- External temperature as a byte , from -50C to 100C 
+
+temp :: Stream Word8 temp = extern " temperature " Nothing 
+
+-- Calculate temperature in Celsius 
+
+ctemp :: Stream Float ctemp =( unsafeCast temp* constant (150.0/255.0)) - constant 50.0 
+
+-- Width of the sliding window 
+
+window :: Int window = 5
+
+-- Compute sliding average of last 5 temps 
+
+avgTemp :: Stream Float avgTemp = (sum window ( replicate window 19.5 ++ ctemp )) / fromIntegral window spec :: Spec spec = do trigger "heaton" ( avgTemp < 18.0) [arg avgTemp ] trigger " heatoff " ( avgTemp > 21.0) [arg avgTemp ] 
+
+Fig. 1. A simple thermostat example.  
+
+> 2This cast is safe, since there is no information loss in this direction. Casting in the other direction could lose information. Copilot uses type classes to enforce which type conversions should be treated as “safe” or “unsafe”. Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 5
+
+(Float) s0 =[19.5 ,19.5 ,19.5 ,19.5 ,19.5] ++ ((( cast) Ext_temperature * 0.5882353) - 50.0) trigger "heaton" =(((((( s0 + drop 1 s0) + drop 2 s0) + drop 3 s0) + drop 4 s0) / 5.0) < 18.0) [arg ((((( s0 + drop 1 s0) + drop 2 s0) + drop 3 s0) + drop 4 s0) / 5.0)] trigger " heatoff " =(((((( s0 + drop 1 s0) + drop 2 s0) + drop 3 s0) + drop 4 s0) / 5.0) > 21.0) [arg ((((( s0 + drop 1 s0) + drop 2 s0) + drop 3 s0) + drop 4 s0) / 5.0)]  
+
+> Fig. 2. The reified version of
+
+spec in Figure 1. 
+
+2.2 Reifying Copilot specifications 
+
+The first step when working with any Copilot monitor (whether to simulate, prove properties, or generate code) is to reify the monitor into an intermediate representation called Copilot Core. In addition to unfolding helper definitions to produce the intermediate syntax, the reification step checks that the streams verified are well-formed . Well-formedness is a syntactic check that ensures that no computations violate temporal causality (i.e., they only depend on “past” values) and that they require only a finite history to compute. These properties ensure that monitors can be implemented using a step-by-step strategy and in constant memory. The reified version of the thermostat example is shown in Figure 2. Here, it becomes clear how the sliding window calculation is unfolded into a stream computation involving the 
+
+drop operator to sum up the 5 most recent values of the stream named s0 . Given a number 
+
+n, drop n drops the first n elements from a stream, where the stream must have at least n
+
+elements of history available. In our example, we prepend 5 constant values to the stream s0 
+
+so there is always enough history, even at the beginning of execution. The cast operator is the reified counterpart to unsafeCast in the stream language. 
+
+2.3 Compiling to C code 
+
+The CopilotC99 library takes a reified monitor and generates C code. The generated code is not a standalone program and is intended to be used part of a larger system. To ease integration, the code has no external dependencies and targets the C99 subset of the C language. There is a straightforward translation from each possible stream value to a C value. For instance, an Int32 in a stream program would be translated to an int32_t in C, and similarly for other scalar types. Compound stream values such as structs and arrays are translated to C structs and arrays with corresponding struct field names and array lengths. While Copilot streams are conceptually infinite sequences, Copilot-generated C programs only use a finite amount of memory. Each stream is translated to a ring buffer, implemented as an array with fixed length equal to the history needed to compute the stream. Each buffer 6 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+has an associated index that tracks the current position in the array, which is incremented as time advances. Note that all streams advance time in lock-step. Figure 3 shows the generated C code for the thermostat example. The s0 stream is translated to C as a ring buffer with 5 elements, just large enough to store the initial 5 temperature values. This ring buffer will be used to compute the current values for the various streams appearing in the trigger definitions, and it will be updated based on the current value of the external 
+
+temperature stream on each tick. A more complicated monitor may have additional ring buffers of various lengths, each of which will be updated as necessary. The step function advances the state of the program by a single tick or time step. The following diagram shows how step computes subsequent temperatures from the previous time step and inserts into the appropriate position in the buffer, tracked by the index value 
+
+s0_idx . This diagram assumes that the inputs from the external temperature stream begin 
+
+[150 , 95 , ... ]. One additional temperature value is computed at each time step, which is marked in this diagram in red italic font. 19.5 19.5 19.5 19.5 19.5 38.2 19.5 19.5 19.5 19.5 38.2 5.9 19.5 19.5 19.5 . . .             
+
+> s0_idx =0s0_idx =1s0_idx =2Time 0 Time 1 Time 2
+> ⇝⇝⇝
+
+Aside from updating the ring buffer, the step function is responsible for checking if any of the monitored conditions have been met and, if so, firing the corresponding triggers. The trigger functions heaton and heatoff are only given forward declarations; they are meant to be defined by the application that links against the Copilot monitor. 
+
+2.4 The challenge of verifying Copilot compilation 
+
+We have seen how the thermostat example has been translated from a stream-based program (Figure 1) to a C program (Figure 3), but can we be sure that they actually behave in identical ways? With careful evaluation, one can see that the values in the s0 buffer, as computed by 
+
+s0_get(0) , s0_get(1) , . . . , and s0_get(4) at a given time step 𝑛 , will match the 𝑛 th, 
+
+(𝑛 + 1)th, . . . , and (𝑛 + 4)th elements of the avgTemp stream. As a result, the heaton and 
+
+heatoff trigger functions in C will be called if and only if the corresponding trigger streams evaluate to true, and the arguments to the trigger functions will always equal the value of the 
+
+avgTemp stream at that time step. In this sense, the two programs exhibit the same behavior. Most Copilot monitors in the wild (e.g., Section 6) are significantly more involved than this example, however, and establishing a correspondence between the monitor and the generated C code is substantially harder. 
+
+3 Verifier overview 
+
+CopilotVerifier runs alongside the CopilotC99 compiler and formally verifies that the results are correct. Specifically, it proves that the semantics of the input Copilot monitor correspond to the semantics of the generated C program. In most cases, the verifier requires no input annotations beyond what is supplied to the compiler (we discuss exceptions in Section 7.3). The implementation of the verifier can be found at Scott et al. [71]. The architecture of CopilotVerifier is depicted in Figure 4. At its heart is a comparison between the input Copilot program, which computes over streams (1) , and the compiled C program, which represents streams in real memory (2) . To enable this comparison, both the Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 7
+
+extern uint8_t temperature ; void heaton(float arg0 ); void heatoff (float arg0 ); static float s0 [5] = {19.5f, 19.5f, 19.5f, 19.5f, 19.5f}; static size_t s0_idx = 0; float s0_get(size_t x) {return s0[( s0_idx + x) % 5]; }float avgTemp (void) {return (s0_get (0) + s0_get (1) + s0_get (2) + s0_get (3) + s0_get (4)) / 5.0f; }void step(void) {if ( avgTemp () < 18.0f) heaton( avgTemp ()); if ( avgTemp () > 21.0f) heatoff ( avgTemp ()); s0[s0_idx] = ( temperature * 0.5882353 f) - 50.0f; s0_idx = (s0_idx + 1) % 5; }
+
+Fig. 3. C code generated for Figure 1. The code has been cleaned up for presentation purposes only.     
+
+> Copilot monitor
+> Copilot C program
+> LLVM bitcode
+> Crucible
+> Copilot semantics (1)
+> C/LLVM semantics (2)
+> Bisimulation prover (3) All goals verified
+> Falsified goals
+
+What4 
+
+> Assurance case
+> CopilotC99
+> CopilotTheorem
+> Clang
+> CrucibleLLVM
+> Symbolic simulation
+> SMT solver
+
+Fig. 4. The architecture of CopilotVerifier .
+
+input and compiled program are represented by a collection of formulas in What4 , an SMT interface library [ 43 ]. The relationship between the two semantics are then established by the bisimulation prover (3) . CopilotVerifier reports back to the user whether it solved all of the generated proof goals successfully. Specifically, the verifier either produces a successful result, produces a failing result, or, in exceptional cases, diverges when solving proof goals 8 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+(Section 7.3.4). If it succeeds, the verifier produces an assurance argument that the proof is valid, as explained in Section 5. If it fails, the verifier identifies which goals were falsified. Intuitively, programs at both the Copilot and C levels are translated to transition systems corresponding to the program control-flow graph. The formulas that are generated in 
+
+What4 encode the effect of a single transition on the state—either streams or memory. The generated transition systems are intentionally very similar in structure, so the main task of the bisimulation proof is to demonstrate that the states stay in correspondence (see Section 4). The translation from Copilot programs to What4 is performed by CopilotTheorem , which we extended as part of this work. CopilotTheorem uses Perez et al . [58] as the source of truth for the semantics of Copilot stream programs. Because Copilot is a functional language, it is relatively simple to encode the semantics of each program step in an SMT style. For instance, Copilot’s integer arithmetic operations involving streams translate straightforwardly to SMT-Lib’s fixed-size bitvector operations, so CopilotTheorem would translate the expression 
+
+x + 42 :: Stream Int32 into an SMT formula resembling (bvadd x (_ bv42 32))) .There are similarly direct translations for all other stream operations with the exception of floating-point operations, a special case that we discuss further in Section 7.3.1. It is much more complex to faithfully capture the semantics of a C program. To do this, we lean on a pre-existing tool, Galois’s Crucible [14 ] symbolic simulation library. Specifically, 
+
+CopilotVerifier compiles the C program to LLVM bitcode and uses Crucible ’s LLVM backend to simulate it. The result is a collection of What4 formulas that precisely represent the LLVM program’s semantics. Crucible provides an accurate model of LLVM, intended for industry formal methods applications. For example, Crucible has previously been applied in tools used to verify industry cryptographic libraries [7, 15, 25]. Continuing the earlier example, when Crucible simulates x + 42 (where x is an int32_t )as C code, it returns two SMT formulas. The first SMT formula is (bvadd x (_ bv42 32))) ,which represents the result of the overall expression. The second SMT formula is 
+
+(bvslt x (_ bv2147483616 32))) , which must be satisfiable for the overall expres-sion to be free of undefined behavior. This formula encodes the fact that the C code performs signed integer addition, and signed integer overflow is undefined behavior in C—hence, x
+
+must be less than 2 31 − 32 = 2147483616. See Section 4.3.4 for more discussion on how 
+
+CopilotVerifier handles C operations that are not well-defined on all inputs. 
+
+Bugs found in Copilot. We developed CopilotVerifier by testing it against a variety of examples used in Copilot’s test suite, which uncovered a number of bugs in Copilot itself. These issues include memory unsafety [ 31 , 38 ], incorrect C code generation [ 33 , 34 , 36 , 37 ], and mismatches between Copilot and C semantics [ 32 , 35 ]. To illustrate one particular bug in more detail, CopilotVerifier was able to detect that the translation of the signum function in CopilotC99 was inconsistent with the Copilot semantics [ 35 ]. Specifically, the former would claim that signum 0 = 1 , but the latter would state that signum 0 = 0 . This bug, as well as all the other previously mentioned issues, have been fixed upstream. 
+
+4 Bisimulation proof structure 
+
+The core theorem we wish to prove is extensional equality . That is, the Copilot program and its compiled C representation behave identically in the input-output behavior observable in the execution context. Since only trigger functions can be observed in Copilot, we opt for the Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 9
+
+following formal description. A Copilot program 𝑃 and its compiled form 𝑄 are extensionally equal if for any arbitrary input stream, the following holds at every time step: 
+
+• The same set of trigger functions are called in 𝑃 and 𝑄 with the same arguments. 
+
+• 𝑃 has crashed iff 𝐶 has crashed. Note that CopilotVerifier checks for the absence of undefined behavior in the generated C code (Section 4.3.4). Therefore, we do not need to consider non-termination in our setting, since the generated C code contains no loops, no recursion, and no potentially unsafe or diverging function calls. Proving extensional equality between arbitrary programs is difficult, but the Copilot program and the compiled program are intentionally very similar in their structure. Consider again the Copilot thermostat program in Figure 1 and the resulting C code in Figure 3 (we will use this as a running example in this section). Let us assume that the C program’s first 𝑛 
+
+inputs correspond to the first 𝑛 values of the external stream inputs. Intuitively, after 𝑛 calls to the step function in the C program, the state of the ring buffers should be equal to the value of the corresponding stream expressions at index 𝑛 . Moreover, the trigger functions in the C program should be called from the step function at the same times when the corresponding stream expressions evaluate to true. We can view a Copilot stream program and its generated C program as labeled transition systems (LTSes). To prove correctness, CopilotVerifier constructs a bisimulation relation between the two systems. Intuitively, the proof shows that the two systems start in correspond-ing states, and that every transition in one system has a transition to a corresponding state in the other system. This has the effect of proving extensional equality because it shows that trigger functions are called in corresponding states, and that the two systems transition to crashing states at the same time. The bisimulation constructed by CopilotVerifier is a strong bisimulation [ 52 , 57 ] because every transition in one system corresponds exactly to a transition in the other system. Note that this is not the only way we could have proven a bisimulation. Alternatively, we could have constructed a weak [52 ] or branching [5 , 75 ] bisimulation, where some internal states in one system are abstracted away in the other system. In our very restricted setting, it is more convenient to use a strong bisimulation, as one time step in Copilot naturally corresponds one invocation of the step function in C. Using a strong bisimulation is somewhat unusual from a compiler verification perspective, where the system representing compiled code is usually an abstraction of the specification’s system, i.e., where multiple states in the compiled code can correspond to a single state in the specification. We instead use a strong bisimulation because we are allowed to set up 
+
+CopilotVerifier in a way where the states and transitions naturally line up, so it is more convenient to build an LTS for the compiled C code that combines all of the internal actions of a step function into a single transition. To be more precise, CopilotVerifier does not prove the overall bisimulation property. Instead, it proves a set of per-transition properties whose conjunction implies a bisimulation. Verifying the bisimulation would take us outside the logical fragment that can be easily reasoned about in SMT solvers. 10 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins                                       
+
+> 19.5 19.5 19.5 19.5 19.5 38.2 19.5 19.5 19.5 19.5 38.2 5.9 19.5 19.5 19.5 . . . ⇝⇝⇝
+> s0_idx =0s0_idx =1s0_idx =2
+> Time 0 Time 1 Time 2 . . . ⇝⇝⇝
+> (A) (B) (C)
+> heaton = ff
+> heatoff = ff
+> heaton = ff
+> heatoff = tt
+> heaton = ff
+> heatoff = ff
+
+Fig. 5. Two labelled transition systems (LTSes). The upper LTS represents the stream program in Figure 1. The lower LTS represents the C program in Figure 3. Transition labels are shared between both LTSes. Transition B fires the heatoff trigger. 
+
+4.1 Programs as transition systems 
+
+Formally, an LTS consists of a set of states, a set of labels, and a set of labeled transitions between pairs of states. Consider again the thermostat example (Figures 1 and 3). Assume that the inputs from the external temperature stream begin [150 , 95 , ... ], which are roughly 38 .2◦ and 5 .9◦ in Celsius. Note that the triggers heaton and heatoff will fire if the sliding average of the previous five temperatures dips below 18 ◦ or if it exceeds 21 ◦, respectively. Copilot is a stream processing language based on functional programming ideas. As a result, it has no explicit state in its semantics, beyond the (immutable) input streams and the current time step. Instead, the value of stream expressions are calculated from the input stream at the current time step and its prefix. An example sequence of transitions for the thermostat stream program with concrete inputs is pictured in the upper diagram of Figure 5. In a C program, each state consists of the global memory that contains the ring buffers and their current indices. The transition relation is defined by the generated step function. An LTS for the thermostat C program is pictured in the lower diagram of Figure 5. This program’s global memory only tracks one buffer, s0 , which holds the five most recent temperatures. The global memory also tracks s0_idx , the current index into the buffer. In each transition, a newly sampled value from temperature is placed in the position that s0_idx points to, after which the index is incremented. The same set of labels is used for both the stream and C LTSes. Each label is associated with observable events required for the transition to occur. In the stream spec, the events correspond to trigger streams evaluating to true. In C, the events correspond to the step 
+
+function invoking the corresponding trigger functions. In Figure 5, each transition records whether the heaton and heatoff triggers fired. The 
+
+heatoff trigger fires in transition (B), as adding 38 .2◦ makes the sliding average temperature 23 .2◦, which exceeds the upper bounds that avgTemp checks for. In transition (C), however, 
+
+heatoff no longer fires, as adding 5 .9◦ lowers the average temperature to 20 .5◦.
+
+4.2 Correspondence relation 
+
+We now define a correspondence relation between stream and C program states. In Copilot, each stream has a finite window of past values that can be accessed at any point in the program. Consider a Copilot program containing a stream 𝑠 with a window value 𝑘 . Let buf be the ring buffer in the C program that corresponds to 𝑠 , and let idx be the current index into buf .A stream program state is related to a C program state by the correspondence relation if and Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 11 
+
+only if the value of 𝑠 at index 𝑛 + 𝑖 is equal to the value of buf at index ( idx + 𝑖 ) mod 𝑘 ,where 𝑖 ranges from 0 to 𝑘 − 1. We lift this to sets of streams in the obvious way. The thermostat example has a single stream definition s0 that retains window = 5 
+
+previous values. At time step 0, the s0 stream’s first five elements are 19.5 due to the use of replicate window 19.5 in its definition. In C, the values of s0_get(i) (as i ranges from 0 to 4) are also 19.5 , as these are the initial values of the s0 buffer before running 
+
+step . Therefore, the two programs are in correspondence at time step 0. We can also intuit that the two programs correspond at subsequent time steps. For instance, at time step 1, the 
+
+s0 stream would produce 38.2 as its fifth value, which would match the value of s0_get(4) 
+
+after a single invocation of the step function on the C side. 
+
+4.3 Proving the bisimulation 
+
+The goal of CopilotVerifier is to demonstrate that the correspondence relation is a bisimulation. That is, for every pair of states (𝑠, 𝑐 ) in the correspondence relation, if 𝑠 
+
+transitions to 𝑠 ′ in the stream program with label 𝛼 , then there must exist a C program state 
+
+𝑐 ′ such that 𝑐 transitions to 𝑐 ′ with label 𝛼 . The converse must also be true: if 𝑐 transitions to 
+
+𝑐 ′, then there must exist a stream program state 𝑠 ′ such that 𝑠 transitions to 𝑠 ′ with label 𝛼 .It is straightforward to identify which transitions in each LTS correspond to each other, as the 𝑛 th time step in the stream program corresponds to the 𝑛 th invocation of step in the C program. The main challenge, then, is to demonstrate that the stream values equal the ring buffer values at each time step. The verifier does this by proving three properties about the correspondence relation: (1) The initial states of the programs are in the correspondence relation. (2) For each pair of states (𝑠, 𝑐 ) in the correspondence relation, there exist a stream program state 𝑠 ′, a C program state 𝑐 ′, and a label 𝛼 such that 𝑠 transitions to 𝑠 ′ with label 𝛼 , 𝑐 transitions to 𝑐 ′ with label 𝛼 , and (𝑠 ′, 𝑐 ′) is in the correspondence relation. (3) For each label 𝛼 used in the transition relations, the triggers for 𝛼 fire in corresponding ways in both programs. Note that the definition of a bisimulation has two directions: one direction in which the stream program state 𝑠 ′ is universally quantified and the C program state 𝑐 ′ is existentially quantified, and another direction in which the order of quantification is reversed. Property (2), on the other hand, checks both directions simultaneously. This is done for practical reasons, as it is always clear what the existentially quantified states 𝑠 ′ and 𝑐 ′ are after each transition. The verifier combines both directions into a single step with the same label 𝛼 .
+
+CopilotVerifier reduces each of these properties to SMT formulas. The proof principle of bisimulation itself is not amenable to SMT, as it falls outside of the first-order theories that SMT solvers understand. Likewise, the semantics of Copilot and C could potentially be reduced to SMT, but it would be impractical to do so. Instead, we reduce the individual proof obligations above to lower-level logical statements that can be represented as SMT queries. 
+
+4.3.1 Initial state correspondence 
+
+The first proof obligation that the verifier must discharge is that the initial states of the two programs correspond. This is tantamount to taking the initial values in each ring buffer and proving that they are equal to the first 𝑘 values of the corresponding stream at time step 0, where 𝑘 is the length of the ring buffer. Due to the restrictions that Copilot places on 12 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+programs, these first 𝑘 values (e.g., the 19.5 values prepended to s0 in Figure 2) must be concrete and cannot depend on external inputs. As a result, this step is simple to translate to SMT queries and only requires evaluation of concrete values. 
+
+Thermostat example: We demonstrated initial state correspondence for the thermostat example in Section 4.2. The proof is tantamount to showing that the values of the s0 stream and ring buffer all equal 19.5 at time step 0, a total of five proof goals. 
+
+4.3.2 Transition correspondence 
+
+Most of the proof effort consists of demonstrating that the correspondence relation is preserved by transitions. In this phase of the proof, we begin with completely symbolic program states at an arbitrary time value 𝑛 .3 As a result, we must create fresh symbolic values for each stream definition and its corresponding ring buffer. More precisely, let 𝑠 range over the stream definitions, where each 𝑠 is required to retain 𝑘 
+
+previous values. Let buf be the ring buffer in the C program that corresponds to 𝑠 , and let 
+
+idx be the current index into buf . For each 𝑖 ranging from 0 to 𝑘 − 1, we create a symbolic value and assume it is equal to both the value of 𝑠 at index 𝑛 + 𝑖 and the value of buf at index (idx + 𝑖 ) mod 𝑘 . We then advance the symbolic state of the stream and C programs once. Then, for each 𝑗 ranging from 1 to 𝑘 , we read the value of 𝑠 at index 𝑛 + 𝑗 and check that it is equal to the value of buf at index ( idx + 𝑗 ) mod 𝑘 under the previous assumptions. Advancing the symbolic state of the Copilot stream program is a matter of evaluating each stream expression at the next time step. For the C program, we advance the symbolic state by invoking the Crucible symbolic simulator to run the step function, which updates the memory used in the program. In addition to generating proof goals about bisimulation equivalence conditions, Crucible can also generate side conditions that relate to the memory safety of the program. For instance, each memory access into a ring buffer could potentially have out-of-bounds indexing. If CopilotC99 generates C code correctly, all such accesses should be within bounds, but this must be checked as a part of the query submitted to the SMT solver. The simulator also generates side conditions related to C operations with undefined behavior—see Section 4.3.4 for details. 
+
+Thermostat example: Ten goals involve checking symbolic values for equality, with two goals discharged for each element that the s0 stream retains. Thirty goals involve checking if the array indexes in s0_get and step are within bounds. Four goals involve checking if the trigger functions fire in equivalent ways, which is described in Section 4.3.3. In total, the verifier discharges 44 goals. 
+
+4.3.3 Triggers 
+
+The proof must establish that, for each trigger function in the generated C program, the trigger function is called if and only if the corresponding trigger stream in the stream program evaluates to true. In a real setting, the application linked against a Copilot monitor would implement the trigger functions. However, we are verifying the generated monitor code in isolation, so we do not have implementations of the trigger functions available. Instead, the verifier creates stub implementations for each trigger function that captures the arguments and the path condition under which it was called. If no path in the C program reaches a trigger, then a false path condition is generated. After symbolic simulation finishes, the captured  
+
+> 3In Section 7.3.2, we explain how to constrain symbolic program states by adding invariants. Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 13
+
+arguments and path condition are asserted to be equivalent to the corresponding trigger stream and arguments from the stream program. 
+
+Thermostat example: Four proof goals arise from checking for equivalent behavior for the 
+
+heaton and heatoff triggers. Two goals check that each trigger is fired in both programs during a transition. Two goals check that the arguments passed to each trigger correspond. 
+
+4.3.4 Partial operations 
+
+Another subtlety of the transition relation step of the proof is how to handle partial Copilot operations. These range from division, which can fail if the second argument is zero, to signed integer arithmetic, which can overflow. If a partial operation is used on an input for which it is not defined, it can result in undefined behavior in the generated C code. One way to handle partial operations is to take an uncompromising approach: if Crucible 
+
+detects undefined behavior when simulating the generated C code, it aborts and causes the proof to fail. This ensures that Copilot specifications do not misbehave, but, if a spec does 
+
+misbehave, the verifier will simply fail and not reveal anything about the rest of the spec. Another way to handle partial operations is to prove that a Copilot spec is “crash-equivalent” to its corresponding C program. That is, if the C program invokes a partial operation on undefined inputs, the verifier checks that the corresponding operation in the Copilot spec is invoked on the same inputs. CopilotVerifier supports both the uncompromising approach and the crash-equivalence approaches as user-configurable options. To check for crash-equivalence during symbolic simulation, the verifier will analyze any invocation of a partial operation in the stream program. For each invocation, CopilotVerifier 
+
+will generate a side condition that this operation will only be invoked on well defined inputs. During the transition step of the proof, the verifier will assume these side conditions before starting symbolic simulation. Therefore, if the simulator generates any side conditions due to partial operations in the C program, they should be dischargeable using the corresponding side conditions from the stream program. 
+
+5 Assurance cases 
+
+CopilotVerifier is the first step in a longer project: integrating formal methods into safety-critical deployment practices. Our ultimate goal is for Copilot code to be deployed with a safety case largely constructed by automated means. Existing standards such as DO-333 provide guidance on how formal methods evidence should be handled. However, there are few examples of successful formal methods deployments in safety-critical practice. See [ 20 , 76 ]for a discussion of the issues involved in certification and formal methods. To use Copilot in safety-critical systems, the evidence provided by our tools must be understood and accepted by human auditors. This is challenging because CopilotVerifier 
+
+performs most of its reasoning through complicated SMT queries. These queries are difficult to analyze manually without some way of connecting them back to higher-level requirements. We address this challenge by giving CopilotVerifier a setting that, when enabled, displays each Crucible proof goal generated during a successful run of the verifier. Each proof goal has an accompanying high-level description of what it demonstrates, such as a symbolic stream value being equal to its corresponding C ring buffer value. Each proof goal also has an associated What4 formula and SMT query representing the goal. With this information, 14 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins                                                                                      
+
+> Goal 1: The generated C program is traceable to low-level requirements
+> Strategy 1: Establish a bisimulation relation between the stream and C programs
+> Goal 2: The initial program states are in the relation
+> . . .
+> Goal 3: The relation is preserved across a program transition
+> Goal 4 ( Crucible ): Assert that the s0 ring buffer value at index 0 is equal to the corresponding stream value after a transition
+> Goal 5 ( Crucible ): Assert that accessing the s0 ring buffer at index 0 is within the bounds of the array
+> . . .
+> Goal 6 ( What4 ):
+> let v121 =bvUrem (bvSum cs0_idx@89 :bv 0x4 :[64]) 0x5 :[64] v122 =bvSum (bvMul 0x4 :[64] v121) ...
+> Goal 7 ( What4 ):
+> let v94 =bvSum (bvMul 0x4 :[64] cs0_idx@89 :bv) v100 =bvUrem (bvSum cs0_idx@89 :bv 0x1 :[64]) 0x5 :[64] v1874 =bvUrem (bvSum v100 0x1 :[64]) 0x5 :[64] ...
+> Goal 8 (SMT):
+> (declare -fun s0_idx () (_ BitVec 64)) (define -fun x!0 () (_ BitVec 64) (bvadd s0_idx (_ bv4 64))) (define -fun x!1 () (_ BitVec 64) (bvurem x!0 (_ bv5 64))) (define -fun x!2 () (_ BitVec 64) (bvmul (_ bv4 64) x!1)) ...
+> Goal 9 (SMT):
+> (declare -fun s0_idx () (_ BitVec 64)) (define -fun x!0 () (_ BitVec 64) (bvmul (_ bv4 64) s0_idx )) (define -fun x!1 () (_ BitVec 64) (bvadd s0_idx (_ bv1 64))) (define -fun x!2 () (_ BitVec 64) ( bvurem x!1 (_ bv5 64))) ...
+
+Fig. 6. A sketch of a GSN diagram presenting a CopilotVerifier assurance case for the thermostat programs from Figures 1 and 3. For brevity’s sake, only a subset of goals are shown. 
+
+each portion of a proof can be broken down into lower- and lower-level requirements until eventually reaching SMT, with a chain of evidence linking each intermediate step. Using the evidence that CopilotVerifier produces, one can construct a complete assurance case that is more amenable to certification. Figure 6 shows a sketch of what an assurance case would look like for the thermostat programs from Figures 1 and 3. The evidence is captured using Goal Structuring Notation (GSN) [ 44 ], which presents each goal in a CopilotVerifier 
+
+safety case in a way that emphasizes the relationship between high-level parent goals and lower-level child goals. Aside from proof goals, a GSN diagram can also be used to document assumptions that the verifier makes during verification, such as those discussed in Section 7. The process of making CopilotVerifier ’s evidence be acceptable for auditors is ongoing work. We plan to work with auditors to iteratively improve formats and explanations towards the goal of providing convincing evidence in a suitable format. Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 15 
+
+6 Case studies 
+
+In this section, we report on the use of CopilotVerifier to verify monitors of specific aerospace-related algorithms and safety monitors used in experimental flights. 
+
+6.1 Sense and avoid 
+
+We turn our attention to using CopilotVerifier to verify a Copilot implementation of an algorithm used in an unmanned aircraft system (UAS) to sense and avoid other aircraft. More precisely, the [ 28 ] defines the concept of sense and avoid as “the capability of a UAS to remain well clear from and avoid collisions with other airborne traffic”. Upchurch et al .[74] provides a rigorous well-clear boundary model where any UAS inside the boundary are considered to be in well-clear violation. Copilot is particularly well-suited to monitoring well-clear violations, which makes Upchurch et al . [74] ’s algorithm an interesting case study for how well CopilotVerifier can handle a real-world aerospace-related use case. The first step in the verification process is to implement the well-clear violation checking algorithm inside of Copilot. For the most part, this is a straightforward exercise, as all of the mathematical operations that the algorithm uses directly correspond to floating-point operations that Copilot supports. We review some highlights of the Copilot implementation below, but readers interested in further details should consult the full implementation 4, as well as the original algorithm’s description in Upchurch et al. [74]. The algorithm heavily relies on computing horizontal and vertical components in 3-D space. Vertical components (comprising the z-axis) are described as points (i.e., altitude values), and horizontal components (comprising the x- and y-axis) are described as 2-D vectors within 3-D space. For convenience, we define a Vect2 type alias in Copilot to refer to vector values, which consist of a pair of two Double -valued streams: 
+
+type Vect2 = (Stream Double , Stream Double) 
+
+We also define common vector operations such as negation, dot product, squaring, and computing vector lengths and determinants. For instance, vector dot product is defined as: 
+
+(|*|) :: Vect2 -> Vect2 -> Stream Double (|*|) (x1 , y1) (x2 , y2) = (x1 * x2) + (y1 * y2) 
+
+Well-clear detection relies on knowing the relative velocities and positions between the 
+
+ownship aircraft and the intruder aircraft. By convention, we represent the horizontal relative velocity and position as vectors (i.e., as Vect2 s) named v and s, and we represent the vertical relative velocity and position as points (i.e., as streams of Double s) named vz and sz . All computations within the algorithm are defined in terms of these quantities. To detect if there is a well-clear violation, the algorithm needs a (horizontal) time variable ,which is a function that maps the horizontal relative position and velocity into a real number. One such time variable is the time of horizontal closest point of approach , which we abbreviate as tcpa in the implementation. Based on the horizontal relative position and velocity, tcpa s v computes a positive number if the aircraft are horizontally converging, a negative number if they are horizontally diverging, and the number zero otherwise:  
+
+> 4https://github.com/Copilot-Language/copilot-verifier/blob/cea9f8e924fe8f50cdbffd15ea7e00d7f73f1d8a/copilot-verifier/examples/Copilot/Verifier/Examples/ShouldPass/WCV.hs 16 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins
+
+tcpa :: Vect2 -> Vect2 -> Stream Double tcpa s v@(vx , vy) =if vx ~= 0 && vy ~= 0 then 0 else -(s |*| v)/( sq v) 
+
+Note that sq computes the square of a vector, and (~=) checks if two vectors are equal plus or minus a small error value. The tcpa function is one possible time variable, but it is not the only one; there are alternative time variables [74], which we also implement. In addition to tcpa , which describes horizontal closeness, we also compute the time to co-altitude (tcoa ), which describes if the aircraft are vertically converging or diverging: 
+
+tcoa :: Stream Double -> Stream Double -> Stream Double tcoa sz vz = if (sz * vz) < 0then (-sz) / vz else -1 
+
+Related to tcpa is the distance at time of closest point approach, or dcpa :
+
+dcpa :: Vect2 -> Vect2 -> Stream Double dcpa s@(sx , sy) v@(vx , vy) =norm (sx + (tcpa s v) * vx , sy + (tcpa s v) * vy) 
+
+With these functions defined, we now have everything we need to define the notion of a well-clear violation ( wcv ). Such a violation occurs when there is both a horizontal and vertical violation. Observe that the wcv function is parameterized not just by the positions and velocities, but also the horizontal time variable tvar :
+
+wcv :: (Vect2 -> Vect2 -> Stream Double) -> Vect2 -> Stream Double -> Vect2 -> Stream Double -> Stream Bool wcv tvar s sz v vz =horizontalWCV tvar s v && verticalWCV sz vz 
+
+A horizontal violation occurs when the relative horizontal position falls below a certain threshold dthr , or if the distance at time of closest point of approach is less than dthr and the time variable falls below a certain threshold tthr :
+
+horizontalWCV :: (Vect2 -> Vect2 -> Stream Double) -> Vect2 -> Vect2 -> Stream Bool horizontalWCV tvar s v =(norm s <= dthr) || ((( dcpa s v) <= dthr) && (0 <= (tvar s v)) && (( tvar s v) <= tthr )) 
+
+A vertical violation occurs when the relative vertical position is less than a given threshold 
+
+zthr , or if the time to co-altitude is less then a given threshold tcoathr :Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 17 
+
+verticalWCV :: Stream Double -> Stream Double -> Stream Bool verticalWCV sz vz =(( abs $ sz) <= zthr) || (0 <= (tcoa sz vz) && (tcoa sz vz) <= tcoathr ) 
+
+The exact values of the threshold values depend on the specifics of the UAS in question. We define the thresholds as external streams. Note that, although this allows us to vary the thresholds over time, we expect the thresholds to remain constant in this specific application: 
+
+dthr , tthr , zthr , tcoathr :: Stream Double dthr = extern "dthr" Nothing tthr = extern "tthr" Nothing zthr = extern "zthr" Nothing tcoathr = extern " tcoathr " Nothing 
+
+Similarly, we sample the relative positions and velocities from the application: 
+
+vx , vy , vz :: Stream Double vx = extern " relative_velocity_x " Nothing vy = extern " relative_velocity_y " Nothing vz = extern " relative_velocity_z " Nothing sx , sy , sz :: Stream Double sx = extern " relative_position_x " Nothing sy = extern " relative_position_y " Nothing sz = extern " relative_position_z " Nothing 
+
+-- Relative velocity and position as 2D vectors . 
+
+v, s :: Vect2 v = (vx , vy) s = (sx , sy) 
+
+Finally, we can define the overall Copilot specification: 
+
+spec :: Spec spec =trigger " well_clear_violation " (wcv tcpa s sz v vz) [] 
+
+One interesting property of this Copilot spec is that all of the basic streams are external ones. As such, when compiling this spec to C code, the resulting code does not need to use any ring buffers to store stream elements; all stream values are represented as C extern s: 18 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+extern double relative_position_x ; extern double relative_position_y ; extern double relative_velocity_x ; extern double relative_velocity_y ; extern double relative_position_z ; extern double relative_velocity_z ; extern double dthr; extern double tthr; extern double zthr; extern double tcoathr ; 
+
+Using entirely external Copilot streams does not pose an issue for CopilotVerifier . In fact, this property of the spec arguably makes it easier to verify, as it makes checking the initial state of the bisimulation relation extremely simple. CopilotVerifier represents both the values of external Copilot streams and the values of C extern s using the same fresh, symbolic variables, which mean that they are trivially equal to each other. The only interesting part of verifying this spec is proving the transition step of the bisimulation relation. Because CopilotVerifier treats all floating-point operations as uninterpreted functions (see Section 7.3.1), it does not perform any deep reasoning about partial floating-point functions such as division. As such, it does not emit any proof goals related to memory safety in the transition step. There is only one interesting proof goal emitting during this step: proving that the well_clear_violation trigger fires in the Copilot spec if and only if the corresponding C handling function is called. The proof goal is quite large due to the multitude of floating-point operations, but the verifier is nevertheless able to solve the proof goal in less than one second. 
+
+6.2 Monitoring safe mode changes 
+
+CopilotVerifier has been used to verify the correctness of monitors flown in drones at NASA Langley Research Center (LaRC). We worked with a team at LaRC to capture flight software properties in Copilot and produce a NASA Core Flight System (cFS) [ 1, 78 ] application that monitored the vehicle during flight. That application monitored the status of the vehicle based on information published by other components, and alerted of potentially dangerous mode changes before they occurred (e.g., transitioning to autopilot without a GPS signal). To help justify that the Copilot monitors could be flown safely in the same vehicle, we included (1) the proof of correctness of the generated C code, obtained using CopilotVerifier ,(2) evidence that the time and memory consumed by the monitors was bounded, obtained using randomized tests and tools that measure memory usage, and (3) evidence that the monitors would not crash or raise exceptions (also obtained using randomized tests). 
+
+7 Design tradeoffs 
+
+When designing CopilotVerifier , our goal was to create a verification tool that achieves high assurance at modest cost. This section explains the tradeoffs involved in achieving this. Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 19 
+
+7.1 Trusted computing base (TCB) 
+
+We trust the underlying C toolchain. CopilotVerifier relies on Clang to compile C into LLVM bitcode, which becomes the basis for producing the semantics of the C file. Bugs in Clang may affect the soundness of the verifier. We consider this risk mitigated by the fact that Clang is a well-tested compiler and that CopilotC99 targets a well-understood subset of C, reducing the likelihood of triggering compiler bugs. The Copilot developers have experimented using CompCert to verify the compiled binary code [ 39 , 47 ], which would remove this portion of the TCB. At the time, CompCert did not target many of the architectures that the Copilot users utilize, but CompCert has since added new backends, including RISC-V and AArch64. We plan on revisiting the use of CompCert as future work. When CopilotVerifier runs, it uses the Clang version available to the user. In principle, the meaning of the C program could change if the program is compiled using different flags, a different Clang version, or a different C compiler altogether. We leave it to users to ensure that their choice of compiler does not alter the behavior of the program in a meaningful way. We trust that Crucible ’s LLVM backend faithfully encodes the semantics of LLVM bitcode. Errors in this part of Crucible could affect the soundness of the verifier. To justify this trust, we note that Crux [ 73 ], a verification tool also based on Crucible , has been tested on a large number of C verification problems from the SV-COMP verification competition [70]. We also trust that the CopilotTheorem library accurately encodes the semantics of Copilot stream programs. At present, we do not have a robust way to test these semantics beyond careful engineering and manual comparison with the Copilot interpreter. Because of the way we model trigger functions, we make a number of implicit assumptions about how the implementations of those functions must behave. In particular, we assume that trigger functions do not modify any memory under the control of the Copilot program, including its ring buffers and stack. We also assume that the trigger functions are memory-safe and do not perform any undefined behavior. Responsibility for enforcing these assumptions lies with the user who supplies definitions for the trigger functions. 
+
+7.2 C compiler optimizations 
+
+CopilotVerifier assumes that all streams in a Copilot spec have corresponding static, global arrays in the generated LLVM bitcode. This assumption simplifies the work done by 
+
+CopilotVerifier , as it can associate each stream with a distinct, top-level array. While this assumption is safe to make when the generated C code is compiled with low optimization settings, it is not safe at higher settings. For instance, consider a stream containing a single value, which CopilotVerifier assumes to be translated to an array of length 1. At -O1 or higher, Clang replaces length-1 static arrays with scalar values, which breaks the verifier’s assumptions. The verifier mitigates these issues by always invoking Clang with -O0 . This makes the generated LLVM bitcode more predictable at the expense of only verifying code at lower levels of optimization. When code is compiled to be deployed on the target system, and after a successful run of CopilotVerifier , users can invoke Clang with higher optimization settings and have an expectation that the resulting code will match the original specification, provided that Clang correctly optimizes the code. We consider that the task of verifying the correctness of Clang to be out of the scope of our work. 20 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+7.3 Limits of automation 
+
+CopilotVerifier aims to be a push-button solution, and, in our experiments, we successfully used it to verify all the examples in the Copilot test suite (Section 3) and two case studies (Section 6). However, in exceptional circumstances, CopilotVerifier may not be able to prove that a generated program is equivalent to its specification. That is, the verifier is sound, but not complete . When this occurs, users may be able to alter the original spec to make it amenable to verification. We provide examples in the rest of this section. 
+
+7.3.1 Floating-point support 
+
+Copilot provides a variety of floating-point operations, including transcendental functions and other primitive functions. There is limited SMT solver support for floating-point values, however, and even less support for robustly handling special functions. Nevertheless, we wish to have some level of support, as many Copilot monitors make essential use of floating-point operations. For instance, detecting if an unmanned aircraft system is well clear [74 ] uses the square-root function to compute the lengths of vectors. 
+
+CopilotVerifier treats floating-point operations as uninterpreted functions, leaving the semantics of the operations abstract. This approach is sound, as the verifier need only demonstrate that a Copilot program applies the same floating-point operations as the corresponding C program, and in the same order. The downside to this technique is that reasoning about floating-point operations is somewhat fragile. The verifier relies on the Clang not optimizing the operations to the point where they differ from the stream program’s operations. As an example, consider ctemp from Figure 1: 
+
+ctemp :: Stream Float ctemp =( unsafeCast temp * constant (150.0 / 255.0)) - constant 50.0 
+
+A subtlety of this definition is that the division operation occurs before the numeric value is lifted into a stream with the constant function. As a result, the reified stream in Figure 2 contains 0.5882353 , the result of the division. If, instead, we instead express it as the result of dividing two stream values: 
+
+ctemp =( unsafeCast temp) * ( constant 150.0 / constant 255.0)) - constant 50.0 
+
+then the reified Copilot spec would not evaluate the result of dividing the two streams to 
+
+0.5882353 . On the other hand, the generated C code would contain 150.f / 255.0f , and C compilers will perform constant folding on this, even on low optimization levels. As a result, the stream semantics would contain an uninterpreted division function but the C semantics would not, leading an SMT solver to conclude that they may not be equivalent. We take some measures to mitigate this issue, such as invoking C compilers on low optimization settings (see Section 7.2) and avoiding the use of the --fast-math flag. Under these settings, C compilers, and Clang in particular, are more reluctant to rearrange floating-point code, which results in more programs successfully verifying. Nevertheless, Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 21 
+
+the example above shows that this is not foolproof, and users may need to rearrange code to make the operations align in just the right way. 
+
+7.3.2 Invariants for partial operations 
+
+As detailed in Section 4.3.4, the verifier has a mode for aborting the proof early if it finds a partial operation applied to undefined inputs. In this mode, the verifier does not try to infer invariants needed to make operations well defined. For example: 
+
+stream :: Stream Int32 stream = extern "stream" Nothing spec :: Spec spec = trigger " streamAdd " (( stream + 1) == 2) [arg stream] 
+
+When abort-early mode for partial operations is enabled, this example fails to verify, as 
+
+stream + 1 could result in signed integer overflow if a value in stream is equal to the maximum value of an Int32 . It is possible, however, for applications that use this monitor to maintain the invariant that the values in stream are always less than the maximum Int32 
+
+size. To do so, the user must communicate this invariant by declaring a property in the spec: 
+
+spec :: Spec spec = do prop " notInt32Max " (forall (stream < constI32 maxBound )) trigger " streamAdd " ... 
+
+Here, the function prop is used to declare a property named notInt32Max , and the 
+
+forall combinator is used to express that the property should hold for all elements in the stream. The verifier must then be instructed to assume the notInt32Max property during verification so that the addition is well defined. 
+
+7.3.3 Inductive arguments 
+
+There are certain properties about stream programs that hold true because of inductive reasoning that CopilotVerifier is nevertheless unable to prove. For example, consider this specification that involves array indexing: 
+
+sArr :: Stream (Array 2 Bool) sArr = [array [True , False ]] ++ sArr sIdx :: Stream Word32 sIdx = [1, 0] ++ sIdx spec :: Spec spec = trigger " sArrIdx " (sArr .!! sIdx) [arg sArr , arg sIdx] 
+
+In the stream sArr , each element is a length-2 array containing True and False . The (.!!) 
+
+combinator indexes into a stream of arrays using a stream of indices, so sArr .!! sIdx 
+
+computes a stream of Bool s whose elements alternate between False and True consecutively. 22 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+Each use of (.!!) requires that the index value be within the bounds of the array to be well formed, and CopilotVerifier discharges this requirement as a proof goal. Somewhat surprisingly, however, the verifier is unable to conclude that the use of (.!!) is within bounds. To see why, consider the C code that is generated for the sArrIdx trigger: 
+
+static bool sArr [1][2] = {{true , false }}; static size_t sArr_idx = 0; static uint32_t sIdx [2] = {1, 0}; static size_t sIdx_idx = 0; bool* sArr_get (size_t x) {return sArr [( sArr_idx + x) % 1]; }uint32_t sIdx_get (size_t x) {return sIdx [( sIdx_idx + x) % 2]; }bool sArrIdx_guard (void) {return sArr_get (0)[ sIdx_get (0)]; }
+
+The part of this code that poses issues for the verifier is the sArrIdx_guard function, which indexes an array using an element from sIdx . Note that during the transition correspondence phase, the verifier creates symbolic values for each ring buffer. Because sIdx contains symbolic values, the value that sIdx_get(0) returns is also symbolic. Consequently, the verifier cannot determine if the returned value lies within the bounds of sArr , so it fails with an unsatisfied proof goal. It is possible to prove by induction on the number of steps that sIdx_get(0) is within bounds by observing that the value it returns is less than 2. However, the verifier does not currently infer inductive invariants, and the user must manually state the invariant using prop 
+
+so that it can be assumed true during verification. 
+
+7.3.4 SMT solver performance 
+
+The performance of SMT solvers is very susceptible to small changes in how formulas are rep-resented. A small change in a formula can sometimes make the SMT solver take an arbitrarily long time to verify a proof goal, which can affect the performance of CopilotVerifier .Because CopilotVerifier is designed as a push-button solution, users do not have the ability to modify the intermediate SMT formula before it is passed to the SMT solver, or to attempt to prove it manually if the SMT solver fails to prove it automatically. As an alternative, users can modify the spec in a way that it generates a proof goal that the SMT solver is better able to handle (see Section 7.3.1 for an example), or they can use a configuration option to alter the shape of proof goals (see Section 8.1 for details). Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 23 
+
+8 Implementation 
+
+CopilotVerifier is implemented as a Haskell library that builds on top of Copilot- and 
+
+Crucible -related libraries as dependencies. The verifier is maintained and released as part of the overall Copilot suite of libraries. CopilotVerifier ’s source code can be installed from Hackage [ 41 ] or from GitHub [ 30 ]. Currently, the verifier comprises 1,854 lines of code (excluding comments and whitespace) spread among four modules. As part of this work, we also extended CopilotTheorem , increasing its total line count by 871 lines. The CopilotVerifier library has a minimal API. In most cases, a CopilotVerifier user only needs to invoke the verify function. verify generates a C program from a Copilot specification, compiles it to LLVM bitcode using Clang, and then verifies the behavior of the bitcode against the specification. After the verification process finishes, it reports whether verification succeeded or not as output. A typical invocation looks like this: 
+
+main :: IO () main = do spec ’ <- reify spec verify mkDefaultCSettings [] " c_program_name " spec ’ 
+
+Here, mkDefaultCSettings instructs Clang to compile the generated C code using a reasonable default set of compiler flags, and [] indicates that we do not make any additional assumptions about the behavior of the streams in the specification. (See Section 7.3.2 for an example where verification uses an additional assumption.) 
+
+8.1 Configuration options 
+
+In addition to the verify function, the CopilotVerifier API offers a verifyWithOptions 
+
+function that takes an additional set of configuration options. verifyWithOptions is intended for users who wish to fine-tune the verifier’s behavior for particular use cases. We describe the available configuration options below. 
+
+8.1.1 SMT solvers 
+
+By default, CopilotVerifier uses the Z3 [ 24 ] SMT solver to solve proof goals. Users may wish to choose a different SMT solver, however, as solvers differ in their performance as well as the types of proof goals that they can prove. The verifier offers an smtSolver setting that allows overriding the default choice of Z3. Aside from the Z3 solver, CopilotVerifier 
+
+supports the use of either CVC4 [4], CVC5 [3], or Yices [26]. 
+
+8.1.2 IEEE-754 floating-point mode 
+
+SMT solvers have limited support for floating-point operations in general, and there are some operations found in Copilot specifications that SMT solvers do not support at all, such as transcendental functions. As noted in Section 7.3.1, CopilotVerifier works around this problem by treating all floating-point operations as uninterpreted functions by default. This allows CopilotVerifier to perform very basic equivalence checks involving floating-point operations, but this approach is fragile in the presence of compiler optimizations. As an alternative, CopilotVerifier offers an smtFloatMode setting to allow users to interpret floating-point operations using IEEE-754 semantics where possible. Under this mode, the verifier will be able to reason more deeply about the subset of floating-point 24 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+operations that SMT solvers do support, such as basic arithmetic. This allows the verifier to be slightly more robust in the face of floating-point–related compiler optimizations. This approach does not solve the problem of SMT solvers lacking support for operations such as transcendental functions, however. In fact, the verifier currently aborts if it encounters such an operation in IEEE-754 mode, so this mode can only be enabled on programs that do not make use of these operations. We are currently evaluating alternative approaches (Section 10). 
+
+8.1.3 Side conditions for partial operations 
+
+As described in Section 4.3.4, CopilotVerifier is strict about partial operations by default: if it detects any undefined behavior in the C code during simulation, it will cause the proof to fail. As an alternative, CopilotVerifier users can enable an assumePartialSideConds 
+
+setting that causes the verifier to check that any invocation of a partial operation in the C code corresponds to an invocation of the same partial operation in the original Copilot spec. This allows users to check for “crash-equivalence”, which may be useful for uncovering properties about a spec beyond uses of partial operations on undefined inputs. 
+
+8.1.4 Logging proof goals and SMT interactions 
+
+By default, CopilotVerifier tries not to overwhelm users with the information it presents. For this reason, when it performs a successful proof, it displays a short summary: 
+
+Translated bitcode into Crucible Generating proof state data Computing initial state verification conditions Proving initial state verification conditions Proved 5 of 5 total goals Computing step bisimulation verification conditions Proving step bisimulation verification conditions Proved 14 of 14 total goals copilot - verifier has produced a mathematical proof that the behavior of the generated C program precisely matches the behavior of the Copilot specification . ... 
+
+The output reports the number of proof goals, but not what each proof goal means or from where in the program the goal arises. Knowing the provenance and full details of each proof goal is vital for certain use cases, such as when the evidence produced by CopilotVerifier 
+
+is used as part of an assurance case (see Section 5). For this reason, the verifier offers a 
+
+verbosity setting that, when set to a high level, prints the details of each proof goal and SMT solver interaction. Figure 6 includes examples of what verbose proof goals look like. 
+
+8.2 Code style 
+
+CopilotVerifier is built on top of both the Copilot and Crucible library ecosystems. While both libraries are written in Haskell, each one is written in very different coding styles. Copilot is largely written using simple Haskell2010 code and avoids the use of language extensions, except where strictly necessary. Crucible , on the other hand, makes heavy use of advanced Haskell features present in the Glasgow Haskell Compiler (GHC), such as GADTs [ 2, 59 ], Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 25 
+
+type families [ 13 , 69 ], data kinds [ 79 ], and kind-indexed GADTs [ 77 ]. CopilotVerifier , as a tool built on top of the Crucible API, inherits its use of advanced GHC features. The Crucible authors describe their experience in maintaining their particularly advanced style of Haskell code in Christiansen et al . [14] , and our experiences largely match theirs. Just like in Christiansen et al . [14] , we observe that Haskell’s type system allows us to have a high degree of confidence that certain properties of CopilotVerifier are correct, such as ensuring that SMT queries that we send to the solver are always well typed. This, in turn, allows us to more confidently refactor the verifier’s code, as shallow bugs are usually caught by GHC’s type checker. On the other hand, we have the same difficulties that Christiansen et al . [14] do: namely, it can be difficult to find Haskell developers familiar with all of the language features used in CopilotVerifier ’s code base, and training Haskell developers to learn these features can be time-consuming. We continue to evaluate the tradeoffs in the style of code used in the verifier in an attempt to strike the right balance for our needs. 
+
+8.3 Development process 
+
+CopilotVerifier is developed as part of the overall Copilot framework, which also includes an interpreter, C99 and Bluespec backends, an interactive visualizer, a pretty-printer, and a library of stream combinators implementing functionality generally useful to monitor systems in aerospace (e.g., temporal logic, statistics, voting, clocks, stacks, and regular expressions). As an intricate part of the Copilot project, CopilotVerifier is developed following a set of rules and processes designed to meet the requirements for Class D, Research and Technology Software, as described in NASA Software Engineering Requirements (NPR 7150.2D) [ 54 ]. Among other qualities, our process requires full traceability from code changes to issues and milestones, extensive documentation of both the code and each individual commit, following a strict process to document, confirm, and schedule an issue before its solution is implemented, and reproducible scripts that replicate a bug before a pull request is accepted into the mainline and that demonstrate the bug’s absence in the pull request. This process is designed so that we can check for compliance with some of NPR 7150.2D requirements automatically [ 56 ]. Additionally, Copilot is released on a fixed cadence (exactly every two months) in an effort to demonstrate the project’s commitment towards reliability. The code produced by Copilot has been used to support missions at higher levels of criticality (NPR 7150.2D, Class C, Mission Support Software or Aeronautic Vehicles, or Major Engineering/Research Facility Software). CopilotVerifier is an essential piece towards making an assurance argument to operate Copilot-generated code at that level. 
+
+9 Related work 
+
+Copilot was originally based on Lustre [ 12 ] and LOLA [ 23 ]. Other similar RV frameworks include RMOR [ 42 ], which compiles to C, and Proteus [ 49 , 50 ], which compiles to C++. 
+
+CopilotVerifier shares similarity with other translation validation–based compilers, such as previous efforts to translate SIGNAL [ 63 ] and Simulink [ 67 ] to C, the Alive2 bounded translation validation tool for LLVM [ 48 ], and the C-to-binary translation validation used in the seL4 operating system kernel [72]. Most other RV frameworks do not verify their compiled code against the specifications. A notable exception is Lustre, which boasts a verified compiler named V ´elus [ 8 –10 ]. V ´elus is an ambitious project that verifies the Lustre compilation pipeline within the Coq theorem prover 26 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+by building on CompCert [ 47 ]. This is in contrast to CopilotVerifier ’s translation validation approach, which only allows verifying individually translated programs in isolation. V ´elus first translates Lustre’s stream functions into a synchronous transition code (STC) language based on state transitions and values rather than streams. STC is, in turn, translated into an object-oriented language (Obc) with each Lustre node represented as a class with its own memory, possessing a reset method performing initialization and a step method to process the next instant in time. Obc is translated into CompCert’s Clight, which is then translated into assembly. Coq is used to manually prove an equivalence at each translation step. The proofs are aided by a memory semantics given in terms of streams of memory trees. The culmination of the effort is a bisimulation theorem relating the behavior of a Lustre node and the generated assembly code. An approach grounded in manual proof can be more complete than CopilotVerifier ’s automated approach. For instance, the difficulties that we encountered with floating-point operations (Section 7) could be surmounted using a Coq formalization of floating-point computation [ 6 , 64 ]. On the other hand, adapting V ´elus to build a verified Copilot compiler would be non-trivial. Although the core stream languages are very similar, V ´elus introduces complexities such as the object-oriented intermediate language to accommodate Lustre features not present in Copilot. Alternatively, one could build a verified Copilot compiler from scratch, but in either case, considerable resources would need to be dedicated to the effort. Our approach to Copilot verification was influenced by the need to assure an existing compiler for a DSL being used at NASA, and to do so under significant resource and time constraints, hence demonstrating the applicability of the technique to many industrial projects. Previous versions of Copilot [ 61 , 62 ] performed limited verification of C code by compiling with two different backends and verifying the equivalence of the generated programs using CBMC [ 17 ]. This approach can potentially catch many of the same issues as CopilotVerifier ,but it does not prove that the C programs match the original Copilot monitors. Current versions of Copilot use property-based testing [ 16 , 29 ] for added assurance. Although techniques such as property-based testing could catch some of the same bugs that 
+
+CopilotVerifier was able to detect, it would be unlikely to detect some of the memory safety bugs uncovered by CopilotVerifier (some of which went unnoticed until recently [38]). There have been efforts in Copilot to generate C code that includes Hoare-logic–style contracts as function comments, where the contracts are derived from parts of the stream program that the C function should implement. The Frama-C static analyzer [ 22 ] is then used to prove that the C code satisfies the contracts [ 39 ]. This approach is not fully automated: manual edits are sometimes required for the generated contracts to pass the analysis checks. 
+
+10 Conclusions 
+
+We have presented CopilotVerifier , a verifier that proves correspondences between high-level Copilot monitors and low-level C code generated by the Copilot compiler. Our aim was to increase confidence in the Copilot compiler while working within a realistic engineering budget, which we achieved through careful design choices and strategic use of existing tools. Currently, CopilotVerifier is limited in its treatment of modeling transcendental, floating-point functions such as sine, cosine, etc., which reduces its applicability. In the future, we would like to evaluate an approach where transcendental functions are left uninterpreted, but other floating-point functionality is modeled using IEEE-754 semantics. Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 27 
+
+In the future, we plan to use CopilotVerifier to construct assurance cases that are amenable to certification. Specifically, the NASA tool Ogma [ 53 ] uses Copilot to produce complete monitoring applications for NASA Core Flight System, Robot Operating System 2, and F Prime [ 11 ]. We plan to extend Ogma to leverage CopilotVerifier to produce evidence of assurance for the applications generated. In addition to demonstrating that the original Copilot spec matches the LLVM bitcode, we plan to extend Ogma to facilitate checking if the behavior of the C program is altered by the choice of compiler or compiler flags, via a combination of lightweight formal methods (fuzzing, differential testing, etc.). 
+
+Acknowledgements 
+
+We thank the reviewers for their feedback and suggestions. This manuscript has been co-authored by Ivan Perez, an employee of KBR under Prime Contract No. 80ARC020D0010 with the NASA Ames Research Center. Any opinions, findings, and conclusions or recom-mendations expressed in this material are those of the authors and do not necessarily reflect the views, either expressed or implied, of any of the funding organizations. The United States Government retains, and by accepting the article for publication, the publisher acknowledges that the United States Government retains, a non-exclusive, paid-up, irrevocable, worldwide license to publish or reproduce the published form of this work, or allow others to do so, for United States Government purposes. 28 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins 
+
+References 
+
+[1] 2026. The Core Flight System (cFS). https://github.com/nasa/cfs [2] Lennart Augustsson and Kent Petersson. 1994. Silly Type Families* DRAFT. (1994). [3] Haniel Barbosa, Clark W. Barrett, Martin Brain, Gereon Kremer, Hanna Lachnitt, Makai Mann, Abdalrhman Mohamed, Mudathir Mohamed, Aina Niemetz, Andres N ¨otzli, Alex Ozdemir, Mathias Preiner, Andrew Reynolds, Ying Sheng, Cesare Tinelli, and Yoni Zohar. 2022. cvc5: A Versatile and Industrial-Strength SMT Solver. In Tools and Algorithms for the Construction and Analysis of Systems - 28th International Conference, TACAS 2022, Held as Part of the European Joint Conferences on Theory and Practice of Software, ETAPS 2022, Munich, Germany, April 2-7, 2022, Proceedings, Part I (Lecture Notes in Computer Science, Vol. 13243) ,Dana Fisman and Grigore Rosu (Eds.). Springer, 415–442. https://doi.org/10.1007/978-3-030-99524-9 24 [4] Clark W. Barrett, Christopher L. Conway, Morgan Deters, Liana Hadarean, Dejan Jovanovic, Tim King, Andrew Reynolds, and Cesare Tinelli. 2011. CVC4. In Computer Aided Verification - 23rd International Conference, CAV 2011, Snowbird, UT, USA, July 14-20, 2011. Proceedings (Lecture Notes in Computer Science, Vol. 6806) , Ganesh Gopalakrishnan and Shaz Qadeer (Eds.). Springer, 171–177. https://doi.org/10.1007/978-3-642-22110-1 14 [5] Twan Basten. 1996. Branching bisimilarity is an equivalence indeed! Inform. Process. Lett. 58, 3 (1996), 141–147. [6] Sylvie Boldo and Guillaume Melquiond. 2011. Flocq: A unified library for proving floating-point algorithms in Coq. In 2011 IEEE 20th Symposium on Computer Arithmetic . IEEE, 243–252. https://doi.org/10.1109/ ARITH.2011.40 [7] Brett Boston, Samuel Breese, Joey Dodds, Mike Dodds, Brian Huffman, Adam Petcher, and Andrei Stefanescu. 2021. Verified cryptographic code for everybody. In CAV 2021 . https://doi.org/10.1007/978-3-030-81685-8 31 [8] Timothy Bourke, L ´elio Brun, Pierre- ´Evariste Dagand, Xavier Leroy, Marc Pouzet, and Lionel Rieg. 2017. A Formally Verified Compiler for Lustre. In Proceedings of the 38th ACM SIGPLAN Conference on Programming Language Design and Implementation (Barcelona, Spain) (PLDI 2017) . Association for Computing Machinery, 586–601. https://doi.org/10.1145/3140587.3062358 [9] Timothy Bourke, L ´elio Brun, and Marc Pouzet. 2019. Mechanized Semantics and Verified Compilation for a Dataflow Synchronous Language with Reset. Proc. ACM Program. Lang. 4, POPL, Article 44 (dec 2019), 29 pages. https://doi.org/10.1145/3371112 [10] Timothy Bourke, Paul Jeanmaire, Basile Pesin, and Marc Pouzet. 2021. Verified Lustre Normalization with Node Subsampling. ACM Trans. Embed. Comput. Syst. 20, 5s, Article 98 (sep 2021), 25 pages. https://doi.org/10.1145/3477041 [11] California Institute of Technology. 2026. F Prime. https://github.com/nasa/fprime [12] P. Caspi, D. Pialiud, N. Halbwachs, and J. Plaice. 1987. LUSTRE: a Declarative Language for Programming Synchronous Systems. In 14th Symposium on Principles of Programming Languages . 178–188. https: //doi.org/10.1145/41625.41641 [13] Manuel M. T. Chakravarty, Gabriele Keller, and Simon Peyton Jones. 2005. Associated type synonyms. In 
+
+Proceedings of the Tenth ACM SIGPLAN International Conference on Functional Programming (Tallinn, Estonia) (ICFP ’05) . Association for Computing Machinery, New York, NY, USA, 241–253. https: //doi.org/10.1145/1086365.1086397 [14] David Thrane Christiansen, Iavor S. Diatchki, Robert Dockins, Joe Hendrix, and Tristan Ravitch. 2019. Dependently Typed Haskell in Industry (Experience Report). Proc. ACM Program. Lang. 3, ICFP, Article 100 (July 2019), 16 pages. https://doi.org/10.1145/3341704 [15] Andrey Chudnov, Nathan Collins, Byron Cook, Joey Dodds, Brian Huffman, Colm MacC ´arthaigh, Stephen Magill, Eric Mertens, Eric Mullen, Serdar Tasiran, Aaron Tomb, and Eddy Westbrook. 2018. Continuous Formal Verification of Amazon s2n. In Computer Aided Verification , Hana Chockler and Georg Weissenbacher (Eds.). Springer International Publishing, Cham, 430–446. https://doi.org/10.1007/978-3-319-96142-2 26 [16] Koen Claessen and John Hughes. 2000. QuickCheck: a lightweight tool for random testing of Haskell programs. In Proceedings of the fifth ACM SIGPLAN international conference on Functional programming . 268–279. https://doi.org/10.1145/351240.351266 [17] Edmund Clarke, Daniel Kroening, and Flavio Lerda. 2004. A tool for checking ANSI-C programs. In 
+
+International Conference on Tools and Algorithms for the Construction and Analysis of Systems . Springer, 168–176. https://doi.org/10.1007/978-3-540-24730-2 15 Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 29 [18] Darren Cofer. 2021. Unintended Behavior in Learning-Enabled Systems: Detecting the Unknown Unknowns. In 
+
+2021 IEEE/AIAA 40th Digital Avionics Systems Conference (DASC) . 1–7. https://doi.org/10.1109/DASC52595. 2021.9594406 [19] Darren Cofer, Isaac Amundson, Ramachandra Sattigeri, Arjun Passiand Christopher Boggs, Eric Smith, Limei Gilham, Taejoon Byun, and Sanjai Rayadurgam. 2020. Run-Time Assurance for Learning-Enabled Systems. In 
+
+NASA Formal Methods: 12th International Symposium, NFM 2020, Moffett Field, CA, USA, May 11–15, 2020, Proceedings . Springer-Verlag, Berlin, Heidelberg, 361–368. https://doi.org/10.1007/978-3-030-55754-6 21 [20] Darren Cofer and Steven Miller. 2014. DO-333 Certification Case Studies. In NASA Formal Methods ,Julia M. Badger and Kristin Yvonne Rozier (Eds.). Springer International Publishing, Cham, 1–15. https: //doi.org/10.1007/978-3-319-06200-6 1 [21] National Research Council. 2014. Autonomy Research for Civil Aviation: Toward a New Era of Flight . The National Academies Press. [22] Pascal Cuoq, Florent Kirchner, Nikolai Kosmatov, Virgile Prevosto, Julien Signoles, and Boris Yakobowski. 2012. Frama-c. In International conference on software engineering and formal methods . Springer, 233–247. https://doi.org/10.1007/978-3-642-33826-7 16 [23] B. D’Angelo, S. Sankaranarayanan, C. S ´anchez, W. Robinson, Zohar Manna, B. Finkbeiner, H. Spima, and S. Mehrotra. 2005. LOLA: Runtime Monitoring of Synchronous Systems. In 12th International Symposium on Temporal Representation and Reasoning . IEEE, 166–174. https://doi.org/10.1109/TIME.2005.26 [24] Leonardo De Moura and Nikolaj Bjørner. 2008. Z3: An Efficient SMT Solver. In Proceedings of the Theory and Practice of Software, 14th International Conference on Tools and Algorithms for the Construction and Analysis of Systems (Budapest, Hungary) (TACAS’08/ETAPS’08) . Springer-Verlag, Berlin, Heidelberg, 337–340. [25] Robert Dockins, Adam Foltzer, Joe Hendrix, Brian Huffman, Dylan McNamee, and Aaron Tomb. 2016. Constructing Semantic Models of Programs with the Software Analysis Workbench. In Verified Software. Theories, Tools, and Experiments , Sandrine Blazy and Marsha Chechik (Eds.). Springer International Publishing, Cham, 56–72. https://doi.org/10.1007/978-3-319-48869-1 5 [26] Bruno Dutertre. 2014. Yices 2.2. In Computer Aided Verification , Armin Biere and Roderick Bloem (Eds.). Springer International Publishing, Cham, 737–744. [27] Yli `es Falcone, Klaus Havelund, and Giles Reger. 2013. A Tutorial on Runtime Verification. In Engineering Dependable Software Systems , Manfred Broy, Doron A. Peled, and Georg Kalus (Eds.). NATO Science for Peace and Security Series, D: Information and Communication Security, Vol. 34. IOS Press, 141–175. https://doi.org/10.3233/978-1-61499-207-3-141 [28] Federal Aviation Administration. 2009. Sense and Avoid (SAA) for Unmanned Aircraft Systems (UAS). [29] George Fink and Matt Bishop. 1997. Property-Based Testing: A New Approach to Testing for Assurance. 
+
+SIGSOFT Softw. Eng. Notes 22, 4 (jul 1997), 74–80. https://doi.org/10.1145/263244.263267 [30] GitHub. 2025. Copilot Verifier. https://github.com/Copilot-Language/copilot/tree/master/copilot-verifier [31] GitHub, Issue on Copilot. 2021a. Generated C code accesses stream buffer out of bounds. https: //github.com/Copilot-Language/copilot/issues/238 [32] GitHub, Issue on Copilot. 2021b. C translation doesn’t correctly select operations based on types. https: //github.com/Copilot-Language/copilot/issues/263 [33] GitHub, Issue on Copilot. 2021c. Basic example involving structs generates invalid C code. https: //github.com/Copilot-Language/copilot/issues/275 [34] GitHub, Issue on Copilot. 2021d. Delaying streams of arrays or structs produces C code that fails to compile with Clang. https://github.com/Copilot-Language/copilot/issues/276 [35] GitHub, Issue on Copilot. 2021e. Copilot-c99: C99 and interpretation of signum behave inconsistently for 0 and NaN. https://github.com/Copilot-Language/copilot/issues/278 [36] GitHub, Issue on Copilot. 2022a. Copilot-c99: appending values to a stream of arrays produces incorrect C99 code. https://github.com/Copilot-Language/copilot/issues/314 [37] GitHub, Issue on Copilot. 2022b. Copilot-c99: array has incomplete element type error when declaring stream with array of structs. https://github.com/Copilot-Language/copilot/issues/373 [38] GitHub, Issue on Copilot. 2022c. Copilot-c99: Streams of arrays result in C code with undefined behavior. https://github.com/Copilot-Language/copilot/issues/386 [39] Alwyn Goodloe. 2016. Challenges in high-assurance runtime verification. In International Symposium on Leveraging Applications of Formal Methods . Springer, 446–460. https://doi.org/10.1007/978-3-319-47166-2 31 30 Ryan G. Scott, Ivan Perez, Alwyn E. Goodloe, Mike Dodds, and Robert Dockins [40] Alwyn Goodloe and Lee Pike. 2010. Monitoring Distributed Real-Time Systems: A Survey and Future Directions . Technical Report NASA/CR-2010-216724. NASA Langley Research Center. [41] Hackage. 2025. Copilot-verifier: System for verifying the correctness of generated Copilot programs. https://hackage.haskell.org/package/copilot-verifier [42] Klaus Havelund. 2008. Runtime verification of C programs. In Testing of Software and Communicating Systems . Springer, 7–22. https://doi.org/10.1007/978-3-540-68524-1 3 [43] Joe Hendrix, Ben Selfridge, and Robert Dockins. 2020. What4: New Library to Help Developers Build Verification and Program Analysis Tools. https://galois.com/blog/2020/07/what4-new-library-to-help-devs-build-verification-program-tools/ [44] Tim Kelly and Rob Weaver. 2004. The goal structuring notation–a safety argument notation. In Proceedings of the dependable systems and networks 2004 workshop on assurance cases , Vol. 6. Citeseer. [45] Ramana Kumar, Magnus O Myreen, Michael Norrish, and Scott Owens. 2014. CakeML: a verified implemen-tation of ML. ACM SIGPLAN Notices 49, 1 (2014), 179–191. https://doi.org/10.1145/2578855.2535841 [46] Jonathan Laurent, Alwyn Goodloe, and Lee Pike. 2015. Assuring the guardians. In Runtime Verification .Springer, 87–101. https://doi.org/10.1007/978-3-319-23820-3 6 [47] Xavier Leroy. 2009. Formal verification of a realistic compiler. Commun. ACM 52, 7 (2009), 107–115. https://doi.org/10.1145/1538788.1538814 [48] Nuno P Lopes, Juneyoung Lee, Chung-Kil Hur, Zhengyang Liu, and John Regehr. 2021. Alive2: bounded translation validation for LLVM. In Proceedings of the 42nd ACM SIGPLAN International Conference on Programming Language Design and Implementation . 65–79. https://doi.org/10.1145/3453483.3454030 [49] Brian McClelland. 2021. Adding Runtime Verification to the Proteus Language . Ph. D. Dissertation. California State University, Northridge. [50] Brian McClelland, Daniel Tellier, Meyer Millman, Kate Beatrix Go, Alice Balayan, Michael J Munje, Kyle Dewey, Nhut Ho, Klaus Havelund, and Michel Ingham. 2021. Towards a systems programming language designed for hierarchical state machines. In 2021 IEEE 8th International Conference on Space Mission Challenges for Information Technology (SMC-IT) . IEEE, 23–30. https://doi.org/10.1109/SMC-IT51442.2021.00010 [51] AFE87 Project Members. 2020. AFE 87 - Machine Learning . Technical Report. Aerospace Vehicle Systems Institute. [52] Robin Milner. 1990. Operational and algebraic semantics of concurrent processes. In Formal Models and Semantics . Elsevier, 1201–1242. [53] NASA. 2021. Ogma. https://github.com/nasa/ogma Accessed 2026-09-29. [54] NASA. 2022. NPR 7150.2 NASA Software Engineering Requirements (Appendix D. Software Classifications). https://nodis3.gsfc.nasa.gov/displayDir.cfm?Internal ID=N PR 7150 002D &page name=AppendixD [55] George C. Necula. 1997. Proof-carrying code. In Proceedings of the 24th ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (Paris, France) (POPL ’97) . Association for Computing Machinery, New York, NY, USA, 106–119. https://doi.org/10.1145/263699.263712 [56] Carlos Paradis, Ivan Perez, and Misty Davies. 2023. Towards Streamlining Auditing for Compliance With Requirements in Open-Source Software at NASA. Journal of Systems and Software (2023). https: //ntrs.nasa.gov/citations/20230011257 [57] David Park. 1981. Concurrency and Automata on Infinite Sequences. In Proceedings of the 5th GI-Conference on Theoretical Computer Science . Springer-Verlag, Berlin, Heidelberg, 167–183. [58] Ivan Perez, Frank Dedden, and Alwyn Goodloe. 2020. Copilot 3 . Technical Report. NASA Langley Research Center. [59] Simon Peyton Jones, Dimitrios Vytiniotis, Stephanie Weirich, and Geoffrey Washburn. 2006. Simple unification-based type inference for GADTs. In Proceedings of the Eleventh ACM SIGPLAN International Conference on Functional Programming (Portland, Oregon, USA) (ICFP ’06) . Association for Computing Machinery, New York, NY, USA, 50–61. https://doi.org/10.1145/1159803.1159811 [60] Lee Pike, Alwyn Goodloe, Robin Morisset, and Sebastian Niller. 2010. Copilot: a hard real-time runtime monitor. In International Conference on Runtime Verification . Springer, 345–359. https://doi.org/10.1007/978-3-642-16612-9 26 [61] Lee Pike, Nis Wegmann, Sebastian Niller, and Alwyn Goodloe. 2012. Experience report: a do-it-yourself high-assurance compiler. In Proceedings of the 17th ACM SIGPLAN international conference on Functional programming . 335–340. https://doi.org/10.1145/2398856.2364553 Trustworthy Runtime Verification via Bisimulation (Extended Experience Report) 31 [62] Lee Pike, Nis Wegmann, Sebastian Niller, and Alwyn Goodloe. 2013. Copilot: monitoring embedded systems. 
+
+Innovations in Systems and Software Engineering 9, 4 (2013), 235–255. https://doi.org/10.1007/s11334-013-0223-x [63] Amir Pnueli, Michael Siegel, and Eli Singerman. 1998. Translation validation. In International Conference on Tools and Algorithms for the Construction and Analysis of Systems . Springer, 151–166. https://doi.org/10. 1007/BFb0054170 [64] Tahina Ramananandro, Paul Mountcastle, Beno ˆıt Meister, and Richard Lethin. 2016. A unified Coq framework for verifying C programs with floating-point computations. In Proceedings of the 5th ACM SIGPLAN Conference on Certified Programs and Proofs . 15–26. https://doi.org/10.1145/2854065.2854066 [65] RTCA 2011. Formal Methods Supplement to DO-178C and DO-278A. RTCA, Inc.. RCTA/DO333. [66] RTCA. 2011. Software Considerations in Airborne Systems and Equipment Certification. RTCA, Inc.. RCTA/DO-178C. [67] Michael Ryabtsev and Ofer Strichman. 2009. Translation validation: From simulink to c. In International Conference on Computer Aided Verification . Springer, 696–701. https://doi.org/10.1007/978-3-642-02658-4 57 [68] SAE International. 2010. Guidelines For Development Of Civil Aircraft and Systems. SAE International. ARP4754A. [69] Tom Schrijvers, Simon Peyton Jones, Manuel Chakravarty, and Martin Sulzmann. 2008. Type checking with open type functions. In Proceedings of the 13th ACM SIGPLAN International Conference on Functional Programming (Victoria, BC, Canada) (ICFP ’08) . Association for Computing Machinery, New York, NY, USA, 51–62. https://doi.org/10.1145/1411204.1411215 [70] Ryan Scott, Robert Dockins, Tristan Ravitch, and Aaron Tomb. 2021. Crux: Symbolic Execution Meets SMT-based Verification (Competition Contribution). https://doi.org/10.5281/zenodo.6147218 [71] Ryan G. Scott, Mike Dodds, Ivan Perez, Alwyn E. Goodloe, and Robert Dockins. 2023. Artifact for ”Trustworthy Runtime Verification via Bisimulation (Experience Report)” . https://doi.org/10.5281/zenodo.7978326 [72] Thomas Arthur Leck Sewell, Magnus O Myreen, and Gerwin Klein. 2013. Translation validation for a verified OS kernel. In Proceedings of the 34th ACM SIGPLAN conference on Programming language design and implementation . 471–482. [73] Aaron Tomb. 2020. Crux: Introducing Our New Open-Source Tool for Software Verification. https: //galois.com/blog/2020/10/crux-introducing-our-new-open-source-tool-for-software-verification/ [74] Jason M Upchurch, Cesar A Munoz, Anthony J Narkawicz, James P Chamberlain, and Maria C Consiglio. 2014. Analysis of Well-Clear Boundary Models for the Integration of UAS in the NAS . Technical Report. NASA Langley Research Center. [75] Rob J Van Glabbeek and W Peter Weijland. 1996. Branching time and abstraction in bisimulation semantics. 
+
+Journal of the ACM (JACM) 43, 3 (1996), 555–600. [76] Lucas Wagner, Alain Mebsout, Cesare Tinelli, Darren Cofer, and Konrad Slind. 2017. Qualification of a Model Checker for Avionics Software Verification. In NASA Formal Methods , Clark Barrett, Misty Davies, and Temesghen Kahsai (Eds.). Springer International Publishing, Cham, 404–419. https://doi.org/10.1007/978-3-319-57288-8 29 [77] Stephanie Weirich, Justin Hsu, and Richard A. Eisenberg. 2013. System FC with explicit kind equality. In 
+
+Proceedings of the 18th ACM SIGPLAN International Conference on Functional Programming (Boston, Massachusetts, USA) (ICFP ’13) . Association for Computing Machinery, New York, NY, USA, 275–286. https://doi.org/10.1145/2500365.2500599 [78] Jonathan Wilmot. 2005. A core flight software system. In Proceedings of the 3rd IEEE/ACM/IFIP international conference on Hardware/software codesign and system synthesis . 13–14. [79] Brent A. Yorgey, Stephanie Weirich, Julien Cretin, Simon Peyton Jones, Dimitrios Vytiniotis, and Jos ´e Pedro Magalh ˜aes. 2012. Giving Haskell a promotion. In Proceedings of the 8th ACM SIGPLAN Workshop on Types in Language Design and Implementation (Philadelphia, Pennsylvania, USA) (TLDI ’12) . Association for Computing Machinery, New York, NY, USA, 53–66. https://doi.org/10.1145/2103786.2103795
