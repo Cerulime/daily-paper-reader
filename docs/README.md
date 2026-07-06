@@ -6,37 +6,34 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-05
-- 运行时间：2026-07-05 21:06:21 UTC
+- 最新运行日期：2026-07-06
+- 运行时间：2026-07-06 21:01:35 UTC
 - 运行状态：成功
-- 本次总论文数：5
+- 本次总论文数：4
 - 精读区：2
-- 速读区：3
+- 速读区：2
 
 ### 今日简报（AI）
-今日精读两篇高分安全研究：用LLM自动化协议极端测试，以及移动端侧AI攻防体系全景梳理  
-最值得关注LLM生成针对性测试用例挖掘协议漏洞，以及移动AI面临的模型窃取、对抗样本等系统化攻击  
-建议关注LLM在安全自动化中的落地实践与移动AI隐私保护的模型级防御方案
-- 详情：[/202607/05/README](/202607/05/README)
+今天深入软件安全前沿，精读了两篇顶会论文，速读了两项多智能体与模型编辑研究。  
+最值得关注：Hamm-Grams 能从字节流中直接挖出高可读正则，让二进制分析自动化前进一大步；另一篇揭示 PyPI 中大量相似命名包实为供应链攻击的潜在跳板。  
+建议开发者加强审查依赖包的名称混淆风险，安全研究者不妨把 Hamm-Grams 的思路用到恶意代码特征提取上。
+- 详情：[/202607/06/README](/202607/06/README)
 
 ### 精读区论文标签
-1. [CornerCase: Automated Extremal Testing of Protocol Implementations using LLMs](/202607/05/2606.29124v1-cornercase-automated-extremal-testing-of-protocol-implementations-using-llms)  
+1. [Hamm-Grams: An Algorithm for Mining Regular Expressions of Bytes](/202607/06/2607.01445v1-hamm-grams-an-algorithm-for-mining-regular-expressions-of-bytes)  
    标签：评分：9.0/10、query:sys-security
-   evidence：针对协议实现的自动极值测试，以发现漏洞边界案例
-2. [SoK: Attack and Defense Landscape of Mobile On-device AI Systems](/202607/05/2607.00362v1-sok-attack-and-defense-landscape-of-mobile-on-device-ai-systems)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：针对移动端人工智能在异构CPU/GPU/NPU硬件上安全的系统化知识整理
+   evidence：基于正则表达式的恶意软件静态特征提取
+2. [Uncovering Similar but Different Packages in PyPI and Potential Security Threats](/202607/06/2606.29785v1-uncovering-similar-but-different-packages-in-pypi-and-potential-security-threats)  
+   标签：评分：8.0/10、query:sys-security
+   evidence：揭示PyPI中复制包的安全威胁
 
 ### 速读区论文标签
-1. [ML-Powered LDAP Reconnaissance Detection using Weak Supervision](/202607/05/2606.28917v1-ml-powered-ldap-reconnaissance-detection-using-weak-supervision)  
+1. [Minos: A Multi-Agent Collaborative Framework for Provenance-Based Backward Tracking](/202607/06/2607.00440v1-minos-a-multi-agent-collaborative-framework-for-provenance-based-backward-tracking)  
    标签：评分：7.0/10、query:sys-security
-   evidence：基于ML的运行时恶意LDAP侦察查询检测
-2. [Words Speak Louder Than Code: Investigating Cognitive Heuristics in LLM-Based Code Vulnerability Detection](/202607/05/2606.30587v1-words-speak-louder-than-code-investigating-cognitive-heuristics-in-llm-based-code-vulnerability-detection)  
+   evidence：基于溯源的APT攻击事后追溯分析
+2. [Mitigating Package Hallucinations in Large Language Models via Model Editing](/202607/06/2607.02052v1-mitigating-package-hallucinations-in-large-language-models-via-model-editing)  
    标签：评分：7.0/10、query:sys-security
-   evidence：研究认知偏差对基于大语言模型的代码漏洞检测准确性的影响
-3. [Trustworthy Runtime Verification via Bisimulation (Extended Experience Report)](/202607/05/2607.01363v1-trustworthy-runtime-verification-via-bisimulation-extended-experience-report)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：利用双模拟进行运行时验证，为编译后的C语言监控器生成正确性证明，属于动态分析技术。
+   evidence：模型编辑框架防止软件供应链中包幻觉的利用
 
 
 <div class="dpr-home-promo-card">
