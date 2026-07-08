@@ -6,52 +6,49 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-07
-- 运行时间：2026-07-07 21:26:53 UTC
+- 最新运行日期：2026-07-08
+- 运行时间：2026-07-08 21:23:54 UTC
 - 运行状态：成功
-- 本次总论文数：10
-- 精读区：7
-- 速读区：3
+- 本次总论文数：9
+- 精读区：5
+- 速读区：4
 
 ### 今日简报（AI）
-今日精读聚焦于执行追踪驱动的程序分析与安全检测，从模糊测试到固件漂移皆有高分突破。  
-最值得关注的是“执行分歧图”将控制流发现转化为高效Fuzzing反馈，以及通过运行时追踪自动检测安全关键固件的架构漂移。  
-建议读者重点关注动态追踪技术与系统安全、嵌入式场景的交叉应用，尤其是将程序行为建模用于攻击检测和自我修复。
-- 详情：[/202607/07/README](/202607/07/README)
+今日深入追踪9项安全攻防研究，从GPU功耗跨域攻击到隐藏算法复杂度漏洞全面扫描。  
+《Bit2Watt》证实了可借GPU负载远程扰动电网，《ShadowProbe》则能精准捕获软件里潜伏的高复杂度攻击面。  
+建议开发者立即排查算法逻辑炸弹，同时留意AI芯片的电源行为是否正被悄悄操控。
+- 详情：[/202607/08/README](/202607/08/README)
 
 ### 精读区论文标签
-1. [Execution Divergence Graphs:Effective Discovery of Control-Flows from Execution Traces as Fuzzing Feedback](/202607/07/2607.03396v1-execution-divergence-graphseffective-discovery-of-control-flows-from-execution-traces-as-fuzzing-feedback)  
+1. [Bit2Watt: A Cyber-Physical Vulnerability Exploiting GPU Workloads Across Power and Computing Infrastructures](/202607/08/2607.05993v1-bit2watt-a-cyber-physical-vulnerability-exploiting-gpu-workloads-across-power-and-computing-infrastructures)  
    标签：评分：10.0/10、query:sys-security
-   evidence：从执行轨迹构建控制流图作为模糊测试反馈用于漏洞检测
-2. [Detecting Architectural Drift in Safety-Critical Firmware through Runtime Trace Analysis](/202607/07/2607.03135v1-detecting-architectural-drift-in-safety-critical-firmware-through-runtime-trace-analysis)  
+   evidence：利用异构系统中的GPU工作负载，揭示安全挑战。
+2. [ShadowProbe: Language-Extensible Detection of Hidden Algorithmic Complexity Vulnerabilities](/202607/08/2607.05474v1-shadowprobe-language-extensible-detection-of-hidden-algorithmic-complexity-vulnerabilities)  
    标签：评分：9.0/10、query:sys-security
-   evidence：利用硬件辅助运行时跟踪检测安全关键固件架构漂移，属于动态分析技术
-3. [A Binary and System Integrated Analysis Approach for Securing the QUIC Protocol](/202607/07/2607.03149v1-a-binary-and-system-integrated-analysis-approach-for-securing-the-quic-protocol)  
+   evidence：检测软件中的隐藏算法复杂度漏洞
+3. [Complets: Universal Compartmentalisation and Programming Model For Arm Permission Overlay Extension 2](/202607/08/2607.05569v1-complets-universal-compartmentalisation-and-programming-model-for-arm-permission-overlay-extension-2)  
    标签：评分：9.0/10、query:sys-security
-   evidence：对已编译QUIC服务器进行二进制级别安全分析
-4. [LLM-Enhanced Hierarchical Heterogeneous Graph Representation Learning for Malicious Python Package Detection](/202607/07/2607.03350v1-llm-enhanced-hierarchical-heterogeneous-graph-representation-learning-for-malicious-python-package-detection)  
+   evidence：基于内存保护键的进程内隔离机制
+4. [Detecting Vulnerability-Inducing Commits via Multi-Stage Reasoning with LLM-Based Agents](/202607/08/2607.05772v1-detecting-vulnerability-inducing-commits-via-multi-stage-reasoning-with-llm-based-agents)  
    标签：评分：9.0/10、query:sys-security
-   evidence：基于大语言模型增强的图学习检测恶意Python包，一种用于软件供应链安全的静态分析方法
-5. [Data Structures for Private Token Transfers in TEE-Based Networks](/202607/07/2607.04032v1-data-structures-for-private-token-transfers-in-tee-based-networks)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：针对TEE机密智能合约网络中的存储访问模式攻击，提出新颖的数据结构防御
-6. [Securing Deep Learning Hardware: A Survey of Side-Channel Vulnerabilities and Countermeasures](/202607/07/2607.04055v1-securing-deep-learning-hardware-a-survey-of-side-channel-vulnerabilities-and-countermeasures)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：综述了深度学习硬件的侧信道攻击，直接针对含 GPU 的异构系统安全
-7. [RustMizan: A Compilable, Contamination-Aware Benchmarking Framework for Rust Vulnerabilities](/202607/07/2607.04729v1-rustmizan-a-compilable-contamination-aware-benchmarking-framework-for-rust-vulnerabilities)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：提供Rust代码漏洞检测基准，推动软件漏洞分析技术
+   evidence：基于LLM智能体的多阶段推理检测漏洞引入提交
+5. [Beyond Refusal: A Same-Lineage Study of Aligned and Abliterated LLMs for Vulnerability Analysis](/202607/08/2607.05842v1-beyond-refusal-a-same-lineage-study-of-aligned-and-abliterated-llms-for-vulnerability-analysis)  
+   标签：评分：8.0/10、query:sys-security
+   evidence：大语言模型辅助漏洞分析用于代码审查、分类与修复
 
 ### 速读区论文标签
-1. [Detecting Adversarial Evasion Attacks Against Autoencoder-Based Network Intrusion Detection Systems](/202607/07/2607.01194v1-detecting-adversarial-evasion-attacks-against-autoencoder-based-network-intrusion-detection-systems)  
+1. [Cloak and Detonate: Scanner Evasion and Dynamic Detection of Agent Skill Malware](/202607/08/2607.02357v2-cloak-and-detonate-scanner-evasion-and-dynamic-detection-of-agent-skill-malware)  
    标签：评分：7.0/10、query:sys-security
-   evidence：动态检测针对自编码器网络入侵检测系统的对抗性规避攻击
-2. [RES-DARE: Failure-Aware Expert Adaptation and Rollback-Safe Self-Repair for Intrusion Detection](/202607/07/2607.02687v1-res-dare-failure-aware-expert-adaptation-and-rollback-safe-self-repair-for-intrusion-detection)  
+   evidence：通过对SkillCloak规避框架的研究，提出对代理技能恶意软件的动态检测方法，利用运行时分析对抗静态扫描器规避。
+2. [ProvICS: A Provenance-based Intrusion Detection for Industrial Control Systems](/202607/08/2607.05989v1-provics-a-provenance-based-intrusion-detection-for-industrial-control-systems)  
    标签：评分：7.0/10、query:sys-security
-   evidence：具有动态自我修复能力的持续入侵检测，适应不断演变的威胁
-3. [CVE-TTP KG: Knowledge Graph Linking Software Vulnerabilities to Attack Behaviors](/202607/07/2606.31557v2-cve-ttp-kg-knowledge-graph-linking-software-vulnerabilities-to-attack-behaviors)  
+   evidence：基于溯源的IDS对因果行为进行动态分析以检测入侵
+3. [VeriChat: An Agentic Conversational AI Assistant for Hardware Security Verification](/202607/08/2607.01668v1-verichat-an-agentic-conversational-ai-assistant-for-hardware-security-verification)  
    标签：评分：6.0/10、query:sys-security
-   evidence：通过知识图谱将CVE与攻击行为关联
+   evidence：描述VeriChat硬件安全验证助手，利用检索增强生成提供上下文感知的安全指导，支持系统安全分析。
+4. [Overprivilege Analysis of Security Policies in Serverless Cloud Applications](/202607/08/2607.02875v1-overprivilege-analysis-of-security-policies-in-serverless-cloud-applications)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：分析无服务器IAM策略的过度权限以减小攻击面
 
 
 <div class="dpr-home-promo-card">

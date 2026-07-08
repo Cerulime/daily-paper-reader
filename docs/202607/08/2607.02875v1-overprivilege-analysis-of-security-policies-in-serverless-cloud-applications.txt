@@ -1,0 +1,752 @@
+Title: Overprivilege Analysis of Security Policies in Serverless Cloud Applications
+
+URL Source: https://arxiv.org/pdf/2607.02875v1
+
+Published Time: Tue, 07 Jul 2026 00:37:10 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Overprivilege Analysis of Security Policies in Serverless Cloud Applications 
+
+Elvis Yeboah-Duako 
+
+University of Massachusetts, Amherst 
+
+eyeboahduako@umass.edu 
+
+Pubali Datta 
+
+University of Massachusetts, Amherst 
+
+pdatta@umass.edu 
+
+Abstract —Serverless computing has seen rapid adop-tion in cloud deployments, yet the security implica-tions of its service-oriented programming model re-main poorly understood. Distributed, modular, and heterogeneous applications complicate the specification of precise security policies. Role-based access con-trol solutions such as Identity and Access Manage-ment (IAM) already exhibit pervasive misconfiguration problems, and the multiplicity of functions, services, and resources in serverless applications, together with frequent permission model changes by cloud providers, greatly increases the likelihood of policy misconfigura-tions. Consequently, policies are often overprivileged, thereby enlarging the attack surface and exposing sen-sitive cloud resources to compromise. We present a large-scale measurement study of over-privilege in real-world serverless applications, analyz-ing a curated dataset of 689 AWS Lambda applications comprised of 1,293 functions. To enable this study, we develop PrivLess, a static policy analysis frame-work that extracts function-to-resource interactions from application source code, derives an interaction-permission mapping, and reconciles inferred interac-tions with declared policies to quantify overprivilege. Our measurement reveals that overprivilege is systemic and severe across the serverless ecosystem: 47.7% of applications carry excess permissions with a significant privilege reduction potential of 99.65%. Applications with wildcard-defined permissions exhibited an average overprivilege ratio 274 × higher than those without. More critically, the excess permissions enable concrete attack vectors: 18.8% of applications hold unnecessary Privilege Escalation capabilities, and 12 applications had Defense Evasion permissions they did not need. 
+
+Index Terms —Access Control, Security Policy Anal-ysis, Serverless cloud security 
+
+I. Introduction 
+
+Identity and Access Management (IAM) frameworks (e.g., AWS IAM [4], Google IAM [27], Microsoft IAM [42]) enable developers to specify security policies for cloud applications. However, writing correct policies remains difficult, and developers frequently introduce misconfigu-rations and excessive privileges. This problem is exacer-bated in serverless environments, where modular, event-driven, stateless functions [54] must access many auxiliary services (e.g., data stores, messaging queues, logging), that makes least-privilege specification harder and expands the attack surface [39]. Over-privileged policies have con-tributed to high-impact breaches (e.g., SolarWinds [20]) and widespread incidents, with roughly 82% of enter-prises reporting security problems from misconfigured policies [38], [51] and aggregate financial losses exceeding USD 5 trillion [29]. Cloud platforms offer hundreds of services, each with numerous actions and resources requiring precise per-mission specifications. The ever-evolving nature of IAM permissions framework [32], [43], opaque service depen-dencies, and inadequate documentation for correlating policy components [25] complicate correct policy defini-tion. Moreover, in serverless applications, each function acts as a distinct security principal requiring specific authorizations. This function-level granularity compounds policy complexity even further. Consequently, developers resort to coarse-grained policies with wildcards to expedite deployment. Moreover, even initially secure policies can become overprivileged as cloud providers introduce finer-grained permissions for their services over time. Updating application policies to adopt these refined permissions is labor-intensive and often neglected, leaving existing policies with excessive privileges [14], [37]. Given the severity of this problem, we set out, in this work, to measure how overprivileged serverless cloud applications are in the wild. To this end, we sampled and analyzed 789 real-world applications with a total of 1,293 serverless functions, from our curated dataset of 3,363 serverless applications sourced from open-source repositories. The sample size comprised 622 JavaScript/-TypeScript, 151 Python, and 16 Go applications. We build PrivLess, a policy analysis framework to quantify overpriv-ilege in serverless application policies before deployment. PrivLess employs static analysis to extract all service and resource interactions from function source code, and automatically generates a comprehensive resource-action-permission mapping from current cloud provider documen-tation and resources. PrivLess further reconciles discov-ered interactions with required permissions to precisely characterize overprivilege in developer-defined policies. We implement PrivLess for the AWS Lambda ecosystem and evaluate it on our curated dataset. To the best of our knowledge, this is the first study to systematically measure overprivilege in real-world server-less cloud applications through systematic code-to-policy analysis. Our analysis reveals pervasive and systemic over-
+
+> arXiv:2607.02875v1 [cs.CR] 3 Jul 2026
+
+privilege: applications are granted an average of 418.75 permissions while requiring only 1.55 — a 270-fold excess at the mean and a 10 × excess at the median. Applica-tions with wildcards show a 99.02% privilege reduction potential, with 69.2% of these excess permissions granted on critical data services (e.g., S3, DynamoDB). Policy boundaries further shape the risks: function-specific poli-cies yield a 3.60 × overprivilege ratio versus 95.94 × for global policies (one policy for all functions) — a 26.7-fold difference. These findings complement and inform existing work on policy analysis. The industry has introduced tools such as AWS IAM Access Analyzer [3] and Google Security Command Center [26] to help minimize policy misconfig-urations. However, these tools operate on deployed con-figurations, identifying potential issues only after exces-sive privileges have been granted to cloud resources. In the research community, approaches like Valve [22] and Trapeze [1] track sensitive data flows but do not directly enforce permission boundaries. Policy generation tools [24], [30], [36], [45], [47] infer access policies from execution logs, runtime behavior, or developer annotations, requiring either significant manual effort or live deployment prior to generating recommendations. By providing the first characterization of overprivilege at scale, our measurement study establishes a concrete empirical foundation to guide the development of more effective, development-time least-privilege enforcement tools. In summary, our contributions are as follows:  
+
+> •
+
+We conduct a large-scale empirical analysis of server-less applications and provide new insights into com-mon IAM policy misconfigurations in serverless cloud applications. We quantify the extent of over-privilege and highlight opportunities to reduce it.  
+
+> •
+
+We create a dataset of 3,363 real-world serverless ap-plications (1908 JavaScript/TypeScript, 400 Python, 64 Go, and others) to support reproducible research in serverless cloud security.  
+
+> •
+
+We design a policy analysis framework for auto-matically reasoning about an optimal permission set needed to balance security and code functionality. 
+
+II. Background and Motivation 
+
+IAM policies govern access to resources by specifying allow or deny rules for specific actions and principals. An IAM policy statement comprises four main components (see Listing 1): (1) a security principal—the entity being authorized; (2) a resource—the system, service, or data to be accessed; (3) actions—the operations the principal can perform on the resource; and (4) an effect—either allow or deny. In serverless computing, each Lambda function serves as a security principal and must be granted the necessary permissions to access protected resources. Listing 1: Example IAM Policy statement     
+
+> funcA : iamRoleStatements : -Effect : Allow Action : -" dynamodb : Get * " Resource : " accounts - table "
+
+1) IAM Policy Definition Types.: In serverless environ-ments, IAM policies can be defined globally so that all functions in an application inherit the same level of autho-rization ( Global policies ). Such policies can be inherently overly permissive, as not all functions require the same privileges. On the other hand, IAM policies can be defined with custom authorizations for each function ( Function-based policies ). While this is the recommended way to define policies, they can still be overly permissive when a function’s permission set exceeds the required level. Moreover, when many individual functions are considered, defining policies for them becomes harder to reason about across varying levels of function complexity. As a result, developers sometimes favor global security policies, accept-ing the associated security vulnerabilities and risks [44]. 
+
+2) Wildcard usage in IAM policies.: Wildcards match multiple actions or resources by using pattern matching. In Listing 1, dynamodb:Get* is a prefix wildcard that allows a function to perform all DynamoDB actions beginning with 
+
+Get . Service-level wildcards are more permissive: s3:* 
+
+grants all 106 AWS S3 actions to a function, yet most ap-plications require only a small subset. The most permissive wildcard is the full wildcard ( *), which grants all possible actions on all AWS services—a common misconfiguration in practice. Similar wildcard patterns apply to resources: resource identifiers can be specified as full wildcards (all resources in the tenant), service wildcards (all resources of a given service), or prefix wildcards (resources matching a specific path). These resource wildcards are equally problematic, as they grant access far beyond what most functions require. 
+
+3) Managed Policies.: Managed policies are predefined security policies designed for common use cases to simplify permission management. They assist developers with lim-ited expertise in policy definition by bundling necessary permissions for routine tasks. While managed policies represent an improvement over wildcards, they frequently grant permissions broader than an application requires, potentially introducing security risks. Moreover, because developers do not control managed policies, updates by cloud providers or administrators can have unintended consequences. A notable example occurred in December 2021, when AWS inadvertently added the s3:GetObject 
+
+permission to the AWSSupportServiceRolePolicy man-aged policy, despite its intention to provide only metadata visibility [2]. This incident illustrates how changes to man-aged policies can be difficult to track and difficult to reason about, emphasizing the need for tools that continuously audit actual permission requirements rather than relying on static, cloud-provider-defined policies. F1      
+
+> F3
+> F4
+> Get
+> Delete
+> Create
+> F2 F5
+> List Update
+> DynamoDB
+> Table
+> Scan
+> Query
+> All granted
+> Permissions
+> PutItem
+> GetItem
+> UpdateItem
+> DeleteItem
+> Default IAM Policy for the Serverless App
+> F1
+> F3
+> F4
+> Get
+> Delete
+> Create
+> F2 F5
+> List Update
+> DynamoDB
+> Table
+> Generated IAM Policy for the Serverless App
+> Scan
+> Query
+> Color Access
+> Permissions
+> PutItem
+> GetItem
+> UpdateItem
+> DeleteItem
+
+Fig. 1: Overprivilege widens the blast radius by granted functions permissions they do not require. 
+
+4) Motivating Example.: To illustrate the overprivilege problem concretely, consider a representative serverless application from our dataset 1 that implements a task-management API. The application comprises five server-less functions that interact with a single DynamoDB table. It has a global policy with 6 permissions: dynamodb:Query ,
+
+dynamodb:Scan , dynamodb:GetItem , dynamodb:PutItem ,
+
+dynamodb:UpdateItem , and dynamodb:DeleteItem , as shown in Figure1. However, analyzing the application code reveals that each function required only a single permission. For example, the List function required only 
+
+dynamodb:Scan to retrieve tasks, yet it was granted 
+
+dynamodb:DeleteItem and dynamodb:UpdateItem . If this function is compromised through a code injection vulner-ability or malicious dependency, an attacker could exploit these excess permissions to delete entire tables or corrupt all task records—causing immediate data loss and denial of service. Our analysis, shown in Figure 1, identifies this over-privilege and recommends a reduced permission set needed by each function. Applying these refined permis-sions achieves an 83.3% reduction in privileges, substan-tially limiting an attacker’s ability to cause damage while preserving all legitimate functionality. 
+
+III. Threat Model and Assumptions 
+
+We consider an adversary whose objective is to ex-ploit overprivileged serverless function’s IAM execution role to access sensitive cloud resources reachable from the function, and extend their reach beyond the com-promised function. With excess permissions, an attacker can perform many unauthorized actions including the following: (i) exfiltrate data from S3 buckets, DynamoDB tables, or Secrets Manager entries that the function was never intended to access; (ii) move laterally to services unrelated to the function’s purpose; (iii) escalate privi-leges (e.g., in AWS, via actions such as iam:PassRole 
+
+or sts:AssumeRole ) to acquire broader permissions; and (iv) establish persistence by creating new resources or mod-ifying existing policies. We assume that developer-defined policies are function-ally correct and authorize the function to perform its 
+
+> 1App anonymized for responsible disclosure
+
+intended operations. However, we make no assumption about the minimality of these policies; they may grant sig-nificantly more permissions than necessary for operational purposes. This allows PrivLess to use developer policies as an authoritative reference for legitimate function behavior while still identifying and quantifying over-privilege. We do not consider malicious developers (insider threat), compromise of cloud infrastructure, or resource-based policies (e.g., Lambda resource policies) that grant access independently of the execution role. 
+
+IV. Serverless Applications Dataset 
+
+To the best of our knowledge, there is only one publicly available dataset of serverless applications [45]. However, that dataset was curated in 2021, and the serverless ecosystem on GitHub has grown substantially since then. To address this gap, we curated a new dataset as described below. We focus on the Serverless Framework [49] because it is a widely adopted serverless deployment tool, and has standardized configuration that enables consistent large-scale static analysis without external policy lookups. 
+
+Data Collection. We curated our dataset using amulti-stage filtering of GitHub repositories. First, we queried GitHub’s Search API for repositories explicitly tagged with ”serverless” in their metadata, which returned 167,290 repositories. To filter out experimental or incom-plete projects, we applied a minimum threshold of 10 GitHub stars and excluded repositories created before 2014, when serverless computing emerged. This initial filtering reduced the dataset to 5,227 repositories, of which 69% had been updated within the past year, indicating active maintenance. The collection phase was conducted over three days (October 17–19, 2025). Next, we examined the cloned repositories to identify those built with the Serverless Framework [49] by checking for the presence of a serverless.y {a}ml configuration file, which is required to use the framework. This filtering yielded 1,273 repositories. Finally, we accounted for monorepository practices (large repositories containing multiple independent ap-plications) by extracting each serverless application as a separate entity and excluding non-serverless applications. This extraction process identified 3,714 applications from the 1,273 repositories. Of these, 351 applications (9.45%) were excluded due to parsing failures: invalid configuration syntax (82), unimplemented intrinsic function calls (17) such as Fn::FindInMap , Fn::Sub , and Fn::ImportValue 
+
+that required live API access; conversion errors (89) from unhandled event types and type mismatches; and missing provider or runtime sections (163) required for analysis. Our final dataset contained 3,363 serverless applications. Request Extraction   
+
+> Source
+> Code
+> Config
+> File
+> Trace & Resolve
+> Resource IDs
+> IAM Permission
+> Knowledge Base
+> Entry
+> Functions Call
+> Graph
+> Extract
+> Service
+> Requests
+> Infer minimal
+> Privileges
+> Generalize
+> Resource IDs
+> Relax
+> Privileges
+> Resource Identification Policy Generation
+> PrivLess
+> Policy
+
+Fig. 2: Overview of PrivLess’s source code analysis for minimal policy generation TABLE I: Serverless Projects by Cloud Provider        
+
+> Cloud Provider App Count (%)
+> AWS 2553 (75.91%) Scaleway 41 (1.22%) Azure 39 (1.16%) Google 29 (0.86%) Others (OpenWhisk, Cloudflare, etc) 701 (20.85%)
+> Total 3363 (100%)
+
+Cloud Provider Distribution. As shown in Table I, the dataset is heavily skewed toward AWS. Amazon Web Ser-vices (AWS) dominates with 2,553 applications (75.91%), while Microsoft Azure Functions and Google Cloud Func-tions account for 39 (1.16%) and 29 (0.86%), respec-tively. The remaining 20.85% of applications use alterna-tive providers, including OpenWhisk, Tencent, Cloudflare, Kubeless, and OpenFaaS. 
+
+V. Methodology 
+
+We designed PrivLess, a policy overprivilege analysis pipeline that quantifies and reduces overprivilege in server-less applications. At its core, PrivLess analyzes application source code to extract all function-to-cloud-service interac-tions (i.e., service requests), generates minimal permission sets based on the observed interactions, and reconciles them with developer-defined IAM policies to identify ex-cessive permissions. It then synthesizes refined policies containing only necessary privileges (Figure 2). To enable this analysis, we first construct an offline curated IAM Knowledge base that maps each API endpoint (SDK call) to its minimum required permissions. 
+
+A. IAM Permission Knowledge Base 
+
+Determining whether a serverless function holds ex-cess permissions requires knowing the minimum permis-sion(s) each service request actually needs. While cloud providers document which permissions are required for specific actions, this information is fragmented across mul-tiple sources(e.g., SDK documentation, API references, managed policies) and is often incomplete or difficult to reconcile. To address this, we construct a curated IAM Knowledge Base by running six complementary extraction strategies over the provider’s SDK artifacts and public documentation, then converging their outputs into a single confidence-annotated registry. 
+
+a) Extraction strategies.: We employ six comple-mentary strategies (#S1–Direct mapping, #S2–Regex mining, #S3–Semantic annotations, #S4–Heuristic rules, #S5–Authorization reference, #S6–Managed policies) to construct the curated Knowledge Base. Table II sum-marizes each strategy’s signal, extraction method, and data sources. #S1 and #S5 form the backbone: #S1 derives a primary permission for every operation using the cloud provider’s naming convention, while #S5 pro-vides the authoritative enumeration of valid IAM actions. Any permission #S1 derives that is absent from #S5 is flagged not in docs . #S3 contributes the most reliable cross-service signals, as its annotations are embedded in the SDK’s formal service model. #S2 and #S4 surface conditional and implicit permissions not found in formal documentation, prioritizing recall over precision. Finally, #S6 acts as a statistical validator: cross-service permis-sions whose caller-to-callee service pair never appears in the provider’s managed or predefined policies are down-weighted as likely false positives. 
+
+Algorithm 1: IAM Knowledge Base Convergence 
+
+Input: hits : strategy → operation data 
+
+valid : authoritative reference action set 
+
+Output: primary : list of ⟨permission , conf ⟩ pairs  
+
+> 1
+
+σ ← {}  
+
+> 2
+
+foreach strategy s with primary permission p in hits [s] do  
+
+> 3
+
+σ[p] += ws 
+
+> 4
+
+end  
+
+> 5
+
+p∗ ← arg max p σ[p] 
+
+> 6
+
+if σ[p∗] ≥ 4 then conf ← high  
+
+> 7
+
+else if σ[p∗] ≥ 2 then conf ← medium  
+
+> 8
+
+else conf ← low  
+
+> 9
+
+return [⟨p∗, conf ⟩]
+
+b) Convergence and confidence.: The outputs of the six strategies are merged per ⟨service , operation ⟩ pair via weighted voting with weights w#S5 = w#S3 = 3, w#S1 = 2, 
+
+w#S2 = w#S4 = 1. Algorithm 1 details the core con-vergence process. For each permission candidate p, we accumulate the weights of all strategies that identified it, selecting the highest-scored candidate p∗ and assigning confidence based on the cumulative score: σ ≥ 4 ⇒ high ;
+
+σ ≥ 2 ⇒ medium ; otherwise low . Post-convergence, quality flags may be applied to annotate entries with known limitations: for example, services whose IAM nam-ing is incompatible with the 1:1 permission-to-operation mapping, or permissions derived by strategies but absent from the authoritative reference source. These flags inform downstream users of the knowledge base about entry TABLE II: IAM permission extraction strategies (cloud-agnostic).                                                          
+
+> ID Strategy Signal Source (Sample per provider)
+> #S1 Direct mapping Leverages near-universal naming conventions mapping of cloud SDK methods to their corresponding service permissions or actions AWS: AWS SDK (e.g., botocore service-2.json) [6]; Google Cloud: API client li-braries [17]; Azure: Azure SDK [12] #S2 Regex mining Extracts conditional permissions embedded in prose documentation in code, keyed to the parameter that triggers them AWS: botocore doc strings [6]; Google Cloud: Cloud API documentation [16]; Azure: API reference [8] #S3 Semantic annotations Machine-readable permission annotations authored by the cloud provider’s service team, providing cross-service dependency signals AWS: AWS SDK models (Smithy) [7]; Google Cloud: API definitions [15]; Azure: OpenAPI definitions [10] #S4 Heuristic rules Structured rule table encoding cross-service patterns (encryption, identity delegation, networking, container registries) that fire on matching parameter names Parameter-shape analysis from service SDK specifications (provider-agnostic) #S5 Authorization reference Ground-truth enumeration of all valid actions/permis-sions; serves as both data source and validation corpus AWS: IAM Authorization Reference [5]; Google Cloud: IAM Roles Reference [19]; Azure: RBAC Built-in Roles [11] #S6 Provider managed policies Service-to-service dependency index derived from cloud-provider-managed and service-linked policies; flags implausible cross-service entries AWS: Managed policies corpus [55]; Google Cloud: Predefined roles [18]; Azure: Built-in roles [9]
+
+confidence and applicability. Conditional and cross-service permissions are converged using the same weighted scoring and confidence assignment process. 
+
+c) Runtime resolution.: At analysis time the registry is queried with a ⟨service , operation , params ⟩ triple. Con-ditional permissions are included only when their trigger parameter is present in the call, narrowing the permis-sion set to what the specific invocation actually requires. This results in a per-function minimal permission set Rf
+
+(defined formally in Section V-B3) used to compute over-privilege as Gf \R f , where Gf is the permission set granted to function f ’s execution role [46]. 
+
+B. Source-Code Analysis 1) Request extraction: With the IAM knowledge base setup, we analyze application source code statically to identify all interactions between a defined serverless func-tions and cloud services. A function fi may invoke one or more service API endpoints (wrapped by the cloud provider’s SDKs). We refer to the set of statically de-termined API calls as service requests, R. Each request 
+
+ri = (fi, a i, q i) ∈ R consists of a service action ai
+
+(e.g., s3.getObject ) and a set of parameters qi (e.g., 
+
+(Bucket=bucket, Key=key) ). First, given a serverless app, we parse the configura-tion file to identify the entry functions requiring privi-lege assignment. Then, for each function, we construct a call graph to identify dependent functions and modules, ensuring that privileges required by such functions or inter-procedural calls are properly attributed to the entry function. We then trace the instantiations and use of a cloud provider’s imported SDK in the code to extract all the service requests, R invoked by the functions. R is passed to the next phase, which infers the resource objects targeted by these requests. 
+
+2) Resource Identification: The parameters, qi, in a given service request, ri, may contain resource identifiers that the request targets. Such resource IDs (e.g., S3 bucket names or DynamoDB table names) are essential for ensuring that access controls are properly scoped to the intended resources. While many resource values are dynamically provisioned, we use data flow analysis [34] to trace parameter variables to their concrete values where statically determinable—from literal assignments, environment variables, or the serverless configuration file. Since multiple parameters may exist but only a subset specifies resources, we curate a resource key mapping for all applicable services based on provider’s documentation and attempt resource ID resolution only for parameters present in this mapping. Once a resource ID is success-fully resolved, we replace the variable name in the initial request with the resolved ID. Otherwise, we retain the first declared or instantiated value—typically an environment variable—that flows into the parameter. We argue that, although static analysis cannot capture all resource IDs due to their dynamic nature, developers typically know which resources they intend to secure, making explicit specification straightforward. Moreover, by preserving un-resolved environment variables in the policy, they resolve correctly to the intended resources at runtime. 
+
+3) Policy Generation: Given the updated requests, R,PrivLess generates the final IAM policy through four sequential steps: (1) A Permission Inference Engine queries the knowledge base for each request to produce the per-function inferred permission set Rf ; (2) the Resource Generalizer consolidates resource identifiers into prefix wildcards, producing generalized requests GR ; (3) a re-laxation step refines Rf against the developer’s declared policy, yielding the relaxed set R∗ 
+
+> f
+
+; and (4) the Policy Compiler assembles GR and R∗ 
+
+> f
+
+into the final policy PN .
+
+Permission Inference. Given the set of requests, R,the Permission Inference Engine resolves the minimum IAM permissions required for each request by query-ing the knowledge base (Section V-A). For each request 
+
+ri = ( fi, a i, q i), the knowledge base is queried with the triple ⟨service , a i, q i⟩: it returns the primary IAM action and any parameter-triggered conditional permissions. For example, s3.getObject with VersionId in qi resolves to s3:GetObjectVersion , and to s3:GetObject without it. Moreover, conditional cross-service permissions (e.g., 
+
+kms:GenerateDataKey when an SSE-KMS key parameter is present) are included only when the triggering param-eter is present in qi. The union of permissions resolved across all ri ∈ R with fi = f constitutes the per-function inferred required set Rf .
+
+Resource Generalization. Serverless applications of-ten access multiple objects or resources from a shared location. For example, an application may request these files from an S3 bucket: bucket/images/image1.jpg , buck-et/images/image2.jpg , bucket/images/image3.jpg , and so on. Resource generalization summarizes these requests into a prefix wildcard that represents the shared directory: 
+
+bucket/images/* . This allows PrivLess to generate a single IAM policy statement that grants the applicable function the necessary permissions for all objects in the directory, rather than creating separate statements for each individ-ual object—an approach that would result in a complex and unwieldy policy. Moreover, this ensures that the gen-erated IAM policy can accommodate future requests to resources in the same path without modification. The Resource Generalizer groups the requests, R, by function, fi. We limit resource generalization to requests made by the same function to ensure that the generated IAM policy is specific to each function’s operations and does not inadvertently grant other functions access to resources they do not require. For each group of requests, the Resource Generalizer examines the resource IDs in 
+
+qi to identify and generate prefix wildcards for resources sharing a common path. The common prefix, cp i, becomes the generalized resource identifier for all requests in that subset. Resources with unique paths are preserved without generalization. Finally, PrivLess outputs a set of general-ized requests, GR .
+
+Privilege Relaxation. Taking Rf (the per-function in-ferred required set from permission inference) and Gf (the developer-defined grant set for function f , parsed from the framework configuration) as inputs, this step addresses two limitations of purely static inference. First, Rf may contain permissions the developer never intended to grant. Second, implicit dependencies absent from explicit SDK calls—such as runtime-emitted log writes—may be missing from Rf , causing legitimate permissions to be incorrectly flagged as over-privileged. PrivLess applies a two-pass relaxation step. Pass 1(Bounding). Let ˆGf denote the wildcard-expanded devel-oper grant set, where patterns such as svc:* or svc:Put* 
+
+are treated as covering all matching actions. Any permis-sion in Rf not covered by ˆGf is evicted, yielding Rf ∩ ˆGf .This bounds the inferred set strictly by developer intent, given the assumption that developer-defined permissions are functional(III). Any false-positive permissions gener-ated by the knowledge base are thereby corrected. 
+
+Pass 2 (Augmentation). Developer permissions not yet in Rf are candidates for augmentation to recover actions the static analysis may have missed. Unre-stricted augmentation—admitting any developer permis-sion for a service statistically related to one the function uses—restores over-privilege that per-function scoping is designed to eliminate. We instead apply three comple-mentary filters, all of which must hold for a candidate permission p ∈ G f \ R f to be admitted. Let svc( p) denote the service prefix of permission p,svcs( S) = {svc( p) | p ∈ S}, Rapp = ⋃ 
+
+> g∈F
+
+Rg the union of inferred sets across all functions F in the application, and level( p) the IAM access level of p (e.g., Read, Write, List) drawn from the knowledge base.  
+
+> •
+
+A (Direct service). svc( p) ∈ svcs( Rf ): augmenta-tion is restricted to services PrivLess directly observed for this function. Cross-service dependency is not a sufficient criterion; the co-occurrence of two services in the dataset does not imply that every permission of the dependent service is required by this function.  
+
+> •
+
+B (App-level static evidence). p /∈ Rapp : if PrivLess generated p for any other function in the same application, that demonstrates p is statically observable in this codebase. Its absence from Rf is therefore evidence that function f does not exercise it, not that the analysis missed it.  
+
+> •
+
+C (Access-level compatibility). level( p) is com-patible with the access levels already present in Rf
+
+for service svc( p). A function whose detected calls are read-level should not receive write-level developer permissions through augmentation. When level( p) is absent from the knowledge base the filter passes conservatively. 
+
+R∗ 
+
+> f
+
+= (Rf ∩ ˆGf
+
+) ∪
+
+{
+
+p ∈ G f \ R f
+
+∣∣∣
+
+svc( p) ∈ svcs( Rf )
+
+︸ ︷︷ ︸
+
+> A
+
+∧ p / ∈ R app 
+
+︸ ︷︷ ︸
+
+> B
+
+∧ level comp( p, Rf )
+
+︸ ︷︷ ︸
+
+> C
+
+}
+
+Because all augmented permissions are drawn from Gf ,the relaxed set R∗ 
+
+> f
+
+is always a subset of ˆGf : the policy is grounded in developer intent and never broader than what the developer granted. The relaxation is configurable and can be disabled when the knowledge base alone is sufficient (e.g., an authoritative permission mapping from a Cloud provider is provisioned). 
+
+Policy Compilation Finally, the Policy Compiler takes 
+
+GR and the per-function relaxed permission sets R∗ 
+
+> f
+
+as inputs and assembles them into IAM policy statements 
+
+PN , grouping by function and then by resource. For each resource accessed by a function, a single policy statement is generated that assigns the corresponding permissions. For instance, In an AWS serverless application, if a func-tion issues three requests r1, r 2, r 3 where r1 and r3 are read and write requests to access an AWS S3 resource 
+
+bucket/images/ and r2 is a read request to resource buck-et/videos/ , the Policy Compiler generates: 
+
+> iamRoleStatements: - Effect: "Allow" Action: ["s3:GetObject", "s3:PutObject"] Resource: "bucket/images/" - Effect: "Allow" Action: ["s3:GetObject"] Resource: "bucket/videos/"
+
+The aggregated policy PN corresponds to ⋃ 
+
+> f
+
+R∗ 
+
+> f
+
+and is compared against the developer-defined grant set ⋃ 
+
+> f
+
+Gf to quantify over-privilege as (⋃  
+
+> f
+
+Gf
+
+) \ (⋃  
+
+> f
+
+R∗
+
+> f
+
+): permissions granted but never required by the application. 
+
+VI. Implementation 
+
+Static Analysis Tool: We implemented a prototype of PrivLess using CodeQL [48] for static and data flow analy-sis of source code, with Python orchestrating, processing, and analyzing results. CodeQL’s semantic code analysis engine was chosen for its rich, dedicated query language, which enables seamless retrieval of information from its relational database representation of application source code. 
+
+Measurement Scope. The dominance of AWS (75.91% of applications) in our dataset (Sec IV) aligns with its leading position in the serverless computing market [21]. More importantly, a structural property of the Serverless Framework’s AWS integration makes static over-privilege analysis tractable: developer-defined IAM permissions can be declared inline within the application configuration file ( serverless.yml ), making the developer-granted per-mission set G directly accessible to static analysis. In contrast, Google Cloud Functions and Azure Functions use fundamentally different permission models. Both providers bind permissions to service accounts or managed identities through out-of-band operations— gcloud CLI role bind-ings [28] or Azure RBAC assignments [41]—that reside outside the application repository. Consequently, this mea-surement study focuses on AWS serverless applications, as developer-defined permissions are unavailable in source code for other providers, precluding over-privilege quan-tification. 
+
+Supported Programming Languages. Based on the distribution of programming languages in AWS serverless applications in our dataset (Table III), we implemented our analysis pipeline for the three most prevalent lan-guages: JavaScript/TypeScript, Python, and Go, which collectively account for 86.2% (2,244) of applications. This focus aligns with industry trends identifying these lan-guages as the most popular for serverless workloads [21], [52]. Our implementation leverages language-specific Cod-eQL queries for semantic code analysis, while the core analysis pipeline—data flow tracing, resource resolution, and policy generation—is implemented in Python and re-mains language-agnostic. Support for additional languages (Java, C#, Ruby, etc.) can be readily extended by writing analogous CodeQL queries for those languages. TABLE III: Programming Languages in AWS Serverless Applications        
+
+> Language App Count (%)
+> JavaScript/TypeScript 1829 (71.6%) Python 363 (14.2%) Go 52 (2.0%) Java 40 (1.6%) Other 269 (10.5%)
+> Total 2553 (100%)
+
+Analyzed Applications and Functions Of the 2,244 serverless applications written in the supported program-ming languages, only 886 (39.48%) contained at least one serverless function with an IAM policy defined, mak-ing them suitable for over-privilege analysis. However, 97 of these 886 applications (10.95%) failed to com-plete the analysis pipeline due to CodeQL database cre-ation failures, query execution timeouts, incompatible Node/Python/Go versions, or language misclassifications. These applications were excluded from the study. The final analyzed dataset comprised 789 serverless applications containing a total of 1,293 serverless functions. However, the full dataset of 3,363 multi-cloud-and-language server-less applications (as described in Section IV) would be made available to support varying research in serverless cloud security. 
+
+VII. Evaluation: Policy Analysis 
+
+We run PrivLess on our dataset on a virtual machine with a 48-core AMD EPYC 7643 processor, 16 GB of memory, and 285 GB of disk space, running Ubuntu 22.04.5 LTS. 
+
+A. Default Policy Analysis 1) Policy Type Distribution: Across all 789 analyzed ap-plications, global-only IAM policies dramatically dominate at 88.6% (699 apps), revealing that developers overwhelm-ingly default to granting a single permission set across all functions, which inadvertently increases the blast radius of the application. This vulnerability was seen in breaches like the Capital One breach [35], where a compromised function accessed S3 buckets it was not supposed to access. On the other hand, only 6.6% (52 apps) followed the recommended approach for least-privilege enforcement by defining function-based IAM policies. We show in later analysis that even these scoped policies often are similarly overprivileged. Also, a small fraction (2.4%, 19 apps) defined both global and function-based policies, which can be ideal for scenarios where all functions require similar access on some resources, in addition to other scoped permissions. Finally, there were some 19 apps (2.4%) that relied on CloudFormation default roles outside the application’s control, making them invisible to our static analysis pipeline. Fig. 3: Wildcard distribution for permissions and resources across the dataset. 166 (21%) applications had both permission and resource wildcards, indicating significant overprivilege. 
+
+2) Action Wildcard Distribution: Wildcard usage in permissions represents one of the most serious forms of over-privilege in IAM policies. In our dataset, 23.3% (184 apps) included at least one wildcard permission, indicating widespread misuse of this dangerous pattern. Table IV breaks down the severity distribution. The most critical findings are the 10 applications (5.4% of 184) using full wildcards ( *), which grant unrestricted access to all AWS services and resources. Compromise of any function in these applications amounts to near-complete account takeover: an attacker could create IAM users, exfiltrate data across all services, or establish per-sistent backdoors with no technical constraints. This rep-resents a fundamental break of the security model. More prevalent are the 163 applications (88.6%) employ-ing service-level wildcards ( <service>:* ), which allows all actions within specific services (e.g., S3, DynamoDB). While more limited than full wildcards, these still violate least-privilege principles by granting unnecessary permis-sions within each service. A function that only reads S3 configuration should never have permissions to delete buckets, modify ACLs, or make data public—yet service wildcards grant all of these capabilities. Finally, 20 applications (10.9%) used prefix wildcards (<service>:<prefix>* ), such as dynamodb:Batch* ,granting groups of related actions when functions typically need only one or two specific operations. While the blast radius is smaller, this pattern still demonstrates inadequate permission governance. TABLE IV: Wildcard Usage in Permissions and Resources           
+
+> Wildcard Type Permissions Resources
+> Full 10 (5.4%) 354 (56.2%) Service 184 (88.6%) 154 (24.4%) Prefix 15 (10.9%) 253 (40.2%)
+> Total 184 630
+
+3) Resource Wildcard Distribution: Resource wildcards compound the over-privilege problem. In our study, 79.8% (630 apps) used wildcards in their resource definitions, demonstrating how action-level permissions are amplified by overly broad resource scopes (Table IV). Most criti-cally, 354 applications (56.2% of 630) used full resource wildcards ( Resource: "*" ), allowing functions to access any resource in the account regardless of ownership or purpose. The consequences are severe. A policy granting 
+
+s3:GetObject on Resource: "*" permits functions to read every S3 bucket in the account, including those containing credentials, application secrets, customer PII, and data from other applications. A single compromised function can thus trigger account-wide data exfiltration. This exact pattern enabled the Capital One breach [35], where wildcard resources exposed more than 700 S3 buck-ets and sensitive customer data. Service-scoped resource wildcards appear in 24.4% (154 apps), such as Resource: "arn:aws:dynamodb:region:account:table/*" . While nominally limiting access to dynamoDB service resources, these still grant unrestricted access to all dynamoDB tables in a tenant’s directory, including production databases and backups from other applications. Prefix wildcards, used by 40.2% (253 apps), represent a more disciplined approach—for example, Resource: "arn:aws:dynamodb:region:account:table/app-*" 
+
+scopes access to tables matching a naming convention. However, these can still enable over-privilege if the prefix patterns are too broad or inadvertently span unrelated resources. Even with careful naming, prefix wildcards remain a compromise between convenience and principle. 
+
+4) Wildcard Co-occurrence.: Over-privilege reaches its peak when permission and resource wildcards combine (compounded over-privilege), amplifying the attack sur-face multiplicatively. In our dataset, 21% (166 apps) ex-hibited this dangerous combination. Most alarmingly, 7 applications configured the worst possible scenario: full permission wildcards ( *) paired with full resource wild-cards ( Resource: "*" ), granting functions unrestricted access to the entire AWS account. Against such con-figurations, even trivial vulnerabilities such as an SQL injection flaw, an SSRF bug, or a compromised depen-Fig. 4: Top 5 AWS service wildcard usage. S3 and Dy-namoDB services have high wildcard usage patterns across permissions and resources. dency, become account-takeover vectors. An attacker could read all data across all services, create privileged IAM credentials, delete production databases, or pivot to other AWS accounts via cross-account roles with no technical barriers. Beyond these extreme cases, partial wildcard combina-tions remain highly dangerous. A policy that combines service-level action wildcards (e.g., s3:* ) with full resource wildcards ( Resource: "*" ) grants all S3 operations across all buckets, enabling massive data exfiltration. Similarly, prefix action wildcards (e.g., dynamodb:Batch* ) paired with full resource wildcards permit all batch operations on every DynamoDB table. Even seemingly ”reasonable” combinations of service-scoped resources with broad ac-tion wildcards remove the containment boundaries that should limit the blast radius of a compromised function. Table V enumerates the distribution of these dangerous co-occurrence patterns across our dataset. TABLE V: Wildcard Permutation Analysis (Action and Resource Wildcards)           
+
+> Wildcard Combination Count(%)
+> Full Action + Full Resource 7 (4%) Full Action + Service Resource 1 (0.6%) Full Action + Prefix Resource 2 (1.2%) Service Action + Full Resource 114 (68.7%) Service Action + Service Resource 25 (15.1%) Service Action + Prefix Resource 57 (34.3%) Prefix Action + Full Resource 16 (9.6%) Prefix Action + Service Resource 2 (1.2%) Prefix Action + Prefix Resource 8 (4.8%)
+
+5) Wildcard usage across Services: We find that wild-card usage concentrates most heavily on services that store sensitive data, amplifying data breach risks. As shown in Figure 4, S3 and DynamoDB, the primary data storage services in AWS serverless architectures, exhibit the highest wildcard usage with 312 applications defining 
+
+Fig. 5: Distribution of Permission Type. Most assigned permissions (76.6%) allow functions to manipulate data. 21.4% allow privilege escalation, and 41.3% allow the destruction of data or storage bases. resource wildcards and 128 applications using permission wildcards across these services. 
+
+6) Attack Surface Approximation: We explored the attack surface and blast radius in the event of a function compromise. Using a subset of the MITRE ATT&CK framework [53], we use heuristics (Appendix C) to classify permissions into 8 categories: Reconnaissance (e.g, iam:ListUsers), Data Exfiltration (e.g., rds:DownloadDBLogFilePortion), 
+
+Credential Access (e.g., iam:CreateAccessKey), 
+
+Privilege Escalation (e.g., sts:AssumeRole), Data Tampering (e.g. s3:PutObject), Data Destruction 
+
+(e.g., dynamodb:DeleteTable), Denial of Service 
+
+(e.g., ec2:TerminateInstances), Resource Hijacking 
+
+(e.g., batch:SubmitJob) and Defense Evasion (e.g., cloudtrail:stopLogging). We observe that many applications have permissions that can enable full attack chains. Data Tampering per-missions, which allow attackers to change records, add harmful content, or alter how the app works, are found in 76.6% of applications. Data Exfiltration permissions are present in 59.9% of applications. 41.3% of applica-tions have Data Destruction permissions that could be used for ransomware attacks or sabotage, and 21.4% have Privilege Escalation permissions that allow attackers to assume higher-privileged roles. Credential Access permis-sions, which allow attackers to create persistent backdoors using new API keys or session tokens, are found in 9.0% of applications. This spread of permissions means that if a function is compromised, attackers often do not need to use multiple exploits as they already have what they need to carry out multi-stage attacks. These can include mapping resources, stealing data, maintaining access, and hiding their actions. The high number of applications with destructive permissions (41.3% can delete data) is especially worrying, as it means nearly half of serverless applications could be used to destroy data or mount denial-of-service attacks if any function is compromised. (a) Granted Permissions Density (b) Required Permissions Density 
+
+Fig. 6: Cumulative density of permissions required against density of permissions granted per application. 76.7% of applications require four or fewer permissions to function. However, 65.3% are granted five or more  
+
+> (a) Granted Permissions Density (b) Required Permissions Density
+
+Fig. 7: Cumulative density of permissions required against cumulative density of permissions granted per function. 46.7% of the applications require two or fewer permissions. However, 87.7% were granted three or more permissions 
+
+B. Over-privilege Analysis with PrivLess 1) Permission Density and Privilege Reduction: 
+
+We measured the gap between permissions granted in developer-defined IAM policies and the minimal set Priv-Less infers from function interactions. Across the 789 ap-plications, we observe a striking disparity between granted and required permissions. Developers collectively granted 538,390 effective permissions (after wildcard expansion) against 1,896 required permissions determined by Priv-Less. This represents a staggering 99.65% privilege re-duction potential. The mean granted was 683.37 versus 2.40 required (285 ×), with the disparity holding at the median where applications were granted 9 permissions while requiring only 1. This shows that over-privilege is not limited to outliers but is a systemic issue. In total, 47.7% of applications (376) carry more permissions than PrivLess determines are necessary. The CDF in Figure 6 illustrates the systematic mismatch: 76.7% of applications require four or fewer permissions to function, yet 65.3% are granted five or more. Only 26.1% of applications receive permissions closely matching their actual needs. Moreover, at the function level (Figure 7), 46.7% of functions re-quired two or fewer permissions to function but 87.7% were granted more, demonstrating that permission grants are decoupled from code requirements. 
+
+2) Wildcard Influence on Over-privilege: Wildcards sig-nificantly amplify over-privilege. As shown in Table VI, applications with wildcards exhibit a 98.69% privilege reduction potential compared to 61.78% for those without, and are over-privileged at higher rates (59.2% vs. 44.1%). This reflects how unrestricted action patterns compound permission sprawl. 
+
+3) Policy Type Influence on Overprivilege: Similarly, policy scope choice directly influences overprivilege sever-ity(Table VI). Global-only policies, used in 699 applica-tions (88.6%), had a 73.97% privilege reduction potential. Function-level policies, though used by only 52 applica-tions, demonstrate substantially lower over-privilege with a 41.35% reduction potential. This affirms that function-based policies minimize the blast radius, but do not automatically eliminate overprivilegr and require careful privilege assignment. Hybrid policies (both global and function-level) split the difference at 88.20% reduction, suggesting that per-function refinement, even when paired with a global baseline, meaningfully constrains excess permissions. The dominance of global-only policies thus directly drives the systemic over-privilege observed across the dataset. 
+
+4) Security Impact of Over-Privilege by Threat Cate-gory: We classified all granted and required IAM permis-sions into nine threat categories (Reconnaissance, Data Exfiltration, Credential Access, Privilege Escalation, Data Tampering, Data Destruction, DoS, Resource Hijacking, Defense Evasion) to assess real-world risk. The granted vs. required gap is stark: Reconnaissance permissions appear in 48.8% of applications despite rarely being functionally TABLE VI: Permission Usage by Wildcard Presence and Policy Scope                   
+
+> Category Apps Avg Granted Reduction
+> No Wildcards 605 14.72 61.78% Has Wildcards 184 2,877.62 98.69% Global Only 699 738.89 73.97% Function Only 52 23.23 41.35% Both 19 1,089.47 88.20%
+
+necessary; Privilege Escalation permissions are granted in 93 applications (18.8%) but required in only 19; most critically, Defense Evasion permissions (e.g., disabling CloudTrail, deleting CloudWatch alarms) are granted in 12 applications yet required by zero, creating silent per-sistence paths for attackers. Only Credential Access shows restrained over-granting (77.0% reduction), suggesting de-velopers exercise discipline when managing secrets but not across other threat categories. 
+
+C. Performance Evaluation 
+
+For the end-to-end runtime of our implementation of PrivLess, we observed a mean runtime of 193.6 seconds across all 789 applications. CodeQL operations dominate with 99.9% of total execution time consumed by database creation ( ∼ 24%) and query execution ( ∼ 75%). The core Python-side analysis (resource resolution, call-graph scoping, and permission mapping) completes in under 100 ms on average and is never a bottleneck. We no-ticed a high variance in runtime (p95 ≈ 8 min) which reflects differences in codebase size, dependency depth, and language complexity (e.g., JS/TS transpilation), not PrivLess’s algorithm. We argue that PrivLess’s analysis is not in the critical path and operates offline; hence, the seemingly high end-to-end time cost is acceptable. Moreover, alternative static analysis tools (such as pure AST-based analyzers) could eliminate database creation overhead and reduce runtime. We chose CodeQL for its rich query language and relational database semantics, a performance tradeoff justified by enhanced analysis capa-bility and precision. 
+
+D. Case Studies 
+
+To ground the aggregate findings, we examine five ap-plications that collectively span the dominant patterns of over-privilege observed in our dataset (Table VII; per-function breakdowns in Appendix B). For ethical reasons, we anonymized the case-study apps. The five applications exhibit four anti-patterns: over-scoped service wildcards , where s3:* (229 actions) and 
+
+rekognition:* (76 actions) are applied globally in 
+
+Anonymized-1 (3,110 effective permissions) when one spe-cific action per service suffices; speculative service inclusion 
+
+(service suites declared for integrations never implemented or removed, as in Anonymized-2 ’s unused Rekognition suite — 126 grants, zero calls); deployment tooling in runtime roles (codedeploy:* alone accounts for 517 of 570 grants in Anonymized-4 ); and over-declared operations 
+
+(a global policy in the Anonymized-3&5 app grants all anticipated actions uniformly to every function regardless of individual need). Reductions range from 83% to 99.8%, showing that over-privilege scales with policy scope rather than application complexity. TABLE VII: Case Study Summary                         
+
+> App Funcs Granted Required Reduction
+> Anonymized-1 10 3,110 799.8% Anonymized-2 18 522 22 95.8% Anonymized-3 20 82 11 86.6% Anonymized-4 11 570 599.1% Anonymized-5 530 583.3%
+
+VIII. Related Works 
+
+Cloud IAM Auditing Tools: AWS Zelkova [13], [33] uses SMT solving to evaluate policy conditions, while AWS IAM Access Analyzer [3], Azure Monitor [40], and Google Security Command Center [26] provide post-deployment auditing and visibility. These tools are reac-tive —reporting overprivilege after deployment. PrivLess enables pre-deployment measurement of the permission gap at scale by analyzing source code directly. 
+
+Information Flow Control: Systems like Valve [23], Trapeze [1], and SecLambda [31] enforce data confidential-ity in serverless applications but assume IAM policies are already correctly scoped. PrivLess addresses the upstream problem: quantifying the extent to which real-world poli-cies exceed what functions actually require. 
+
+Static Policy Analysis: GRASP [45] constructs reach-ability graphs from configurations, AutoArmor [36] ana-lyzes microservice patterns, and Will.IAM [47] enforces ac-cess control dynamically. These rely on configuration cor-rectness or runtime instrumentation. ALPS [50], the clos-est related work, applies static analysis to infer minimum permissions and enforces them via runtime hooks across multiple cloud providers. Unlike ALPS, which targets 
+
+enforcement , PrivLess targets measurement —quantifying overprivilege in large real-world corpora without code modification or runtime instrumentation. Growlithe [30] combines static and runtime approaches but requires pol-icy annotations. D’Antoni et al. [24] infer policies from request logs, but log-based approaches miss untriggered code paths. 
+
+IX. Conclusion 
+
+We present a systematic overprivilege analysis frame-work, PrivLess, that quantifies the gap(overprivilege) be-tween developer-defined IAM policies and actual appli-cations’ IAM needs. Applied to 789 real-world serverless applications, our study establishes that overprivilege is en-demic: 47.7% of applications carry excess permissions with an aggregate privilege reduction potential of upto 99.65%. Wildcard policies are the primary driver, inflating over-privilege to 799 × for affected applications (274 × higher than those without wildcards). These excess permissions pose concrete risks, as 18.8% of applications hold unneces-sary privilege escalation capabilities, and 12 applications grant defense evasion permissions they never use. These findings demonstrate that manual IAM management has systematically failed in serverless environments, making automated analysis not merely beneficial but essential infrastructure for understanding and remediating over-privilege at scale. 
+
+References 
+
+[1] Kalev Alpernas, Cormac Flanagan, Sadjad Fouladi, Leonid Ryzhyk, Mooly Sagiv, Thomas Schmitz, and Keith Winstein. Secure serverless computing using dynamic information flow control. Proc. ACM Program. Lang. , 2(OOPSLA):118:1–118:26, October 2018. URL: http://doi.acm.org/10.1145/3276488, 
+
+doi:10.1145/3276488 .[2] Amazon. AWSSupportServiceRolePolicy Informational Update. https://aws.amazon.com/security/security-bulletins/AWS-202 1-007, 2021. [Accessed 14-04-2025]. [3] Amazon. Am access analyzer guides you toward least-privilege permissions. https://aws.amazon.com/iam/features/analyze-a ccess/, 2023. [4] Amazon. Identity and Access Management for AWS Lambda -AWS Lambda. https://docs.aws.amazon.com/lambda/latest/ dg/security-iam.html, 2024. [Accessed 31-12-2024]. [5] Amazon Web Services. AWS services that work with IAM — service authorization reference. https://docs.aws.amazon.com/ service-authorization/latest/reference/, 2024. Accessed 2025. [6] Amazon Web Services. botocore: Low-level, data-driven core of the AWS SDK for Python. https://github.com/boto/boto core, 2024. Service models ( service-2.json ) encode operation names, parameter shapes, and embedded documentation. [7] Amazon Web Services. Smithy: A language for defining services and SDKs. https://smithy.io/, 2024. The aws.iam trait names-pace provides machine-readable IAM permission annotations including requiredActions and conditionKeys .[8] Microsoft Azure. Azure api reference documentation. URL: https://learn.microsoft.com/en-us/rest/api/. [9] Microsoft Azure. Azure built-in roles. URL: https://learn.micr osoft.com/en-us/azure/role-based-access-control/built-in-rol es. [10] Microsoft Azure. Azure rest api specifications. URL: https: //github.com/Azure/azure-rest-api-specs. [11] Microsoft Azure. Azure role-based access control built-in roles. URL: https://learn.microsoft.com/en-us/azure/role-based-acc ess-control/built-in-roles. [12] Microsoft Azure. Azure sdk for python and typescript. URL: https://github.com/Azure/azure-sdk-for-python. [13] John Backes, Ulises Berrueco, Tyler Bray, Daniel Brim, By-ron Cook, Andrew Gacek, Ranjit Jhala, Kasper Luckow, Sean McLaughlin, Madhav Menon, Daniel Peebles, Ujjwal Pu-galia, Neha Rungta, Cole Schlesinger, Adam Schodde, Anvesh Tanuku, Carsten Varming, and Deepa Viswanathan. Stratified abstraction of access control policies. In Computer Aided Verification: 32nd International Conference, CAV 2020, Los Angeles, CA, USA, July 21–24, 2020, Proceedings, Part I,page 165–176, Berlin, Heidelberg, 2020. Springer-Verlag. doi: 10.1007/978-3-030-53288-8_9 .[14] Anshu Bansal. Why Cloud Misconfigurations Remain A Top Cause Of Data Breaches — forbes.com. https://www.forbes .com/councils/forbestechcouncil/2025/04/08/why-cloud-mis conf igurations-remain-a-top-cause-of-data-breaches/, 2025. [Accessed 14-04-2025]. [15] Google Cloud. Google api definitions. URL: https://github.c om/googleapis/googleapis. [16] Google Cloud. Google cloud api documentation. URL: https: //cloud.google.com/docs. [17] Google Cloud. Google cloud client libraries. URL: https://gith ub.com/googleapis/google-cloud-python. [18] Google Cloud. Google cloud iam predefined roles. URL: https: //cloud.google.com/iam/docs/understanding-roles#predefined roles. [19] Google Cloud. Google cloud iam roles reference. URL: https: //cloud.google.com/iam/docs/understanding-roles. [20] Noam Dahan. Cloud infrastructure is not immune from the SolarWinds Orion breach. https://securityboulevard.com/20 20/12/cloud-infrastructure-is-not-immune-from-the-solarwind s-orion-breach/, 2020. [Accessed 31-12-2024]. [21] Datadog. The State of Serverless — datadoghq.com. https: //www.datadoghq.com/state-of-serverless/, 2023. [Accessed 14-04-2025]. [22] Pubali Datta, Prabuddha Kumar, Tristan Morris, Michael Grace, Amir Rahmati, and Adam Bates. Valve: Securing function workflows on serverless computing platforms. In Pro-ceedings of The Web Conference 2020 , WWW ’20, pages 939– 950, New York, NY, USA, 2020. Association for Computing Machinery. doi:10.1145/3366423.3380173 .[23] Pubali Datta, Prabuddha Kumar, Tristan Morris, Michael Grace, Amir Rahmati, and Adam Bates. Valve: Securing func-tion workflows on serverless computing platforms. In Proceed-ings of The Web Conference 2020 , WWW ’20, page 939ˆ a€“950, New York, NY, USA, 2020. Association for Computing Machin-ery. doi:10.1145/3366423.3380173 .[24] Loris D’Antoni, Shuo Ding, Amit Goel, Mathangi Ramesh, Neha Rungta, and Chungha Sung. Automatically reducing privilege for access control policies. Proc. ACM Program. Lang. ,8(OOPSLA2), October 2024. doi:10.1145/3689738 .[25] Puneet Gill, Werner Dietl, and Mahesh Tripunitara. Least-privilege calls to amazon web services. IEEE Transactions on Dependable and Secure Computing , 20(3):2085–2096, 2023. 
+
+doi:10.1109/TDSC.2022.3171740 .[26] Google. Security Command Center. https://cloud.google.c om/security/products/security-command-center. [Accessed 12-04-2025]. [27] Google. IAM overview ˆA — ˆA IAM Documentation ˆA — ˆAGoogle Cloud — cloud.google.com. https://cloud.google.com/i am/docs/overview, 2024. [Accessed 14-04-2025]. [28] Google Cloud. Access control for Cloud Functions using IAM. https://cloud.google.com/f unctions/docs/concepts/iam, 2024. Describes the service-account-based permission model for Google Cloud Functions; permissions are bound out-of-band via gcloud CLI rather than inline in application configuration. Accessed 2025. [29] Jonathan Greig. 2020 Cloud Misconfigurations Report. http s://divvycloud.com/misconf igurations- report- 2020, 2020. [Accessed 31-12-2024]. [30] Praveen Gupta, Arshia Moghimi, Devam Sisodraker, Moham-mad Shahrad, and Aastha Mehta. Growlithe: A developer-centric compliance tool for serverless applications. In 2025 IEEE Symposium on Security and Privacy (SP) , pages 99–99. IEEE Computer Society, 2024. [31] Deepak Sirone Jegan, Liang Wang, Siddhant Bhagat, Thomas Ristenpart, and Michael Swift. Guarding serverless applications with seclambda, 2020. arXiv:2011.05322 .[32] Du Lac Josh and Enekwizu Emeka. Strategies for achieving least privilege at scale – Part 1 — Amazon Web Services — aws.amazon.com. https://aws.amazon.com/blogs/security/st rategies-f or-achieving-least-privilege-at-scale-part-1/, 2024. [Accessed 06-08-2025]. [33] Josh Joy and Andrew Gacek. How to automatically archive expected IAM Access Analyzer findings — Amazon Web Ser-vices. https://aws.amazon.com/blogs/security/how-to-autom atically-archive-expected-iam-access-analyzer-findings/, 2020. [Accessed 12-04-2025]. [34] Ken Kennedy. A survey of data flow analysis techniques . IBM Thomas J. Watson Research Division, 1979. [35] Shaharyar Khan, Ilya Kabanov, Yunke Hua, and Stuart Mad-nick. A systematic analysis of the capital one data breach: Critical lessons learned. ACM Trans. Priv. Secur. , 26(1), November 2022. doi:10.1145/3546068 .[36] Xing Li, Yan Chen, Zhiqiang Lin, Xiao Wang, and Jim Hao Chen. Automatic policy generation for Inter-Service access control of microservices. In 30th USENIX Security Symposium (USENIX Security 21) , pages 3971–3988. USENIX Association, August 2021. URL: https://www.usenix.org/conference/usenix security21/presentation/li-xing. [37] Stuart Madnick. Why Data Breaches Spiked in 2023 — hbr.org. https://hbr.org/2024/02/why-data-breaches-spiked-in-2023, 2024. [Accessed 14-04-2025]. [38] Security Magazine. Misconfigurations drive 80 https://www.se curitymagazine.com/articles/100630-misconfigurations-drive-8 0-of-security-exposures, 2024. [Accessed 14-04-2025]. [39] Eduard Marin, Diego Perino, and Roberto Di Pietro. Serverless computing: a security perspective. Journal of Cloud Computing ,11(1):69, 2022. doi:10.1186/s13677-022-00347-w .[40] Microsoft. Azure monitor overview. https://learn.microsof t.com/en-us/azure/azure-monitor/f undamentals/overview. [Accessed 12-04-2025]. [41] Microsoft. What is Azure role-based access control (Azure RBAC)? https://learn.microsoft.com/en-us/azure/role-based - access- control/overview, 2024. Overview of Azure RBAC; permissions are assigned via portal or CLI role assignments rather than inline in application configuration. Accessed 2025. [42] Microsoft. What is Azure role-based access control (Azure RBAC)? — learn.microsoft.com. https://learn.microsof t.co m/en- us/azure/role- based- access- control/overview, 2024. [Accessed 14-04-2025]. [43] Christophe Parisel. Quantifying azure rbac wildcard overreach, 2025. URL: https://arxiv.org/abs/2506.10755, arXiv:2506.1 0755 .[44] Siddhant Patil. Why serverless risk demands identity-aware security at cloud scale. https://blog.qualys.com/product- t ech/2026/01/15/serverless-security-risks-identity-ssrf-rce. [45] Isaac Polinsky, Pubali Datta, Adam Bates, and William Enck. Grasp: Hardening serverless applications through graph reach-ability analysis of security policies. In Proceedings of the ACM Web Conference 2024 , WWW ’24, page 1644ˆ a€“1655, New York, NY, USA, 2024. Association for Computing Machinery. 
+
+doi:10.1145/3589334.3645436 .[46] Jerome H. Saltzer and Michael D. Schroeder. The protection of information in computer systems. Proceedings of the IEEE ,63(9):1278–1308, 1975. Formulates the principle of least privi-lege ( § 3.g). doi:10.1109/PROC.1975.9939 .[47] Arnav Sankaran, Pubali Datta, and Adam Bates. Workflow integration alleviates identity and access management in server-less computing. In Annual Computer Security Applications Conference , ACSAC ’20, pages 496–509, New York, NY, USA, 2020. Association for Computing Machinery. doi:10.1145/34 27228.3427665 .[48] GitHub Security. CodeQL — codeql.github.com. https://code ql.github.com/. [Accessed 27-03-2025]. [49] Serverless. Serverless Framework Documentation — server-less.com. https://www.serverless.com/framework/docs, 2024. [Accessed 14-04-2025]. [50] Changhee Shin, Bom Kim, and Seungsoo Lee. Alps: Automated least-privilege enforcement for securing serverless functions. 
+
+arXiv preprint arXiv:2603.25393 , 2026. [51] Shonal. 2024 Cloud Security Report: Misconfigurations and Limited Visibility Plague Enterprises. https://duplocloud.c om/blog/helpful-resources/2024-cloud-security-report-misconf igurations-limited-visibility-plague-enterprises/, 2024. [52] StackOverflow. Technology — 2024 Stack Overflow Developer Survey — survey.stackoverflow.co. https://survey.stackoverflo w.co/2024/technology, 2024. [Accessed 14-04-2025]. [53] Blake E. Strom, Andy Applebaum, Doug P. Miller, Kathryn C. Nickels, Adam G. Pennington, and Cody B. Thomas. MITRE ATT&CK: Design and philosophy. Technical Report MP180360R1, The MITRE Corporation, McLean, VA, USA, March 2020. Originally published July 2018; Revised March 2020. URL: https://attack.mitre.org/docs/ATTACK Desig n and Philosophy March 2020.pdf. [54] Jinfeng Wen, Zhenpeng Chen, Xin Jin, and Xuanzhe Liu. Rise of the planet of serverless computing: A systematic review. ACM Trans. Softw. Eng. Methodol. , 32(5), July 2023. doi:10.1145/ 3579643 .[55] Adrien Zoph and SummitRoute. aws managed policies: A collection of all AWS managed IAM policies. ht t p s : / / g i thub.com/SummitR oute/aws managed policies, 2024. Corpus of all AWS managed policies including service-linked role policies, used as a service-dependency plausibility index. Originally maintained at z0ph/MAMIP .
+
+Appendix 
+
+A. Ethical Considerations 
+
+Our dataset consists of publicly available open-source repositories. While this data is publicly accessible, our analysis reveals security vulnerabilities (overprivileged policies) that developers may not have been aware of. To respect developer privacy and intent, we anonymize applications in aggregate findings and encourage repos-itory maintainers to use PrivLess to audit their own applications. 
+
+Responsible Disclosure of Case Studies: The five applications selected for detailed case studies are currently anonymized in this manuscript. We have conducted re-sponsible disclosure by directly emailing repository owners with detailed findings, security implications, and reme-diation recommendations. We deliberately refrained from using public channels (pull requests or GitHub issues) for disclosure, as publicly exposing overprivilege vulnerabil-ities could enable attackers to exploit these weaknesses before fixes are deployed. This private disclosure approach allows developers to address issues on their own time-line without creating attack opportunities. If repository owners provide feedback, explicit consent, and evidence of fixes before publication, we commit to de-anonymizing those applications and crediting the maintainers for their proactive response. This practice balances transparency, security, and developer agency. 
+
+B. Case Studies - Detailed Analysis 
+
+Anonymized-1 App: is a code-sharing platform that allows users to create, view, update, and delete code snippets, with image upload support. Its 10 Lambda func-tions are: verify (domain ownership verification), main 
+
+(homepage), features (feature listing), create (snippet creation), login (WeChat OAuth), userCode (list snip-pets by user), code (get snippet detail), updateCode (edit snippet), deleteCode (remove snippet), and upload (im-age upload with text recognition). The global IAM policy carries three statements applied uniformly to all 10 functions: six specific DynamoDB actions (GetItem , PutItem , UpdateItem , Query , Scan ,
+
+DeleteItem ) on the application table; s3:* on the up-load bucket; and rekognition:* on all resources. After wildcard expansion using the permission model (229 S3 actions, 76 Rekognition actions), the effective total is 3 ,110 permissions across the 10 functions. PrivLess detects service calls in 6 of the 10 functions. The CRUD handlers (code , userCode ,
+
+updateCode , deleteCode , create ) use four DynamoDB operations (Scan , PutItem , UpdateItem , DeleteItem ); the relaxer augments GetItem and Query back since both appear in the developer policy and DynamoDB is a directly-detected service. The upload handler uses two services: s3:PutObject (direct call) and 
+
+rekognition:DetectText , which is called through the local utility module imageAnalyser.js using Rekognition’s nested image schema ({ Image: {
+
+S3Object: { Bucket, Name } } } ). The extractor recognises Image as a resource parameter and correctly attributes the call to upload . The inferred minimum policy requires 8 unique permissions — six DynamoDB actions, s3:PutObject , and rekognition:DetectText 
+
+— yielding a 99.7% reduction (3 ,110 to 8). The case illustrates how service-level wildcards com-pound over-privilege across two dimensions. The s3:* 
+
+wildcard grants all 229 S3 actions to every function when only upload needs PutObject ; rekognition:* grants all 76 Rekognition actions globally for what is ultimately a single DetectText call in one function. In both cases Priv-Less identifies the precise minimal action and produces per-function policies that eliminate the wildcard entirely. 
+
+Anonymized-2 App: is a photo-management platform that stores images in S3, manages user metadata in DynamoDB, and identifies faces using Amazon Rekog-nition. It has 18 Lambda functions that handle the full lifecycle: create , get , query , update , delete , thumbs ,
+
+personThumb , fotoEvents , indexes , indexesUpdate ,
+
+faces , people , peopleUpdate , peopleMerge , person ,
+
+stream , collectionCreate , and collectionDelete .The global IAM policy lists 29 permission entries applied uniformly to all 18 functions — 12 Dy-namoDB operations, four S3 actions across two buck-ets, two Lambda actions, four CloudWatch Logs ac-tions, and a seven-action Rekognition suite ( IndexFaces ,
+
+CreateCollection , DeleteCollection , DeleteFaces ,
+
+DetectLabels , ListFaces , SearchFaces ) — totalling 522 declared permissions across all functions. No wildcards appear, so effective equals declared. PrivLess traces SDK calls across all 18 functions and detects no code path that invokes any Rekognition action: the seven-action suite (126 grants across 18 functions) exists entirely as policy bloat. The application’s authen-tication module uses the Laconia dependency-injection framework, which passes AWS SDK client objects as call-back parameters; this pattern is opaque to static analysis, so Cognito calls in the auth layer are not attributed to Lambda handlers. Since the developer’s IAM policy likewise grants no Cognito permissions to the Lambda execution role, this analysis gap does not affect the output. And because the app uses a single global IAM policy, the relaxer assigns the same 22-permission set (the developer’s 29 actions minus the seven Rekognition actions) to every function, yielding a 24 × ratio and 95.8% reduction poten-tial (522 to 22 unique permissions). 
+
+Anonymized-3 App: is a Twitter-clone social backend built on AWS AppSync and DynamoDB. Unlike the previous applications, it assigns function-level IAM policies to each of its 20 Lambda functions, which implement user management (confirmUserSignup ,
+
+getImageUploadUrl ), social graph operations (tweet ,
+
+retweet , unretweet , reply ), follower distribution (distributeTweets , distributeTweetsToFollower ), search and discovery (search , getHashTag ,
+
+syncUsersToAlgolia , syncTweetsToAlgolia ), notifications (notify , notifyLiked ,
+
+notifyDmed ), messaging (sendDirectMessage ,
+
+getTweetCreator ), and infrastructure management (firehoseTransformer , setResolverLogLevelToAll ,
+
+setResolverLogLevelToError ). Most functions are granted individual DynamoDB operations against named table ARNs; search-related functions additionally receive ssm:GetParameters for Algolia credentials; and a global policy applies xray:PutTraceSegments and 
+
+xray:PutTelemetryRecords to all 20 functions. After summing across all functions, the developer declares 82 total effective permissions. PrivLess identifies 11 unique actions in actual use: six DynamoDB operations ( GetItem , PutItem , UpdateItem ,
+
+DeleteItem , Query , BatchWriteItem ), two S3 ac-tions ( PutObject , PutObjectAcl ), ssm:GetParameters ,
+
+iam:PassRole , and dynamodb:BatchGetItem . The two globally declared X-Ray actions do not appear in any application code path; the relaxer evicts them from the generated policy. The result is a 7 .5× ratio and 86.6% reduction (82 to 11 unique permissions). This case shows that function-level policies substantially narrow the blast radius compared to global grants, but excess still ac-cumulates through operational tooling (X-Ray) declared speculatively across all functions. 
+
+Anonymized-4 App: is a restaurant ordering application comprising 11 functions: get-index ,
+
+get-restaurants , search-restaurants , place-order ,
+
+notify-restaurant , retry-notify-restaurant ,
+
+accept-order , notify-user , retry-notify-user ,
+
+auto-create-api-alarms , and fulfill-order .Its global IAM role carries three entries: 
+
+cloudwatch:PutMetricData , the X-Ray pair, and 
+
+codedeploy:* . The last is the primary driver of over-privilege: the CodeDeploy service-level wildcard expands to 47 runtime permissions and is applied to all 11 functions, contributing 517 of the 570 total effective permissions. The intent is to support blue/green deployment automation, but CodeDeploy actions are invoked by deployment pipelines, not by Lambda function code at runtime — no function ever calls a CodeDeploy API. Function-level overrides add targeted permissions: dynamodb:scan 
+
+(restaurants table), kinesis:PutRecord (order events), 
+
+sns:Publish (notification topics), execute-api:Invoke ,
+
+ssm:GetParameters* (prefix wildcard expanding to 2SSM actions), and secretsmanager:GetSecretValue .PrivLess traces SDK calls and identifies five unique ac-tions across the 11 functions: cloudwatch:PutMetricData 
+
+(all functions), cloudwatch:PutMetricAlarm 
+
+(auto-create-api-alarms only), kinesis:PutRecord 
+
+(order-processing functions), sns:Publish (notification functions), and dynamodb:Scan (restaurant-query functions). Although Cognito calls appear in test-helper files, the developer’s runtime IAM policy does not include Cognito permissions for Lambda; the relaxer correctly evicts those calls, excluding test infrastructure from the generated function policies. No code path invokes CodeDeploy at runtime, confirming that the wildcard’s 47-action expansion (517 of the 570 total grants) is pure overhead. The inferred minimum policy requires five permissions — none from CodeDeploy or X-Ray — yielding a 114 × ratio and 99.1% reduction (570 to 5 unique permissions). This case illustrates how deployment tooling bundled into runtime IAM roles produces systematic over-privilege across every function in the service. 
+
+Anonymized-5 App: is a canonical Serverless Frame-work starter for a CRUD REST API backed by Dy-namoDB, comprising five Lambda functions each re-sponsible for a single operation: create (POST), list 
+
+(GET all), get (GET by id), update (PUT), and delete 
+
+(DELETE). The developer declares a single global IAM policy granting six DynamoDB actions — Query , Scan ,
+
+GetItem , PutItem , UpdateItem , and DeleteItem — on the application table, which is pplied uniformly to all five functions. With no wildcards, the effective permissions equal declared permissions: 30 total across the functions. PrivLess traces one SDK call per function and identifies five distinct DynamoDB actions in use: PutItem (create ), 
+
+Scan (list ), GetItem (get ), UpdateItem (update ), and 
+
+DeleteItem (delete ). No function calls query , mak-ing dynamodb:Query the sole superfluous permission — granted to all five functions but exercised by none. The inferred minimum policy requires five unique permissions, yielding a 6 × ratio and 83.3% reduction (30 to 5 unique permissions). Beyond service-level eviction, per-function scoping reveals a deeper opportunity: each function needs exactly one DynamoDB action, yet the global policy grants six to all. PrivLess’s per-function output assigns each function its single required action, reducing total grants from 30 to 5 and eliminating cross-function privilege (a 
+
+create function that also holds DeleteItem can silently delete records). This case establishes the baseline pattern — over-declared operations in a global policy — that the following applications exhibit at larger scale. 
+
+C. Permission Classification Rules 
+
+We classify AWS IAM permissions using a priority-ordered set of heuristic rules that match keyword patterns. Classification groups are: Reconnaissance (R), Data Exfiltration (DE), Data Destruction(DD), Credential Access (CA), Privilege Escalation (PE), Data Tampering (DT), Denial of Service (DoS), Resource Hijacking (RH) and Defense Evasion(DEv) . Permissions that were not classified were added as classified as Other . Given a permission string p with extracted service s and action a, we apply the following classification rules in order. 
+
+Service-Specific Overrides: First, we define an override function Override, O(s, a ) that checks for explicit service-action mappings for overriding general rules: 
+
+O(s, a ) = R if ( s=iam) ∧ (a∈{ get, list })
+
+O(s, a ) = R if ( s=sm) ∧ (a∈{ desc, list })
+
+O(s, a ) = R if ( s=ssm) ∧ (a∈{ desc, list })
+
+O(s, a ) = R if ( s=kms) ∧ (a∈{ get, list })
+
+O(s, a ) = P E if ( s=sts) ∧ (a∈{ assume, get })
+
+O(s, a ) = P E if ( s=lam) ∧ (a∈{ upd, crt })
+
+O(s, a ) = CA if ( s=sm) ∧ (a=get) 
+
+O(s, a ) = CA if ( s=ssm) ∧ (a=get) 
+
+O(s, a ) = CA if ( s=kms) ∧ (a=dec) 
+
+O(s, a ) = RH if ( s=lam) ∧ (a=inv) 
+
+O(s, a ) = DEv if ( s=ct) ∧ (a∈{ stp, del })
+
+O(s, a ) = DEv if ( s=gd) ∧ (a=del) 
+
+O(s, a ) = DEv if ( s=lg) ∧ (a=del) (1) 
+
+Abbreviations: R = Reconnaissance, PE = Privilege Esca-lation, CA = Credential Access, RH = Resource Hijacking, DEv = Defense Evasion; sm = secretsmanager, lam = lambda, ct = cloudtrail, gd = guardduty, lg = logs; desc = describe, upd = update, crt = create, inv = invoke, dec = decrypt, stp = stop, del = delete. 
+
+Priority-Ordered Category Rules: If no override applies, we evaluate the following rules in priority order (stopping at the first match): 1) Credential Access (CA): 
+
+CA (s, a ) = 
+
+[
+
+(s ∈ S c) ∧ (∃α ∈ A r : α ⊆ a)∧
+
+(∄λ ∈ A l : λ ⊆ a)
+
+]
+
+∨
+
+[
+
+(∃κ ∈ K c : κ ⊆ a)∧
+
+(∃α ∈ A r : α ⊆ a)
+
+]
+
+(2) where Sc = {secretsmanager, ssm, kms },
+
+Ar = {get, decrypt, retrieve },
+
+Al = {list, describe },
+
+Kc = {secret, password, key, token, credential, parameter }2) Privilege Escalation (PE): 
+
+P E (s, a ) = 
+
+[
+
+(s ∈ S p) ∧ (∃α ∈ A m : α ⊆ a)∧
+
+(∃κ ∈ K p : κ ⊆ a)
+
+]
+
+∨
+
+[
+
+(passrole ⊆ a′) ∨ (assumerole ⊆ a′)
+
+]
+
+∨
+
+[
+
+(s = lambda) ∧ (functioncode ⊆ a)
+
+]
+
+(3) where Sp = {iam, sts, lambda, ec2 },
+
+Am = {attach, put, create, update, modify, add, associate },
+
+Kp = {policy, role, user, group, permission, assume, pass }, a′ denotes a with delimiters removed 3) Data Destruction (DD): 
+
+DD (s, a ) =( ∃α ∈ A d : α ⊆ a)∧
+
+[
+
+(∃κ ∈ K d : κ ⊆ a) ∨ (s ∈ S d)
+
+]
+
+(4) where Ad = {delete, remove, destroy, terminate, drop },
+
+Kd = {object, item, record, table, bucket, function, instance, volume },
+
+Sd = {s3, dynamodb, rds, redshift, elasticache, documentdb }
+
+4) Denial of Service (DoS): 
+
+DoS (s, a ) =( ∃α ∈ A s : α ⊆ a)∧
+
+(∃κ ∈ K s : κ ⊆ a) (5) where As = {delete, stop, terminate, disable },
+
+Ks = {function, instance, cluster, service, table, distribution, loadbalancer, database, queue, topic }
+
+5) Resource Hijacking (RH): 
+
+RH (s, a ) =( s ∈ S h) ∧ (∃α ∈ A e : α ⊆ a)∧
+
+(∃κ ∈ K r : κ ⊆ a) (6) where Ae = {run, invoke, create, start, execute, launch },
+
+Sh = {ec2, lambda, sagemaker, batch, ecs, eks },
+
+Kr = {instance, function, job, task, training, container }
+
+6) Data Exfiltration (DE): 
+
+DE (s, a ) =( ∃α ∈ A r : α ⊆ a)∧
+
+[
+
+(∃κ ∈ K o : κ ⊆ a) ∨ (s ∈ S d)
+
+]
+
+(7) where Ar = {get, read, download, export, retrieve, fetch, select },
+
+Sd = {s3, dynamodb, rds, redshift, elasticache }Ko = {object, item, record, file, document, data, content, body, backup },7) Data Tampering (DT): 
+
+DT (s, a ) =( ∃α ∈ A m : α ⊆ a) ∧ ¬ P E (s, a ) (8) where Am = {put, update, modify, write, edit, change, replace, upload, insert }
+
+8) Reconnaissance (R): 
+
+R(s, a ) =( ∃α ∈ A l : α ⊆ a)∧
+
+(∄κ ∈ K c : κ ⊆ a)∧
+
+(∄κ ∈ K o : κ ⊆ a) (9) where Al = {list, describe, get, scan, query, search },
+
+Kc and Ko as defined above 9) Other (O): Default category if no rule matches. The final classification is determined by: Classify( p) = 
+
+
+
+c if ∃c ∈ O (s, a )
+
+ci if ci is first true in priority order Other otherwise (10) 
+
+Notation: ⊆ denotes substring containment (e.g., “get” ⊆
+
+“getobject”); S, A, and K denote service, action, and key-word pattern sets respectively; ∃ and ∄ denote existence and non-existence quantifiers.
