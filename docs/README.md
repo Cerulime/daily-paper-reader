@@ -6,49 +6,37 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-08
-- 运行时间：2026-07-08 21:23:54 UTC
+- 最新运行日期：2026-07-09
+- 运行时间：2026-07-09 21:38:48 UTC
 - 运行状态：成功
-- 本次总论文数：9
-- 精读区：5
-- 速读区：4
+- 本次总论文数：5
+- 精读区：2
+- 速读区：3
 
 ### 今日简报（AI）
-今日深入追踪9项安全攻防研究，从GPU功耗跨域攻击到隐藏算法复杂度漏洞全面扫描。  
-《Bit2Watt》证实了可借GPU负载远程扰动电网，《ShadowProbe》则能精准捕获软件里潜伏的高复杂度攻击面。  
-建议开发者立即排查算法逻辑炸弹，同时留意AI芯片的电源行为是否正被悄悄操控。
-- 详情：[/202607/08/README](/202607/08/README)
+今日聚焦智能汽车操作系统漏洞监控与芯片硬件木马防御，精读两篇高价值研究。  
+最值得关注的方向：下一代汽车OS的实时漏洞监测方法，以及标准单元库中硬件木马的风险评估与预防。  
+建议从业者优先阅读这两篇高分论文，跟进车联网安全与芯片供应链信任技术。
+- 详情：[/202607/09/README](/202607/09/README)
 
 ### 精读区论文标签
-1. [Bit2Watt: A Cyber-Physical Vulnerability Exploiting GPU Workloads Across Power and Computing Infrastructures](/202607/08/2607.05993v1-bit2watt-a-cyber-physical-vulnerability-exploiting-gpu-workloads-across-power-and-computing-infrastructures)  
-   标签：评分：10.0/10、query:sys-security
-   evidence：利用异构系统中的GPU工作负载，揭示安全挑战。
-2. [ShadowProbe: Language-Extensible Detection of Hidden Algorithmic Complexity Vulnerabilities](/202607/08/2607.05474v1-shadowprobe-language-extensible-detection-of-hidden-algorithmic-complexity-vulnerabilities)  
+1. [Monitoring Vulnerabilities in Next-Generation Automotive Operating Systems](/202607/09/2607.07226v1-monitoring-vulnerabilities-in-next-generation-automotive-operating-systems)  
    标签：评分：9.0/10、query:sys-security
-   evidence：检测软件中的隐藏算法复杂度漏洞
-3. [Complets: Universal Compartmentalisation and Programming Model For Arm Permission Overlay Extension 2](/202607/08/2607.05569v1-complets-universal-compartmentalisation-and-programming-model-for-arm-permission-overlay-extension-2)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：基于内存保护键的进程内隔离机制
-4. [Detecting Vulnerability-Inducing Commits via Multi-Stage Reasoning with LLM-Based Agents](/202607/08/2607.05772v1-detecting-vulnerability-inducing-commits-via-multi-stage-reasoning-with-llm-based-agents)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：基于LLM智能体的多阶段推理检测漏洞引入提交
-5. [Beyond Refusal: A Same-Lineage Study of Aligned and Abliterated LLMs for Vulnerability Analysis](/202607/08/2607.05842v1-beyond-refusal-a-same-lineage-study-of-aligned-and-abliterated-llms-for-vulnerability-analysis)  
+   evidence：下一代汽车操作系统漏洞评估工具
+2. [LIB-TRAP: Standard Cell Library Hardware Trojan Risk Assessment and Prevention](/202607/09/2607.01526v1-lib-trap-standard-cell-library-hardware-trojan-risk-assessment-and-prevention)  
    标签：评分：8.0/10、query:sys-security
-   evidence：大语言模型辅助漏洞分析用于代码审查、分类与修复
+   evidence：针对标准单元库的硬件木马风险评估与预防，解决异构计算硬件安全问题
 
 ### 速读区论文标签
-1. [Cloak and Detonate: Scanner Evasion and Dynamic Detection of Agent Skill Malware](/202607/08/2607.02357v2-cloak-and-detonate-scanner-evasion-and-dynamic-detection-of-agent-skill-malware)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：通过对SkillCloak规避框架的研究，提出对代理技能恶意软件的动态检测方法，利用运行时分析对抗静态扫描器规避。
-2. [ProvICS: A Provenance-based Intrusion Detection for Industrial Control Systems](/202607/08/2607.05989v1-provics-a-provenance-based-intrusion-detection-for-industrial-control-systems)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：基于溯源的IDS对因果行为进行动态分析以检测入侵
-3. [VeriChat: An Agentic Conversational AI Assistant for Hardware Security Verification](/202607/08/2607.01668v1-verichat-an-agentic-conversational-ai-assistant-for-hardware-security-verification)  
+1. [Security Analysis for SCONE Logic Locking](/202607/09/2607.03288v1-security-analysis-for-scone-logic-locking)  
    标签：评分：6.0/10、query:sys-security
-   evidence：描述VeriChat硬件安全验证助手，利用检索增强生成提供上下文感知的安全指导，支持系统安全分析。
-4. [Overprivilege Analysis of Security Policies in Serverless Cloud Applications](/202607/08/2607.02875v1-overprivilege-analysis-of-security-policies-in-serverless-cloud-applications)  
+   evidence：与软硬件分析测试相关的逻辑锁定方案安全性分析
+2. [Large Language Models (LLMs) and Generative AI in Cybersecurity and Privacy: A Survey of Dual-Use Risks, AI-Generated Malware, Explainability, and Defensive Strategies](/202607/09/2607.06963v1-large-language-models-llms-and-generative-ai-in-cybersecurity-and-privacy-a-survey-of-dual-use-risks-ai-generated-malware-explainability-and-defensive-strategies)  
    标签：评分：6.0/10、query:sys-security
-   evidence：分析无服务器IAM策略的过度权限以减小攻击面
+   evidence：综述涵盖基于LLM的防御策略和漏洞利用技术
+3. [Mitigating Taint-Style Vulnerabilities in MCP Servers via Security-Aware Tool Descriptions](/202607/09/2607.07461v1-mitigating-taint-style-vulnerabilities-in-mcp-servers-via-security-aware-tool-descriptions)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：系统分析MCP服务器污点式漏洞并提出安全感知工具描述
 
 
 <div class="dpr-home-promo-card">
