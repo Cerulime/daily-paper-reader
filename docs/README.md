@@ -6,37 +6,46 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-09
-- 运行时间：2026-07-09 21:38:48 UTC
+- 最新运行日期：2026-07-10
+- 运行时间：2026-07-10 20:25:59 UTC
 - 运行状态：成功
-- 本次总论文数：5
-- 精读区：2
-- 速读区：3
+- 本次总论文数：8
+- 精读区：6
+- 速读区：2
 
 ### 今日简报（AI）
-今日聚焦智能汽车操作系统漏洞监控与芯片硬件木马防御，精读两篇高价值研究。  
-最值得关注的方向：下一代汽车OS的实时漏洞监测方法，以及标准单元库中硬件木马的风险评估与预防。  
-建议从业者优先阅读这两篇高分论文，跟进车联网安全与芯片供应链信任技术。
-- 详情：[/202607/09/README](/202607/09/README)
+今日深入剖析了视觉语言模型在云边推理中的视觉令牌操纵攻击与CPU模糊测试新框架。
+两大亮点：针对大模型输入端的持久性对抗伪装，以及基于分层强化学习的语义感知自适应模糊策略。
+建议关注云边协同场景中不可信视觉流的安全评估，以及将类似RL方法移植到固件测试。
+- 详情：[/202607/10/README](/202607/10/README)
 
 ### 精读区论文标签
-1. [Monitoring Vulnerabilities in Next-Generation Automotive Operating Systems](/202607/09/2607.07226v1-monitoring-vulnerabilities-in-next-generation-automotive-operating-systems)  
+1. [Vision Token Manipulation Attacks on Cloud-Edge Inference of Large Vision-Language Models](/202607/10/2607.02819v1-vision-token-manipulation-attacks-on-cloud-edge-inference-of-large-vision-language-models)  
    标签：评分：9.0/10、query:sys-security
-   evidence：下一代汽车操作系统漏洞评估工具
-2. [LIB-TRAP: Standard Cell Library Hardware Trojan Risk Assessment and Prevention](/202607/09/2607.01526v1-lib-trap-standard-cell-library-hardware-trojan-risk-assessment-and-prevention)  
+   evidence：对云边异构LVLM系统的令牌操纵攻击
+2. [HiFuzz: Hierarchical Reinforcement Learning for Semantic-Aware and Adaptive CPU Fuzzing](/202607/10/2607.06619v1-hifuzz-hierarchical-reinforcement-learning-for-semantic-aware-and-adaptive-cpu-fuzzing)  
+   标签：评分：9.0/10、query:sys-security
+   evidence：基于分层强化学习的CPU模糊测试以发现漏洞
+3. [KS-CFA: Control-Flow Attestation via Symbolic Replay Against Control-Flow Bending Attacks](/202607/10/2607.07926v1-ks-cfa-control-flow-attestation-via-symbolic-replay-against-control-flow-bending-attacks)  
+   标签：评分：9.0/10、query:sys-security
+   evidence：通过符号重放的运行时控制流证明对抗控制流弯曲攻击
+4. [Mini-Programs, Mega-Problems: Unveiling OAuth-based Authentication Misuses in Mini-Programs via Dynamic Analysis](/202607/10/2607.08232v1-mini-programs-mega-problems-unveiling-oauth-based-authentication-misuses-in-mini-programs-via-dynamic-analysis)  
+   标签：评分：9.0/10、query:sys-security
+   evidence：通过动态分析检测小程序中的运行时 OAuth 认证误用
+5. [Coded Task Offloading for Fluid Computing: A Privacy-Aware Approach under D2D Networks](/202607/10/2607.08440v1-coded-task-offloading-for-fluid-computing-a-privacy-aware-approach-under-d2d-networks)  
+   标签：评分：9.0/10、query:sys-security
+   evidence：提出面向异构计算环境的隐私感知编码任务卸载方案
+6. [Evaluating Endpoint Detection Robustness Against Genetic Algorithm Driven Code Transformations](/202607/10/2607.07191v1-evaluating-endpoint-detection-robustness-against-genetic-algorithm-driven-code-transformations)  
    标签：评分：8.0/10、query:sys-security
-   evidence：针对标准单元库的硬件木马风险评估与预防，解决异构计算硬件安全问题
+   evidence：进化代码变体测试端点检测鲁棒性
 
 ### 速读区论文标签
-1. [Security Analysis for SCONE Logic Locking](/202607/09/2607.03288v1-security-analysis-for-scone-logic-locking)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：与软硬件分析测试相关的逻辑锁定方案安全性分析
-2. [Large Language Models (LLMs) and Generative AI in Cybersecurity and Privacy: A Survey of Dual-Use Risks, AI-Generated Malware, Explainability, and Defensive Strategies](/202607/09/2607.06963v1-large-language-models-llms-and-generative-ai-in-cybersecurity-and-privacy-a-survey-of-dual-use-risks-ai-generated-malware-explainability-and-defensive-strategies)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：综述涵盖基于LLM的防御策略和漏洞利用技术
-3. [Mitigating Taint-Style Vulnerabilities in MCP Servers via Security-Aware Tool Descriptions](/202607/09/2607.07461v1-mitigating-taint-style-vulnerabilities-in-mcp-servers-via-security-aware-tool-descriptions)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：系统分析MCP服务器污点式漏洞并提出安全感知工具描述
+1. [Agentic SABRE: An Uncertainty-Aware Neuro-Symbolic Multi-Agent Framework for Adaptive Ransomware Detection](/202607/10/2607.04292v1-agentic-sabre-an-uncertainty-aware-neuro-symbolic-multi-agent-framework-for-adaptive-ransomware-detection)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：利用运行时行为遥测进行自适应勒索软件检测
+2. [An Automated Framework for Generating Stealthy Cell-Embedded Hardware Trojans](/202607/10/2607.07049v1-an-automated-framework-for-generating-stealthy-cell-embedded-hardware-trojans)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：用于安全评估的硬件木马生成
 
 
 <div class="dpr-home-promo-card">
