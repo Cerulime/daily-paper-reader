@@ -6,46 +6,52 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-10
-- 运行时间：2026-07-10 20:25:59 UTC
+- 最新运行日期：2026-07-11
+- 运行时间：2026-07-11 21:24:58 UTC
 - 运行状态：成功
-- 本次总论文数：8
-- 精读区：6
-- 速读区：2
+- 本次总论文数：10
+- 精读区：1
+- 速读区：9
 
 ### 今日简报（AI）
-今日深入剖析了视觉语言模型在云边推理中的视觉令牌操纵攻击与CPU模糊测试新框架。
-两大亮点：针对大模型输入端的持久性对抗伪装，以及基于分层强化学习的语义感知自适应模糊策略。
-建议关注云边协同场景中不可信视觉流的安全评估，以及将类似RL方法移植到固件测试。
-- 详情：[/202607/10/README](/202607/10/README)
+今日聚焦代码安全：从任务向量驱动的安全代码生成，到漏洞基准构建与评估。
+最值得关注：利用任务向量实现功能与安全并重的代码生成，以及更贴近现实的漏洞基准与泄漏感知评估。
+建议读者从评估框架入手，理解这些方法如何提升自动化漏洞检测与修复的可信度。
+- 详情：[/202607/11/README](/202607/11/README)
 
 ### 精读区论文标签
-1. [Vision Token Manipulation Attacks on Cloud-Edge Inference of Large Vision-Language Models](/202607/10/2607.02819v1-vision-token-manipulation-attacks-on-cloud-edge-inference-of-large-vision-language-models)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：对云边异构LVLM系统的令牌操纵攻击
-2. [HiFuzz: Hierarchical Reinforcement Learning for Semantic-Aware and Adaptive CPU Fuzzing](/202607/10/2607.06619v1-hifuzz-hierarchical-reinforcement-learning-for-semantic-aware-and-adaptive-cpu-fuzzing)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：基于分层强化学习的CPU模糊测试以发现漏洞
-3. [KS-CFA: Control-Flow Attestation via Symbolic Replay Against Control-Flow Bending Attacks](/202607/10/2607.07926v1-ks-cfa-control-flow-attestation-via-symbolic-replay-against-control-flow-bending-attacks)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：通过符号重放的运行时控制流证明对抗控制流弯曲攻击
-4. [Mini-Programs, Mega-Problems: Unveiling OAuth-based Authentication Misuses in Mini-Programs via Dynamic Analysis](/202607/10/2607.08232v1-mini-programs-mega-problems-unveiling-oauth-based-authentication-misuses-in-mini-programs-via-dynamic-analysis)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：通过动态分析检测小程序中的运行时 OAuth 认证误用
-5. [Coded Task Offloading for Fluid Computing: A Privacy-Aware Approach under D2D Networks](/202607/10/2607.08440v1-coded-task-offloading-for-fluid-computing-a-privacy-aware-approach-under-d2d-networks)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：提出面向异构计算环境的隐私感知编码任务卸载方案
-6. [Evaluating Endpoint Detection Robustness Against Genetic Algorithm Driven Code Transformations](/202607/10/2607.07191v1-evaluating-endpoint-detection-robustness-against-genetic-algorithm-driven-code-transformations)  
+1. [Functional and Secure Code Generation with Task Vectors](/202607/11/2607.07881v1-functional-and-secure-code-generation-with-task-vectors)  
    标签：评分：8.0/10、query:sys-security
-   evidence：进化代码变体测试端点检测鲁棒性
+   evidence：提出任务向量算术以生成无安全漏洞代码，直接防止利用。
 
 ### 速读区论文标签
-1. [Agentic SABRE: An Uncertainty-Aware Neuro-Symbolic Multi-Agent Framework for Adaptive Ransomware Detection](/202607/10/2607.04292v1-agentic-sabre-an-uncertainty-aware-neuro-symbolic-multi-agent-framework-for-adaptive-ransomware-detection)  
+1. [JavaVulBench: A Java Vulnerability Benchmark with Realistic Splits, a Unified Multi-Backend Harness, and a Leakage-Aware Evaluation Mode](/202607/11/2607.02825v1-javavulbench-a-java-vulnerability-benchmark-with-realistic-splits-a-unified-multi-backend-harness-and-a-leakage-aware-evaluation-mode)  
    标签：评分：7.0/10、query:sys-security
-   evidence：利用运行时行为遥测进行自适应勒索软件检测
-2. [An Automated Framework for Generating Stealthy Cell-Embedded Hardware Trojans](/202607/10/2607.07049v1-an-automated-framework-for-generating-stealthy-cell-embedded-hardware-trojans)  
+   evidence：提供Java漏洞检测基准数据集，用于评估软件漏洞检测技术
+2. [Advanced Topic Modeling Techniques for Categorizing Software Vulnerabilities](/202607/11/2607.03887v1-advanced-topic-modeling-techniques-for-categorizing-software-vulnerabilities)  
    标签：评分：7.0/10、query:sys-security
-   evidence：用于安全评估的硬件木马生成
+   evidence：运用大语言模型驱动的主题建模对软件漏洞进行分类
+3. [Context-to-Execution Integrity for LLM Agents](/202607/11/2607.06000v1-context-to-execution-integrity-for-llm-agents)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：提出通过执行边界完整性检查防止LLM代理工具调用被利用的防御机制
+4. [FDIFormer:Protocol-Aware Transformer Learning for False Data Injection Attack Detection in Smart Grid Networks](/202607/11/2607.06213v1-fdiformerprotocol-aware-transformer-learning-for-false-data-injection-attack-detection-in-smart-grid-networks)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：提出协议感知变压器用于检测智能电网GOOSE消息中的虚假数据注入攻击（一种利用形式）。
+5. [Beware What You Autocomplete: Forensic Attribution of Backdoored Code Completions](/202607/11/2607.08011v1-beware-what-you-autocomplete-forensic-attribution-of-backdoored-code-completions)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：后门代码补全的取证溯源，用于软件供应链安全
+6. [Prismata: Confining Cross-Site Prompt Injection in Web Agents](/202607/11/2607.08147v1-prismata-confining-cross-site-prompt-injection-in-web-agents)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：提出针对提示注入这一软件漏洞利用的防御机制，通过上下文最小权限保护Web代理
+7. [Token-Flow Firewall: Semantic Runtime Auditing for Persistent AI Agents](/202607/11/2607.08395v1-token-flow-firewall-semantic-runtime-auditing-for-persistent-ai-agents)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：TokenWall在运行时对令牌流进行语义审计以拦截不安全行为，是一种动态安全分析技术。
+8. [Layer-Parallel Inference Reduces Encrypted Nonlinear Depth in Transformers](/202607/11/2607.04819v1-layer-parallel-inference-reduces-encrypted-nonlinear-depth-in-transformers)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：改进基于FHE的加密推理以支持机密计算
+9. [xDECAF: An Extensible Data Flow Diagram Analysis Framework for Information Security](/202607/11/2607.05913v1-xdecaf-an-extensible-data-flow-diagram-analysis-framework-for-information-security)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：用于信息安全的数据流图可扩展分析工具，可用于系统安全分析任务。
 
 
 <div class="dpr-home-promo-card">
