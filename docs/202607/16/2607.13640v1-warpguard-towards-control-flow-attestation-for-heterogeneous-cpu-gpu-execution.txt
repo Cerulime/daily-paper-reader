@@ -1,0 +1,581 @@
+Title: WarpGuard: Towards Control-Flow Attestation for Heterogeneous CPU-GPU Execution
+
+URL Source: https://arxiv.org/pdf/2607.13640v1
+
+Published Time: Thu, 16 Jul 2026 01:10:23 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# WarpGuard: Towards Control-Flow Attestation for Heterogeneous CPU-GPU Execution 
+
+# Christian Lindenmeier 
+
+NVIDIA Santa Clara, USA 
+
+# Meni Orenbach 
+
+NVIDIA Santa Clara, USA 
+
+# Amro Awad 
+
+University of Oxford Oxford, UK 
+
+# Fabian Schwarz 
+
+NVIDIA Santa Clara, USA 
+
+# Fritz Alder 
+
+NVIDIA Santa Clara, USA 
+
+# Ahmad Atamli 
+
+NVIDIA Santa Clara, USA University of Southampton Southampton, UK 
+
+## Abstract 
+
+Heterogeneous CPU-GPU workloads are increasingly used in safety-critical embedded systems, yet no existing approach provides joint attestation of their execution. Prior Control-Flow Attestation (CFA) techniques focus on CPU-side CFA, while GPU attestation is limited to static, load-time verification and does not provide runtime guar-antees. As a result, runtime attacks on GPU kernels and violations of the CPU-GPU interaction contract remain unaddressed. We present WarpGuard, the first composite CFA framework for heterogeneous CPU-GPU workloads. WarpGuard verifies execu-tion against a unified control-flow graph (CFG) that captures both CPU and GPU components. It extends prior CFA techniques in two ways: it enables runtime CFA of GPU kernels by tracing their exe-cution against kernel-specific CFGs, and it monitors kernel launch events and enforces per-call site policies to detect violations at the CPU–GPU boundary. These extensions address challenges arising from GPU parallelism and cross-device interactions. We implement WarpGuard using software-based instrumenta-tion, requiring no specialized hardware or binary modifications. Our evaluation on an NVIDIA Jetson Orin Nano shows that Warp-Guard detects GPU-side control-flow and cross-boundary attacks. Across microbenchmarks, SPECAccel, and eight TensorRT infer-ence workloads, WarpGuard incurs moderate overheads, suggesting practicality for embedded safety-critical settings. 
+
+## 1 Introduction 
+
+Modern compute workloads increasingly rely on heterogeneous processor combinations: a CPU host orchestrates the overall execu-tion while a GPU accelerator performs data-parallel computation. This pattern spans scientific computing, machine learning inference, robotics, and autonomous systems [ 19 , 27 , 35 ], and is particularly prevalent in embedded and IoT deployments, where integrated CPU-GPU platforms enable real-time Artificial Intelligence (AI) inference at low power budgets. As these heterogeneous workloads take on safety-critical roles, verifying their end-to-end execution integrity becomes paramount: a compromised or malfunctioning workload must be detected before it causes harm. For CPU programs, Control-Flow Attestation (CFA) provides exactly this capability. CFA allows a remote verifier to cryptograph-ically confirm that a prover executed only control-flow (CF) paths permitted by its Control-Flow Graph (CFG), enabling detection of code-reuse attacks such as return-oriented programming (ROP) [ 45 ]and jump-oriented programming (JOP) [ 8]. Since the foundational work of C-FLAT [ 4 ], CFA for CPU-only workloads has matured into a rich research area with solutions across embedded microcon-trollers [ 14 ], real-time systems [ 48 , 50 ], and general-purpose plat-forms [ 33 ], covering both software instrumentation and hardware-assisted tracing approaches. The GPU side of heterogeneous workloads has received com-paratively little attention. Existing GPU integrity approaches, such as SAGE [ 28 ], focus on static, load-time verification: they confirm that a GPU kernel binary is unmodified when loaded onto the de-vice, but provide limited guarantees about the runtime behavior of the loaded code. Recently, however, Guo et al. [ 23 ] demonstrated that GPU stack buffer overflows can be exploited to conduct GPU-targeted ROP attacks that are entirely undetectable by load-time binary attestation. This result shows that GPU runtime CF hijack-ing is a practical threat today that demands runtime monitoring. Closing this gap requires overcoming two fundamental challenges. First, GPU kernels execute thousands of threads concurrently under the Single-Instruction Multiple-Thread (SIMT) model, where threads are grouped into warps that advance in lockstep but can di-verge at conditional branches. Naively tracing CF at per-thread gran-ularity would produce trace volumes orders of magnitude larger than CPU tracing, overwhelming device memory and hampering performance. Thus, existing CPU CFA techniques do not directly transfer to GPUs: the assumptions of sequential, single-threaded execution do not hold for massively parallel warp execution. Second, attesting the GPU side in isolation is insufficient. The CPU application controls which GPU kernel binary is dispatched and how many threads are used, both of which directly affect the computation’s execution integrity. For example, an attacker who can influence the CPU-GPU dispatch boundary can substitute a GPU kernel for another benign one or manipulate the launch config-uration to alter execution, none of which leaves a trace in the GPU attestation record alone. Yet, the computation as a whole might be entirely different from what was intended. Detecting these CPU-GPU attacks requires binding each GPU execution to the specific GPU callsite on the CPU thread that triggered it, which existing CFA frameworks for either side cannot provide independently. We present WarpGuard , the first CFA framework that addresses both challenges jointly for heterogeneous CPU-GPU workloads. WarpGuard traces the CF of both the CPU host application and all dispatched GPU kernels, and correlates each GPU execution with arXiv:2607.13640v1 [cs.CR] 15 Jul 2026 Lindenmeier et al. 
+
+the GPU callsite on the CPU that triggered it. On the GPU side, WarpGuard exploits the SIMT property to trace at warp granularity: since all active threads in a non-diverged warp execute the same instruction, a single trace entry per warp faithfully captures the warp’s CF at a fraction of the per-thread cost. At the CPU-GPU boundary, WarpGuard records each kernel dispatch, binds it to a content-based kernel identity, and enforces per-GPU launchsite policies specifying which GPU kernels are authorized to execute at each dispatch site and under which launch configurations. Warp-Guard’s verifier works on a composite CFG unifying both CPU execution and per-kernel GPU CFGs. We prototype WarpGuard on an NVIDIA Jetson Orin Nano [ 43 ] using software-based instru-mentation frameworks DynamoRIO [ 1] and NVBit [ 51 ], thus not requiring source code, i.e., supporting proprietary AI libraries, or specific hardware modifications enabling widespread adoption. In summary, our contributions are: 
+
+• A systematic analysis of the attack surface of CPU-GPU workloads, identifying five attack vectors that no existing system jointly addresses (Sec. 3.2). 
+
+• The design and implementation of WarpGuard, the first composite CPU-GPU CFA framework, including a compos-ite CFG model, a warp-level GPU tracing mechanism, and CPU-GPU binding (Sec. 5). 
+
+• A performance evaluation on microbenchmarks, the SPECac-cel benchmark suite [ 46 ], and AI IoT inference workloads [ 41 ]showing moderate overhead (Sec. 7). 
+
+• An end-to-end security demonstration by reproducing the GPU CF hijacking attack of Guo et al. [ 23 ] and showcasing WarpGuard’s practical detection (Sec. 7). 
+
+## 2 Background 2.1 Control-Flow Attestation for CPUs 
+
+CFA enables a verifier to obtain cryptographic evidence that a pro-gram on a prover followed a legitimate execution path [ 4]. Unlike Control-Flow Integrity (CFI) [ 3 , 9 ], which enforces a policy at run-time to prevent CF deviations locally, CFA passively records and reports the execution path to a remote party; enforcement decisions (e.g., alerting or halting the system) are made by the verifier upon receiving the attestation report. This separation of detection from verification makes CFA suitable for settings where a trusted verifier monitors an untrusted workload by either running locally on the same device in a protected subsystem or entirely remotely. Most CFA schemes operate in two phases [ 4, 50 ]. In the offline phase , the verifier pre-computes a reference model of the execu-tion, e.g., the static CFG of each attestable binary. The CFG is a directed graph whose nodes are basic blocks (BBs) and whose edges represent valid control transfers. Each binary is identified by a cryptographic hash, which typically includes measurements over the code segment. In the online phase , the prover collects execution traces capturing CF transitions of the program and forwards them, via an authenticated secure channel, to the verifier, which checks conformance either by CFG replay (walking the CFG and flagging invalid edges) or hash-based comparison against a known-good run. Trace collection is the primary source of performance overhead. 
+
+Hardware-assisted tracing uses dedicated CPU features such as Intel Processor Trace or ARM CoreSight to record branches transpar-ently with minimal overhead [ 20 , 33 ]. However, similar features are not publicly available for the GPU side. Software-based tracing 
+
+instruments the application, either statically at compile time or at runtime via dynamic binary instrumentation (DBI) frameworks such as DynamoRIO [1]. Software tracing is architecture-portable and requires no hardware support, but incurs higher overhead due to the instrumentation hooks executed at each observed instruction. 
+
+## 2.2 CPU-GPU Heterogeneous Workloads 
+
+A CPU-GPU heterogeneous workload consists of two components: a host application running on the CPU and one or more kernels 
+
+executing on the GPU. The host manages the full lifecycle: allo-cating GPU memory, transferring input data, dispatching GPU kernels, and reading back results. GPU kernels are typically writ-ten in C/C++, thus they are susceptible to memory corruptions enabling CF hijacking attacks inside the GPU [ 23 ]. Kernels are com-piled to an intermediate virtual ISA (PTX) and translated to the hardware-native binary format (SASS), either ahead of time or via JIT compilation at launch; the resulting images are bundled in a 
+
+fatbin container embedded in the host executable. At dispatch time, the GPU runtime selects the appropriate SASS image from the fatbin, transfers it to GPU memory, and submits a launch command to the GPU driver. Crucially, the GPU runtime per-forms no verification that the dispatched kernel image matches the intended kernel. Equally, standard CPU CFA traces CF transitions between CPU code locations and has no mechanism to observe what code is loaded into GPU memory or how it executes, mak-ing CPU-only CFA fundamentally incapable of attesting CPU-GPU workloads. 
+
+## 2.3 NVIDIA GPU Architecture 
+
+Execution Model. An NVIDIA GPU consists of an array of Stream-ing Multiprocessors (SMs), each capable of executing multiple thread groups concurrently. The fundamental scheduling unit is the warp :a group of 32 threads that execute in lockstep under the Single-Instruction, Multiple-Thread (SIMT) model. All 32 threads in a warp issue the same instruction each cycle, but each thread operates on its own registers and can follow an independent execution path. When a conditional branch causes threads within a warp to disagree on the taken direction, the warp diverges : the hardware serializes the two diverged groups, executing each in turn while masking inactive threads via a per-warp active mask that records which threads are currently executing. 
+
+Control-Flow Instructions. The SASS ISA exposes a rich set of CF instructions relevant to CFA. BRA performs a direct conditional or unconditional branch to an immediate offset; BRX performs an indirect branch via a register-indexed jump table. CAL and JCAL 
+
+issue relative and absolute function calls, respectively. RET returns from a called function using an address stored in the thread’s local stack frame. EXIT terminates kernel execution. The divergence management instructions SSY , PBK , and PCNT establish future re-convergence points before a branch, break, or continue; SYNC , BRK ,and CONT transfer control to the corresponding re-convergence points. WarpGuard 
+
+Memory Model and Local Stack. Each thread has a private local memory region allocated in off-chip global memory, used to store spilled registers and the thread’s function call stack. Stack frames, including return addresses for RET instructions, are stored in this per-thread local memory at predictable, fixed offsets within the frame. Guo et al. [ 23 ] demonstrated that these offsets are determin-istic and accessible to a vulnerable kernel, making it possible for a buffer overflow in one stack variable to overwrite the return ad-dress of the same frame, i.e., directly enabling CF hijacking attacks like ROP and JOP inside GPU kernels. Unlike CPUs, NVIDIA GPU device memory has no execute-permission bit: writable allocations such as those created with cudaMalloc can also be fetched and ex-ecuted as code, enabling code injection in addition to CF hijacking. We note that we focus on code-reuse attacks and do not tackle code injection attacks, since they require an orthogonal solution. 
+
+## 3 Attacks against CPU-GPU Workloads 
+
+A heterogeneous CPU-GPU workload presents multiple distinct attack surfaces. In this work, we focus on control-flow hijacking attacks that alter the sequence of code executed on the CPU or GPU independently, and on attacks that abuse the CPU-GPU dispatch boundary to manipulate the composite execution without triggering a deviation on either side in isolation. 
+
+## 3.1 Motivating Scenario Perception  Actuators 
+
+> CPU
+
+Compute  
+
+> Performance Domain Safety Domain
+> inference
+> with model X
+> result
+> CPU
+> verify
+> allow
+> decide
+> AI model A
+> AI model B
+> ...
+> input data
+> GPU
+> input data
+> action
+
+Figure 1: Exemplary AI inference pipeline for a robot: the host CPU selects an AI model based on task context and dispatches it as a GPU kernel in the performance domain; a safety monitor continuously verifies the execution before actuation commands are issued. 
+
+We motivate the design of WarpGuard with a scenario from au-tonomous robotics, a domain where GPU-accelerated AI inference is increasingly deployed on embedded platforms such as the NVIDIA Jetson Orin series [ 43 ]. Figure 1 depicts a perception-inference-actuation pipeline: a robot’s sensors feed data to a CPU host ap-plication, which selects an appropriate AI model, for example, an obstacle detection network or a navigation aid classifier, and dis-patches it as a GPU kernel. The inference result drives a motor command or navigation decision, and different models may be selected at runtime based on operational context (e.g., indoor vs. outdoor environment, current mission phase). A safety monitor, isolated from the performance domain, continuously verifies that the workload executes as intended; if an anomaly is detected, it can halt or slow the robot before an unsafe action reaches the actuators. In this paper, we focus on software attacks at the application layer: the hardware, OS, GPU device drivers, and CUDA runtime stack are part of the trusted computing base (TCB) (Sec. 4). An attacker who gains a foothold at this layer may (1) exploit memory-safety vulnerabilities in the CPU application or GPU kernels to hijack CF, or (2) abuse the CPU-GPU dispatch mechanism to alter what code executes on the GPU without triggering any per-side CFG violation. We now systematically analyze this attack surface and explain why existing attestation approaches are insufficient to detect it. 
+
+## 3.2 Control-Flow Hijacking Attacks 
+
+An attacker may exploit a vulnerability in either the CPU or GPU component of the heterogeneous workload to hijack its CF inde-pendently. 
+
+Class A: CPU Control-Flow Hijacking. The CPU host application governs the entire workload lifecycle: it acquires sensor data, se-lects the AI model, launches GPU kernels, and issues actuation com-mands based on their output. An attacker who exploits a memory-safety vulnerability in the host application, for example, a stack buffer overflow, can overwrite CF data and construct ROP or JOP chains [ 8, 45 ] that diverge from the intended execution path. This is the standard attacker model for CPU CFA systems; existing frame-works such as C-FLAT [ 4 ], ScaRR [ 50 ], and ReCFA [ 57 ] are designed to detect precisely this class of attack. We design WarpGuard to inherit their guarantees for the CPU side. 
+
+Class B: GPU Control-Flow Hijacking. GPU kernels process attacker-influenced sensor data and are equally susceptible to memory-safety vulnerabilities. As described in Section 2.3, each thread’s local mem-ory stores stack frames at predictable, fixed offsets, including the return address for each CAL invocation. Guo et al . [ 23 ] demonstrated that this layout can be exploited: a buffer overflow in a kernel’s local array can overwrite a saved return address and redirect execution to an attacker-chosen location. 
+
+Listing 1: Buffer overflow in a matrix-vector multiplication kernel. When the attacker controls n, the derived tile count 
+
+ncols may exceed the local buffer capacity, corrupting a saved return address.  
+
+> 1
+
+__device__ void matvecmul(scalar_t *T, scalar_t *V,  
+
+> 2
+
+scalar_t *R, int m, int n) {  
+
+> 3
+
+scalar_t arr_local[64];  
+
+> 4
+
+int ncols = n / blockDim.x;  
+
+> 5
+
+int col0 = blockIdx.x * blockDim.x + threadIdx.x;  
+
+> 6
+
+for (int k = 0; k < ncols; k++) {  
+
+> 7
+
+/* no bounds check: overflow possible */  
+
+> 8
+
+arr_local[k] = R[col0 * ncols + k];  
+
+> 9
+
+} 
+
+> 10
+
+/* RET with corrupted return address */  
+
+> 11
+
+}
+
+Listing 1 illustrates a concrete instance: a matrix-vector kernel al-locates a fixed-size local array (line 3) and fills it using a loop bound derived from the attacker-controlled parameter n. Because ncols Lindenmeier et al. 
+
+(line 4) is never validated against the buffer capacity, a sufficiently large n causes the loop to write past arr_local into adjacent stack memory, overwriting the saved return address placed there by the 
+
+CAL that invoked matvecmul . By supplying crafted values in R at the overflow positions, the attacker redirects execution to an arbi-trary location after the function executes its RET . No existing CPU CFA system can detect this attack, and prior GPU attestation work such as SAGE [ 28 ] only verifies static binary integrity at load time: it checks that the kernel binary is unmodified before launch, but provides no protection against runtime CF hijacking. 
+
+## 3.3 Abuse of CPU-GPU Interactions 
+
+The most distinctive attack class for heterogeneous workloads arises at the CPU-to-GPU dispatch boundary. As described in Section 2.2, kernel images reside in CPU-addressable host memory and are treated as data by the CPU’s CFG, i.e., no CPU branch targets GPU kernel code. An attacker can therefore alter what code is loaded into the GPU or how a kernel is configured at launch, without producing any deviation in the CPU execution trace. We identify three sub-classes of such attacks. 
+
+Class C: Kernel Manipulation. The attacker patches the kernel binary image in host memory (or on disk before load) before it is transferred to the GPU by, e.g., replacing specific code sequences. A sophisticated variant leaves the kernel’s CF structure intact, so that GPU CF tracing would produce a trace fully compliant with the kernel’s CFG, rendering the attack invisible even to CPU or GPU CFA systems that purely rely on CF traces. SAGE [ 28 ] addresses this class by computing a cryptographic measurement of the kernel binary inside the GPU before execution, i.e., confirming its integrity. WarpGuard also covers kernel image integrity, however, at the GPU runtime API dispatch boundary. 
+
+Class D: Kernel Substitution. A heterogeneous workload typically ships with multiple GPU kernel binaries targeting different opera-tional modes (e.g., different AI model variants or precision settings). Even when measuring the identity of the kernel loaded into the GPU, one cannot determine which of the application’s kernels was 
+
+intended at a given GPU callsite executed on the CPU. This gap en-ables kernel substitution: the attacker remaps which kernel image is dispatched by replacing the intended kernel A with a different, unmodified kernel B that the verifier knows as legitimate. In the robotics scenario (Sec. 3.1), an attacker could substitute the obstacle detection model with a legitimate but task-mismatched model that reports “no obstacle” on most inputs. Detection requires a binding between the GPU callsite on the CPU and the set of kernels au-thorized to execute there. WarpGuard provides this binding via a per-GPU-callsite policy and by tracing GPU kernel launches. 
+
+Class E: Kernel Launch Configuration Manipulation. Beyond the kernel binary, each GPU kernel dispatch carries hardware-level launch parameters: the grid dimension ( gridDim ) and block dimen-sion ( blockDim ) define the number of thread blocks and threads per block, respectively. These parameters directly influence execution: as shown in Listing 1, blockDim.x determines loop bounds per thread (line 4) and per-thread memory access offsets (line 5), so a manipulated blockDim can silently alter the computation without violating the kernel’s CFG. WarpGuard records the launch configu-ration at each GPU callsite and enables enforcing a per-GPU-callsite configuration policy, closing this gap. 
+
+## 3.4 Coverage Gap 
+
+Most CFA approaches target CPU CFA [ 4, 50 , 57 ], i.e., cover Class A. GPU kernel manipulation (Class C) is addressed by recent work, e.g., SAGE [ 28 ]. However, to the best of our knowledge, no existing CFA system covers GPU CF at runtime (Class B), leaving GPU workloads entirely unprotected at runtime. Beyond that, even a hypothetical system that naively combines an existing CPU CFA solution with an independent GPU CFA solution would still miss Classes D and E: a substituted kernel produces a benign-looking per-side trace, and a manipulated launch configuration can alter execution behavior while remaining CFG-compliant. Detection of all five attack classes requires a composite attestation framework that jointly traces CPU execution, GPU execution, and the dispatch events binding them. 
+
+## 4 Threat Model 
+
+Our threat model is influenced by our motivating scenario of a robotics platform (Sec. 3.1) and is therefore tailored for deployments in embedded or edge environments. 
+
+Trust Assumptions. The following software components are part of the TCB: the OS and GPU device drivers, the GPU runtime stack (e.g., CUDA), the prover, and the verifier. The prover is the trusted measurement agent that instruments and observes the heteroge-neous workload. Depending on the implementation, it receives CF traces via local IPC channels (e.g., shared memory), which we assume to be trusted. 
+
+Adversary Capabilities. The heterogeneous workload, i.e., both the CPU host application and all GPU kernels, running at the ap-plication layer, is untrusted and may contain vulnerabilities. The adversary may feed malicious data into the compute platform via hijacking or manipulating perception sensors (Sec. 3.1) in order to exploit, e.g., memory-safety vulnerabilities, and write into non-intended memory areas. This includes attacks that overwrite any CF data saved on the stack to hijack the CF of either the CPU host application or any of the launched GPU kernels with the goal to construct ROP or JOP chains (Sec. 3.2). Also, the attacker may try to tamper with the integrity of GPU kernels by manipulating them at runtime in memory or on the disk before they are passed to the GPU runtime API. On top of that, we include CPU-sided attacks that leverage write primitives to tamper with the CPU-GPU interaction by manipulating launch configu-ration parameters passed to GPU callsites executed on the CPU. This includes changing the kernel image pointer or overwriting 
+
+gridDim or blockDim values (Sec. 3.3). 
+
+Out of Scope. Our main objective is the extension of CFA to heterogeneous CPU-GPU workloads, thus we have an overlap with the scope limitations of other related CFA systems targeting CPUs. WarpGuard employs a static CFG-based CFA both for CPU and GPU and does not claim to detect CF bending attacks that tamper with runtime-dependent conditional branch or jump instructions. However, we note that for the GPU these are extremely rare due to performance optimizations, and we did not encounter them in our WarpGuard 
+
+evaluation set. Furthermore, we keep data-only attacks on the CPU that do not target the GPU kernel image or launch configuration at a GPU callsite but change the CPU applications’ semantic CF, out of scope. However, since WarpGuard is compatible with other CPU CFA approaches, this limitation mostly depends on the chosen CPU CFA scheme’s properties. We also note that, while to the best of our knowledge not shown to be practical, data-only attacks inside the GPU are out of scope. Additionally, we exclude side-channel attacks and dynamically generated or self-modifying code. Lastly, WarpGuard does not address the threat of GPU code injection attacks [ 23 ] via write-executable memory, as we see this to be an orthogonal challenge. 
+
+## 5 Design 
+
+In this section, we present the design of WarpGuard as the first PoC framework that enables capturing the new attack vectors in heterogeneous compute environments, as discussed in Section 3. We begin by describing the functional requirements of WarpGuard, the different design options and their trade-offs, the high-level architecture, and main components of WarpGuard. Implementation aspects of our proof-of-concept are covered in Section 6. 
+
+## 5.1 Functional Requirements 
+
+As explained in Section 2.2, CFA of heterogeneous workloads must capture the CF behavior of the CPU, GPU, and the interactions be-tween them. Thus, any attestation reports generated by WarpGuard must capture the following details. First, the run-time CF behavior of the CPU-side execution, which captures the executed code path in an order-preserving fashion (Class A attacks). For each run, the prover must ensure that the execution traces are freshly generated and correspond to the run being attested. Second, for the GPU-side execution, we need to verify that the path taken by each thread is compliant with the allowed CF but in a scalable fashion, which is challenging due to the highly parallel nature of GPUs (Class B at-tacks). Finally, and perhaps most importantly, verifying that at each GPU callsite executed on the CPU side, the expected kernel image together with a benign launch configuration is executed (Class C, D, and E attacks). 
+
+## 5.2 Design Space and Trade-offs 
+
+CFA frameworks can vary in the resolution of CF tracking, required software and hardware support, and the employed logging mecha-nism and location. We now elaborate on different trade-offs with the peculiarities of GPUs in mind. 
+
+Control-flow Resolution. The amount of information logged by a CFA framework depends on what type of CF transitions are cap-tured (where) and how often such transitions are captured (when). In its most aggressive form, CFA reports capture each CFG edge transition, and hence capture each BB’s execution (when). An ex-ample to accomplish this is to insert CF capturing hooks in the last or first instruction of each BB (where). Naturally, this may induce a high performance overhead; thus, a more relaxed version might capture only the function-level CF under the assumption that a CF hijacking attack will most likely surface at function boundaries. Given the large number of threads executing in GPUs, the differ-ence in performance for BB vs. function-level is more pronounced, hence we support and evaluate both options for GPU kernels. 
+
+Required Support. While hardware-assisted approaches on the CPU, e.g., ARM’s CoreSight, often offer very low performance over-heads, they pose challenges of flexibility and wider applicability. Additionally, to the best of our knowledge, on the GPU side, no equivalent publicly available tracing facility exists. Thus, while hardware-assisted CFA tracing for CPUs might be an option, the unavailability on the GPU side makes it ill-suited for heterogeneous compute environments, and we opt for a purely software-based instrumentation in our PoC (Sec. 6). Additionally, to support propri-etary closed-source libraries (e.g., TensorRT), we opt for a dynamic binary instrumentation tool given its flexibility and potential wider applicability. 
+
+Tracing Responsibility. Given the serial nature of CPU tracing, the tracing responsibility is often held by the executing thread itself, i.e., one trace event per CF event per thread. However, for GPU kernels, there are usually thousands of GPU threads, and therefore, it is intractable to create and process this massive number of traces corresponding to each GPU thread. Fortunately, our key insight is that due to the nature of the SIMT execution model (Sec. 2.3), active 
+
+threads within each executing warp follow the exact same CF. As a result, for the GPU side, we opt for dynamically selecting a lead thread which is responsible for tracing the whole warp. This warp-level tracing allows us to significantly reduce the amount of CF traces, making CF tracing on the GPU feasible from a performance perspective without sacrificing security guarantees. 
+
+Logging Location. Execution traces from the CPU and GPU must be logged both efficiently and securely, but the two requirements pull in opposing directions depending on where the buffer resides. On the CPU side, secure logging buffers can be realized within a trusted execution environment. No equivalent mechanism is readily available on the GPU. However, simply writing each GPU trace record directly to host memory at the moment of generation would serialize every warp’s trace operation across the CPU-GPU inter-face, inducing extreme overheads. We therefore adopt a local tracing strategy as a trade-off: CPU traces are generated in host memory, while GPU traces are generated in GPU-local memory but period-ically flushed to the host in batches with the frequency being a user-controlled knob. We acknowledge that this is a probabilistic rather than cryptographic guarantee, and discuss hardware exten-sions that could close this gap fully in Section 8. 
+
+## 5.3 High-level Architecture 
+
+In this section, we first describe general assumptions about estab-lished CPU CFA on which WarpGuard builds; then, we explain our extensions to integrate the GPU. Aspects of CPU profiling are detailed in Section 5.4 while GPU profiling with warp-level trac-ing is explained in Section 5.5. Sections 5.6 and 5.7 revolve around WarpGuard’s prover and verifier respectively. 
+
+5.3.1 General Assumptions. WarpGuard follows the well-established CFA two-party architecture [ 4]: a prover running on the target de-vice and a verifier that assesses execution integrity. However, in Lindenmeier et al. 
+
+contrast to CPU-only CFA, WarpGuard’s prover encapsulates the complete execution of a heterogeneous workload that offloads com-putation to a GPU, collecting CF traces from both the CPU and GPU components and forwarding them securely to the verifier. The verifier analyzes these reports against a pre-established refer-ence model and raises an alarm on any detected deviation. In the canonical deployment, the verifier is a remote trusted entity; in our embedded or edge scenario (Sec. 3.1), it may be co-located on the same device within a protected subsystem. 
+
+Authenticity and Freshness. WarpGuard builds on top of well-established CFA challenge-response protocols established in prior work [ 4]: the verifier issues a per-session challenge to the prover before any trace data is exchanged, and the prover’s reports are bound to that challenge, preventing an adversary from replaying a previously captured attestation session as a fresh execution. We assume the OS as our root-of-trust (RoT) (Sec. 4) and rely on it to provide a fresh and authentic communication channel between the prover and the verifier. This is consistent with the TCB assumptions of CPU-only CFA systems [ 4, 50 , 57 ], and WarpGuard inherits those guarantees. We assume that the extensions introduced by WarpGuard run within the same authenticated session, binding GPU-side evidence to the same challenge-response context as the CPU traces. 
+
+CPU Binary Integrity. We further assume that the CPU applica-tion binary is attested at load time as part of the challenge-response handshake: the OS-trusted loader measures a cryptographic hash 
+
+ℎ𝑎𝑠ℎ cpu over the application’s code segments and includes it in the initial prover report. The verifier uses ℎ𝑎𝑠ℎ cpu to select the cor-rect 𝐶𝐹𝐺 cpu from its reference model, ensuring runtime traces are checked against the CFG of the binary actually running on the device. We note that in CPU CFA schemes, GPU kernel binaries are not checked for integrity, which is a contribution of WarpGuard. 
+
+5.3.2 Extending CFA to GPUs. We depict the high-level architec-ture and workflow of WarpGuard in Figure 2. WarpGuard comprises three main components (profiler, prover, and verifier) that operate in five main steps. Initially, in a measurement step 1 , which is offline, i.e., before the actual execution on a device, we generate the verifier’s reference model in a trusted system using an integrity-verified version of the workload. WarpGuard processes the hetero-geneous workload and divides it into CPU application binaries and GPU kernel binaries. For the CPU binary, we generate the static 
+
+𝐶𝐹𝐺 cpu with its CF edges. Similarly, we generate the set of static GPU CFGs, i.e., 𝐶𝐹𝐺 gpu,n , for each of the 𝑛 kernels. We use crypto-graphic hashes as identifiers for both the CPU and each GPU CFG. Lastly, we define so-called GPU launchsite policies : for each GPU callsite in the CPU binary, a policy lists the authorized GPU kernel hashes and launch configuration values. In combination, all three artifacts comprise a composite 𝐶𝐹𝐺 comp which our verifier uses as the reference model (Sec. 5.7). In a second step 2 , the workload gets executed on a device. While the launch of the CPU application is handled via established mechanisms (Sec. 5.3.1), WarpGuard’s prover has the capability to intercept GPU kernel launches, which is crucial to validate the integrity of the executed binary but also to record the precise GPU callsite on the CPU. WarpGuard’s prover will also record the kernel launch configuration values and send Heterogeneous Workload 
+
+CPU Application Code 
+
+GPU Kernel B Code 
+
+WarpGuard Profiler 
+
+> CPU Instr.
+
+WarpGuard 
+
+Prover 
+
+CPU  
+
+> CPU CF Logs GPU CF Logs
+
+WarpGuard 
+
+Verifier GPU Kernel A Code 
+
+> On-device
+> execution
+> GPU Instr.
+
+GPU  CF Log 
+
+> Collection
+> GPU Launch
+> Monitoring
+
+## 1
+
+## 2
+
+## 4
+
+## 5
+
+## 3
+
+Figure 2: High-level architecture of WarpGuard. 
+
+all this information in a so-called launch trace to the verifier. The launch trace effectively binds a GPU kernel’s execution to its GPU callsite (Sec. 5.6). In a third step 3 , the CPU and GPU parts of the heterogeneous workload get instrumented by WarpGuard’s pro-filer. Since we opted for a software-based CFA approach, this step entails disassembling both CPU and GPU binaries and inserting logging routines at either BB- or function-level resolution. Next, both the instrumented CPU and GPU components will be executed on their respective processors and leave traces of CF events in their logging buffers. In a fourth step 4 , both CF logs are collected by WarpGuard’s prover and sent in batches to the verifier. In the last fifth step 5 , WarpGuard’s verifier receives the traces and verifies the composite execution of the CPU and GPU under defined GPU launchsite policies using 𝐶𝐹𝐺 comp .
+
+## 5.4 CPU Profiling and Tracing 
+
+WarpGuard’s CPU profiler instruments the CPU application binary at BB granularity, similar to related work [ 4]. Before each CF in-struction WarpGuard inserts an inline hook that records two values: the instruction offset of the current BB within the binary ( 𝑏𝑏 _𝑖𝑑 )and the OS-level thread identifier ( 𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑 ). Together, these two fields allow the verifier to reconstruct the per-thread execution sequence and check it against 𝐶𝐹𝐺 cpu . The complete CPU trace stream Tcpu is the sequence of all such flushed messages across all threads. 
+
+GPU Callsite Logging. A key aspect in WarpGuard is the binding of CPU and GPU traces via GPU launch monitoring. To this end, WarpGuard extends the CPU instrumentation with a dedicated WarpGuard 
+
+Table 1: WarpGuard’s compact GPU trace record. Each record is 16 bytes: two packed 64-bit fields ( addr_id and warp_key ). Field Subfield Bits Description 
+
+addr_id f_idx 32 Index of the device func-tion within the kernel’s related-function set. 
+
+bb_offset 32 Byte offset of the BB en-try from the start of its function. 
+
+warp_key smid 16 Identifies the physical SM. 
+
+local_warpid 16 Warp ID within the SM. 
+
+active_mask 32 Lane execution mask. GPU callsite logging mechanism. WarpGuard scans the CPU binary for calls to GPU APIs (e.g., cudaLaunchKernel ) and instruments them with a hook that, at the moment of invocation, logs the call instruction’s offset within the binary ( 𝑎𝑑𝑑𝑟 _𝑖𝑑 ) together with the issuing thread’s 𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑 into a separate GPU launchsite buffer. When the prover later intercepts the GPU kernel dispatch, it reads this buffer to recover the (𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑, 𝑎𝑑𝑑𝑟 _𝑖𝑑 ) pair identifying the precise GPU callsite on the CPU. 
+
+## 5.5 GPU Profiling and Tracing 
+
+While CPU-sided CF tracing is well-established, GPU-sided CF tracing comes, due to the GPU’s massively parallel architecture, with unique peculiarities. We now describe WarpGuard’s approach of GPU kernel instrumentation, our compact GPU trace layout, and also the reasoning behind warp-level tracing. 
+
+Kernel Instrumentation. WarpGuard instruments GPU kernel binaries either at BB or function-level resolution: a hook is placed at the first instruction of every BB in the kernel root function and all its related device functions; or only on the first BB for function-level instrumentation, respectively. The BB-entry strategy reconstructs the executed CF path from a sequence of (prev-BB, curr-BB) pairs: every taken inter-block transfer causes the destination block’s entry hook to fire. As depicted in Table 1, each trace includes an 𝑎𝑑𝑑𝑟 _𝑖𝑑 
+
+field that allows mapping it to a specific node in the kernel CFG. Divergence-management instructions (e.g., BSYNC ) mark future re-convergence targets but do not themselves terminate BBs; they are not instrumented independently, but the BB that contains them is traced like any other. A re-convergence event, therefore, appears in the trace as a new BB entry under the merged active mask, which WarpGuard’s verifier handles through its per-warp divergence-tracking state (Sec. 5.7). 
+
+Warp-level Tracing. Because GPU kernels launch thousands of threads simultaneously, per-thread trace logging is infeasible: in the non-diverged case, all active threads in a warp execute the same instruction, so recording one entry per thread yields 32 identical copies with no additional security benefit (Sec. 5.2). WarpGuard therefore traces at warp granularity : at each BB entry, only the lowest-numbered active lane, determined via the hardware active-mask register, records a trace entry on behalf of the entire warp, CPU CFG  GPU A CFG 
+
+> GPU B CFG
+> Policy
+> Policy
+
+Figure 3: Composite CFG: the CPU CFG (left in black) con-tains kernel launch nodes that bridge to per-kernel GPU CFGs (right in gray). The GPU launchsite policies bind each GPU callsite on the CPU to a specific GPU CFG. 
+
+reducing trace volume by up to 32 ×. Under divergence, SIMT hard-ware serializes the diverged sub-groups, executing each while mask-ing the others; the first active lane of every serialized sub-group logs independently, so every execution path taken by any thread is represented in the warp-level trace. As listed in Table 1, each trace uses a warp_key which allows the verifier to correlate executed traces to their warps and verify their execution. 
+
+## 5.6 Prover 
+
+At each GPU callsite, WarpGuard’s prover intercepts the GPU run-time API to bind the CPU and GPU execution contexts before the kernel is dispatched. The prover reads the CPU profiler’s per-thread buffer to retrieve the GPU callsite record (𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑, 𝑎𝑑𝑑𝑟 _𝑖𝑑 ) logged by the issuing CPU thread (Section 5.4), then assembles a GPU launch trace (𝑐𝑡𝑟, ℎ𝑎𝑠ℎ 𝑘 , 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 , (𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑, 𝑎𝑑𝑑𝑟 _𝑖𝑑 )) and for-wards it to the verifier as part of a stream Tlaunch . Here, 𝑐𝑡𝑟 is a per-kernel launch monotonic counter provided by the OS-based RoT; ℎ𝑎𝑠ℎ 𝑘 is a deterministic content hash over the (offset, opcode) pairs of every instruction in the root kernel and all transitively reachable device functions; and 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 captures the gridDim and 
+
+blockDim parameters of the launch. After measuring and recording the kernel launch, the prover reads the GPU-side logging buffer containing the warp-level trace records (𝑤𝑎𝑟𝑝 _𝑘𝑒𝑦, 𝑎𝑑𝑑𝑟 _𝑖𝑑 ) produced during execution. The prover annotates each batch with 𝑐𝑡𝑟 to correlate it with the correspond-ing GPU launch trace and forwards the batches to the verifier as a stream Tgpu .
+
+## 5.7 Verifier 
+
+The verifier receives three distinct trace streams Tcpu , Tlaunch , Tgpu 
+
+from the prover and combines them with a composite 𝐶𝐹𝐺 comp to produce the final attestation verdict. 
+
+Composite CFG. To accurately analyze heterogeneous workloads, a single flat CFG of the CPU application is insufficient (Section 3). WarpGuard uses a composite 𝐶𝐹𝐺 comp (Figure 3) that models the CPU and GPU execution domains separately while linking them at dispatch points via GPU launchsite policies. We note that the verifier might have multiple CFGs, both for the CPU and GPU side, while cryptographic hashes of the associated binaries are used Lindenmeier et al. 
+
+for identification. Initially, our verifier uses ℎ𝑎𝑠ℎ 𝑐𝑝𝑢 of the CPU binary exchanged during prover communication to identify the CPU-side CFG as the anchor for building the composite CFG. Thus, we can loosely define 𝐶𝐹𝐺 comp = (𝐶𝐹𝐺 cpu , 𝐺, 𝑃 ) with the set 𝐺 =
+
+(𝐶𝐹𝐺 gpu,1 , 𝐶𝐹𝐺 gpu,2 , 𝐶𝐹𝐺 gpu,n ) and the set 𝑃 = (𝑃𝑜𝑙𝑖𝑐𝑦 launch,1 , 𝑃𝑜𝑙𝑖𝑐𝑦 launch,2 , 𝑃𝑜𝑙𝑖𝑐𝑦 launch,m ).
+
+𝐶𝐹𝐺 cpu represents the CF of the initial CPU application in the form: nodes are BBs, edges are statically known branches, jumps, calls, and returns. Similarly, the set 𝐺 of 𝐶𝐹𝐺 gpu,n elements represents the CF of GPU kernels, consisting each also of nodes as BBs and edges of statically known CF events. Note that these are all supported GPU kernel CFGs, thus our verifier needs semantic policies to associate them with GPU callsites in 𝐶𝐹𝐺 cpu . The set 𝑃 holds GPU launchsite policy elements 𝑃𝑜𝑙𝑖𝑐𝑦 launch,x for each GPU callsite 𝑥 on the CPU; each one holding the following information: (1) ℎ𝑎𝑠ℎ 𝑐𝑝𝑢 used to identify the associated 𝐶𝐹𝐺 cpu , (2) 𝑎𝑑𝑑𝑟 _𝑖𝑑 identifying the specific GPU callsite location 𝑥 within 𝐶𝐹𝐺 cpu , (3) ℎ𝑎𝑠ℎ 𝑔𝑝𝑢 identifying the expected GPU kernel binary and used to correlate 𝐶𝐹𝐺 gpu,n , and (4) 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 defining the expected launch configuration including specification about the expected values for gridDim and blockDim .
+
+Composite Verification. WarpGuard’s verifier uses 𝐶𝐹𝐺 comp in or-der to verify the holistic CF of a heterogeneous CPU-GPU workload in three steps: (1) CPU trace verification: The verifier receives Tcpu carrying a sequence of (𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑, 𝑏𝑏 _𝑖𝑑 ) pairs and verifies compli-ance with Tcpu . In detail, for each substream of traces with the same 𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑 , this means that (a) every 𝑏𝑏 _𝑖𝑑 corre-sponds to a valid node in 𝐶𝐹𝐺 cpu and (b) every sequence of (𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑, 𝑏𝑏 _𝑖𝑑 ) pairs lies on valid edges in 𝐶𝐹𝐺 cpu .Non-conformance implies a Class A attack. (2) Launch trace verification: For every received GPU launch trace (𝑐𝑡𝑟, ℎ𝑎𝑠ℎ 𝑘 , 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 , (𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑, 𝑎𝑑𝑑𝑟 _𝑖𝑑 )) ∈ T launch 
+
+the verifier checks compliance with 𝑃 as: (a) there exists a policy 𝑃𝑜𝑙𝑖𝑐𝑦 launch,x for callsite 𝑥 = 𝑎𝑑𝑑𝑟 _𝑖𝑑 , (b) ℎ𝑎𝑠ℎ 𝑘 is a valid hash in 𝑃𝑜𝑙𝑖𝑐𝑦 launch,x , and (c) 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 is the valid launch configuration in 𝑃𝑜𝑙𝑖𝑐𝑦 launch,x . If ℎ𝑎𝑠ℎ 𝑘 is not a valid hash associated with any CFG in 𝐺 it implies a Class C attack. If ℎ𝑎𝑠ℎ 𝑘 is valid in some CFG in 𝐺 but does not match ℎ𝑎𝑠ℎ 𝑔𝑝𝑢 defined in 𝑃𝑜𝑙𝑖𝑐𝑦 launch,x , it implies a Class D attack. If 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 from the launch event is not compliant with 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 defined in 𝑃𝑜𝑙𝑖𝑐𝑦 launch,x , it implies a Class E attack. (3) GPU trace verification: For each launch trace verification, the verifier checks the associated GPU traces. We use the value ℎ𝑎𝑠ℎ 𝑘 in combination with the monotonic counter 𝑐𝑡𝑟 
+
+to correlate the associated Tgpu and 𝐶𝐹𝐺 gpu . For every GPU trace (𝑤𝑎𝑟𝑝 _𝑘𝑒𝑦, 𝑎𝑑𝑑𝑟 _𝑖𝑑 ) in Tgpu the verifier first checks that 𝑎𝑑𝑑𝑟 _𝑖𝑑 is a node in 𝐶𝐹𝐺 gpu identified via ℎ𝑎𝑠ℎ 𝑘 . Sec-ond, for sequences of records with the same 𝑤𝑎𝑟𝑝 _𝑘𝑒𝑦 
+
+(which includes the active mask) within one invocation (using 𝑐𝑡𝑟 ), consecutive 𝑎𝑑𝑑𝑟 _𝑖𝑑 must be connected by a valid CFG edge in 𝐶𝐹𝐺 gpu or be the first instruction of a di-verged sub-group (i.e., the traces come from distinct active-mask contexts, indicating a hardware-serialized divergence rather than a sequential transfer). Non-conformance im-plies a Class B attack. If all three verification steps hold across all elements observed in 
+
+Tcpu , Tlaunch , Tgpu , the verifier confirms the composite execution as compliant. Any deviation from these conditions constitutes an attestation failure. 
+
+## 6 Implementation Details 
+
+We implement a PoC of WarpGuard on an NVIDIA Jetson Orin Nano (8-core Arm Cortex-A78AE CPU, NVIDIA Ampere GPU, 8 GB unified memory). We use dynamic binary instrumentation (DBI) frameworks; DynamoRIO [ 1] for CPU-side instrumentation and NVBit [ 51 ] for GPU-side instrumentation. We implement Warp-Guard’s verifier as a standalone application, while WarpGuard’s prover is part of our NVBit tool. 
+
+## 6.1 Instrumentation and Tracing 
+
+DynamoRIO Client. The CPU side (Sec. 5.4) of our PoC is im-plemented as a DynamoRIO client and uses the readily available API tracing. CPU trace pairs (𝑡ℎ𝑟𝑒𝑎𝑑 _𝑖𝑑, 𝑏𝑏 _𝑖𝑑 ) accumulate in a per-thread circular buffer; on fill, a flush callback sends the buffered data to the verifier over a TCP socket with a CPU-source header tag. The size of the buffer is controllable by the user as a trade-off between security and performance. GPU callsite logging records the module-relative offset of each cudaLaunchKernel callsite into a per-thread shared-memory slot indexed by DynamoRIO thread slot number, so concurrent dispatches from different threads never con-flict. Two mechanisms cover a range of API dispatch conventions. First, __cudaRegisterFunction is hooked to extract each kernel’s runtime stub address into a target table; necessary on AArch64 with static cudart, where all stubs share a single trampoline. Sec-ond, at code-translation time, each BB is scanned, and a clean call is inserted before any direct branch whose target is in the stub table, recording the branch’s module-relative offset. 
+
+NVBit Tool. The GPU-side (Sec. 5.5) of our PoC is implemented as an NVBit tool and split into a host-side and a device-side part. The host side intercepts CUDA runtime events via the callback API, disassembles each kernel on first launch, and instruments it at BB or function granularity. It iterates over all BBs of the root kernel and every reachable device function, maintaining a per-CUfunction set to skip already instrumented kernels. A device-side hook is injected at the first instruction of each BB and receives two JIT-baked pa-rameters: a pointer to a per-SM ring buffer and a 64-bit addr_id 
+
+encoding the device-function index and the BB’s byte offset within that function. Dividing the ring buffer into per-SM shards turned out to be a key improvement to reduce synchronization overhead. At each BB entry, the hook calls __activemask() and __ffs() to elect the lowest active lane; all other lanes return immediately, real-izing WarpGuard’s warp-level tracing. The elected lane reads %smid 
+
+and %warpid via inline PTX, packs them with the active mask into 
+
+warp_key , and writes the record (warp_key, addr_id) to its SM’s ring buffer. If the buffer fills, the warp flushes it to the CPU-side prover; when the kernel exits, an is_exit callback enqueues a flush kernel on the same CUDA stream to drain any remaining records. The CPU receiver polls all SM doorbells in round-robin order; warp-level trace order is preserved because warp-to-SM assignment is fixed for the duration of a kernel launch. WarpGuard 
+
+## 6.2 Prover 
+
+Our prover is implemented as part of the NVBit tool and has two responsibilities: launch trace sending and GPU trace forwarding. On each pre-launch callback, it computes ℎ𝑎𝑠ℎ 𝑘 as an FNV-1a-64 digest over the (offset, opcode) pairs of every instruc-tion in the root kernel and all reachable device functions, cached per CUfunction to avoid re-hashing. 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 is read from the 
+
+gridDim /blockDim fields of the cuLaunchKernel_params param-eter struct. The GPU callsite record is retrieved by matching the issuing thread’s Linux TID against the shared-memory region main-tained by the DynamoRIO client; the slot is reset to zero to prevent stale data. The prover sends the assembled launch trace to the verifier over a mutex-protected TCP socket. A dedicated receiver thread polls the GPU-side per-SM ring buffers; on our evaluation platform, the trace buffer is allocated as CUDA pinned mapped host memory, eliminating cudaMemcpy trans-fers. When a doorbell flag signals a completed batch, the receiver forwards it to the verifier, tagged with the monotonic counter. 
+
+## 6.3 Verifier 
+
+The verifier is a standalone process with dedicated I/O threads that receive CPU, launch, and GPU traces over TCP, and a pool of worker threads that perform CFG replay. Our implementation fo-cuses on launch and GPU trace verification. Incoming GPU batches are enqueued to workers using the kernel hash as a sharding key, enabling parallel verification. 
+
+GPU CFG Construction. The GPU CFG is obtained by an offline profiling pass over the target application. For each kernel, we walk every BB’s terminating instruction to derive edges: direct branches (BRA ) add one or two edges to statically known targets; blocks ending in indirect transfers ( BRX ) are marked as wildcard sources, accepting any observed successor at runtime (though we did not encounter any in our evaluation set). CAL and JCAL encode absolute device addresses and are also treated as wildcard sources; a post-pass then adds a call-to-return edge from each call site to the BB immediately following the call instruction. Return edges are con-structed by collecting the return sites of CALL.REL (per-function) and CALL.ABS /JCAL (global) callers and adding edges from each 
+
+RET block to the union of the applicable return-site sets. 
+
+Launch and GPU Trace Verification. On receiving a launch trace, the verifier records the received ℎ𝑎𝑠ℎ 𝑘 , 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 , and GPU callsite address and allocates a fresh per-launch context indexed by 𝑐𝑡𝑟 to receive subsequent GPU trace batches; the collected launch traces are reported at the end of execution to allow manual inspection against the expected launchsite policies. We match the corresponding kernel CFG via its 𝑐𝑡𝑟 value per GPU trace record. A node-membership check confirms that addr_id 
+
+appears in the CFG node set, and an edge-level check confirms that the transition from the previous block is a valid CFG edge. While wildcard-source blocks are exempt, we report their occurrence at the end. When a record’s active mask differs from the full warp mask, the verifier opens a per-(warp_id, active_mask) diver-gence slot and tracks that sub-group independently, so a violation in one diverged lane cannot be obscured by another. Reconvergence is detected when a full-mask record arrives while sub-warp slots remain open; the edge check is suppressed at this transition because the reconvergence target declared by BSSY is not reachable from every diverging path via a single static edge. 
+
+Proof-of-Concept Scope. For our PoC, CPU traces are collected and sent, but not verified; we defer CPU-side CFG checking to established host CFA implementations [ 4]. The GPU launchsite policy verification is not pre-populated. Instead, the verifier records observed launch traces and prints a summary that requires manual inspection to identify violations. We defer automating this check to future work. 
+
+## 7 Evaluation 
+
+We test WarpGuard against microbenchmarks, SPECaccel bench-marks, and real-world AI workloads. Furthermore, we showcase WarpGuard’s effectiveness in detecting GPU-based CF attacks. 
+
+## 7.1 Performance Analysis 
+
+We measure WarpGuard’s overhead in various modes designed to isolate individual overhead sources: 
+
+• 𝑏𝑎𝑠𝑒𝑙𝑖𝑛𝑒 : Runs the benchmark without any instrumenta-tion. 
+
+• 𝐷𝑦𝑛𝑎𝑚𝑜𝑅𝐼𝑂 𝑏𝑏 𝑓 𝑢𝑙𝑙 : Activates only the CPU CFA component tracing on BB-level resolution. 
+
+• 𝑁𝑉 𝐵𝑖𝑡 𝑏𝑏 /𝑓 𝑢𝑛𝑐 𝑒𝑚𝑝𝑡 𝑦 /𝑓 𝑢𝑙𝑙 : Activates only the GPU CFA component at either BB- or function-level resolution. The 𝑒𝑚𝑝𝑡𝑦 vari-ants insert a no-op NVBit hook to isolate the instrumen-tation framework’s baseline overhead from WarpGuard’s tracing logic. 
+
+• 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 /𝑓 𝑢𝑛𝑐 𝑒𝑚𝑝𝑡 𝑦 /𝑓 𝑢𝑙𝑙 : Fully activated configuration of Warp-Guard. The 𝑏𝑏 /𝑓 𝑢𝑛𝑐 and 𝑒𝑚𝑝𝑡𝑦 /𝑓 𝑢𝑙𝑙 variants reference the same options as NVBit’s configuration for GPU tracing. For all modes involving NVBit instrumentation, we additionally report the JIT time required to instrument each kernel. 
+
+Custom Microbenchmarks. In summary, we test our PoC against three custom benchmarks, evaluating different aspects of GPU kernel BB size, GPU kernel runtime, and number of GPU kernel launches. The results, collected across five runs and averaged, are presented in Figure 4. In the left plot, the microbenchmark kernel is configured with a varying number of FP64 operations per BB and executed ten times; WarpGuard generates ≈281 .5𝐾 GPU records regardless of block size, confirming correct measurement. With growing computation per BB, 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 ’s overhead falls since the ratio of work to tracing improves. In the middle plot, the microbenchmark kernel is configured with a varying number of loop iterations around a fixed-size BB; the increasing GPU record counts on the x-axis con-firm correct measurement. The results show that 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 ’s overhead falls with longer running kernels as the per-hook cost becomes negligible relative to total kernel work. In the right plot, the microbenchmark kernel is configured with a fixed BB size and loop iterations; yet, we vary the number of kernel launches. JIT compilation cost dominates at low launch counts but is amortized as launches increase; 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 ’s overhead follows the same Lindenmeier et al. 1
+
+> 10
+> 100
+> 1000
+> BB work (FP64 ops per basic block)
+> 1×
+> 1.5×
+> 2×
+> 3×
+> 5×
+> 10×
+> Slowdown vs baseline (×)
+> Overhead vs Computation per GPU Hook
+> WarpGuard bb full
+> JIT overhead
+> WarpGuard bb empty
+> DynamoRIO bb full
+> NVBit bb empty
+> 28K
+> 97K
+> 725K
+> 7.1M
+> GPU records per launch
+> 1×
+> 1.5×
+> 2×
+> 3×
+> 5×
+> 10×
+> Slowdown vs baseline (×)
+> Overhead vs Kernel Runtime
+> WarpGuard bb full
+> JIT overhead
+> WarpGuard bb empty
+> DynamoRIO bb full
+> NVBit bb empty
+> 1
+> 10
+> 100
+> Number of kernel launches
+> 1×
+> 1.5×
+> 2×
+> 3×
+> Slowdown vs baseline (×)
+> Overhead vs Number of Kernel Launches
+> WarpGuard bb full
+> JIT overhead
+> WarpGuard bb empty
+> DynamoRIO bb full
+> NVBit bb empty
+
+Figure 4: Comparison of different modes of WarpGuard considering our three microbenchmarks. The results show tracing done on BB granularity. Function-level tracing on the GPU shows a similar trend with lower absolute numbers. 
+
+trend, indicating that WarpGuard scales well with long-running heterogeneous workloads. 
+
+Takeaway: Through all microbenchmarks, the gap between 
+
+𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 and 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑒𝑚𝑝𝑡 𝑦 shows that the dominant overhead stems from the underlying instrumentation frameworks. 
+
+𝐷𝑦𝑛𝑎𝑚𝑜𝑅𝐼𝑂 𝑏𝑏 𝑓 𝑢𝑙𝑙 and 𝑁𝑉 𝐵𝑖𝑡 𝑏𝑏 𝑒𝑚𝑝𝑡 𝑦 each induce up to ≈5× slowdown independently, and their combination in 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑒𝑚𝑝𝑡 𝑦 accounts for the bulk of the total overhead. We discuss hardware support that could reduce this framework overhead in Section 8. 
+
+SPECaccel Benchmarks. We evaluate WarpGuard on SPECaccel 2023 [ 46 ], a suite of GPU-accelerated programs designed for server-class hardware. To fully stress-test WarpGuard, we deliberately run these benchmarks despite the platform mismatch. We note that three benchmarks could not execute due to insufficient GPU mem-ory, and we used the test workload size. We run each benchmark five times and average the results. 
+
+𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 overhead ranges from 2.4× to 128 × (mean 39 .3×); function-level tracing reduces this to 1.2×–113 × (mean 26 .7×). Benchmarks with many short-lived, distinct kernels suffer from JIT overhead: spF (7,901 launches, 0.56 s base) and swim (122 launches, 
+
+0.25 s base) spend 63 .7s and 19 .5s in JIT alone, yielding 128 ×/113 ×
+
+overhead at 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 and 75 ×/70 × at 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑓 𝑢𝑛𝑐 𝑓 𝑢𝑙𝑙 . Long-running kernels with few distinct invocations amortize costs: ilbdc (1,000 launches of the same kernel, 17 .8s base) reaches only 2.4×
+
+(𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 ) and 1.4× (𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑓 𝑢𝑛𝑐 𝑓 𝑢𝑙𝑙 ), since its total JIT cost of 0.7s is negligible against baseline. For md (3 unique long-running kernels, 2.52 B GPU records), switching to function-level tracing drops overhead from 9.3× to 1.3×. We identified thrashing at extremely high GPU record volumes, indicating that we reach hardware limits. Consistent with the microbenchmark findings, 
+
+𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑒𝑚𝑝𝑡 𝑦 closely tracks 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 across all bench-marks, confirming that the instrumentation frameworks account for the dominant share of overhead. 
+
+AI IoT Benchmarks. To evaluate WarpGuard’s real-world practi-cability in the context described in Section 3.1, we run eight Ten-sorRT inference engines [ 41 ], covering common AI IoT tasks: image classification (ResNet-50, Inception-v4, VGG-19), object detection (MobileNet, YOLOv3-Tiny), pose estimation (Pose), image super-resolution (Super-Res), and semantic segmentation (U-Net). Figure 5 compares throughput in queries per second (QPS) across modes. For 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 , overhead ranges from 15.5 × (ResNet-50) to 120 × (YOLOv3-Tiny); switching to 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑓 𝑢𝑛𝑐 𝑓 𝑢𝑙𝑙 reduces this to 1.9 ×–6.9 × across all models, retaining throughput levels suitable for edge and IoT deployments: MobileNet retains 104.9 QPS, VGG-19 101.5 QPS, and ResNet-50 82.1 QPS. Even 𝑊 𝑎𝑟𝑝𝐺𝑢𝑎𝑟𝑑 𝑏𝑏 𝑓 𝑢𝑙𝑙 remains acceptable for ResNet-50 (20.5 QPS) and MobileNet (34.9 QPS) in security-critical settings. The two outliers, YOLOv3-Tiny ( 0.22 QPS) and Super-Res ( 0.32 QPS), exhibit exceptionally high per-launch GPU record density ( 1.2M and 3.2M records per launch versus 
+
+1.7K– 42 K for all other models) despite low baseline throughput. This combination overwhelms two CPU-side components simulta-neously: the drain thread cannot forward ring-buffer records fast enough, and the verifier reaches its CPU resource ceiling processing the resulting trace volume. However, since our PoC prover runs as part of NVBit, i.e., as part of the workload process, it shares the CPU core, thus we believe that shifting this component to a separate multi-core process is an interesting aspect for performance optimizations. 
+
+## 7.2 Security Evaluation 
+
+Our security evaluation has two parts: practically detecting a GPU CF attack (i.e., Class B) and discussing CPU-to-GPU attacks. Pure CPU-based CF attacks are addressed by related work [ 4, 33 , 50 , 57 ]. 
+
+Detecting GPU CF Attacks. We reproduce the PoC attack by Guo et al. [ 23 ] on our Jetson Orin Nano and adapt it to our scenario. The attack targets kernel k1 , which calls a helper sum1 that writes a fixed-size stack array using an attacker-controlled index, i.e., a GPU stack buffer overflow. A crafted out-of-bounds offset overwrites the saved return address, redirecting execution into sum2 (which adds 10 instead of 1 to a buffer and should never be called in a benign execution). We note that we added a dead call to sum2 from k1 to force it to be part of the instrumentation based on the CFG. We run two configurations: (1) a baseline run without CF hi-jacking, i.e., below the overflow threshold, and (2) an attack run triggering the overflow and changing the CF to execute sum2 . In WarpGuard ResNet-50 
+
+> Inception-v4
+> MobileNet
+> Pose
+> Super-Res
+> U-Net
+> VGG-19
+> YOLOv3-Tiny
+> AI IoT TensorRT Benchmark
+> 0.2
+> 0.5
+> 1
+> 2
+> 5
+> 10
+> 20
+> 50
+> 100
+> 200
+> 500
+> 1000
+> Throughput (QPS)
+> base
+> WarpGuard func full
+> WarpGuard bb empty
+> WarpGuard bb full
+
+Figure 5: Throughput reached for TensorRT AI workloads by various modes of WarpGuard. 
+
+the baseline run, both the verifier’s node-membership check and edge-level CFG check pass: all 𝑎𝑑𝑑𝑟 _𝑖𝑑 values in GPU traces belong to the node set for k1 and sum1 , and all consecutive warp-level GPU trace pairs (𝑤𝑎𝑟𝑝 _𝑘𝑒𝑦, 𝑎𝑑𝑑𝑟 _𝑖𝑑 ) match valid static CFG edges. In the attack run, the verifier receives 𝑎𝑑𝑑𝑟 _𝑖𝑑 values corresponding to the sum2 function body. Since the 𝑎𝑑𝑑𝑟 _𝑖𝑑 values lie inside the statically compiled k1 code segment, they correspond to valid nodes in the kernel’s device CFG, hence passing the node-membership check. However, during edge-level CFG check, the verifier immedi-ately identifies a violating edge when execution enters sum2 from the RET instruction of sum1 .
+
+CPU-to-GPU Attacks. We reason about WarpGuard’s ability to detect Class C, D, and E attacks. In a Class C attack, the adver-sary modifies the kernel binary image in host memory before GPU API transfer, which will alter the (offset, opcode) pairs over which ℎ𝑎𝑠ℎ 𝑘 is computed. The resulting ℎ𝑎𝑠ℎ 𝑘 matches no valid entry (assuming no hash collision) in the verifier’s offline artifacts. A sophisticated attacker who modifies code but preserves the CF would still be caught, since ℎ𝑎𝑠ℎ 𝑘 covers all instruction bytes, not just branch targets. In a Class D attack, the adversary replaces the intended kernel 𝐴 with an authorized kernel 𝐵 at GPU callsite 𝑥 ,which leaves both binaries intact. However, our verifier looks up 
+
+𝑃𝑜𝑙𝑖𝑐𝑦 launch,x and checks that ℎ𝑎𝑠ℎ 𝑘 of 𝐵 does not equal the autho-rized kernel hash for that site; since ℎ𝑎𝑠ℎ 𝐵 ≠ ℎ𝑎𝑠ℎ 𝐴 , again assuming no hash collisions. In a Class E attack, the adversary tampers with launch configuration parameters (e.g., gridDim or blockDim ) to silently change execution without CF deviation. However, our veri-fier looks up 𝑃𝑜𝑙𝑖𝑐𝑦 launch,x and checks 𝑐𝑜𝑛𝑓 𝑖𝑔 𝑘 against the values in Tlaunch , thus any mismatch will be detected. 
+
+## 8 Discussion 
+
+Trace Encoding. As an alternative to having the prover transmit full execution traces to the verifier, the prover can instead compute and send a cryptographic hash summarizing the trace. This hash acts as a compact commitment to the program’s CF, allowing the verifier to confirm execution integrity without processing the entire execution history. While this approach significantly reduces communication over-head and does not require secure storage for the traces, it introduces certain limitations. In particular, computing cryptographic hashes over long execution traces incurs unacceptable performance degra-dation on the prover side, as GPU SMs must spend time computing the hash, which we observed to affect real-time responsiveness. Moreover, since the verifier only receives a singular, aggregated hash value, it cannot perform partial or incremental verification, thus sacrificing the ability to localize integrity violations or audit intermediate execution states, crucial for long-running GPU ker-nels. Additionally, in practice pre-computing valid hash values for arbitrary inputs can be infeasible. 
+
+Future Hardware Recommendation. A fundamental asymmetry between CPU and GPU security architectures is the absence of hardware-enforced 𝑊 ⊕ 𝑋 , or Data Execution Prevention (DEP), on the GPU side [ 23 ]. Enforcing these would make GPU code injec-tion structurally impossible. By combining these extensions with WarpGuard’s CFA verification, which ensures runtime CF integrity, such a system closes the remaining window for in-GPU CF attacks. WarpGuard’s PoC currently relies on dynamic instrumentation frameworks, notably DynamoRIO [ 1 ], NVBit [ 51 ] for both CPU and GPU tracing, respectively. However, dynamic instrumentation incurs a high performance impact (Sec. 7.1). To mitigate the per-formance impact on the CPU side, we propose to integrate CFA approaches using Intel PT and ARM CoreSight ETM [ 7], showing overheads below 5% [ 20 , 33 ]. On the GPU side, no publicly available similar hardware tracing facility exists for NVIDIA GPUs. We pro-vide two proposals for such future hardware. First, a cryptographic hash engine that will enable hashing within the GPU directly and communicate the aggregated hash to a verifier. Alternatively, for a similar trace of visited addresses, future hardware can provide Lindenmeier et al. 
+
+means to trace them directly into CPU memory that would be within the RoT for storage of the prover. Regardless on how future GPU, and CPU architectures may expose dedicated tracing hardware, WarpGuard’s layered design accommodates such substitutions on GPU and CPU tracing without any major protocol changes. 
+
+Applicability to other Architectures and Settings. WarpGuard’s de-sign is not inherently GPU-specific: the composite CFG model, the GPU launchsite policies, and the CPU-GPU binding apply to any system where a CPU host dispatches code to an attached accelerator via a runtime API. The GPU instrumentation layer would need to be adapted for non-NVIDIA GPUs (e.g., AMD ROCm) or other ac-celerator types (e.g., TPUs, FPGAs), but the same warp-level tracing principles apply wherever parallel execution under a SIMT model is used. Our PoC targets the embedded Jetson platform, but Warp-Guard’s software-based approach is equally applicable to server and HPC settings with dedicated discrete GPUs, as DynamoRIO and NVBit both support those configurations. 
+
+JIT-compiled and Dynamic GPU Code. AI frameworks such as Py-Torch and TensorFlow can, in some deployments, use JIT-compiled GPU kernels generated at runtime from Python-level operations. These kernels are not present in a pre-compiled binary and cannot be covered by a static offline CFG. JIT compilation makes CFA much harder to deploy correctly, and there are several limitations around precision, security coverage, and performance. We see JIT support as an important direction for future work. 
+
+Trace Buffer Integrity. A limitation of software-based GPU trac-ing is that NVBit’s trace buffers are allocated in device global mem-ory, which is accessible to any code running in the same context, including the attacker-controlled kernel being attested. An adver-sary who gains control within a GPU kernel could corrupt the trace buffer after a malicious branch executes but before the CPU-sided thread reads it, causing CF events to go unreported. However, as the buffer can be allocated at arbitrary locations in memory, this imposes a harder barrier for attacking its content due to high ad-dress space entropy. Additionally, the user can define the frequency of trace flushes to the verifier by setting smaller buffer sizes, con-trolling the attack window and risk. As proposed above, future hardware extensions could enable secure storage. 
+
+## 9 Related Work 
+
+CPU Control-Flow Attestation. CFA for CPU-bound workloads has been studied extensively [ 2, 4– 6, 10 , 12 – 16 , 21 , 22 , 24 – 26 , 30 –33 , 36 , 38 , 44 , 48 , 50 , 53 , 54 , 57 ]. C-FLAT [ 4 ] pioneered the area with a software-based scheme for embedded systems that uses dynamic binary rewriting to record execution traces and a trusted verifier to replay them against a static CFG. ScaRR [ 50 ] extended this approach to larger, more complex systems using dynamic binary rewriting with binary-only support. ReCFA [ 57 ] introduced resilient CFA using static binary instrumentation. Hardware-assisted approaches include Log-based CFA [ 33 ], which leverages ARM TrustZone and CoreSight to achieve low overhead, and LO-FAT [ 15 ], which uses existing hardware features. ATRIUM [ 54 ] targets memory-attack-resilient attestation with dedicated hardware extensions. Other CPU CFA work addresses constrained IoT devices (Tiny-CFA [ 12 ], LAPE [ 26 ], LiteHAX [ 14 ]), collaborative autonomous systems (DIAT [ 5]), and operation execution integrity (OAT [ 48 ]). All of these systems operate exclusively on CPU execution and are blind to GPU CF (Class B) and CPU-GPU attacks (Class C, D, and E). 
+
+GPU Execution Attestation. SAGE [ 28 ] is the closest prior work to WarpGuard on the GPU side. SAGE uses an SGX enclave to verify that a GPU kernel binary is unmodified before execution, via a pseudo-random memory traversal checksum. This provides a static binary integrity guarantee but not runtime CF tracing: an unmodified kernel can still have its CF hijacked at runtime via a stack overflow attack [ 23 ]. SAGE also does not address the integration of the GPU attestation with the CPU side. 
+
+GPU Control-Flow Attacks. Guo et al . [ 23 ] demonstrated that GPU kernels are vulnerable to return-address overwrite attacks due to predictable stack frame layouts in per-thread local memory and the absence of a hardware NX bit on GPU device memory. Their work motivates the need for GPU-side CFA and directly informs our threat model and PoC design. 
+
+Control-Flow Integrity. Abadi et al . [ 3] prevents CF deviations by enforcing a policy locally at runtime, without producing a report for a remote verifier. Many CFI systems have advanced this concept [ 11 ,39 , 40 , 49 , 55 , 56 ]. WarpGuard adopts the CFA model with passive recording and remote verification instead. This is because CFA is suitable for settings where enforcement decisions are made by an external monitor. To our knowledge, no CFI mechanisms exist for GPU execution, leaving GPU kernels without even local CF enforcement before WarpGuard. 
+
+GPU Trusted Execution Environments. An alternative to CFA is hardware-enforced isolation: Graviton [ 52 ], HIX [ 29 ], and XpuTEE [ 17 ]provide GPU TEEs by extending the trust boundary of CPU TEEs (SGX, TrustZone) to the GPU. NVIDIA Confidential Computing embeds a hardware RoT directly on the GPU die [ 42 ]. These ap-proaches offer strong isolation but require hardware not present on existing embedded GPU platforms, such as the Jetson Orin, and they provide execution isolation rather than an audit trail. WarpGuard provides runtime CFA on unmodified existing hardware, comple-menting TEE approaches where they are available and being the only option where they are not. 
+
+Instrumentation Frameworks. WarpGuard builds on the frame-works DynamoRIO [ 1] and NVBit [ 51 ] for CPU and GPU instru-mentation respectively. These are analogous to Valgrind [ 37 ], Intel PIN [34], ATOM [47] for CPU and Ocelot [18] for GPU. 
+
+## 10 Conclusion 
+
+The attestation of heterogeneous CPU-GPU execution is an under-explored area. Our work presents the first composite CFA frame-work that jointly attests CPU and GPU execution. By tracing GPU kernels at warp granularity and binding each kernel dispatch to its originating GPU callsite on the CPU, WarpGuard detects GPU runtime CF hijacking attacks and attacks abusing the CPU-GPU interactions. Operating entirely with software, our PoC implemen-tation achieves moderate performance overhead, enabling adoption for security-critical scenarios on embedded devices. Our results demonstrate that composite CPU-GPU CFA is feasible today and WarpGuard 
+
+we hope WarpGuard serves as a foundation for future hardware-assisted approaches that reduce the remaining instrumentation overhead. 
+
+## Acknowledgments 
+
+This work has received funding from the European Union’s Horizon Europe research and innovation programme under Grant Agree-ment No. 101167904 (CASTOR). Views and opinions expressed are however those of the author(s) only and do not necessarily reflect those of the European Union or the European Commission. Nei-ther the European Union nor the granting authority can be held responsible for them. 
+
+## References 
+
+[1] 2011. Tutorial: Building dynamic instrumentation tools with DynamoRIO. In 
+
+International Symposium on Code Generation and Optimization (CGO 2011) . xxi– xxi. https://doi.org/10.1109/CGO.2011.5764658 [2] Chilese, Marco and Mitev, Richard and Orenbach, Meni and Thorburn, Robert and Atamli, Ahmad and Sadeghi, Ahmad-Reza . 2024. One for All and All for One: GNN-based Control-Flow Attestation for Embedded Devices . In 2024 IEEE Symposium on Security and Privacy (SP) . IEEE Computer Society, Los Alamitos, CA, USA, 3346–3364. https://doi.org/10.1109/SP54263.2024.00251 [3] Martin Abadi, Mihai Budiu, Úlfar Erlingsson, and Jay Ligatti. 2005. Control-flow integrity. Proceedings of the ACM Conference on Computer and Communications Security (CCS) (2005), 340–353. [4] Tigist Abera, N. Asokan, Lucas Davi, Jan-Erik Ekberg, Thomas Nyman, Andrew Paverd, Ahmad-Reza Sadeghi, and Gene Tsudik. 2016. C-FLAT: Control-Flow Attestation for Embedded Systems Software. In Proceedings of the 2016 ACM SIGSAC Conference on Computer and Communications Security (Vienna, Austria) 
+
+(CCS ’16) . Association for Computing Machinery, 743–754. https://doi.org/10. 1145/2976749.2978358 [5] Tigist Abera, Raad Bahmani, Ferdinand Brasser, Ahmad Ibrahim, Ahmad-Reza Sadeghi, and Matthias Schunter. 2019. DIAT: Data Integrity Attestation for Resilient Collaboration of Autonomous Systems.. In NDSS .[6] Adam Caulfield and Norrathep Rattanavipanon and Ivan De Oliveira Nunes. 2023. ACFA: Secure Runtime Auditing & Guaranteed Device Healing via Active Control Flow Attestation. In 32nd USENIX Security Symposium (USENIX Security 23) . USENIX Association, Anaheim, CA, 5827–5844. https://www.usenix.org/ conference/usenixsecurity23/presentation/caulfield [7] ARM LTD. 2023. Embedded Trace Macrocell Architecture Specification ETMv4.0 to ETM4.6 . ARM LTD. https://developer.arm.com/documentation/ihi0064/latest/. [8] Tyler Bletsch, Xuxian Jiang, Vince W Freeh, and Zhenkai Liang. 2011. Jump-oriented programming: a new class of code-reuse attack. In Proceedings of the 6th ACM symposium on information, computer and communications security . 30–40. [9] Nathan Burow, Scott A. Carr, Joseph Nash, Per Larsen, Michael Franz, Stefan Brunthaler, and Mathias Payer. 2017. Control-Flow Integrity: Precision, Security, and Performance. ACM Comput. Surv. 50, 1, Article 16 (April 2017), 33 pages. https://doi.org/10.1145/3054924 [10] Conti, Mauro and Dushku, Edlira and Mancini, Luigi V. 2019. RADIS: Remote Attestation of Distributed IoT Services. In 2019 Sixth International Conference on Software Defined Systems (SDS) . 25–32. https://doi.org/10.1109/SDS.2019.8768670 [11] John Criswell, Nathan Dautenhahn, and Vikram Adve. 2014. KCoFI: Complete Control-Flow Integrity for Commodity Operating System Kernels. In 2014 IEEE Symposium on Security and Privacy . 292–307. https://doi.org/10.1109/SP.2014.26 [12] Ivan De Oliveira Nunes, Sashidhar Jakkamsetti, and Gene Tsudik. 2021. Tiny-CFA: Minimalistic Control-Flow Attestation Using Verified Proofs of Execution. In 2021 Design, Automation & Test in Europe Conference & Exhibition (DATE) .641–646. https://doi.org/10.23919/DATE51398.2021.9474029 [13] Debes, Heini Bergsson and Dushku, Edlira and Giannetsos, Thanassis and Marandi, Ali. 2023. ZEKRA: Zero-Knowledge Control-Flow Attestation. In Pro-ceedings of the 2023 ACM Asia Conference on Computer and Communications Secu-rity (Melbourne, VIC, Australia) (ASIA CCS ’23) . Association for Computing Ma-chinery, New York, NY, USA, 357–371. https://doi.org/10.1145/3579856.3582833 [14] Ghada Dessouky, Tigist Abera, Ahmad Ibrahim, and Ahmad-Reza Sadeghi. 2018. LiteHAX: Lightweight Hardware-Assisted Attestation of Program Execution. In 
+
+2018 IEEE/ACM International Conference on Computer-Aided Design (ICCAD) . 1–8. https://doi.org/10.1145/3240765.3240821 [15] Ghada Dessouky, Shaza Zeitouni, Thomas Nyman, Andrew Paverd, Lucas Davi, Patrick Koeberl, N. Asokan, and Ahmad-Reza Sadeghi. 2017. LO-FAT: Low-Overhead control Flow ATtestation in hardware. In 2017 54th ACM/EDAC/IEEE Design Automation Conference (DAC) . 1–6. https://doi.org/10.1145/3061639. 3062276 [16] Dessouky, Ghada and Zeitouni, Shaza and Ibrahim, Ahmad and Davi, Lucas and Sadeghi, Ahmad-Reza. 2019. CHASE: A Configurable Hardware-Assisted Security Extension for Real-Time Systems. In 2019 IEEE/ACM International Conference on Computer-Aided Design (ICCAD) . 1–8. https://doi.org/10.1109/ICCAD45719. 2019.8942142 [17] Shulin Fan, Zhichao Hua, Yubin Xia, and Haibo Chen. 2025. XpuTEE: A High-Performance and Practical Heterogeneous Trusted Execution Environment for GPUs. ACM Trans. Comput. Syst. 43, 1–2, Article 2 (April 2025), 27 pages. https: //doi.org/10.1145/3719653 [18] Naila Farooqui, Andrew Kerr, Gregory Diamos, S. Yalamanchili, and K. Schwan. 2011. A framework for dynamically instrumenting GPU compute applications within GPU Ocelot. In Proceedings of the Fourth Workshop on General Purpose Pro-cessing on Graphics Processing Units (Newport Beach, California, USA) (GPGPU-4) .Association for Computing Machinery, New York, NY, USA, Article 9, 9 pages. https://doi.org/10.1145/1964179.1964192 [19] Angelo Garofalo, Alessandro Ottaviano, Matteo Perotti, Thomas Benz, Yvan Tortorella, Robert Balas, Michael Rogenmoser, Chi Zhang, Luca Bertaccini, Nils Wistoff, Maicol Ciani, Cyril Koenig, Mattia Sinigaglia, Luca Valente, Paul Scheffler, Manuel Eggimann, Matheus Cavalcante, Francesco Restuccia, Alessandro Biondi, Francesco Conti, Frank K. Gurkaynak, Davide Rossi, and Luca Benini. 2025. A Re-liable, Time-Predictable Heterogeneous SoC for AI-Enhanced Mixed-Criticality Edge Applications. arXiv:2502.18953 [cs.AR] https://arxiv.org/abs/2502.18953 [20] Xinyang Ge, Weidong Cui, and Trent Jaeger. 2017. GRIFFIN: Guarding Control Flows Using Intel Processor Trace. In Proceedings of the Twenty-Second Inter-national Conference on Architectural Support for Programming Languages and Operating Systems (Xi’an, China) (ASPLOS ’17) . Association for Computing Ma-chinery, New York, NY, USA, 585–598. https://doi.org/10.1145/3037697.3037716 [21] Munir Geden and Kasper Rasmussen. 2019. Hardware-assisted Remote Runtime Attestation for Critical Embedded Systems. In 2019 17th International Conference on Privacy, Security and Trust (PST) . 1–10. https://doi.org/10.1109/PST47121. 2019.8949036 [22] Gonzalez-Gomez, Jeferson and Nassar, Hassan and Bauer, Lars and Henkel, Jörg. 2024. LightFAt: Mitigating Control-Flow Explosion via Lightweight PMU-Based Control-Flow Attestation. In 2024 IEEE International Symposium on Hardware Oriented Security and Trust (HOST) . 222–226. https://doi.org/10.1109/HOST55342. 2024.10545348 [23] Yanan Guo, Zhenkai Zhang, and Jun Yang. 2024. GPU Memory Exploitation for Fun and Profit. In 33rd USENIX Security Symposium (USENIX Security 24) .USENIX Association, Philadelphia, PA, 4033–4050. https://www.usenix.org/ conference/usenixsecurity24/presentation/guo-yanan [24] Halldórsson, Ragnar Mikael and Dushku, Edlira and Dragoni, Nicola. 2021. AR-CADIS: Asynchronous Remote Control-Flow Attestation of Distributed IoT Ser-vices. IEEE Access 9 (2021), 144880–144894. https://doi.org/10.1109/ACCESS. 2021.3122391 [25] Jianxing Hu, Dongdong Huo, Meilin Wang, Yazhe Wang, Yan Zhang, and Yu Li. 2019. A Probability Prediction Based Mutable Control-Flow Attestation Scheme on Embedded Platforms. In 2019 18th IEEE International Conference On Trust, Security And Privacy In Computing And Communications/13th IEEE International Conference On Big Data Science And Engineering (TrustCom/BigDataSE) . 530–537. https://doi.org/10.1109/TrustCom/BigDataSE.2019.00077 [26] Dongdong Huo, Yu Wang, Chao Liu, Mingxuan Li, Yazhe Wang, and Zhen Xu. 2020. LAPE: A Lightweight Attestation of Program Execution Scheme for Bare-Metal Systems. In 2020 IEEE 22nd International Conference on High Performance Computing and Communications; IEEE 18th International Conference on Smart City; IEEE 6th International Conference on Data Science and Systems (HPCC/SmartCi-ty/DSS) . 78–86. https://doi.org/10.1109/HPCC-SmartCity-DSS50907.2020.00011 [27] Ruba Islayem, Fatima Alhosani, Raghad Hashem, Afra Alzaabi, and Mahmoud Meribout. 2024. Hardware accelerators for autonomous cars: A review. arXiv preprint arXiv:2405.00062 (2024). [28] Andrei Ivanov, Benjamin Rothenberger, Arnaud Dethise, Marco Canini, Torsten Hoefler, and Adrian Perrig. 2023. SAGE: Software-based Attestation for GPU Ex-ecution. In 2023 USENIX Annual Technical Conference (USENIX ATC 23) . USENIX Association, Boston, MA, 485–499. https://www.usenix.org/conference/atc23/ presentation/ivanov [29] Insu Jang, Adrian Tang, Taehoon Kim, Simha Sethumadhavan, and Jaehyuk Huh. 2019. Heterogeneous Isolated Execution for Commodity GPUs. In Pro-ceedings of the Twenty-Fourth International Conference on Architectural Support for Programming Languages and Operating Systems (Providence, RI, USA) (ASP-LOS ’19) . Association for Computing Machinery, New York, NY, USA, 455–468. https://doi.org/10.1145/3297858.3304021 [30] Jinwen Wang and Yujie Wang and Ao Li and Yang Xiao and Ruide Zhang and Wenjing Lou and Y. Thomas Hou and Ning Zhang. 2023. ARI: Attestation of Real-time Mission Execution Integrity. In 32nd USENIX Security Symposium (USENIX Security 23) . USENIX Association, Anaheim, CA, 2761–2778. https: //www.usenix.org/conference/usenixsecurity23/presentation/wang-jinwen [31] Koutroumpouchos, Nikos and Ntantogian, Christoforos and Menesidou, Sofia-Anna and Liang, Kaitai and Gouvas, Panagiotis and Xenakis, Christos and Gian-netsos, Thanassis. 2019. Secure Edge Computing with Lightweight Control-Flow Lindenmeier et al. 
+
+Property-based Attestation. In 2019 IEEE Conference on Network Softwarization (NetSoft) . 84–92. https://doi.org/10.1109/NETSOFT.2019.8806658 [32] Kuang, Boyu and Fu, Anmin and Zhou, Lu and Susilo, Willy and Zhang, Yuqing. 2020. DO-RA: Data-oriented runtime attestation for IoT devices. Comput. Secur. 
+
+97, C (Oct. 2020), 11 pages. https://doi.org/10.1016/j.cose.2020.101945 [33] Jingbin Liu, Qin Yu, Wei Liu, Shijun Zhao, Dengguo Feng, and Weifeng Luo. 2019. Log-Based Control Flow Attestation for Embedded Devices. In Cyberspace Safety and Security: 11th International Symposium, CSS 2019, Guangzhou, China, December 1–3, 2019, Proceedings, Part I (Guangzhou, China). Springer-Verlag, Berlin, Heidelberg, 117–132. https://doi.org/10.1007/978-3-030-37337-5_10 [34] Chi-Keung Luk, Robert Cohn, Robert Muth, Harish Patil, Artur Klauser, Geoff Lowney, Steven Wallace, Vijay Janapa Reddi, and Kim Hazelwood. 2005. Pin: building customized program analysis tools with dynamic instrumentation. In 
+
+Proceedings of the 2005 ACM SIGPLAN Conference on Programming Language Design and Implementation (Chicago, IL, USA) (PLDI ’05) . Association for Comput-ing Machinery, New York, NY, USA, 190–200. https://doi.org/10.1145/1065010. 1065034 [35] Sparsh Mittal and Jeffrey S. Vetter. 2015. A Survey of CPU-GPU Heterogeneous Computing Techniques. ACM Comput. Surv. 47, 4, Article 69 (July 2015), 35 pages. https://doi.org/10.1145/2788396 [36] Morbitzer, Mathias and Kopf, Benedikt and Zieris, Philipp. 2023. GuaranTEE: Introducing Control-Flow Attestation for Trusted Execution Environments. In 
+
+2023 IEEE 16th International Conference on Cloud Computing (CLOUD) . 547–553. https://doi.org/10.1109/CLOUD60044.2023.00073 [37] Nicholas Nethercote and Julian Seward. 2007. Valgrind: a framework for heavy-weight dynamic binary instrumentation. ACM Sigplan notices 42, 6 (2007), 89– 100. [38] Neto, Antonio Joia and Nunes, Ivan De Oliveira. 2023. ISC-FLAT: On the Conflict Between Control Flow Attestation and Real-Time Operations. In 2023 IEEE 29th Real-Time and Embedded Technology and Applications Symposium (RTAS) . 133– 146. https://doi.org/10.1109/RTAS58335.2023.00018 [39] Ben Niu and Gang Tan. 2014. Modular control-flow integrity. In Proceedings of the 35th ACM SIGPLAN Conference on Programming Language Design and Implemen-tation (Edinburgh, United Kingdom) (PLDI ’14) . Association for Computing Ma-chinery, New York, NY, USA, 577–587. https://doi.org/10.1145/2594291.2594295 [40] Ben Niu and Gang Tan. 2014. RockJIT: Securing Just-In-Time Compilation Using Modular Control-Flow Integrity. In Proceedings of the 2014 ACM SIGSAC Conference on Computer and Communications Security (Scottsdale, Arizona, USA) 
+
+(CCS ’14) . Association for Computing Machinery, New York, NY, USA, 1317–1328. https://doi.org/10.1145/2660267.2660281 [41] NVIDIA 2023. Benchmarks Targeted for Jetson . NVIDIA. https://github.com/NVIDIA-AI-IOT/jetson_benchmarks. [42] NVIDIA 2026. NVIDIA Confidential Computing . NVIDIA. https://www.nvidia.com/en-us/data-center/solutions/confidential-computing/. [43] NVIDIA 2026. NVIDIA Jetson Orin . NVIDIA. https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/. [44] Papamartzivanos, Dimitrios and Menesidou, Sofia Anna and Gouvas, Panagiotis and Giannetsos, Thanassis. 2021. Towards Efficient Control-Flow Attestation with Software-Assisted Multi-level Execution Tracing. In 2021 IEEE International Mediterranean Conference on Communications and Networking (MeditCom) . 512– 518. https://doi.org/10.1109/MeditCom49071.2021.9647635 [45] Ryan Roemer, Erik Buchanan, Hovav Shacham, and Stefan Savage. 2012. Return-oriented programming: Systems, languages, and applications. ACM Transactions on Information and System Security (TISSEC) 15, 1 (2012), 1–34. [46] SPECaccel 2023. SPECaccel 2023 benchmark . SPECaccel. https://www.spec.org/accel2023/. [47] Amitabh Srivastava and Alan Eustace. 1994. ATOM: a system for building cus-tomized program analysis tools. In Proceedings of the ACM SIGPLAN 1994 Con-ference on Programming Language Design and Implementation (Orlando, Florida, USA) (PLDI ’94) . Association for Computing Machinery, New York, NY, USA, 196–205. https://doi.org/10.1145/178243.178260 [48] Zhichuang Sun, Bo Feng, Long Lu, and Somesh Jha. 2020. OAT: Attesting Operation Integrity of Embedded Devices. In 2020 IEEE Symposium on Security and Privacy (SP) . 1433–1449. https://doi.org/10.1109/SP40000.2020.00042 [49] Caroline Tice, Tom Roeder, Peter Collingbourne, Stephen Checkoway, Úlfar Erlingsson, Luis Lozano, and Geoff Pike. 2014. Enforcing Forward-Edge Control-Flow Integrity in GCC & LLVM. In 23rd USENIX Security Symposium (USENIX Security 14) . USENIX Association, San Diego, CA, 941–955. https://www.usenix. org/conference/usenixsecurity14/technical-sessions/presentation/tice [50] Flavio Toffalini, Eleonora Losiouk, Andrea Biondo, Jianying Zhou, and Mauro Conti. 2019. ScaRR: Scalable Runtime Remote Attestation for Complex Systems. In 22nd International Symposium on Research in Attacks, Intrusions and Defenses (RAID 2019) . USENIX Association, Chaoyang District, Beijing, 121–134. https: //www.usenix.org/conference/raid2019/presentation/toffalini [51] Oreste Villa, Mark Stephenson, David Nellans, and Stephen W. Keckler. 2019. NVBit: A Dynamic Binary Instrumentation Framework for NVIDIA GPUs. In 
+
+Proceedings of the 52nd Annual IEEE/ACM International Symposium on Microarchi-tecture (Columbus, OH, USA) (MICRO-52) . Association for Computing Machinery, New York, NY, USA, 372–383. https://doi.org/10.1145/3352460.3358307 [52] Stavros Volos, Kapil Vaswani, and Rodrigo Bruno. 2018. Graviton: Trusted Execution Environments on GPUs. In 13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18) . USENIX Association, Carlsbad, CA, 681–696. https://www.usenix.org/conference/osdi18/presentation/volos [53] Yadav, Nikita and Ganapathy, Vinod. 2023. Whole-Program Control-Flow Path Attestation. In Proceedings of the 2023 ACM SIGSAC Conference on Computer and Communications Security (Copenhagen, Denmark) (CCS ’23) . Association for Computing Machinery, New York, NY, USA, 2680–2694. https://doi.org/10.1145/ 3576915.3616687 [54] Shaza Zeitouni, Ghada Dessouky, Orlando Arias, Dean Sullivan, Ahmad Ibrahim, Yier Jin, and Ahmad-Reza Sadeghi. 2017. ATRIUM: Runtime attestation resilient under memory attacks. In 2017 IEEE/ACM International Conference on Computer-Aided Design (ICCAD) . 384–391. https://doi.org/10.1109/ICCAD.2017.8203803 [55] Chao Zhang, Tao Wei, Zhaofeng Chen, Lei Duan, László Szekeres, Stephen McCamant, Dawn Song, and Wei Zou. 2013. Practical Control Flow Integrity and Randomization for Binary Executables. In 2013 IEEE Symposium on Security and Privacy . 559–573. https://doi.org/10.1109/SP.2013.44 [56] Mingwei Zhang and R. Sekar. 2013. Control Flow Integrity for COTS Bina-ries. In 22nd USENIX Security Symposium (USENIX Security 13) . USENIX As-sociation, Washington, D.C., 337–352. https://www.usenix.org/conference/ usenixsecurity13/technical-sessions/presentation/Zhang [57] Yumei Zhang, Xinzhi Liu, Cong Sun, Dongrui Zeng, Gang Tan, Xiao Kan, and Siqi Ma. 2021. ReCFA: Resilient Control-Flow Attestation. In Annual Computer Security Applications Conference (Virtual Event, USA) (ACSAC ’21) . Association for Computing Machinery, New York, NY, USA, 311–322. https://doi.org/10. 1145/3485832.3485900

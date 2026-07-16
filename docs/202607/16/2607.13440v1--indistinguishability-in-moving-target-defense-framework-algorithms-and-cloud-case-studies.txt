@@ -1,0 +1,1038 @@
+Title: ϵ-Indistinguishability In Moving Target Defense: Framework, Algorithms, And Cloud Case Studies
+
+URL Source: https://arxiv.org/pdf/2607.13440v1
+
+Published Time: Thu, 16 Jul 2026 00:47:47 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# ε-I NDISTINGUISHABILITY IN MOVING TARGET DEFENSE :FRAMEWORK , A LGORITHMS , AND CLOUD CASE STUDIES 
+
+A P REPRINT 
+
+Sailik Sengupta ∗ † 
+
+Amazon Science 
+
+sailiks@amazon.com 
+
+Ankur Chowdhary ∗
+
+Intuit 
+
+ankur_chowdhary@intuit.com 
+
+## ABSTRACT 
+
+Moving Target Defense (MTD) assumes its pool of candidate configurations is safe to cycle among, i.e. latency and other observables do not trivially fingerprint the active choice, but this assumption has not been quantified at the pool level. We formalize this pool-safety problem as finding the largest ε-close subset of the Cartesian product of per-component implementation choices, reducing pairwise indistinguishability under an additive utility model to a densest-window query over a sum-set. We give four algorithms spanning the scalability spectrum—full enumeration, meet-in-the-middle, FFT convolution, and Monte Carlo sampling—covering configuration spaces from tens to 10 38 . We then measure the anonymity gap end-to-end on two production cloud case studies, and find that a compo-nent’s latency differences do not survive deployment unchanged: a four-runtime serverless rotation, where nothing else masks the interpreter, collapses from four-way to three-way anonymity against a VPC-adjacent adversary, while a 27 -configuration three-tier stack, where the same interpreter differences are instead absorbed by a shared 8 ms database round-trip, delivers nine-way effective anonymity. The framework and the two case studies together suggest a diagnostic for MTD design: rotating a component adds anonymity only if the latency differences among its variants are too small for the adversary to identify. 
+
+## 1 Introduction 
+
+Moving Target Defense (MTD) rotates a system among diverse configurations to invalidate an attacker’s reconnaissance [Jajodia et al., 2011, Sengupta et al., 2020]. Research on MTD has matured along three axes— which configurations to deploy, how to switch, and when to trigger transitions—but consistently assumes that the candidate pool itself is safe to cycle among. When configurations differ in observable behavior this assumption fails: a passive adversary who measures response latency can identify the active choice without exploiting the service, reading memory, or breaking authentication [Okhravi et al., 2016, Seibert et al., 2014]. Unfortunately approaches like random jitter does not close the gap, because a patient adversary averages over 
+
+n observations to reduce noise by a factor of √n and eventually overcomes any fixed noise budget [Crosby et al., 2009]. Even calibrating that noise in the style of differential privacy [Dwork, 2006] does not fix the problem: the guarantee rests on a finite privacy budget, each probe the adversary issues consumes a portion of it, and an adversary free to keep probing eventually exhausts any budget the defender sets. We test the pool-safety assumption on two cloud rotations and find it violated in both. In one, a four-runtime serverless rotation collapses from four-way to three-way anonymity against a VPC-adjacent adversary, be-cause one Python interpreter version is 0.378 ms slower than the other three. In the other, a three-tier stack of one web server, one Python runtime, and one database, each drawn from three candidates, presents 27 con-figurations in total. Yet, it delivers only nine-way effective anonymity against an adversary an order of mag-nitude blunter than the VPC jitter floor, and three-way at the floor itself, because the database axis’s client-
+
+> ∗
+
+Equal Contribution 
+
+> †
+
+The work does not relate to the author’s position at Amazon. arXiv:2607.13440v1 [cs.CR] 15 Jul 2026 ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+protocol latency gaps are resolved outright while the three interpreter versions—their differences masked behind a shared 8 ms database round-trip—are the only levels the adversary cannot separate. Both collapses point to a common lesson: nominal configuration count is not, by itself, a security metric. To characterize this gap in general and enforce it at deployment time, we formulate the pool-safety problem as follows. A system is a k-component tuple c = ( s1, . . . , s k) ∈ S1 × · · · × Sk, and we model its observable latency as a weighted additive sum of per-component contributions: 
+
+U (c) = 
+
+> k
+
+X
+
+> i=1
+
+wi · u(si). (1) We then seek the largest subset C ⊆ S1 × · · · × Sk satisfying max c∈C U (c) − min c∈C U (c) ≤ ε; we call such a subset ε-close , and it is the pool of configurations that an adversary of precision ε cannot distinguish. Under the additive assumption the search reduces to finding the densest ε-width interval over the multiset 
+
+{U (c) : c ∈ Q 
+
+> i
+
+Si}. Although latency is our running example, any additive quantitative channel, such as CPU footprint, memory pressure, response size, energy, can fit the same formulation (§3.6). We note that MTD candidate pools grow multiplicatively across rotation axes. Hence, a defense-in-depth deployment that diversifies at every layer of the request path—runtime versions, database backends, interface protocols, TLS libraries, container base images, request middleware, and connection-pool sizing—readily produces a dozen rotation axes, and four variants per axis already puts Q 
+
+> i
+
+ni at 412 ≈ 10 7; per-service diversification in a multi-service architecture pushes it well past 10 15 . No single algorithm can handle this range. Thus, we develop four algorithms that together span the scalability spectrum: exact enumeration on tractable product spaces; meet-in-the-middle to extend the exact regime by a square-root factor; FFT convolution to reach product sizes the exact methods cannot address; and Monte Carlo sampling for the remainder, with a uniform-convergence density bound that remains valid even when the target window is selected from the samples. Together, the framework and the two cloud case studies yield a diagnostic criterion for MTD design: a rotation axis converts its nominal multiplicity into anonymity only where its per-level latency gaps fall below the adversary’s precision, and whether they do is a property of the deployment rather than of the axis. The same interpreter axis that leaks its odd member in the serverless rotation, where nothing masks it, supplies the only fine-precision anonymity in the three-tier stack, where a shared I/O floor hides it. The rest of the paper develops this program in three parts. §2 formalizes the problem and presents the four algorithms. §3 measures the anonymity gap on cloud infrastructure and evaluates the algorithms across scales. §4 places the work in the context of prior MTD and side-channel literature. 
+
+## 2 Approach 
+
+2.1 Problem reduction 
+
+The pairwise indistinguishability constraint reduces to a single range condition on C:
+
+Proposition 1. The constraint |U (c1)−U (c2)| ≤ ε for all c1, c 2 ∈ C holds if and only if max c∈C U (c)−
+
+min c∈C U (c) ≤ ε.
+
+By Proposition 1, any maximal ε-close subset is the preimage under U of some interval [ℓ, ℓ + ε] on the real line, and the largest such subset is realized by the densest interval over the multiset {U (c) : c ∈ S1 ×· · ·× Sk}.The additive decomposition (1) exposes this multiset as a k-fold sum-set of per-component contributions 
+
+vi = wi · u(si). In this section, we will describe algorithms below that exploit this sum-set structure. 
+
+2.2 Per-axis budget and visibility regimes 
+
+The additive form of U decomposes not only across configurations but across the axes that select them. When the pool is a product C = C1 × · · · × Ck of per-axis choices, the following corollary of Proposition 1 shows that its total latency spread is exactly the sum of each axis’s own spread, turning ε into a budget the k axes draw from jointly: 2ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+Corollary 1 (Per-Axis Budget) . Let C = C1 × · · · × Ck with Ci ⊆ Si, and let σi(Ci) =max s∈Ci wi u(s) − min s∈Ci wi u(s) denote the latency spread of the selected levels on axis i. Then 
+
+C is ε-close if and only if Pki=1 σi(Ci) ≤ ε.
+
+As discussed in the introduction, the two case studies illustrate what the budget view predicts. The server-less rotation’s 0.378 ms gap separates one Python interpreter version from the other three (§3.2): the axis exceeds its budget, so it splits, and three levels survive where four were nominally available. The three-tier stack’s Python axis measures a spread of zero (§3.3), because a shared 8 ms database round-trip absorbs any interpreter-level difference: the same interpreter axis that split in the serverless rotation spends nothing here, so all three of its levels survive for free. Both cases point to the same lesson: an axis’s regime is a property of where it is measured, not of what it is. Corollary 1 makes this precise by sorting an axis into one of three regimes, indexed by how much of the full axis Si—with spread σi ≡ σi(Si)—an adversary of precision ε leaves standing. If σi ≤ ε, the axis is 
+
+invisible : every level fits inside a single ε-window, so its full multiplicity survives at a budget cost of only σi,and a degenerate axis ( σi = 0 , as the interpreter axis is in the three-tier stack) survives for free. If σi > ε 
+
+but some levels sit closer to each other than to the rest, the axis is partially visible : only the densest cluster of levels—spanning at most the remaining budget—survives, and the rest are exposed, exactly as three of the serverless rotation’s four interpreters survive while the fourth is isolated. If every pair of levels on the axis is separated by more than ε, the axis is fully visible : no two of its levels can coexist in any ε-close product pool, the regime the database axis of §3.3 occupies at any precision tighter than its narrowest adjacent gap. For m
+
+evenly spaced levels, full visibility begins once the spread exceeds (m − 1) ε, since the smallest adjacent gap is the binding constraint. These regimes classify each axis on its own, which is what makes them a useful design diagnostic: an engineer can read per-axis spreads off a measurement like Figure 2(a) and predict how much of an axis’s diversity survives without running any algorithm. They are not a complete characterization of the optimal pool, however, because a product-set assumption underlies them: the densest ε-window found directly over the sum-set can admit configurations whose per-axis differences cancel across axes, so the true optimum need not decompose as C1 × · · · × Ck at all. The four algorithms of the next subsection search the sum-set itself and so capture the cross-axis cancellation that per-axis reasoning misses. 
+
+2.3 Four algorithms across the scalability spectrum 
+
+MTD deployments span many orders of magnitude in configuration-space size, and no single algorithm han-dles the full range. We therefore present four (Table 1), each dominating a distinct regime; step-by-step derivations, pseudocode, and error analysis appear in Appendix C. Table 1: Complexity of the four algorithms. N = Q 
+
+> i
+
+ni is the product space size, R is the discretized utility range, and M is the sample count. Algorithm Time Space Exact Full Enumeration O(N log N ) O(N ) Yes Meet in the Middle O(N log N ) O(√N ) enum + O(N ) merge Yes FFT Convolution O(k · R log R) O(R) Approx. Sampling O(M log M ) O(M ) Approx. 
+
+Full enumeration. For product spaces of tractable size (say, N ≤ 10 7), the utility multiset {U (c)} can be materialized directly. We build it iteratively as a running sum-set over the per-component contributions, sort the resulting array, and apply a two-pointer sliding window of width ε to identify the densest interval in a single linear pass. The algorithm returns the exact optimum in O(N log N ) time, dominated by the sort. 
+
+Meet-in-the-middle. When N exceeds direct enumeration but k remains moderate, we extend the exact regime by partitioning the k sets into two halves and enumerating each half’s sum-set independently at 
+
+O(√N ) cost. Forming all pairwise sums between the halves reconstructs the full utility multiset, on which the same sliding window returns the exact optimum. The gain is in memory: neither half’s enumeration ever 3ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+exceeds O(√N ), so the reachable regime grows by a square-root factor before the merge [Horowitz and Sahni, 1974]. 
+
+FFT convolution. Once N exceeds any exact method, we shift to a distributional representation of the same object. Per-component utilities are discretized into R bins of width δ, and the k resulting histograms are combined by iterated FFT convolution to yield the histogram of {U (c)} over the Cartesian product; a prefix-sum sliding window over that histogram identifies the densest ε-interval [Cooley and Tukey, 1965, Cormen et al., 2009]. Because each per-component contribution is rounded by at most δ/ 2, the total utility of any configuration shifts by at most kδ/ 2, and the resulting relative count error is O(kδ/ε ). The error can be driven down by shrinking δ at proportional cost in bins, while the runtime O(k · R log R) depends on the utility range rather than N and remains tractable well beyond the exact regime. 
+
+Monte Carlo sampling. When the discretized range R itself becomes prohibitive—typically once k passes roughly 15 with wide per-component ranges—we retreat to random sampling. We draw M configurations i.i.d. uniformly from the Cartesian product, compute and sort their utilities, and apply the sliding window to the resulting array; scaling the winning window’s sample count by N/M estimates the true count. The runtime O(M log M ) is independent of both N and R, but the approximate output requires a probabilistic guarantee, which we derive next. 
+
+2.4 A uniform guarantee for Monte Carlo sampling 
+
+Reporting the winning window’s empirical density as an estimate of its true density is optimistic: this is a selection-bias problem. The window ˆℓ is not chosen in advance; it is selected from the same M samples used to estimate its density, as whichever candidate window happens to look densest. A window selected for looking densest is more likely than a fixed window to have benefited from a favorable sampling fluctuation, so its apparent density systematically overstates the true density. A pointwise Hoeffding bound does not fix this: it only guarantees accuracy for a window chosen before the data are drawn, and ˆℓ is chosen after. We therefore need a bound that holds uniformly over every candidate window at once, so that whichever window ends up selected—regardless of how the selection rule picks it—is guaranteed accurate. The Dvoretzky–Kiefer– Wolfowitz (DKW) inequality [Dvoretzky et al., 1956], in the tight form due to Massart [1990], supplies exactly this: 
+
+Proposition 2 (Uniform Window-Density Bound) . For each ℓ ∈ R, let p(ℓ) = Pr c[U (c) ∈ [ℓ, ℓ + ε]] 
+
+over a uniformly random configuration, and let ˆpM (ℓ) be the empirical estimate from M i.i.d. samples. By the Dvoretzky–Kiefer–Wolfowitz inequality, with probability at least 1 − α,
+
+sup 
+
+> ℓ∈R
+
+ˆpM (ℓ) − p(ℓ) ≤ 2t, t =
+
+q 12M log 2 
+
+> α
+
+.
+
+In particular, M = O ε−2 
+
+> stat
+
+log(1 /α ) samples suffice for additive accuracy εstat simultaneously over all candidate windows—including any window selected post-hoc from the samples. 
+
+Applying this uniform bound at both ˆℓ and ℓ∗ and chaining the two inequalities via the definition of ˆℓ as the empirical argmax converts the sampling error into a bound on the gap between the true density p(ˆℓ) and the optimum p∗:
+
+Corollary 2 (Selection-Bias-Aware Near-Optimality) . Let ˆℓ = arg max ℓ ˆpM (ℓ) be the algorithm’s empir-ical choice, ℓ∗ = arg max ℓ p(ℓ) the true optimum, and p∗ = p(ℓ∗). Under the conditions of Proposition 2, with probability at least 1 − α,
+
+p∗ − p(ˆℓ) ≤ 4t = 4 
+
+q 12M log 2 
+
+> α
+
+.
+
+That is, the true density of the empirically-selected window is within 4t of the optimum, even though the same samples are used both to choose the window and to estimate its density. 
+
+The corollary’s 4t bound justifies the use of Monte Carlo sampling in the empirical evaluation of §3: with modest M , the true density of the empirically-selected window is within an M −1/2 margin of the optimum. 4ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+Proofs of the propositions and corollary appear in Appendix A. Appendix B demonstrates that the 4t constant is conservative by one to two orders of magnitude in practice. 
+
+## 3 Experiments 
+
+The evaluation proceeds in three passes. Two cloud case studies (§3.1–§3.3) anchor the paper’s central finding; synthetic evaluation (§3.4–§3.5) demonstrates that the algorithm suite of §2 scales far beyond the tested deployment sizes and that the observed Pareto shape generalizes. Then, two robustness sections (§3.6– §3.7) probe the framework against a channel-pivoting adversary and noisy benchmarks. Finally, we highlight the scope and limitations of our experiments in §3.8. 
+
+3.1 Cloud setup and threat model 
+
+We evaluate whether an MTD candidate pool delivers the indistinguishability it nominally offers, in a de-ployment where a defender rotates among a known configuration set S and a passive adversary co-located in the same cloud region measures response latency. The adversary issues constant-rate HTTP probes and at-tempts to identify the active configuration; it does not exploit the service, read memory, or observe any signal other than end-to-end latency. Other quantitative channels—CPU footprint, memory pressure, response size, energy—are covered by the framework (§3.6) but not measured on the cloud setup. The adversary’s discriminatory power is captured by a single parameter, ε: the smallest latency difference it can reliably resolve. Smaller ε denotes a sharper adversary. We treat ε as the free axis of the evaluation and report every result as a function of it, so a defender can read off the operating point matching their threat model rather than commit to a single estimate. The ε-close guarantee is per-observation, and what repeated observation buys the adversary is governed by the rotation dynamics. Probing one active configuration n times shrinks the resolvable latency difference toward 
+
+σ/ √n, where σ is the path jitter (§1), but rotation caps the accumulation: a configuration that stays active for dwell time ∆ against probe rate r yields at most n = r∆ samples, so the adversary’s achievable precision is bounded below by roughly σ/ √r∆, and a defender should calibrate ε to this dwell-limited floor rather than to the single-probe jitter. Across rotations the schedule itself must not leak, and prior MTD work supplies exactly this ingredient: randomized switching strategies—game-theoretic, multi-stage, and/or learned over repeated interaction [Sengupta et al., 2017, 2020]—denying the adversary a predictable observation window. Pool safety composes with these policies rather than replacing them: the switching strategy governs when and to what the system moves, while the ε-close pool guarantees that whichever member is active, its latency signature stays within ε of every other member’s. From per-configuration latency samples the defender fits an additive ordinary-least-squares model U (s) = 
+
+Pkj=1 wj [ℓj ] + ηs, where wj [ℓ] is the marginal contribution of component j at level ℓ and ηs is the residual. The fitted model induces the ε-close pool C(τ, ε ) = {s ∈ S : | ˆU (s) − τ | ≤ ε}: configurations whose predicted latency falls within ε of an observed target τ . Its cardinality |C(ε)| is the adversary’s residual anonymity set: large means strong MTD; small means the adversary has nearly localized the active configu-ration. 
+
+Instantiation on AWS. We realize this setup on AWS in the us-east-1 region. The adversary runs on a compromised t3.small instance in one availability zone; the defender operates in another. Inter-AZ round-trip jitter is approximately 0.1 ms and sets the practical floor on ε for this environment. Serverless configurations (§3.2) are exercised via 500 sequential warm invocations per Lambda through curl . Three-tier configurations (§3.3) are probed by wrk2 3 at a fixed target rate; wrk2 back-corrects each sample for scheduling delay, so the recorded latency reflects the server rather than the client’s queue. Each three-tier request serves GET /bench —a 1 kB response after a fixed CPU operation—and executes a 100-row SELECT 
+
+against an RDS-hosted database. Per-configuration latencies are averaged before OLS fitting. 
+
+3.2 Single-axis rotation: serverless runtime 
+
+The single-axis instance rotates four AWS Lambda functions running distinct CPython versions (3.9–3.12) behind the same request handler. The handler performs no blocking I/O, so the measured latency reflects 
+
+> 3https://github.com/giltene/wrk2
+
+5ε-Indistinguishability in Moving Target Defense A P REPRINT                        
+
+> 3.9 3.10 3.11 3.12
+> 2
+> 2.2
+> 2.4
+> 2.6
+> 2.8
+> cluster
+> +0.38 ms
+> 2.197 2.142
+> 2.52
+> 2.168
+> CPython runtime version
+> Mean latency (ms)
+> Measured latency per runtime ( n=500 )
+> (a) All four versions are one tool (CPython), so a single color is used; 3.11 is the lone outlier above the {3.9, 3.10, 3.12} cluster. Error bars are ±1 std. dev.
+> 00.20.40.6
+> 3
+> 4
+> 3.11 leaked
+> (attacker wins)
+> |C|=3
+> fully hidden
+> (all merge)
+> |C|=4
+> ε∗=0 .349
+> Adversary precision ε(ms) — smaller =stronger attacker Pool size  |C(ε)| (larger  = better hidden)
+> Indistinguishable configurations vs. precision
+> (b) One clean step at ε∗=0 .349 ms, the size of 3.11’s la-tency gap. Red (left): a sharp adversary ( ε<ε∗) re-solves that gap and isolates Python 3.11, shrinking the pool to |C|=3 .Green (right): a blunter adversary cannot, so all four runtimes merge into one indistinguishable pool (|C|=4= |S|). Larger pool =better defense.
+
+Figure 1: Serverless Runtime Rotation ( k=1 , |S|=4 ). A single active axis with four distinct levels yields a Pareto step. The attack works exactly as the model predicts, and all four pool-discovery algorithms agree on the step location. interpreter behavior directly. Figure 1(a) shows the mean latency of each runtime over 500 warm invocations: CPython 3.9, 3.10, and 3.12 fall within 0.06 ms of one another ( 2.142 –2.197 ms), while CPython 3.11 sits at 
+
+2.520 ms—a 0.378 ms gap above the cluster. The Pareto curve (fig. 1(b)) has a single step at ε∗ = 0 .349 ms, the size of the 3.11 gap. Against an adversary of precision ε < ε ∗ (red region), the pool is |C| = 3 : CPython 3.11 is unconditionally identified while the other three runtimes remain indistinguishable. Against a blunter adversary, say one who resides in a different cloud region with cross-region access (i.e., ε ≥ ε∗, green region), all four merge into a single pool of |C| = 4 . All four pool-discovery algorithms of §2 return the same step location, confirming it is exact and not a discretization artifact; full enumeration over |S| = 4 completes in roughly 5 μs. The direction of the 3.11 gap is worth pausing on: published interpreter benchmarks generally place CPython 3.11 ahead of its neighbors on CPU-bound workloads, so a reader familiar with those benchmarks may expect the opposite result. The gap itself is not an artifact of noise: per-invocation jitter gives each run-time a standard deviation of 1.2–1.4 ms, but at n = 500 the standard error of each mean is roughly 0.06 ms, so the 0.378 ms gap separates the means by more than four standard errors of their difference, and all invoca-tions are warm, ruling out cold-start initialization as an explanation. What the measurement cannot isolate is why the direction reverses here: the deployed artifact couples the interpreter with a version-specific Lambda runtime image, and either the adaptive interpreter’s behavior on this particular handler or the runtime layer itself may be responsible. The distinction does not matter for our argument: we attribute the gap to the de-ployed configuration rather than to CPython 3.11 in general, and the conclusions that follow depend only on the deployed configurations differing measurably, not on why they differ. Had 3.10 been the outlier instead of 3.11, the framework would report the identical |C| = 3 split at the identical threshold, because it operates on measured latency values, not on which runtime produced them. The takeaway is narrow but concrete: a defender who deploys four-runtime rotation expects four-way anonymity but obtains three-way anonymity against a VPC-adjacent adversary, and CPython 3.11 leaks its identity unconditionally. The results also show that even runtime is expected to be faster, yet the gap is a stable fingerprint that persists across all 500 invocations that can be resolved by the adversary. The absence of blocking I/O is the condition that lets the interpreter-level signal reach the wire; the next case study shows what happens when this condition fails. 6ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+3.3 Full-stack rotation: three-tier deployment                          
+
+> nginx
+> Apache
+> Caddy
+> py3.9
+> py3.11
+> py3.12
+> pg14
+> pg16
+> MySQL8
+> −5
+> 0
+> 5
+> 10
+> web python db
+> OLS weight (ms)
+> Per-component latency contribution (OLS weight)
+> nginx Apache Caddy
+> CPython (degen.) PostgreSQL MySQL
+> (a) Each web server (nginx/Apache/Caddy) and database (PostgreSQL/MySQL) is drawn in its own color. The DB axis dominates (13.8 ms spread); the three CPython ver-sions are degenerate (identical gray bars). MySQL’s neg-ative weight is its advantage over the pg14 reference.
+> 04812
+> 3
+> 9
+> 18
+> 27 |S|=27 (full pool)
+> DB resolved
+> ε=1 .9ms: |C|=9
+> full at 12.5 ms
+> Adversary precision ε(ms) — smaller =stronger attacker Pool size  |C(ε)| (larger  = better hidden)
+> Indistinguishable configurations vs. precision
+> (b) Large steps set by the DB latency gaps. One DB group (9 web ×Python combos) merges at ε=1 .9ms; the pool sat-urates to |S|=27 only at 12 .5ms—over 30 ×the precision Runtime Rotation needed.
+
+Figure 2: Full-Stack Rotation (web ×Python ×DB, k=3 , |S|=27 ). One experiment, two opposite axis behaviors: the database axis dominates with an order-of-magnitude larger spread than any other component, while the Python axis is fully degenerate behind an 8 ms I/O floor. The degenerate axis is all that survives fine precision ( |C| = 3 at the VPC jitter floor); the leak is concentrated in a single high-value axis. The three-tier instance rotates axes at every layer of the serving stack: each request is served by one of three web servers (nginx, Apache, Caddy), executed by one of three Python runtimes (3.9, 3.11, 3.12), and backed by a 100-row SELECT against one of three databases (PostgreSQL 14, PostgreSQL 16, MySQL 8). The adversary attempts to localize the active configuration in the 3 × 3 × 3 = 27 -point grid. Figure 2(a) shows the fitted OLS weights. The database axis spans 13 .8 ms: MySQL 8 sits 13 .8 ms below PostgreSQL 14, with PostgreSQL 16 in between. The web-server axis spans 3.2 ms from nginx to Apache. The Python axis spans zero : all three interpreter weights are numerically identical. The database spread traces to the client-library protocol: the MySQL client reaches the query in fewer round-trips than the PostgreSQL driver, which negotiates types and re-authenticates. The interpreter degeneracy is structural rather than inci-dental: the request path blocks for approximately 8 ms on the downstream database round-trip regardless of the interpreter version, so no interpreter-specific signal reaches the wire. Figure 2(b) shows the Pareto curve. It climbs in large steps set by the database axis, reaching |C| = 9 
+
+at ε = 1 .9 ms—the point at which one three-configuration database group has been resolved but the nine web-server × interpreter combinations within it remain indistinguishable—and saturates to |S| = 27 only at 
+
+ε = 12 .5 ms, more than thirty times the precision the single-axis rotation required to saturate. Meet-in-the-middle (§2) makes the axis diagnosis explicit: splitting on the database axis surfaces the nine-way anonymity set at ε = 1 .9 ms, while splitting on the CPython axis yields no separating matches at any tolerance. The two case studies instantiate the visibility regimes of Corollary 1. In the serverless rotation the interpreter axis is partially visible at VPC-adjacent precision: the 0.378 ms gap that isolates CPython 3.11 exceeds the 0.1 ms jitter floor, while the 0.06 ms spread of the remaining cluster falls below it, so three of the four levels survive as a pool. In the three-tier stack the same axis is invisible—its fitted spread is zero because the request path blocks for approximately 8 ms on the database round-trip regardless of interpreter—so its full three-way multiplicity survives at every precision, and it is the sole reason the pool never falls below 
+
+|C| = 3 . The database axis sits at the opposite extreme: its adjacent-level gaps ( 2.3 ms and 11 .5 ms) both dwarf the jitter floor, so at fine precision its nominal three-way diversity contributes no anonymity at all, and even a much blunter 1.9 ms adversary holds the nominal 27 configurations to nine-way effective anonymity. 7ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+Table 2: Synthetic datasets used for scalability evaluation. Name k Representative sizes Q ni ε
+
+TINY 3 [3 , 2, 4] 2.4 × 10 1 2.0 SMALL 5 [10 , 8, 12 , 9, 7] 6.0 × 10 4 1.5 MEDIUM 6 [12 , 10 , 14 , 8, 11 , 9] 1.3 × 10 6 3.0 LARGE 10 ∼ 30 –50 each 8.4 × 10 15 5.0 HUGE 20 ∼ 60 –100 each 1.1 × 10 38 2.0 The comparison yields the diagnostic in its most useful form: an axis converts nominal multiplicity into anonymity only where its per-level latency gaps fall below the adversary’s precision, and whether they do is a property of the deployment, not of the axis. The interpreter axis that leaks CPython 3.11 in the serverless rotation, where nothing masks it, supplies the only fine-precision anonymity in the three-tier stack, where a shared I/O floor hides it. A defender should therefore audit each axis’s level gaps against the deployment’s own noise floor and I/O structure rather than count nominal variants. 
+
+3.4 Scalability of the algorithm suite 
+
+The cloud case studies exercise the framework at k ∈ { 1, 3} with |Sj | ≤ 4, but realistic MTD deployments extend well beyond this scale. As discussed in the introduction, diversification across the full request path— runtime versions, database backends, interface protocols, TLS libraries, and connection-pool sizing among others—readily produces a dozen or more rotation axes, and multiplying their variants puts the configuration space near 10 7 per service and beyond 10 15 across a multi-service architecture. At those scales exact enumer-ation and meet-in-the-middle both become infeasible, leaving FFT convolution and Monte Carlo sampling as the only viable options. We therefore evaluate all four algorithms on synthetic datasets spanning 10 1 to 10 38 
+
+configurations, chosen to match the additive latency structure fit in §3.1. 
+
+Setup. Per-component values are drawn uniformly from [0 , 10] under three additive utility functions: linear (uniform weights), square-root (linear weights), and quadratic (exponential-decay weights). The product-space sizes span from |S| = 24 (matching §3.2) to |S| = 1 .1 × 10 38 (Table 2). Full enumeration and meet-in-the-middle run only on |S| ≤ 2 × 10 6; FFT convolution (bin width δ = 0 .05 ) and Monte Carlo sampling ( M = 5 × 10 5) run on all five datasets. 
+
+Findings. Table 3 reports representative results. All exact algorithms return identical |C| on every dataset where both apply, confirming correctness. FFT convolution completes in under 30 ms even on the 10 38 -configuration dataset because its runtime depends on the discretized utility range, not the product-space size; it overcounts by up to a factor of two near bin boundaries at δ = 0 .05 (a 5× memory increase to δ = 0 .01 
+
+closes the gap), but agrees with the exact count whenever the utility distribution is concentrated. Monte Carlo sampling has near-constant runtime ( ∼ 0.2 s) governed by M alone and tracks exact results within 1% relative error on the datasets where exact ground truth exists. On L ARGE and H UGE the FFT and sampling estimates agree to within the FFT discretization bound, providing mutual cross-validation where no exact reference is available. 
+
+3.5 Framework generality across the ε-axis 
+
+The step-function Pareto structure observed on the two cloud case studies is intrinsic to any additive utility over independent per-component distributions, not an artifact of the specific deployments. To confirm this we sweep ε over [0 .05 , 6.0] in 60 steps on M EDIUM (exact enumeration and FFT) and L ARGE (FFT only; exact methods are infeasible at |S| = 8 .4 × 10 15 ), reporting the pool fraction |C|/|S| per utility function in Figure 3. Three facts follow. First, the M EDIUM and L ARGE curves have near-identical shape per utility, so the Pareto profile is a function of the utility form (concave, linear, convex) rather than the dataset scale—the same shape can be expected of larger deployments constructed under the same additive assumption. Second, the FFT– exact gap on M EDIUM matches the O(kδ/ε ) analysis of §2: the Linear curve overestimates by roughly 2×
+
+at small ε and converges as ε grows, while the Quadratic curve agrees almost everywhere because its wider utility range makes kδ/ε small. Third, the curves let a defender read the sensitivity of pool size to precision 8ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+Table 3: Selected experimental results. “Enum” = Full Enumeration, “MitM” = Meet in the Middle, “FFT” = FFT Convolution, “Samp” = Sampling. Times in seconds. 
+
+Enum / MitM FFT Sampling Dataset Utility |C| Time |C| Time |C| Time TINY Linear 11 0.0001 24 † 0.001 11 0.17 TINY Sqrt 24 0.0002 24 0.001 24 0.14 TINY Quadratic 4 0.0002 5† 0.003 4 0.20 SMALL Linear 28,246 0.024 56,466 † 0.001 28,293 0.21 SMALL Sqrt 59,181 0.012 60,480 0.001 59,180 0.13 SMALL Quadratic 2,703 0.021 3,064 † 0.005 2,713 0.20 MEDIUM Linear 1,162,488 0.48 1,330,560 † 0.001 1,161,507 0.17 MEDIUM Sqrt 1,330,560 0.26 1,330,560 0.001 1,330,560 0.13 MEDIUM Quadratic 176,957 0.46 188,408 † 0.005 175,931 0.21 LARGE Linear — — 8.4 × 10 15 0.002 8.4 × 10 15 0.16 LARGE Quadratic — — 1.3 × 10 15 0.008 1.3 × 10 15 0.21 HUGE Linear — — 1.0 × 10 38 0.004 9.5 × 10 37 0.22 HUGE Quadratic — — 7.3 × 10 36 0.028 7.2 × 10 36 0.24 
+
+> †
+
+FFT overcount due to discretization at δ = 0 .05 .0 1 2 3 4 5 6        
+
+> (latency tolerance)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> |C| /  N (fraction of configs in pool)
+> Medium ( N= 1.3×10 6)
+> Linear / Uniform (FFT)
+> Linear / Uniform (exact)
+> Sqrt / Linear wts (FFT)
+> Sqrt / Linear wts (exact)
+> Quadratic / Exp decay (FFT)
+> Quadratic / Exp decay (exact)
+> 0123456
+> (latency tolerance)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> |C| /  N (fraction of configs in pool)
+> Large ( N= 8.4×10 15 )
+> Linear / Uniform (FFT)
+> Sqrt / Linear wts (FFT)
+> Quadratic / Exp decay (FFT)
+> -sweep: Pareto trade-off between adversary tolerance and pool size
+
+Figure 3: Pareto trade-off between adversary precision ε and configuration-pool fraction |C|/|S|. Solid lines are FFT estimates ( δ=0 .05 ); dashed lines are exact enumeration where tractable. The curves reveal an intrinsic, dataset-size-independent shape determined by the utility form: concave ( Sqrt ) saturates rapidly, convex ( Quadratic ) admits only a small pool fraction even at ε=6 , with linear in between. A defender selects an operating point on this curve given an estimate of the deployment-path noise floor. directly: on L ARGE under Quadratic utility, halving ε from 6 to 3 halves the pool fraction from 0.19 to 0.09 ,so tightening indistinguishability by 2× costs a 2× smaller pool. 
+
+3.6 Multi-channel indistinguishability: a synthetic exploration 
+
+A determined adversary need not stop at latency. Response size, CPU footprint, memory pressure, and energy draw are equally remotely-observable in many deployments, and an adversary will pivot to whichever channel is most discriminative. We argued in §2 that the framework is metric-agnostic; here we make that quantitative. Because the cloud measurements exercise latency only (§3.1), this subsection runs on the synthetic M EDIUM 
+
+dataset with proxy channels—the numbers below demonstrate the multi-channel formulation, not a cloud measurement. We treat Linear/Uniform as a latency proxy and Quadratic/Exp-decay as a CPU-or-memory proxy, both on M EDIUM at ε = 3 . For each formulation we compute the densest indistinguishable pool: (i) channel 1 alone, (ii) channel 2 alone, (iii) the naive intersection of the two channel-optimal windows 9ε-Indistinguishability in Moving Target Defense A P REPRINT 1 2 3 4 5 6 7 8     
+
+> Channel 1 utility U1(latency proxy: linear)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> Channel 2 utility  U2 (CPU/mem proxy: quadratic)  Configurations in the (latency, CPU/mem) plane
+> not in any pool
+> ch. 1 pool only
+> ch. 2 pool only
+> in both single-channel pools
+> joint optimal -box
+> Ch.1 only
+> (Linear)
+> Ch.2 only
+> (Quadratic)
+> Intersection
+> of optima
+> Joint -box
+> optimum
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> |C| /  N
+> 1,162,488
+> (87.4%)
+> 176,957
+> (13.3%)
+> 176,681
+> (13.3%)
+> 176,944
+> (13.3%)
+> Pool fraction by formulation
+> Multi-channel indistinguishability (medium, = 3.0)
+
+Figure 4: Two-channel indistinguishability on M EDIUM at ε = 3 . Left: scatter of 25k random configurations in the (latency proxy, CPU/memory proxy) plane. Vertical blue band: channel-1 optimal ε-window. Horizon-tal red band: channel-2 optimal ε-window. Green dashed box: joint optimal ε-box. Purple points lie in both single-channel-optimal pools. Right: pool fraction |C|/|S| for each formulation. A defender who plans only against latency would believe they retain 87% of configurations; honest accounting against both channels admits only 13% .(configurations that happen to lie in both single-channel-optimal pools), and (iv) the joint formulation, which optimises (ℓ1, ℓ 2) over the 2-D box [ℓ1, ℓ 1 + ε] × [ℓ2, ℓ 2 + ε] to maximise the count of configurations in both windows simultaneously. Formulation (iv) is solved by the natural 2-D extension of the FFT histogram—a 2-D histogram on (U1, U 2) followed by a 2-D prefix-sum sliding rectangle—with the same discretization caveats as the 1-D method; we report the exact count of configurations actually in the chosen box, which corrects the discretization overestimate. Figure 4 surfaces three facts. First, the joint pool size ( 13 .30% ) is essentially equal to the narrower chan-nel’s single-channel pool ( 13 .30% ): the more selective channel dominates. Second, the naive intersection (13 .28% ) is nearly indistinguishable from the joint optimum here, indicating that on this dataset the channel-2 optimal window happens to lie almost entirely within the channel-1 optimal window—a coincidence that is not guaranteed in general but holds when channels are positively correlated, as the scatter plot shows. Third, and most consequential if the pattern carries to real deployments: a defender who calibrates ε to one channel alone overstates the indistinguishable pool by 6.5× on this synthetic instance ( 87% → 13% ). The recipe is straightforward: run the pool-selection procedure once per quantitative channel (or jointly via formulation (iv)), and treat the intersection as the true anonymity budget. 
+
+3.7 Benchmark noise as a practical caveat 
+
+The framework assumes the defender knows per-component utilities u(si) exactly, but real deployments estimate them from benchmarks. The noise studied here is therefore the defender’s —error in the benchmark estimates of u(si)—and is distinct from the adversary’s per-observation variance, which is already folded into the precision parameter ε by the dwell-time argument of §3.1. To quantify the resulting exposure we add i.i.d. Gaussian noise ξc ∼ N (0 , σ 2) to each true configuration utility U (c), run pool selection on Unoisy =
+
+U + ξ, and measure the true latency span max c∈C U (c) − min c∈C U (c) of the selected pool. Whenever this span exceeds the target ε, the pool is not actually ε-indistinguishable in deployment, regardless of what the defender’s algorithm reported. Figure 5 shows a sharp asymmetry between apparent and actual indistinguishability. The apparent pool size (left) is robust to modest noise: at σ = 0 .25 the defender still believes they have a pool covering 86% 
+
+of configurations, only 1.5 percentage points below the noise-free truth. The actual span (right) degrades immediately: at σ = 0 .05 , 100% of replicates produce pools whose true span exceeds ε (mean 3.34 >
+
+3.0), and at σ = 0 .5 the span has doubled to 5.9. Two mitigations follow. First, averaging benchmark measurements over T trials drives the per-configuration noise variance to σ20 /T , so T = O(( σ0/σ tol )2) trials per configuration suffice for tolerance σtol . Second, shrinking the design tolerance from ε to ε − cσ leaves 10 ε-Indistinguishability in Moving Target Defense A P REPRINT 0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00                  
+
+> per-config measurement noise
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> |C| /  N
+> Pool size inflates with measurement noise
+> true | C*|/ N= 0.874 at = 0
+> apparent | Cnoisy |/ N(what the defender sees)
+> 0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00
+> per-config measurement noise
+> 3
+> 4
+> 5
+> 6
+> 7
+> true latency span over selected pool
+> 100% violate
+> 100% violate
+> 100% violate
+> 100% violate
+> 100% violate
+> 100% violate
+> True indistinguishability degrades with
+> target = 3.0
+> true span = max Umin Uover selected pool
+> Noise robustness on medium dataset (util=linear_uniform, = 3.0, R=20 replicates)
+
+Figure 5: Effect of per-configuration benchmark noise σ on pool selection (M EDIUM , Linear/Uniform, ε = 3 ,20 replicates per σ). Left: apparent pool fraction |Cnoisy |/|S| that the defender’s algorithm reports. Right: true latency span of that pool under the noise-free utility. The dashed line is the target ε. Even tiny noise (σ = 0 .05 ) inflates the true span above ε in 100% of replicates. headroom that absorbs the residual span, with the constant c chosen by calibration on a held-out replicate set. Either mitigation closes the apparent–true gap the figure exposes. 
+
+3.8 Scope and limitations 
+
+The cloud case studies exercise two rotation designs on a single provider, in a single region, against a pas-sive adversary co-located in an adjacent availability zone. VPC-adjacent adversary precision was measured directly; the internet-scale precision cited for context is drawn from prior remote timing work [Seibert et al., 2014] and not measured here. The threat model is passive and the candidate pool is public (§3.1); what must remain hidden is the active configuration, and the dwell-time argument of §3.1 bounds what repeated passive observation achieves, but we do not model an active adversary that adaptively times probes around rotation events. Pool safety also composes with, rather than replaces, the switching policy: a schedule that is itself observable—say, fixed round-robin with a known phase—can reveal the active configuration even from an 
+
+ε-close pool, and the randomized game-theoretic switching strategies of prior MTD work [Sengupta et al., 2017, 2020] are the natural complement. The equalization-at-source defense implied by the §3.3 diagnostic— warming a uniform connection pool so that the interpreter axis’s shared 8 ms floor is removed—is proposed, not empirically validated; testing it is future work. Latency is the primary channel we measure on the cloud setup; other quantitative channels are covered by the framework (§3.6) but not exercised on real hardware. Finally, the fitted OLS model assumes additive per-component contributions; interaction effects, if present, are absorbed into the residual ηs and would degrade predictive accuracy in a way our two case studies did not surface. 
+
+## 4 Related Work 
+
+Moving target defense. Moving Target Defense, introduced as a proactive-defense paradigm by Jajodia et al. [2011], has matured along three axes—which configurations to deploy, how to switch, and when to switch—systematized in Sengupta et al. [2020], with randomized game-theoretic strategies addressing the how and the when [Sengupta et al., 2017]. A closely related diversity paradigm is N-variant execution [Cox et al., 2006], in which multiple diversified variants run in parallel and disagreement between them signals an exploit; our pool-safety framework applies directly to the temporal-rotation setting and, with modification, to the parallel-execution setting, where the observable derives from all running variants rather than from a single active choice. This body of work consistently treats the candidate pool as given input and safe to cycle among; whether the pool itself leaks the active configuration through observable behavior has received limited formal treatment. Closest to our motivation, Okhravi et al. [2016] identify information leakage via side channels as a fundamental weakness across the five domains of MTD (dynamic platforms, runtime environments, software diversification, data encoding, network properties), and report that a single observable timing value suffices to narrow down 45% of diversified software functions to an uncertainty set of ten or 11 ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+fewer candidates; their conclusion is that MTD techniques must periodically re-randomize system internals. We take a complementary approach: we frame pool-safety as a formal indistinguishability property, quantify it on production cloud deployments, and give the algorithmic tooling to enforce it at scale. 
+
+Side-channel attacks on diversified systems. Timing side channels have been extensively studied in cryp-tographic implementations [Kocher, 1996] and cache behavior [Bernstein, 2005]. Crosby et al. [2009] es-tablished the remote feasibility of these attacks over WAN paths, demonstrating that microsecond-scale dif-ferences can be recovered through the √n averaging invoked in §1. Most directly relevant to MTD, Seibert et al. [2014] demonstrate remote timing side-channel attacks that infer memory layout from diversified code without requiring any memory disclosure vulnerability, showing that timing measurements alone uniquely fingerprint up to 60% of diversified functions in libc . Dynamic software diversity has been proposed as a defense against microarchitectural timing channels [Crane et al., 2015]; our contribution takes the analogous defensive move at the system-configuration granularity for network-level timing. Our threat model trans-poses this signal from code diversification to configuration diversification: rather than fingerprinting individ-ual functions, the adversary identifies the active configuration among those in the MTD pool by observing response latency. The resulting notion of |C|-way indistinguishability is directly analogous to k-anonymity in privacy-preserving data release [Sweeney, 2002], transposed from record equivalence classes to configura-tion equivalence classes under an observable latency channel. We contribute both a formal indistinguishability constraint that eliminates this signal by construction—configurations in the selected pool differ in latency by at most ε—and end-to-end measurement of the constraint’s slack on production cloud infrastructure, extend-ing prior remote-timing evidence from code-fingerprinting granularity to system-configuration anonymity. 
+
+Algorithmic techniques. The algorithms we compose are individually classical. The two-pointer sliding window over sorted data is elementary; we apply it to a sumset that arises implicitly from a k-fold Carte-sian product. Meet-in-the-middle originates in Horowitz and Sahni’s treatment of the subset-sum problem [Horowitz and Sahni, 1974]. FFT convolution for counting representations in a sumset is a standard use of the discrete Fourier transform [Cooley and Tukey, 1965, Cormen et al., 2009] that we lift to k-fold convolution over discretized utility histograms. Random sampling of additive-utility configuration spaces has precedent in software product lines [Oh et al., 2017]. The novelty of our algorithmic contribution is not in any single technique but in their composition into a suite that covers realistic MTD scales, together with the uniform-convergence analysis that makes the sampling algorithm sound when the sliding window is chosen from the samples themselves. 
+
+## 5 Conclusion 
+
+Moving Target Defense research has matured around which configurations to deploy, how to switch, and when—while treating the candidate pool’s own indistinguishability as an assumption rather than a property to verify. This paper made that property both verifiable and enforceable. We formalized pool safety as the largest ε-close subset of the configuration product, gave algorithms that construct that subset at every realistic scale, and measured the framework end-to-end on live cloud deployments. Both rotations we audited fall short of their nominal anonymity, and the shortfalls carry a general lesson: whether an axis contributes anonymity is decided by the deployment that hosts it, not by the axis itself. A defender should therefore audit each axis’s latency gaps against the deployment’s own noise floor, and rotate among the largest pool the algorithms certify indistinguishable rather than among every nominal variant. Two extensions remain open. The guarantee is per-observation: dwell-time limits and randomized switching already bound what a patient adversary gains by averaging (§3.1), but the two compose with the ε-close pool by argument rather than by proof, and a distributional guarantee over entire rotation sequences would make that composition rigorous. The guarantee is likewise per-channel: an adversary denied the latency channel will pivot to response size or CPU footprint, and enforcing indistinguishability jointly across observable channels would close that pivot. 
+
+## References 
+
+D. J. Bernstein. Cache-timing attacks on AES. Technical report, University of Illinois at Chicago, 2005. J. W. Cooley and J. W. Tukey. An algorithm for the machine calculation of complex Fourier series. Mathe-matics of Computation , 19(90):297–301, 1965. T. H. Cormen, C. E. Leiserson, R. L. Rivest, and C. Stein. Introduction to Algorithms . MIT Press, 3rd edition, 2009. 12 ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+Benjamin Cox, David Evans, Adrian Filipi, Jonathan Rowanhill, Wei Hu, Jack Davidson, John Knight, Anh Nguyen-Tuong, and Jason Hiser. N-variant systems: A secretless framework for security through diversity. In Proceedings of the 15th USENIX Security Symposium , 2006. Stephen Crane, Andrei Homescu, Stefan Brunthaler, Per Larsen, and Michael Franz. Thwarting cache side-channel attacks through dynamic software diversity. In Network and Distributed System Security Sympo-sium (NDSS) , 2015. Scott A. Crosby, Dan S. Wallach, and Rudolf H. Riedi. Opportunities and limits of remote timing attacks. 
+
+ACM Transactions on Information and System Security (TISSEC) , 12(3):17:1–17:29, 2009. Aryeh Dvoretzky, Jack Kiefer, and Jacob Wolfowitz. Asymptotic minimax character of the sample distri-bution function and of the classical multinomial estimator. The Annals of Mathematical Statistics , 27(3): 642–669, 1956. Cynthia Dwork. Differential privacy. In International Colloquium on Automata, Languages, and Program-ming , pages 1–12. Springer, 2006. E. Horowitz and S. Sahni. Computing partitions with applications to the knapsack problem. Journal of the ACM , 21(2):277–292, 1974. S. Jajodia, A. K. Ghosh, V. Swarup, C. Wang, and X. S. Wang. Moving Target Defense: Creating Asymmetric Uncertainty for Cyber Threats . Springer, 2011. P. C. Kocher. Timing attacks on implementations of Diffie-Hellman, RSA, DSS, and other systems. In 
+
+Advances in Cryptology—CRYPTO ’96 , pages 104–113. Springer, 1996. Pascal Massart. The tight constant in the Dvoretzky–Kiefer–Wolfowitz inequality. The Annals of Probability ,18(3):1269–1283, 1990. J. Oh, D. Batory, M. Myers, and N. Siegmund. Finding near-optimal configurations in product lines by random sampling. In Proceedings of ESEC/FSE , pages 637–647. ACM, 2017. Hamed Okhravi, William W. Streilein, and Kevin S. Bauer. Moving target techniques: Leveraging uncertainty for cyber defense. Lincoln Laboratory Journal , 22(1):100–109, 2016. Jeff Seibert, Hamed Okhravi, and Eric Söderström. Information leaks without memory disclosures: Remote side channel attacks on diversified code. In Proceedings of the 21st ACM SIGSAC Conference on Computer and Communications Security , pages 54–65, 2014. Sailik Sengupta, Satya Gautam Vadlamudi, Subbarao Kambhampati, Adam Doupé, Ziming Zhao, Marthony Taguinod, and Gail-Joon Ahn. A game theoretic approach to strategy generation for moving target de-fense in web applications. In Proceedings of the 16th Conference on Autonomous Agents and MultiAgent Systems , pages 178–186, 2017. Sailik Sengupta, Ankur Chowdhary, Abdulhakim Sabur, Adel Alshamrani, Dijiang Huang, and Subbarao Kambhampati. A survey of moving target defenses for network security. IEEE Communications Surveys & Tutorials , 22(3):1909–1941, 2020. Latanya Sweeney. k-anonymity: A model for protecting privacy. International Journal of Uncertainty, Fuzziness and Knowledge-Based Systems , 10(5):557–570, 2002. 13 ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+## A Proofs 
+
+A.1 Proof of Proposition 1 (Pairwise to Range Reduction) 
+
+Proof. (⇒) Suppose |U (c1) − U (c2)| ≤ ε for all c1, c 2 ∈ C. In particular, this holds for the pair achieving the maximum and minimum utilities in C, so 
+
+max  
+
+> c∈C
+
+U (c) − min  
+
+> c∈C
+
+U (c) ≤ ε. 
+
+(⇐) Suppose max c∈C U (c) − min c∈C U (c) ≤ ε. For any c1, c 2 ∈ C, we have 
+
+min  
+
+> c∈C
+
+U (c) ≤ U (c1), U (c2) ≤ max  
+
+> c∈C
+
+U (c),
+
+and therefore 
+
+|U (c1) − U (c2)| ≤ max  
+
+> c∈C
+
+U (c) − min  
+
+> c∈C
+
+U (c) ≤ ε. 
+
+A.2 Proof of Corollary 1 (Per-Axis Budget) 
+
+Proof. For a product set C = C1 × · · · × Ck, the additive form (1) lets the maximum and minimum of U
+
+over C be taken coordinate-wise: 
+
+max  
+
+> c∈C
+
+U (c) = 
+
+> k
+
+X
+
+> i=1
+
+max 
+
+> s∈Ci
+
+wi u(s), min  
+
+> c∈C
+
+U (c) = 
+
+> k
+
+X
+
+> i=1
+
+min 
+
+> s∈Ci
+
+wi u(s),
+
+since each coordinate of the maximizing (resp. minimizing) configuration can be chosen independently within its Ci. Subtracting the two identities gives 
+
+max  
+
+> c∈C
+
+U (c) − min  
+
+> c∈C
+
+U (c) = 
+
+> k
+
+X
+
+> i=1
+
+σi(Ci),
+
+and applying Proposition 1 to the left-hand side yields the claimed equivalence. 
+
+A.3 Proof of Proposition 2 (Uniform Window-Density Bound) 
+
+Proof. We draw M configurations c(1) , . . . , c (M ) independently and uniformly at random from the Cartesian product S1 × · · · × Sk. Let F be the CDF of the random variable U (c) and FM its empirical counterpart on the M samples. The Dvoretzky–Kiefer–Wolfowitz (DKW) inequality [Dvoretzky et al., 1956], with the tight constant of Massart [1990], states that 
+
+Pr 
+
+
+
+sup 
+
+> x∈R
+
+|FM (x) − F (x)| > t 
+
+
+
+≤ 2e−2M t 2
+
+.
+
+Crucially, this bound is uniform over all x ∈ R, so it applies simultaneously to every candidate window— including windows whose endpoints are chosen as a function of the samples. Setting the right-hand side to α
+
+gives t =
+
+q 12M log 2 
+
+> α
+
+, and with probability at least 1 − α,
+
+sup 
+
+> x∈R
+
+|FM (x) − F (x)| ≤ t. (2) Because U takes finitely many values, F has atoms, and the closed window [ℓ, ℓ + ε] must be written with a left limit: p(ℓ) = F (ℓ + ε) − F (ℓ−) and ˆpM (ℓ) = FM (ℓ + ε) − FM (ℓ−), where F (ℓ−) = lim y↑ℓ F (y). The uniform bound extends to left limits, since |FM (x−) − F (x−)| = lim y↑x |FM (y) − F (y)| ≤ sup y |FM (y) −
+
+F (y)|. By the triangle inequality, for any window [ℓ, ℓ + ε],
+
+|ˆpM (ℓ) − p(ℓ)| ≤ | FM (ℓ + ε) − F (ℓ + ε)| + |FM (ℓ−) − F (ℓ−)| ≤ 2 sup 
+
+> x
+
+|FM (x) − F (x)| ≤ 2t. 
+
+Taking the supremum over ℓ on the left-hand side preserves the bound (the right-hand side does not depend on ℓ), giving the proposition: 
+
+sup 
+
+> ℓ∈R
+
+|ˆpM (ℓ) − p(ℓ)| ≤ 2t with probability ≥ 1 − α. 
+
+Solving 2t ≤ εstat for M yields M ≥ 2
+
+> ε2
+> stat
+
+log(2 /α ) = O(ε−2 
+
+> stat
+
+log(1 /α )) .14 ε-Indistinguishability in Moving Target Defense A P REPRINT 10 3 10 4 10 5                    
+
+> samples M
+> 10 6
+> 10 5
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> gap =  p * p( )
+> Linear / Uniform
+> empirical mean gap
+> empirical 95th percentile
+> DKW (1 = 0.95) envelope
+> 10 310 410 5
+> samples M
+> 10 6
+> 10 5
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> gap =  p * p( )
+> Quadratic / Exp decay
+> empirical mean gap
+> empirical 95th percentile
+> DKW (1 = 0.95) envelope
+> Selection bias: true density of the empirically-selected window vs p*
+
+Figure 6: Empirical selection-bias gap p∗ −p(ˆℓ) as a function of sample count M on M EDIUM (200 replicates per M ). Dots: individual replicates (jittered). Solid line: empirical mean. Dashed line: empirical 95 th percentile. Dot-dashed: the DKW envelope from Corollary 2 at α=0 .05 . The empirical gaps shrink at the predicted M −1/2 rate; no replicate violates the envelope, which is conservative by 1–2 orders of magnitude. 
+
+A.4 Proof of Corollary 2 (Selection-Bias-Aware Near-Optimality) 
+
+Proof. Both argmaxes are attained: since U takes finitely many values, the window contents—and hence 
+
+ˆpM (ℓ) and p(ℓ)—take only finitely many values as ℓ ranges over R. The sliding-window pass returns such an argmax: shifting any window right until its left endpoint meets its smallest contained sample loses no samples, so some sample-anchored window—exactly the candidates the two-pointer pass enumerates—achieves the global maximum of ˆpM . Condition on the event in (2), which holds with probability ≥ 1 − α, so that 
+
+|ˆpM (ℓ) − p(ℓ)| ≤ 2t for every ℓ ∈ R simultaneously. By the definition of ˆℓ as the empirical argmax, 
+
+ˆpM (ˆℓ) ≥ ˆpM (ℓ∗). (3) Apply uniform convergence at ℓ∗ and at ˆℓ:
+
+ˆpM (ℓ∗) ≥ p(ℓ∗) − 2t = p∗ − 2t, p(ˆℓ) ≥ ˆpM (ˆℓ) − 2t. 
+
+Chaining these with (3) gives 
+
+p(ˆℓ) ≥ ˆpM (ˆℓ) − 2t ≥ ˆpM (ℓ∗) − 2t ≥ p∗ − 4t, 
+
+i.e., p∗ − p(ˆℓ) ≤ 4t. Substituting t =
+
+q 12M log 2 
+
+> α
+
+yields the stated bound. The selection bias is absorbed entirely by the supremum in (2): because the DKW bound is uniform, it covers any window the algorithm might choose from the samples, including the empirical argmax. 
+
+## B Empirical validation of the selection-bias bound 
+
+Corollary 2 guarantees that, despite reusing samples to both select the densest window and estimate its den-sity, the true density of the empirically-selected window is within 4t = 4 
+
+q 12M log 2 
+
+> α
+
+of the optimum with probability ≥ 1 − α. We verify this empirically on M EDIUM (where p∗ is computable exactly). For each 
+
+M ∈ { 10 3, 3·10 3, 10 4, 3·10 4, 10 5, 3·10 5} we run R=200 replicates of the sampling algorithm and, for each replicate, compute the gap p∗ − p(ˆℓ), where p(ˆℓ) is the true count of configurations falling in the empirically-selected window divided by N .Figure 6 supports three conclusions. First, the DKW envelope is never violated by any of the 200 replicates at any M , so the worst-case bound holds in practice. Second, the empirical mean and 95th-percentile gaps both decay at approximately M −1/2 (slope −0.5 on log–log axes), matching the theoretical scaling. Third, the constant in the DKW bound is conservative by roughly one to two orders of magnitude: at M =10 5 the empirical 95th percentile is ∼ 4 × 10 −4 versus a DKW envelope of ∼ 1.7 × 10 −2, so practitioners running with even modest M obtain near-optimal pool sizes far more reliably than the worst-case bound implies. 15 ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+## C Algorithm details 
+
+This appendix expands each algorithm summarized in Table 1 with pseudocode, complexity derivation, and— where relevant—error analysis. All four algorithms share the same final step: a two-pointer sliding window over a sorted array of utility values to find the densest ε-width interval. 
+
+C.1 Full enumeration with iterative outer sums 
+
+Materializing all N = Q 
+
+> i
+
+ni configuration tuples costs O(kN ) space and O(kN ) evaluation time, a factor-k
+
+overhead over handling the utility values alone. We instead keep only the running sumset of utilities. Starting from V1 = {w1 · u(s) : s ∈ S1}, we form 
+
+V1: i+1 = {a + b : a ∈ V1: i, b ∈ Vi+1 } for i = 1 , . . . , k − 1,
+
+so after k − 1 iterations V1: k is the full multiset {U (c) : c ∈ S1 × · · · × Sk}. No configuration tuple is materialized, and storage never exceeds O(N ) scalars. Sorting V1: k and applying a two-pointer sliding window of width ε finds the densest interval in a single linear pass, so sorting dominates: O(N log N ) time, 
+
+O(N ) space. 
+
+Algorithm 1: Full Enumeration + Sliding Window  
+
+> 1
+
+Input : Sets S1 , ... , Sk ; weights w1 , ... , wk ; 
+
+> 2
+
+tolerance ε 
+
+> 3
+
+Output : Size |C| and interval bounds [l, l + ε] 
+
+> 45
+
+// Step 1: Compute per - set weighted utilities  
+
+> 6
+
+for i = 1 to k: 
+
+> 7
+
+Vi <- {wi · u(s) : s ∈ Si } 
+
+> 89
+
+// Step 2: Initialize accumulator  
+
+> 10
+
+A <- V1 
+
+> 11 12
+
+// Step 3: Iteratively compute outer sums  
+
+> 13
+
+for i = 2 to k: 
+
+> 14
+
+A <- {a + b : a ∈ A, b ∈ Vi } 
+
+> 15 16
+
+// Step 4: Sort by utility value  
+
+> 17
+
+Sort A in non - decreasing order  
+
+> 18 19
+
+// Step 5: Apply sliding window  
+
+> 20
+
+Apply two - pointer window to find densest  
+
+> 21
+
+ε- width interval  
+
+> 22 23
+
+// Step 6: Return result  
+
+> 24
+
+Return size |C| and bounds [l, l + ε]
+
+C.2 Meet-in-the-middle 
+
+When N exceeds direct enumeration, we partition the k sets into two halves Asets = ( S1, . . . , S ⌊k/ 2⌋) and 
+
+Bsets = ( S⌊k/ 2⌋+1 , . . . , S k). Enumeration proceeds independently on each half using the outer-sum trick of §C.1, producing sumsets VA and VB of sizes |VA|, |VB | ≈ √N when the components are balanced. The full utility multiset {U (c) : c ∈ S1 × · · · × Sk} equals the pairwise sum {a + b : a ∈ VA, b ∈ VB }:each configuration c maps to a unique (a, b ) pair with U (c) = a + b, and each pair contributes exactly one configuration. Forming these sums, sorting the result, and applying the sliding window returns the exact optimum. The memory advantage is that neither half’s enumeration ever exceeds O(√N ); the final O(N )
+
+arises only in the merge. If even the merge does not fit in memory, the pairwise sums can be generated in sorted order from the two sorted halves with a heap of size O(√N ), so the sliding window can be streamed while holding only the values inside the current ε-width window. This is the classical technique of Horowitz and Sahni [1974], which halves the exponent of the enumeration cost, adapted here to the range-density query. 16 ε-Indistinguishability in Moving Target Defense A P REPRINT 
+
+Algorithm 2: Meet in the Middle  
+
+> 1
+
+Input : Sets S1 , ... , Sk ; weights w1 , ... , wk ; 
+
+> 2
+
+tolerance ε 
+
+> 3
+
+Output : Size |C| and interval bounds [l, l + ε] 
+
+> 45
+
+// Step 1: Partition into two halves  
+
+> 6
+
+m <- ⌊k/ 2⌋ 
+
+> 78
+
+// Step 2: Enumerate each half via outer sums  
+
+> 9
+
+VA <- outer - sum enumeration over (S1, ..., S m) 
+
+> 10
+
+VB <- outer - sum enumeration over (Sm+1 , ..., S k ) 
+
+> 11 12
+
+// Step 3: Merge halves via pairwise sums  
+
+> 13
+
+A <- {a + b : a ∈ VA , b ∈ VB } 
+
+> 14 15
+
+// Step 4: Sort merged multiset  
+
+> 16
+
+Sort A in non - decreasing order  
+
+> 17 18
+
+// Step 5: Apply sliding window of width ε 
+
+> 19
+
+Find densest ε- interval [l, l + ε] 
+
+> 20 21
+
+// Step 6: Return result  
+
+> 22
+
+Return size |C| and bounds [l, l + ε]
+
+C.3 FFT convolution: correspondence and discretization Convolution correspondence. Discretize per-component utilities into R bins of width δ. Let hi(v) = 
+
+|{ s ∈ Si : bin (wi · u(s)) = v}| be the histogram of set Si after discretization. The number of configurations whose discretized total utility falls in bin z is 
+
+#{c : bin (U (c)) = z} = X 
+
+> v1+··· +vk=zk
+
+Y
+
+> i=1
+
+hi(vi) = ( h1 ∗ h2 ∗ · · · ∗ hk)( z),
+
+where ∗ denotes discrete convolution. The product form arises because each set contributes independently: fixing the per-component bins (v1, . . . , v k) leaves Q 
+
+> i
+
+hi(vi) independent configuration choices [Cormen et al., 2009]. Computing k − 1 pairwise convolutions via FFT costs O(kR log R) [Cooley and Tukey, 1965]. A prefix-sum sliding window over the resulting histogram then identifies the densest ε-interval in O(R)
+
+additional work. 
+
+Discretization error. Rounding each per-component contribution to the nearest bin displaces it by at most 
+
+δ/ 2, so the total utility of any configuration is shifted by at most kδ/ 2. This shift can move a configuration across the boundary of the optimal ε-window only if its true utility lies within kδ/ 2 of the boundary, and the mass within kδ/ 2 of the two boundaries is an O(kδ/ε ) fraction of the window’s own mass whenever the utility distribution has bounded density near the boundaries. Choosing δ = O(ε/k ) therefore guarantees a fixed relative accuracy at the cost of R = O(( umax − umin ) · k/ε ) bins. In practice δ = 0 .05 keeps relative count error under 5% for all datasets in Table 2. 
+
+Algorithm 3: FFT Convolution + Window Search  
+
+> 1
+
+Input : Sets S1 , ... , Sk ; weights w1 , ... , wk ; 
+
+> 2
+
+tolerance ε; resolution δ 
+
+> 3
+
+Output : Count estimate and interval bounds [l, l + ε] 
+
+> 45
+
+// Step 1: Per - set utilities , range , and bin count  
+
+> 6
+
+for i = 1 to k: 
+
+> 7
+
+Vi <- {wi · u(s) : s ∈ Si } 
+
+> 8
+
+umin <- P 
+
+> i
+
+min Vi ; umax <- P 
+
+> i
+
+max Vi 
+
+> 9
+
+R <- ceil (( umax − umin )/δ ) + 1 
+
+> 10 11
+
+// Step 2: Build per - set utility histograms  
+
+> 12
+
+for i = 1 to k: 
+
+> 13
+
+hi <- histogram of Vi on R bins 
+
+17 ε-Indistinguishability in Moving Target Defense A P REPRINT  
+
+> 14 15
+
+// Step 3: Initialize convolution  
+
+> 16
+
+H <- h1 
+
+> 17 18
+
+// Step 4: Iteratively convolve histograms  
+
+> 19
+
+for i = 2 to k: 
+
+> 20
+
+H <- FFTConvolve ( H , hi ) // zero - padded FFT  
+
+> 21 22
+
+// Step 5: Apply sliding window to result  
+
+> 23
+
+Compute prefix sums of H 
+
+> 24
+
+Sweep window of width ceil (ε/δ ) 
+
+> 25 26
+
+// Step 6: Return estimate  
+
+> 27
+
+Return count estimate and bounds [l, l + ε]
+
+C.4 Monte Carlo sampling procedure 
+
+When R is prohibitively large (e.g., k ≥ 15 with wide per-component ranges), even the FFT becomes im-practical. The procedure is: draw M configurations i.i.d. uniformly from S1 × · · · × Sk (equivalently, sample one si from each Si independently), compute U (c) for each sample, sort the utilities, and apply the sliding window to identify the empirically densest interval [ˆℓ, ˆℓ + ε]. Scaling the sample count in [ˆℓ, ˆℓ + ε] by N/M 
+
+estimates the true count. Random configuration sampling in additive-utility spaces has precedent in software product lines [Oh et al., 2017]. Because U is a sum of k independent per-component contributions, its standard deviation grows as √k while its range grows linearly in k, so the distribution concentrates around its mean as k grows and samples land densely in the modal region where the densest window typically lies. The uniform-density and selection-bias guarantees for this algorithm are Prop. 2 and Cor. 2 in §2; proofs are in §A. 
+
+Algorithm 4: Monte Carlo Sampling  
+
+> 1
+
+Input : Sets S1 , ... , Sk ; weights w1 , ... , wk ; 
+
+> 2
+
+tolerance ε; sample count M 
+
+> 3
+
+Output : Estimated count and interval bounds [l, l + ε] 
+
+> 45
+
+// Step 1: Draw M i . i . d . uniform samples  
+
+> 6
+
+for j = 1 to M : 
+
+> 7
+
+for i = 1 to k: 
+
+> 8
+
+sample si ~ Uniform ( Si ) 
+
+> 9
+
+u(j) <- Pki=1 wi · u(si) 
+
+> 10 11
+
+// Step 2: Sort sample utilities  
+
+> 12
+
+Sort (u(1) , ..., u (M )) non - decreasing  
+
+> 13 14
+
+// Step 3: Sliding window over sorted samples  
+
+> 15
+
+Find ˆl maximizing sample count  
+
+> 16
+
+in [ˆl, ˆl + ε] 
+
+> 17 18
+
+// Step 4: Scale to estimate true count  
+
+> 19
+
+ˆ|C| <- ( count in window ) × N/M  
+
+> 20 21
+
+// Step 5: Return estimate  
+
+> 22
+
+Return ˆ|C| and bounds [ˆl, ˆl + ε]
+
+18

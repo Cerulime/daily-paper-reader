@@ -1,0 +1,1508 @@
+Title: Mechanised operational semantics of Rowhammer
+
+URL Source: https://arxiv.org/pdf/2607.10314v1
+
+Published Time: Tue, 14 Jul 2026 00:46:44 GMT
+
+Number of Pages: 35
+
+Markdown Content:
+# Mechanised operational semantics of Rowhammer 
+
+MARTIN BERGER, University of Sussex, UK and Montanarius Ltd, UK 
+
+AMIR NASEREDINI, Huawei R&D UK Ltd, UK Rowhammer is a hardware vulnerability in dynamic random-access memory (DRAM) in which repeated accesses to one or more aggressor rows can induce bit-flips in nearby victim rows. This phenomenon violates a core assumption of conventional programming language semantics: that reading from or writing to one memory location does not modify others. Despite the security importance of this phenomenon, there is no widely established formal framework connecting Rowhammer faults with program behaviour. This makes it difficult to reason rigorously about the efficacy of proposed Rowhammer defences and the program-level guarantees they provide. To address this gap, we present a probabilistic small-step operational semantics for an idealised imperative language subject to Rowhammer-style faults. The semantics is high-level in that it abstracts from DRAM internals and semiconductor physics. A general probabilistic fault model parameterises the semantics, representing Rowhammer-style faults by assigning probabilities to bit-flips during read or write operations within a specified victim region. The resulting distributions are propagated through programs using the standard monadic structure of probabilistic computation. As a case study, we formalise physical separation, a well-known defence that places program variables sufficiently far apart in physical memory that an access to one variable cannot disturb another. We prove a distribution-independent semantic collapse theorem: for every finite execution, including prefixes of terminating and non-terminating executions, the protected projection of the probabilistic Rowhammer semantics is the Dirac distribution of the corresponding Rowhammer-free execution. Furthermore, we develop an observation-parametric account of secure information flow. Non-interference is expressed as a hyperproperty comparing the distributions of low observations from low-equivalent initial memories. Under physical separation, ordinary non-interference and probability-sensitive Rowhammer non-interference coincide for every observer of protected behaviour. Consequently, physical separation preserves non-interference for every admissible fault model, while every Rowhammer non-interference violation reflects a violation already present in the Rowhammer-free semantics. The development is fully mechanised in Lean using mathlib, relying on no unfinished proofs or problem-specific axioms. CCS Concepts: • Theory of computation → Program semantics ; • Software and its engineering 
+
+→ Formal methods ; • Security and privacy → Information flow control ; Systems security ; Logic and verification .Additional Key Words and Phrases: Probability theory, Probabilistic fault models, Rowhammer, Program-ming language semantics, Operational semantics, Relational safety, Mechanised verification, Lean 4, Secure information flow, Non-interference. 
+
+1 Introduction 
+
+Most reasoning about software relies on a locality assumption about memory access effects: 
+
+Reading or writing one memory location does not modify other locations. 
+
+Rowhammer violates this assumption. Repeated activation of one or more aggressor rows in dynamic random-access memory (DRAM) can induce bit-flips in physically nearby victim rows [ 16 , 35 ]. The resulting mismatch between the memory model assumed by software semantics and the behaviour of its semiconductor implementation creates a semantic gap: hardware research describes disturbance mechanisms, address mappings, and mitigations, whereas software verification reasons about commands, stores, traces, observations, and security properties. This gap is particularly important for security. Rowhammer is usually presented as an integrity failure, but corruption of a high-security value can alter control flow or a later low-security output, while corruption of a low-security location can directly change an attacker-visible result. Existing theories of secure  
+
+> Authors’ Contact Information: Martin Berger, contact@martinfriedrichberger.net, University of Sussex, Brighton, UK and Montanarius Ltd, London, UK; Amir Naseredini, sahnaseredini@gmail.com, Huawei R&D UK Ltd, Cambridge, UK. arXiv:2607.10314v1 [cs.PL] 11 Jul 2026 2A. Naseredini & M. Berger
+
+information flow and non-interference [ 10 , 34 ] therefore cannot simply be applied unchanged: they require a semantics that makes the probabilistic, non-local effect of memory accesses explicit. This paper asks closely connected research questions. 
+
+• RQ1. Can Rowhammer be modelled compositionally in the familiar language of operational semantics, without modelling device physics? 
+
+• RQ2. Can the Rowhammer fault mechanism be captured by a small, conceptually non-intrusive semantic interface? 
+
+• RQ3. Can such an interface be made substantially independent of the target programming language? 
+
+• RQ4. Can such a model express and justify a concrete Rowhammer defence? 
+
+• RQ5. Can the abstraction make Rowhammer amenable to existing semantic security frame-works, such as information flow and non-interference reasoning? We answer all questions affirmatively. 
+
+1.1 The semantic view: abstracting memory access 
+
+A standard way to give semantics to an imperative language is to treat programs as state trans-formers. In its most concrete form, assignment and variable lookup are explained by clauses such as 
+
+[[ 𝑥 := 𝑒 ]] ( 𝑚 ) = 𝑚 [𝑥 ↦ → 𝑣 ] where [[ 𝑒 ]] ( 𝑚 ) = 𝑣, 
+
+and 
+
+[[ 𝑥 ]] ( 𝑚 ) = 𝑚 (𝑥 ).
+
+where 𝑚 ranges over memories and 𝑒 over expressions. These equations present memory as a concrete map and use two primitive operations on that map: read the value stored at a location, and update the value stored at a location. A recurring lesson of programming language semantics is that these two operations should be made explicit. Once lookup and update are abstracted from the concrete function space Memory = Loc → Val , where Loc are locations in memory, and Val the values being stored, the syntax of the language no longer has to know how memory is represented. The same assignment rule can then be interpreted over different models of store, aliasing, heaps, concurrency, failure, or other effects. This idea has appeared repeatedly, under different names. McCarthy’s select/store axioms for ar-rays isolate reading and updating as primitive operations on memories [ 23 ]. Monadic and algebraic-effect semantics make the separation systematic: computations with state are interpreted as effectful maps, and state itself may be presented by operations such as lookup and update together with their laws [ 24 , 32 ]. Modular operational semantics pursues a related goal from the small-step side, factoring stores and other auxiliary components out of individual transition rules so that language constructs can be specified more independently [ 25 ]. The common pattern is that memory access becomes an interface rather than an implementation detail. Our Rowhammer semantics uses this idea. Ordinary memory operations are deterministic: 
+
+read : (Loc × Memory ) → Val write : (Loc × Val × Memory ) → Memory 
+
+Rowhammer-affected read and write are instead probabilistic operations 1:
+
+read : (Loc × Memory ) → Dist (Val × Memory ) write : (Loc × Val × Memory ) → Dist (Memory )
+
+The operations still have the shape of a local memory access, but their results are distributions that include the post-access memory. The distributions model Rowhammer faults.           
+
+> 1We discuss in Section 5 why the codomain of read needs to be Dist (Val ×Memory )and not Val ×Dist (Memory ).Mechanised operational semantics of Rowhammer 3
+
+The rest of the semantics is then obtained monadically: deterministic steps are embedded as Dirac distributions, and compound computations are sequenced by monadic bind for the proba-bility monad. Thus the Rowhammer model is not a separate hardware semantics bolted onto the language. It is a small probabilistic reinterpretation of the read/write interface already present in ordinary state-transformer semantics. This is the key abstraction boundary used throughout the paper: Rowhammer enters only at memory accesses, the surrounding operational semantics lifts compositionally around that local probabilistic effect. This move from deterministic to probabilistic state transformers is not unique to Rowhammer: deterministic Turing machines and programming languages naturally become probabilistic by allowing programs to branch according to a probability distribution. In those settings, probabilistic choice is an intentional feature of the syntax or model. Rowhammer is different. Its probabilistic behaviour is an unwanted, observable consequence of the physical substrate, making it conceptually closer to Shannon’s noisy-channel model from information theory: an intended memory operation is transmitted through an unreliable medium and may be received as corrupted state. In contrast, this noise is not merely ambient: it is actively shaped by an attacker’s chosen access patterns and strictly constrained by physical locality in DRAM. Our semantic task is therefore to expose this hardware-level unreliability without modifying the language syntax, placing a probabilistic fault model directly behind the ordinary read/write interface. Ultimately, the novelty lies not in using probabilistic state transformers per se, but in the observation that Rowhammer can be elegantly isolated as a probabilistic reinterpretation of memory access. 
+
+1.2 Contributions 
+
+To address the research questions, we make the following contributions: 
+
+• A fine-grained labelled operational semantics in which Rowhammer has a small, explicit interface at reads and writes. 
+
+• A general probabilistic fault model separating spatial confinement from numerical assump-tions about bit-flips. 
+
+• A distribution-independent soundness theorem for physical separation, a well-known Rowhammer defence, covering terminating and non-terminating executions. 
+
+• An observation-parametric theorem that physical separation preserves and reflects probability-sensitive non-interference. The complete development is mechanised in Lean [ 6 ] using mathlib [ 37 ]. The development con-tains no unfinished proofs or problem-specific axioms. An axiom audit ( scripts/axiomAudit.sh 
+
+in the repo) confirms that all results rest only on Lean’s three foundational axioms ( propext ,
+
+Classical.choice , Quot.sound ): no probability axioms are added. The Lean excerpts shown are automatically extracted verbatim from the sources so they cannot drift from the development. All Lean code is open-sourced and anonymised at [ 1 ]. Full operational rules, auxiliary metatheory, and extended mechanisation details are provided in the supplementary material. The appendices cited in the text are provided as anonymised supplementary material. 
+
+2 Introduction to Rowhammer 
+
+To appreciate what the present work does and does not promise, it helps to understand the physical mechanism it abstracts. The rest of the paper relies on only a few concepts from DRAM architecture, rows, activation, refresh, and the locality of disturbance, and we introduce them here from first principles. Readers already familiar with Rowhammer may skip to the examples at the end of this section. For the underlying semiconductor physics we refer to [ 39 ]. For a broad survey of the attack landscape see [26]. 4 A. Naseredini & M. Berger 
+
+> registers
+> caches (L1–L3)
+> DRAM main memory
+> persistent storage (SSD, disk)
+> faster, costlier per bit
+> larger, cheaper per bit
+> Fig. 1. The memory hierarchy. Each level trades speed for capacity. DRAM (highlighted) wins its place through cell minimalism, one transistor and one capacitor per bit, and the resulting drive towards ever-denser packing is the root cause of the disturbance effects this paper models.
+
+The memory hierarchy. DRAM occupies an important point in a trade-off (Figure 1). Above it sit registers and caches: fast, but expensive. Below sits persistent storage: vast, but orders of magnitude slower. DRAM’s role is to be as large and as cheap as possible while remaining just fast enough. It achieves this with only one transistor and one capacitor per bit, against the six transistors of a cache cell. This economic pressure towards density is Rowhammer’s root cause. The more tightly cells are packed, the stronger the electrical coupling between them, which is why the problem has worsened with every DRAM generation [16]. 
+
+How DRAM stores data. At the hardware level, each DRAM bit is stored as electrical charge in a capacitor, guarded by an access transistor. Cells are organised into large two-dimensional grids called banks , which operate independently of one another. Within a bank, a horizontal line of cells, a row , typically a few kilobytes wide, shares a common control wire known as the wordline , while cells in the same column share a bitline . Individual cells cannot be addressed directly. To access any cell, the memory controller must activate the row containing it: raising the row’s wordline voltage connects every cell of the row to its bitline and copies the row’s contents into the bank’s row buffer ,where reads and writes then take place. Accessing a different row of the same bank requires closing the currently open row, meaning lowering its wordline voltage before activating the new one. Capacitors leak charge. Left alone, a DRAM cell loses its stored charge within a fraction of a second, so the memory controller periodically rewrites every row—a refresh . In commodity DRAM, every row is typically guaranteed a refresh once every 64 ms [ 16 ]. The reliability of DRAM therefore rests on a quantitative margin: between two refreshes, a cell’s charge must stay on the correct side of a threshold, despite whatever electrical disturbance its neighbourhood produces. 
+
+The Rowhammer effect. Kim et al. [ 16 ] showed in 2014 that this margin can be exhausted de-liberately . Every activation of a row causes slight voltage fluctuations on its wordline, and these fluctuations accelerate charge leakage in the cells of physically adjacent rows, an electromagnetic coupling effect that grows stronger as cells are packed more densely. A single activation is harmless. But a program that activates the same row hundreds of thousands of times within one refresh interval, hammering it, can drain a neighbouring cell past its threshold before the next refresh arrives. The value read thereafter is not the value last written: a bit has flipped in a row that was never written to, or even addressed, by the program. The repeatedly activated rows are called 
+
+aggressor rows and the corrupted ones victim rows (Figure 2). The minimum number of activations needed is called the Rowhammer threshold : it has dropped sharply as DRAM density has increased, from over a hundred thousand activations on DDR3 to tens of thousands on modern chips [ 7, 16 ], which is why the problem is getting worse, not better, with each DRAM generation. Rowhammer is not an exotic laboratory effect. It is exploitable from ordinary unprivileged code, including JavaScript in a web browser [ 11 ], and flipping a single page-table or capability bit can Mechanised operational semantics of Rowhammer 5                 
+
+> · · ·
+> row 𝑟 −2
+> row 𝑟 −1
+> row 𝑟
+> row 𝑟 +1
+> row 𝑟 +2
+> · · ·
+> aggressor row (hammered)
+> victim rows: highest flip probability
+> victim rows: highest flip probability
+> weaker disturbance
+> weaker disturbance
+> blast radius ( 𝑏𝑟  = 3)
+> Fig. 2. Disturbance is local. Repeatedly activating ( hammering ) row 𝑟 accelerates charge leakage in nearby rows. The flip probability is highest for the immediate neighbours 𝑟 ±1and decays with distance. Beyond the blast radius 𝑏𝑟 the effect is negligible. The victim rows are corrupted although the program never writes to or even addresses them.
+
+escalate one hardware fault into arbitrary memory access [ 35 ]. The effect has also grown richer since its discovery. Half-Double [ 17 ] induces flips beyond immediate neighbours by combining accesses at different distances, TRRespass [ 7 ] and Blacksmith [ 15 ] bypass in-DRAM mitigations with many-sided and non-uniform hammering patterns, and RAMBleed [ 20 ] turns the data-dependence of flip probabilities into a read primitive, making Rowhammer a confidentiality problem as well as an integrity problem. 
+
+Locality and the blast radius. The one saving grace of DRAM physics is its strong spatial locality: the disturbance an activation causes decays rapidly with physical distance, and beyond a few rows it is negligible. In the rest of the text we call the maximum distance at which an access can disturb a cell the blast radius , abbreviated 𝑏𝑟 . The blast radius of a given DRAM device can be approximated empirically, and it is the key intuition behind an entire class of defences: if everything worth protecting is kept at least 𝑏𝑟 rows away from everything an attacker can hammer, the disturbance never reaches it. 
+
+Physical separation defences. Defences based on placement exploit exactly this locality. CATT [ 2] partitions kernel from user memory with unused guard rows , so that user-space hammering cannot reach kernel rows. ZebRAM [ 18 ] interleaves guard rows between all data rows (Figure 3). The correctness claim of such defences is physical: every row an attacker can reach is separated from every row worth protecting by more than the disturbance radius. In this paper the discipline is captured by a predicate safe (𝑏𝑟, 𝑙𝑜𝑐𝑠 ): the victim region generated by an access to any protected location is disjoint from the protected set 𝑙𝑜𝑐𝑠 . In the distance-based instance this means that distinct protected rows lie at least 𝑏𝑟 apart. But separation is required within the protected set too, because the program’s own accesses hammer their own neighbourhoods. The guard-row layouts above are the same discipline applied to the whole address space, with the attacker-reachable region kept at distance 𝑏𝑟 from everything protected. 
+
+The semantic gap. Program verification speaks a different language: commands, stores, traces, observables. A proof about a program is a proof about its semantics, and standard semantics assume that memory changes only when written. Rowhammer breaks exactly that assumption, and placement defences restore it, but no theorem connects the two levels. What is missing is a semantics in which the physical claim (“flips are confined to a blast radius”) and the placement claim (“protected rows are outside every blast radius”) can both be stated, and a theorem that together they restore the ordinary meaning of programs. This paper supplies both. The examples below, 6 A. Naseredini & M. Berger             
+
+> attacker-reachable
+> attacker-reachable
+> guard row
+> guard row
+> protected ( 𝑥 )
+> guard row
+> guard row
+> protected ( 𝑦 )
+> ≥𝑏𝑟
+> ≥𝑏𝑟
+> hammering here . . .
+> . . . cannot reach here
+> Fig. 3. Physical separation with a blast radius of 𝑏𝑟 =3. Guard rows keep every protected row at least 𝑏𝑟
+> rows away from every row the program (or an attacker) accesses, including the other protected rows, since accesses to 𝑥 hammer 𝑥 ’s own neighbourhood. This is the layout discipline that the predicate safe (𝑏𝑟, 𝑙𝑜𝑐𝑠 )
+> of Section 5.1 abstracts.
+
+adapted from [27], illustrate what goes wrong without separation, and, read against Theorem 6.1, identify exactly which hypothesis each failure violates. 
+
+Example 2.1 (Corruption without a write). Let 𝑥 and 𝑦 occupy adjacent rows, and let the program hammer 𝑦 while never assigning to 𝑥 :
+
+𝑥 := 1; while (0 = 0) do 𝑦 := 𝑦 + 1.
+
+Every access to 𝑦 disturbs the blast radius of 𝑦 ’s row, which contains 𝑥 . In every ordinary semantics 
+
+𝑥 holds 1 forever. Under Rowhammer, the probability that 𝑥 still holds 1 decays with every iteration. No analysis that equates “unwritten” with “unchanged” can see this. 
+
+Example 2.2 (A dead branch awakens). Corruption is not limited to data, it can also redirect control. Let 𝑥 and 𝑦 be adjacent and consider 
+
+𝑥 := 𝑦 ; 𝑥 := 𝑥 ; if 𝑥 = 𝑦 then skip else 𝑃 . 
+
+Ordinarily the guard is always true and 𝑃 is dead code. But the reads and writes of 𝑥 hammer 
+
+𝑥 ’s neighbourhood, which contains 𝑦 : a flip in 𝑦 between the first assignment and the guard makes the guard false, and the machine executes 𝑃 . Which code runs is now probabilistic. This is why the protected view of Section 6.1 tracks the residual program and the access trace , not just memory: a defence that preserved memory but not control flow would not restore the meaning of programs. Note also that both 𝑥 and 𝑦 here are the program’s own variables: if the protected set 𝑙𝑜𝑐𝑠 = {𝑥, 𝑦 } places them in adjacent rows, safe (𝑏𝑟, 𝑙𝑜𝑐𝑠 ) fails, and the theorem correctly does not apply: separation is required within the protected set, not only between the program and the outside world. 
+
+Example 2.3 (An unowned access). Separation of the program’s own rows is not enough either. Suppose 𝑙𝑜𝑐𝑠 = {𝑥 } is safely laid out, but the program also touches a row 𝑧 ∉ 𝑙𝑜𝑐𝑠 that happens to be adjacent to 𝑥 :
+
+𝑧 := 𝑧 + 1; if 𝑥 = 0 then skip else 𝑃 . 
+
+The access to 𝑧 triggers a fault in 𝑧 ’s blast radius, about which safe (𝑏𝑟, 𝑙𝑜𝑐𝑠 ) says nothing, and that radius contains 𝑥 . This is what the well-formedness hypothesis wf 𝑙𝑜𝑐𝑠 (𝑃 ) of Theorem 6.1 rules out: every location the program touches must be part of the protected layout, so that every fault the program can trigger is one the separation condition constrains. Mechanised operational semantics of Rowhammer 7
+
+These examples give us the shape of the theorem we need: quantified over fault behaviour (flip probabilities are the attacker’s, not ours), conclusion covering memory, control, and accesses alike, and hypotheses (frame-locality, separation, well-formedness) each of which is violated by some concrete program above when dropped. 
+
+3 Mathematical preliminaries 
+
+We write P ( 𝑆 ) for the powerset of a set 𝑆 and Pfin (𝑆 ) for the set of all finite subsets of 𝑆 . The Rowhammer semantics assigns to each transition a distribution over successor configurations. This section fixes the small amount of probability theory involved. Readers familiar with the probability monad (also known as Giry monad) [ 8 , 21 ] or with monadic treatments of probabilistic programs [5 , 19 , 33 ] can skim it for notation. All probability spaces in this paper will be discrete, i.e. , finite or countably infinite, so all occurring measure spaces are trivial and we shall not mention them. For a type 𝛼 , we write Dist (𝛼 ) for the type of discrete probability distributions on 𝛼 , i.e. , functions 
+
+𝜇 : 𝛼 → [ 0, 1] with Í𝑥 𝜇 (𝑥 ) = 1. The support of 𝜇 , written supp (𝜇 ), is the set of 𝑥 with 𝜇 (𝑥 ) > 0.The Dirac distribution , also called point mass , at 𝑥 ∈ 𝛼 is the distribution 𝛿 𝑥 ∈ Dist (𝛼 ) given by 
+
+𝛿 𝑥 (𝑦 ) = 1 if 𝑦 = 𝑥 , and 𝛿 𝑥 (𝑦 ) = 0 otherwise, for all 𝑦 ∈ 𝛼 . A probability kernel from 𝛼 to 𝛽 is an input-indexed family of distributions, i.e. , a function 𝜅 : 𝛼 → Dist (𝛽 ). For each input 𝑎 ∈ 𝛼 , the value 𝜅 (𝑎 ) is therefore a distribution on 𝛽 . Any distribution 𝜇 ∈ Dist (𝛽 ) determines the constant kernel 𝑎 ↦ → 𝜇 . Likewise, a deterministic function 𝑓 : 𝛼 → 𝛽 embeds into the probabilistic setting as the Dirac kernel 𝑎 ↦ → 𝛿 (𝑓 (𝑎 )) . In this paper, “kernel” always means a discrete probability kernel of the form 𝛼 → Dist (𝛽 ). In the Lean development this is represented as a function returning a PMF (probability mass function), rather than by mathlib’s more general measure-theoretic type ProbabilityTheory.Kernel . Sequential composition of probabilistic computations is monadic. For our purposes, a monad consists of a type constructor 𝑀 together with operations 
+
+unit return 𝛼 : 𝛼 → 𝑀 (𝛼 ) and bind ≫= : 𝑀 (𝛼 ) →  𝛼 → 𝑀 (𝛽 ) → 𝑀 (𝛽 ), satisfying the left-identity, right-identity, and associativity laws [ 22 , 24 ]. Intuitively, 𝑀 (𝛼 ) is a type of computations producing values of type 𝛼 , return embeds a pure value, and bind sequences. The classical probability monad 
+
+G instantiates this structure with probability measures on measurable spaces. Since all spaces in this paper are discrete, we work with its discrete analogue, spelled out next. On objects it is given by G( 𝛼 ) ≜ Dist (𝛼 ). On morphisms, G acts by pushforward of distributions: for 𝑓 : 𝛼 → 𝛽 , we have G( 𝑓 ) : Dist (𝛼 ) → Dist (𝛽 ), and for 𝜇 ∈ Dist (𝛼 ), we set G( 𝑓 )( 𝜇 )( 𝑦 ) = Í𝑥 ∈𝛼,𝑓 (𝑥 )=𝑦 𝜇 (𝑥 ). The unit return 𝛼 : 𝛼 → G( 𝛼 ) is the Dirac distribution 𝛿 𝑥 , in other words, the point mass concentrated at 𝑥 . G’s bind operation, given a distribution 𝜇 ∈ Dist (𝛼 ) and a probability kernel 𝜅 : 𝛼 → Dist (𝛽 ),
+
+is written 
+
+let 𝑥 ← 𝜇 in 𝜅 (𝑥 ),
+
+and defined pointwise by (let 𝑥 ← 𝜇 in 𝜅 (𝑥 )) ( 𝑦 ) = Í𝑥 ∈𝛼 𝜇 (𝑥 ) 𝜅 (𝑥 )( 𝑦 ). In the Lean development, G
+
+is represented by PMF . The Lean development mirrors this notation in the file DiscreteDist.lean .There, Dist is an abbreviation for mathlib’s PMF , the type of discrete probability mass functions. Thus the formalisation does not assume finite support. The file provides the small interface used in the proofs: Dirac distributions, bind, map, support lemmas, and injectivity of Dirac. 
+
+4 A deterministic small-step operational semantics for a WHILE language 
+
+The aim of this paper is to express Rowhammer in terms of programming language semantics, so as to be able to reason about program correctness and the efficacy of Rowhammer defences using the extensive tool-sets developed over the previous decades by the programming language and verifica-tion communities, but without having to go through semiconductor physics, or even knowledge of DRAM organisation. For this purpose we need a paradigmatic programming language that is simple 8 A. Naseredini & M. Berger 
+
+enough to allow us to explain the key ideas without being drowned out by language complexity, but at the same time general enough to cover interesting Rowhammer-related phenomena. We choose the well-known WHILE language [29, 38]. Its syntax is given by the following rules. 
+
+𝑒 :: = 𝑐 | 𝑥 | 𝑒 + 𝑒 𝑏 :: = true | false | ¬ 𝑏 | 𝑏 ∧ 𝑏 | 𝑒 = 𝑒 𝑃 :: = skip | 𝑥 := 𝑒 | 𝑃 ; 𝑃 | if 𝑏 then 𝑃 else 𝑃 | while 𝑏 do 𝑃 
+
+Here 𝑐 ranges over integers, and 𝑥 over memory locations, collectively denoted Loc . It is natural to assume that Loc = Z, but nothing in our development depends on that. Since the language lacks higher-order functions and dynamic memory allocation, we can associate with each 𝑒 , 𝑏 and 𝑃 the set of locations syntactically mentioned. This gives rise to the WellFormed predicates in our Lean formalisation: e.g., p.WellFormed locs means that the locations occurring syntactically in the program p are contained in the set locs . Clearly well-formedness is preserved by reduction. We give a conventional small-step operational semantics with two minor twists. The operational semantics is a deliberately fine-grained small-step semantics: arithmetic expressions, Boolean expressions, and programs all reduce one step at a time, so every memory read and every write is an individual transition. Transitions carry a label recording the access they perform: 
+
+ℓ :: = read (𝑥 ) | write (𝑥 ) | 𝜏 . 
+
+A read of variable 𝑥 is labelled read (𝑥 ), the write performed by an assignment to 𝑥 is labelled 
+
+write (𝑥 ), and every other transition, operator reduction, branch selection, sequencing, loop un-folding, is silent ( 𝜏 ). We write Acc for the set of all such labels. The labels play no role in the deterministic semantics itself (only assignment writes modify memory) but help injecting the Rowhammer faults (Section 5). Congruence rules propagate the label of their premise. We use three labelled judgements on configurations 
+
+⟨𝑒, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′, 𝑚 ′⟩ ⟨𝑏, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′, 𝑚 ′⟩ ⟨𝑃, 𝑚 ⟩ ℓ
+
+−→𝑝 ⟨𝑃 ′, 𝑚 ′⟩
+
+In all cases, 𝑚 ranges over memories, i.e. , functions of type Loc → Z. We use Memory to refer to the set of all memories. Evaluation is left-to-right, and conjunction is deliberately non-short-circuiting. Values and skip have no outgoing transition. The relations are deterministic, and every non-terminal configuration can progress. The definitions are standard, and we give the most relevant rules next. 
+
+−⟨𝑥, 𝑚 ⟩ read (𝑥 )
+
+−−−−−−→𝑎 ⟨𝑚 (𝑥 ), 𝑚 ⟩⟨𝑒, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′, 𝑚 ′⟩⟨𝑥 := 𝑒, 𝑚 ⟩ ℓ
+
+−→𝑝 ⟨𝑥 := 𝑒 ′, 𝑚 ′⟩−⟨𝑥 := 𝑣, 𝑚 ⟩ write (𝑥 )
+
+−−−−−−−→𝑝 ⟨skip , 𝑚 [𝑥 ↦ → 𝑣 ]⟩ −⟨while 𝑏 do 𝑃, 𝑚 ⟩ 𝜏 
+
+−→𝑝 if 𝑏 then  𝑃 ; while 𝑏 do 𝑃  else skip , 𝑚 
+
+The full rule sets and this basic metatheory are standard and given in Appendix A. We write 𝑠 
+
+=⇒𝑝 
+
+for the reflexive and transitive closure of 𝑙 
+
+−→𝑝 . The length |𝑠 | counts every transition, expression steps included; the access trace acc (𝑠 ) is the subsequence of non-𝜏 labels, whose length is the number of memory accesses the run performs. A program terminates with final memory 𝑚 ′, written 
+
+⟨𝑃, 𝑚 ⟩ ⇓ 𝑚 ′, when ⟨𝑃, 𝑚 ⟩ 𝑠 
+
+=⇒𝑝 
+
+⟨skip , 𝑚 ′⟩ for some 𝑠 ; it diverges , written ⟨𝑃, 𝑚 ⟩ ⇑ , when for every 𝑛 
+
+some 𝑠 with |𝑠 | = 𝑛 extends its run. The transitions give a partial function on configurations ⟨𝑃, 𝑚 ⟩.It will later be convenient to extend this to total functions. We do this by defining a deterministic Mechanised operational semantics of Rowhammer 9    
+
+> Fig. 4. The idea behind the fault model is that each variable 𝑥 has a ’blast radius’, a set of other memory locations that may get flipped when 𝑥 is accessed. Locations outside the blast radius will not be flipped. The fault model formalises the shape of each blast radius, and the flip probabilities. Unlike Figures 2 and 3, this image does not show row shapes, because our formal model does not assume any specific geometry of blast radii.
+
+absorbing run denoted run 𝑛  
+
+> det ,tr
+
+(𝐶 ): iterate the step function 𝑛 times, letting terminal configurations step to themselves with label 𝜏 , and accumulate the labels. Its result is the unique configuration-with-trace reached after 𝑛 steps. 
+
+5 A probabilistic model of Rowhammer 
+
+This section addresses RQ1, RQ2 and RQ3: we now refine the ordinary semantics from the previous section with probabilistic Rowhammer fault models. We aim for the interface between the program-ming language semantics and the fault model to be minimal and canonical. The syntax, evaluation order, and reduction contexts are unchanged, and the refinement touches exactly one place: the 
+
+read (𝑥 )- and write (𝑥 )-labelled transitions of Section 4 additionally sample from the Rowhammer fault model and produce a probability distribution (e.g., bit-flips in successor memories), while 
+
+𝜏 -labelled transitions remain deterministic. With the changes to the read and write functions already explained in the Introduction, this amounts to changing the state transformer semantics of programs from type 
+
+Memory → Memory 
+
+from Section 4 into probabilistic state-transformers 
+
+Memory → Dist (Memory )
+
+(and likewise for expressions). The fault probabilities are lifted in a canonical way to general programs using the probability monad from Section 3. 10 A. Naseredini & M. Berger 
+
+Why reads return a joint distribution. There is a small but important typing choice in the Rowham-mer semantics. The ordinary read operation has type 
+
+read : (Loc × Memory ) → Val 
+
+Since a Rowhammer access to a location 𝑥 is intended to disturb only other locations, one might expect the probabilistic read operation to have type 
+
+(Loc × Memory ) → ( Val × Dist (Memory )) 
+
+returning the value stored at 𝑥 together with a distribution over successor memories. In the model used in this paper, this would indeed be sufficient for a single read step: the value returned by the read is determined by the input memory, and the probabilistic fault only affects the successor memory. We instead use the slightly more general type 
+
+read : (Loc × Memory ) → Dist (Val × Memory )
+
+This is the standard form of a probabilistic state transformer with a return value: it produces a joint distribution over the observed result and the successor state. The more specialised type 
+
+Val × Dist (Memory ) embeds into this one by pairing every successor memory with the same returned value. Using the joint form Dist (Val × Memory ) avoids baking this special case into the semantic interface and ensures that read operations share the same monadic shape as the rest of the semantics. This leaves the abstraction general enough to model bit-flip errors, where a physical fault correlates the specific value returned by a noisy read with the resulting successor memory, without changing the semantic type of reads. 
+
+5.1 The fault-kernel contract 
+
+Fault kernels is our name for the probability kernels that model Rowhammer. The idea behind fault kernels is simple: they describe what memory cells may be affected by Rowhammer effects when a location 𝑥 is accessed and how . Figure 4 visualises this intuition. We formalise this intuition with the following predicates. 
+
+• adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ) gives the set of all memory locations within the blast radius 𝑏𝑟 of location 𝑥 .
+
+• pflip (𝑆, 𝑚 ) ∈ Dist (Memory ) is a probability distribution that is allowed to flip bits in the finite set 𝑆 of locations in memory 𝑚 . Locations outside of 𝑆 must remain unchanged. We can now state the modelling assumptions we will use in Section 6 for proving the soundness of physical separation as a Rowhammer defence. 
+
+• (F1) Access-triggered. Faults are sampled exactly at the read (𝑥 )- and write (𝑥 )-labelled transitions of Section 4, 𝜏 -transitions are fault-free, modelled as the Dirac distribution. (F1) is enforced by construction of the rules below, not assumed. 
+
+• (F2) Spatial confinement (frame-locality). Every memory in the support of pflip (𝑆, 𝑚 )
+
+agrees with 𝑚 outside the victim set 𝑆 . Within 𝑆 the corruption may assign arbitrary probabilities to arbitrary, correlated corruptions: the kernel may behave adversarially, subject only to this clause. 
+
+• (F3) History-freeness. The kernel depends only on the current victim set and the current memory: pflip is a function Pfin (Loc ) → Memory → Dist (Memory ), so a fault cannot depend on the access history, on time, or on hidden hardware state. This is a genuine mod-elling restriction. It excludes, for example, charge accumulation across repeated activations and refresh-cycle effects, generalising to stateful kernels is future work, as discussed in Section 9. Mechanised operational semantics of Rowhammer 11 
+
+• (F4) Stationarity. The same kernel governs every access of a run, so fault behaviour does not drift over time. Like (F3), this is encoded by pflip being a single function rather than assumed as a separate axiom. Clauses (F1-F4), considered in isolation, do not require the location whose access triggers a fault to lie outside its own victim set: the abstract contract permits 𝑥 ∈ adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ). This generality is not needed for Rowhammer which does not allow “self-hammering”: the aggressor location cannot itself be a victim. Nevertheless, no additional axiom is required for the executions covered by our main theorem. Program well-formedness gives 𝑥 ∈ 𝑙𝑜𝑐𝑠 for every program access, and safe physical separation then gives 𝑥 ∉ adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ) by instantiating protected–victim disjointness with the protected location 𝑥 itself. Clause (F2) consequently ensures that the fault preserves the accessed location. Thus, the abstract contract is slightly more general than the intended DRAM interpretation, while the non-self-disturbance property required for protected executions is a derived consequence of the theorem hypotheses rather than a separate kernel axiom. 
+
+5.2 Physical adequacy and scope of our fault model 
+
+Our semantics is not a physically faithful device-level model of the electrical mechanisms underlying Rowhammer, nor is it intended to predict the probability of a bit-flip on a particular DRAM module. Our abstraction can be read as a conservative attacker model for Rowhammer-style disturbance: the bit-flips admissible by our model can be more extreme than those observed in physical DRAM. Therefore, a universal theorem proved for every admissible abstract kernel applies a fortiori to any more constrained concrete device model that refines it. 
+
+5.3 The fault model, mechanised 
+
+The Lean development renders the contract in three declarations. Separation is an abstract structure: a blast-radius function, a safety predicate, and the single fact the soundness proof uses about them: with physical separation, the victim set of an access to a protected location is disjoint from the protected set.                         
+
+> structure SeparationModel where
+> adj : Nat →LocSet →Loc →LocSet isSafe : Nat →LocSet →Prop
+> /-- Safe layouts: the victim set of an access to a protected row is disjoint from the protected set. -/ safe_disjoint : ∀{br : Nat} {locs : LocSet} {x : Loc}, isSafe br locs →x∈locs → ∀ y∈locs, y ∉adj br locs x
+
+Our abstract fault contract does not build the row structure of DRAM directly into the program-ming language semantics. Instead, a separation model supplies an abstract victim-set function 
+
+adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ), identifying the locations that may be corrupted by an access to 𝑥 . The theory does not require this function to be derived from a metric, or even to be symmetric. This is both simpler and more general than fixing a particular DRAM organisation. The mechanisation includes a concrete distance-based instance in which locations are natural numbers and the victim set is determined by numerical distance. This instance is primarily a simple witness that the abstract contract is non-vacuous: numerical address distance should not itself be identified with physical DRAM distance unless locations have already been interpreted as physical row identifiers. A row-based model is a special case of the abstract interface: locations may be taken to denote rows directly, or the victim-set function may be defined through a mapping from program-visible locations to DRAM banks and rows. 12 A. Naseredini & M. Berger 
+
+A fault kernel is a function from victim sets and memories to distributions over memories. The 
+
+type already encodes (F3) and (F4): the kernel sees neither history nor time.      
+
+> abbrev ProbRHFlip (_sep : SeparationModel) := LocSet →Memory →Dist Memory
+
+Clause (F2) is the sole behavioural assumption, stated as a typeclass:               
+
+> class HasProbFlipFrame (sep : SeparationModel) (f : ProbRHFlip sep) : Prop where
+> outside_unchanged : ∀(S : LocSet) (m m ': Memory) (x : Loc), m'∈(f S m).support →x∉S→m'x = m x
+
+Clause (F1) is enforced by construction of the transition rules below. The contract is not vacuous, and not satisfied only by fault-free kernels. The identity kernel 
+
+noFlip (every fault is a no-op) satisfies it and embeds the ordinary semantics (Section 6.2). At the other extreme, so does the worst-case kernel that deterministically corrupts the entire victim set at every access:           
+
+> noncomputable def corruptAll (sep : SeparationModel) : ProbRHFlip sep := fun S m => dirac (fun x => if x∈Sthen m x + 1 else m x)
+
+The mechanisation proves corruptAll frame-local and genuinely faulting (every outcome differs from the pre-fault memory at every victim location), and exhibits concrete physical separation of the distance model together with a well-formed program over it, so every hypothesis of the goal theorem is satisfiable simultaneously with a kernel that really flips bits. 
+
+5.4 Probabilistic transitions 
+
+The transition judgements 
+
+⟨𝑒, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+𝜇, ⟨𝑏, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝜇, ⟨𝑃, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+𝜇 
+
+return a distribution 𝜇 over successor configurations rather than a single successor, and are otherwise the rules of Section 4 with the same left-to-right, non-short-circuit evaluation order. Exactly two rules sample the kernel, matching (F1). A variable read first obtains the value 𝑚 (𝑥 ) and then samples the fault triggered by that access. The sampled fault therefore cannot retroactively change the value returned by the current read, but it may change the memory seen by later reads: 
+
+⟨𝑥, 𝑚 ⟩ ⇝RH 
+
+> 𝑎
+
+ let 𝑚 ′ ← pflip  adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ), 𝑚  in 𝛿  ⟨𝑚 (𝑥 ), 𝑚 ′⟩ (RH-A-Read )Dually, once the right-hand side of an assignment is a value, the assignment writes it and samples the fault triggered by the write, on the updated memory: 
+
+⟨𝑥 := 𝑣, 𝑚 ⟩ ⇝RH 
+
+> 𝑝
+
+ let 𝑚 ′ ← pflip  adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ), 𝑚 [𝑥 ↦ → 𝑣 ] in 𝛿  ⟨skip , 𝑚 ′⟩ (RH-P-Assign )Under the well-formedness and physical separation hypotheses of the main theorem, the accessed location lies outside its victim set. Hence frame-locality preserves the stored value at a read location and preserves the value just installed by an assignment. This fact is derived from physical separation. It is not an additional assumption on the fault kernel. Every other rule is the Dirac or functorial lifting of its deterministic counterpart. The full rule sets for all three judgements are in Section B. There is no transition from ⟨skip , 𝑚 ⟩. The rules are syntax-directed, so every non-terminal program configuration determines a unique one-step distribution: the fault randomises the memory contents, Mechanised operational semantics of Rowhammer 13 
+
+never which access happens next. The semantics is therefore probabilistic but not nondeterministic. We write step RH  
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+(⟨ 𝑃, 𝑚 ⟩) for the program-level distribution. 
+
+5.5 Finite probabilistic executions 
+
+For iteration, define an absorbing extension of the one-step kernel by 
+
+• dstep RH 
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+ ⟨skip , 𝑚 ⟩ = 𝛿  ⟨skip , 𝑚 ⟩,
+
+• dstep RH 
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+ ⟨𝑃, 𝑚 ⟩ = step RH 
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+ ⟨𝑃, 𝑚 ⟩ assuming that 𝑃 ≠ skip ,and the distribution after exactly 𝑛 applications of the absorbing kernel by 
+
+• run 0 
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+(𝐶 ) = 𝛿 (𝐶 ),
+
+• run 𝑛 +1 
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+(𝐶 ) = let 𝐶 ′ ← dstep RH  
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+(𝐶 ) in run 𝑛 𝑏𝑟,𝑙𝑜𝑐𝑠 (𝐶 ′).The absorbing extension exists only to define finite runs. The operational semantics still has no transition from a terminal configuration. Because expression reductions are lifted through assignments and conditionals one step at a time, the index 𝑛 counts genuine small-step transitions. A read or write together with its immediately triggered fault sample counts as one probabilistic transition. In the mechanisation the absorbing kernel is a total function (stepRHHat ), and the displayed judgement rules are inductive relations, that the two agree on non-terminal configurations (the kernel computes exactly the judgement’s distribution, and the judgement’s distribution is unique) is proved ( pRHStep_iff_stepRHHat ), so results stated over the runs below are statements about the displayed rules. Because the rules are syntax-directed, which access a configuration performs next is a function of the configuration alone. The 𝑛 -step run therefore extends canonically to a trace-carrying run 
+
+run 𝑛 𝑏𝑟,𝑙𝑜𝑐𝑠, tr that accumulates the label sequence of Section 4 alongside the configuration, assigning to every outcome its access trace. Absorbing steps at terminal configurations contribute 𝜏 , which the access trace erases. The goal theorem’s trace agreement (Section 6.2) is stated over this run. 
+
+5.6 Mixed termination 
+
+Without mitigations, Rowhammer faults may change not only final values but also whether a program terminates. Indeed, a single initial configuration may induce a probabilistic mixture of terminating and non-terminating executions. Consider the following program: 
+
+while 𝑥 > 17 do  𝑦 := 𝑧 + 1; 𝑥 := 𝑥 − 1.
+
+In the ordinary semantics, every iteration decreases 𝑥 by one, so the program terminates. Now suppose a Rowhammer bit-flip triggered by writing 𝑦 may corrupt 𝑥 . As a concrete illustration, consider a kernel that leaves 𝑥 unchanged with probability 1 − 𝑝 , changes 𝑥 to 𝑥 + 2 with probability 
+
+0 < 𝑝 < 1 after the write to 𝑦 , and otherwise leaves the locations relevant to the example unchanged. Hence the program terminates with positive probability and runs forever with positive probability. This example is deliberately schematic: it demonstrates behaviour permitted by the abstract fault contract, not a quantitative claim about a particular DRAM device. For sufficiently many execution steps, some probability mass may already be on configurations 
+
+⟨skip , 𝑚 ′⟩, while the remaining mass is on non-terminal configurations. The exact probabilities of non-termination are available only as limits. We do not mechanise these limiting probabilities in the present development. The present finite step probability-mass-function approach is sufficient for the theorem we establish in later sections. An explicit account of divergence is possible, but would require additional semantic infrastructure. 14 A. Naseredini & M. Berger 
+
+5.7 Language independence 
+
+The language-parametricity of the model comes from the small semantic signature required by fault kernels. To instantiate the interface for a language, one must identify memories, locations, and the semantic clauses that perform memory actions. The ordinary clauses for those actions are then factored into an intended logical access followed by a call to the fault kernel determined by the accessed location. All other language constructs interact with Rowhammer only through the memory actions they eventually perform. Consequently, the interface can be applied directly to explicitly imperative languages and indirectly to non-imperative languages by applying it to an intermediate language, runtime semantics, or machine semantics in which memory actions are explicit. The language-independence claim is also supported by recent work on reusable architecture semantics. ArchSem [ 31 ], for example, factors instruction set architecture semantics through a small algebraic-effect interface between ISA descriptions and memory models. In that interface, instruction semantics does not directly manipulate a monolithic global machine state. Instead, it emits outcomes such as memory reads and writes, barriers, cache operations, TLB operations, and exceptions. The memory-relevant part of the interface is particularly close to what our model requires: a memory request records an access kind, address, address space, size, and tag information, and the outcome interface contains distinguished memory-read and memory-write effects. Our Rowhammer interface can be understood as an analogous factorisation, but at a different semantic boundary. ArchSem factors ISA behaviour from the memory and concurrency model. We factor the physical fault mechanism from the programming language or machine semantics. To instantiate our model for a new language or architecture, one need not rebuild the Rowhammer theory around that language’s syntax. It suffices to identify the semantic events that correspond to memory accesses, compute the set of physical locations exposed by each such access, and interpret the access through the probabilistic fault kernel. In a WHILE language these events are source-level variable reads and writes, but in an architecture semantics such as ArchSem they would correspond instead to memory outcomes such as MemRead and MemWrite . This is the precise sense in which the interface is substantially independent of the target programming language: the language-specific part is the production of memory-access events, while the Rowhammer-specific part is a reusable interpretation of those events as possible probabilistic disturbances of physical memory. 
+
+6 Soundness of physical separation 
+
+This section addresses our RQ4 and proves the paper’s first main theorem: under the fault kernel contract of Section 5.1, physical separation eliminates Rowhammer faults from being observable in the results of program execution. We first state the goal informally, then define the projection being compared, give the formal statement together with its mechanised form, walk through every hypothesis, and sketch the proof. The idea is simple: given a program 𝑃 such that all variables 𝑙𝑜𝑐𝑠 occurring in 𝑃 are physically separated, meaning that they are all outside each other’s blast radius. Then the probabilistic semantics of ⟨𝑃, 𝑚 ⟩ when restricted to 𝑙𝑜𝑐𝑠 is the Dirac distribution of the deterministic run of ⟨𝑃, 𝑚 ⟩. All formal ingredients are already defined, except comparing a deterministic with a probabilistic run of ⟨𝑃, 𝑚 ⟩.
+
+6.1 The protected view 
+
+We call any element of (Prog × Memory ) × Acc ∗ a configuration with labels . Write run 𝑛  
+
+> det ,tr
+
+(𝐶 ) ∈ (Prog × Memory ) × Acc ∗ for the deterministic 𝑛 -step absorbing run with its accumulated label se-quence (terminal configurations step to themselves, contributing 𝜏 , Section 4), and run 𝑛 𝑏𝑟,𝑙𝑜𝑐𝑠, tr (𝐶 ) ∈ Mechanised operational semantics of Rowhammer 15 
+
+Dist  (Prog × Memory ) × Acc ∗ for the trace-carrying Rowhammer run of Section 5.5. The protected view of a configuration with labels is 
+
+𝜋 𝑙𝑜𝑐𝑠 
+
+ ⟨𝑃, 𝑚 ⟩, 𝑠  ≜  𝑃, 𝑚 ↾𝑙𝑜𝑐𝑠, acc (𝑠 ),
+
+the residual program, the restriction of the memory to the protected locations, and the access trace. In Lean, the restriction is a total map on the subtype of protected locations, and the access trace erases 𝜏 :              
+
+> def protView (locs : LocSet) : (Prog ×Memory) ×List Access →
+> Prog ×({x : Loc // x ∈locs} →Val) ×List Access := fun r => (r.1.1, fun x => r.1.2 x.1, accessTrace r.2)
+
+These three components are exactly what the program’s execution can depend on. What the projection discards, unprotected DRAM subject to Rowhammer outside 𝑙𝑜𝑐𝑠 , is exactly what a physical separation defence sacrifices to the fault, and a well-formed program never reads it. 
+
+6.2 Formal statement 
+
+We are now in a position to state the soundness theorem, both informally and with extracted Lean. 
+
+Theorem 6.1 (Soundness of physical separation, formal). Let pflip satisfy the fault kernel contract (Section 5.1), let safe (𝑏𝑟, 𝑙𝑜𝑐𝑠 ) hold, and let wf 𝑙𝑜𝑐𝑠 (𝑃 ). Then for every initial memory 𝑚 
+
+and every 𝑛 ∈ N,
+
+Dist .𝑚𝑎𝑝 𝜋 𝑙𝑜𝑐𝑠 
+
+ run 𝑛 𝑏𝑟,𝑙𝑜𝑐𝑠, tr (⟨ 𝑃, 𝑚 ⟩)  = 𝛿 
+
+
+
+𝜋 𝑙𝑜𝑐𝑠 
+
+ run 𝑛  
+
+> det ,tr
+
+(⟨ 𝑃, 𝑚 ⟩) 
+
+.
+
+Equivalently, by the support characterisation of the point mass (Section 3): every outcome in the support of the 𝑛 -step Rowhammer run has the residual program, the protected memory, and the access trace of the 𝑛 -step ordinary run. The mechanised statement quantifies in addition over every separation geometry:           
+
+> def PhysicalSeparationSound : Prop :=
+> ∀(sep : SeparationModel) (f : ProbRHFlip sep), HasProbFlipFrame sep f →∀(br : Nat) (locs : LocSet), sep.isSafe br locs →∀(p : Prog), p.WellFormed locs →∀(m : Memory) (n : Nat), Dist.mapD (protView locs) (runRHTrace sep f br locs n (p, m)) = Dist.dirac (protView locs (runDTrace n (p, m)))
+
+It might be of interest to see that all hypotheses in the mechanised statement are needed, and we walk through them in order next. 
+
+• sep : SeparationModel . The theorem is universal over abstract separation geometries (Section 5.3): a blast-radius function adj , a safety predicate safe , and the disjointness fact 
+
+safe_disjoint connecting them. The proof uses nothing else about the geometry, no row arithmetic, no linear layout, so the result applies to any placement scheme whose safety condition implies the disjointness fact, with the distance model of Section 5.3 as the motivating instance. 16 A. Naseredini & M. Berger 
+
+• f : ProbRHFlip sep . The fault kernel. Its type, LocSet → Memory → Dist (Memory ),encodes contract clauses (F3) and (F4): the kernel can consult only the current victim set and memory, and the same kernel governs every access. Nothing about the distribution itself is fixed. 
+
+• HasProbFlipFrame sep f . Contract clause (F2), spatial confinement is the sole behavioural hypothesis . Every memory in the support of pflip (𝑆, 𝑚 ) agrees with 𝑚 outside 𝑆 . Dropping it makes the theorem false immediately: a kernel that flips a protected location on some access satisfies everything else, and its Rowhammer run visibly diverges from the ordinary one on protected memory. 
+
+• br and locs . The blast radius and the protected set. Both are abstract parameters threaded through adj where 𝑙𝑜𝑐𝑠 is a finite set of locations (a Finset ), the memory locations the program uses for computation. 
+
+• sep.isSafe br locs . Physical separation, the condition the defence establishes, e.g., by guard rows. Through safe_disjoint it yields the only fact the proof needs: the victim set of an access to a protected location is disjoint from the protected set. Without it the theorem fails even for kernels obeying the whole contract: accessing one protected location may corrupt another protected location inside its blast radius (Theorem 2.2). 
+
+• p.WellFormed locs . Every location the program reads or writes is in 𝑙𝑜𝑐𝑠 (Section 4). This clause makes separation compose with execution: it guarantees that every access the run performs is an access to a protected location, so safe_disjoint applies to every victim set the run generates. Without it, an access to some 𝑧 ∉ 𝑙𝑜𝑐𝑠 triggers a fault on adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑧 ),about which safe (𝑏𝑟, 𝑙𝑜𝑐𝑠 ) says nothing, the blast radius of an unprotected location may well intersect 𝑙𝑜𝑐𝑠 (Theorem 2.3). 
+
+• m and n. The initial memory and the number of steps, both universally quantified. Quantify-ing over every finite 𝑛 is the relational-safety reading of Theorem 6.1: it covers terminating and diverging programs alike, with no limit construction. It may also be interesting to see what is not assumed: no bound on flip probabilities (faults may be certain), no independence between locations or between fault events, no unbiasedness, no particular distribution. Within the blast radius the kernel may be adversarial. The guarantee is distribution-free: it follows from spatial confinement and separation alone. 
+
+6.3 Corollaries 
+
+Two clauses of Theorem 6.1 are worth recording as standalone consequences of the point mass equation. 
+
+Corollary 6.2 (Exact termination correspondence). Under the hypotheses of Theorem 6.1, if ⟨𝑃, 𝑚 ⟩ 𝑠 
+
+=⇒𝑝 
+
+⟨skip , 𝑚 ′⟩, then every configuration in the support of run |𝑠 | 
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+(⟨ 𝑃, 𝑚 ⟩) is terminal and agrees with 𝑚 ′ on 𝑙𝑜𝑐𝑠 : the Rowhammer execution terminates after exactly the same number of abstract-machine steps, with the same protected final memory (and, by Theorem 6.1, the same access trace).                      
+
+> def TerminationCorrespondence : Prop :=
+> ∀(sep : SeparationModel) (f : ProbRHFlip sep), HasProbFlipFrame sep f →∀(br : Nat) (locs : LocSet), sep.isSafe br locs →∀(p : Prog), p.WellFormed locs →∀(m m ': Memory) (s : List Access), Mechanised operational semantics of Rowhammer 17
+> PTrace (p, m) s (Prog.skip, m ')→∀c∈(runRH sep f br locs s.length (p, m)).support, c.1 = Prog.skip ∧ ∀ x∈locs, c.2 x = m 'x
+
+Corollary 6.3 (Divergence preservation). Under the hypotheses of Theorem 6.1, if ⟨𝑃, 𝑚 ⟩ ⇑ ,then for every 𝑛 every configuration in the support of run 𝑛 𝑏𝑟,𝑙𝑜𝑐𝑠 (⟨ 𝑃, 𝑚 ⟩) is non-terminal (and agrees with the ordinary run on the protected state).                  
+
+> def DivergencePreservation : Prop :=
+> ∀(sep : SeparationModel) (f : ProbRHFlip sep), HasProbFlipFrame sep f →∀(br : Nat) (locs : LocSet), sep.isSafe br locs →∀(p : Prog), p.WellFormed locs →∀(m : Memory), Diverges p m →∀(n : Nat),
+> ∀c∈(runRH sep f br locs n (p, m)).support, c.1 ≠Prog.skip
+
+6.4 Proof sketch 
+
+The proof is a probabilistic simulation whose invariant is parametric in the preserved region : a predicate keep on locations, instantiated only at the very end with membership in 𝑙𝑜𝑐𝑠 . It proceeds in three main steps. 
+
+One-step invariant (stepRHHat_agree ). Suppose the Rowhammer and ordinary configurations share the same residual program and their memories agree on keep , and suppose (i) every location the program uses satisfies keep , and (ii) every fault sample triggered by an access the program can perform preserves keep -locations. Then every outcome of one application of the Rowhammer kernel again shares the residual program of the ordinary step and agrees with it on keep . The residual program is preserved exactly, not just up to keep , because reads return the same values on 
+
+keep -agreeing memories, so both machines make the same control decisions. 
+
+Iteration (runRHTrace_protected ). The one-step invariant is iterated over the step count 𝑛 .Because the rules are syntax-directed, the label of the next transition is a function of the residual program alone. Preserving the residual program exactly therefore forces both runs to emit the same label sequence , which gives the access-trace clause for free. Well-formedness is preserved along the run, so clauses (i) and (ii) remain available at every step. 
+
+Instantiation and conversion. Take keep (ℓ) ≜ ℓ ∈ 𝑙𝑜𝑐𝑠 . Clause (i) is program well-formedness. Clause (ii) is exactly frame-locality (F2) composed with safe_disjoint : an access to 𝑥 ∈ 𝑙𝑜𝑐𝑠 
+
+triggers a fault confined to adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ), which is disjoint from 𝑙𝑜𝑐𝑠 , so every sample fixes every protected location. The invariant then says that every outcome in the support of run 𝑛 𝑏𝑟,𝑙𝑜𝑐𝑠, tr has the protected view of run 𝑛 
+
+> det ,tr
+
+. The support characterisation of Section 3 converts this into the point mass equation. The corollaries follow from the central equation together with determinism, progress, and the trace realisation lemma of the ordinary semantics (Section A). The no-fault embedding is by computation. We can now show that the deterministic semantics is a special case of the probabilistic semantics. This gives us confidence in the correctness of the probabilistic semantics. 18 A. Naseredini & M. Berger 
+
+Theorem 6.4 (No-fault embedding). Let 𝑠𝑒𝑝 be any separation model, let 𝑏𝑟 be any blast-radius parameter, let 𝑙𝑜𝑐𝑠 be any protected set, and let 𝑐 be any initial configuration. If the Rowhammer fault kernel is the identity kernel noFlip (𝑠𝑒𝑝 ), then 𝑛 steps with the Rowhammer semantics is exactly the Dirac distribution concentrated on the 𝑛 -step deterministic trace run: This requires neither safe physical separation nor program well-formedness. 
+
+This theorem is mechanised in Lean as runRHTrace_noFlip .
+
+7 Information flow security under Rowhammer 
+
+We now address our RQ5 whether the well-developed and widely used theory of information flow [ 10 , 34 ] can be lifted to our Rowhammer model. We do this by defining relative non-interference 
+
+and prove that physical separation guarantees relative non-interference. Relative non-interference means that any information leak that happens with Rowhammer also happens without Rowham-mer 2. This is of interest, as Rowhammer is usually presented as an integrity failure: an access to one physical row may corrupt data stored in another. But the same mechanism can also create a confidentiality failure: a Rowhammer induced flip in a high location may alter a branch condition, loop condition, or value that is later copied to low memory. Moreover, a fault in a low location may directly change an attacker-visible result. The theory of information flow is tailor-made for studying such phenomena, and provides a natural test of whether physical separation removes the semantic consequences of Rowhammer rather than merely making faults less likely. 
+
+Low equivalence and non-interference. In order to explain relative non-interference in detail, we need to sketch the key ideas behind information flow security, see [ 10 , 34 ] for details. Fix a policy that classifies every memory location as either L or H. Two memories are low equivalent 
+
+when they agree at every L location (they may differ arbitrarily at H locations). A program is 
+
+non-interfering when executions from low-equivalent initial memories end with memories that are also low-equivalent (we discuss termination later). Non-interference is therefore a hyperproperty 
+
+[3 ]: it relates pairs of executions rather than inspecting one execution in isolation. The ordinary semantics is deterministic, so indistinguishability means equality of the two observations. The Rowhammer semantics maps an initial memory to a probability distribution over executions. Probability-sensitive non-interference consequently requires equality of the induced distributions over low observations. 
+
+What physical separation can and cannot guarantee. The physical separation discussed in previous sections must protect every location used by the program, not only its low locations. Protecting only low variables is insufficient: corrupting a high variable may change control flow and thereby alter a later low write, low access, or termination behaviour. The separation condition used in this paper therefore protects the complete set of locations over which the program is well formed. That means we can only give a no-new-leaks guarantee: physical separation does not make a program secure that is insecure in the deterministic semantics! For example, 
+
+𝐿 := 𝐻 
+
+explicitly leaks a high value into a low variable and is therefore interfering in both semantics. Physical separation only ensures that the Rowhammer semantics has exactly the same protected observations as the ordinary semantics. Hence, with physical separation, a Rowhammer information flow counterexample is only a counterexample that was already present without faults. Without  
+
+> 2Cf. relative consistency results like Gödel’s proof that classical logic does not introduce unsoundness not already present in intuitionistic logic [12], or the Gödel / Cohen results that ZFC set theory is relatively consistent over ZF [4, 9]. Mechanised operational semantics of Rowhammer 19
+
+separation this reasoning fails. If an access to a program’s location can disturb another location, a frame-local fault kernel may change a low variable or a high value controlling future low behaviour. The fault kernel may assign arbitrary probabilities to such corruptions inside the victim set. Safe separation rules out this channel structurally: the victim set generated by an access to a protected location is disjoint from every protected location. 
+
+8 Mechanised observation-parametric non-interference 
+
+This section formalises and proves our relative non-interference results. The Rowhammer semantics of previous sections remains unchanged. Our central design choice is that every observer consumes the protected view already covered by the physical separation theorem. Thus the security results are consequences of semantic collapse proven already, rather than a second operational simulation argument. This gives us additional confidence in our mathematical rendering of Rowhammer as a programming language feature. 
+
+8.1 Formal development 
+
+Observation-parametric security. There is no single universally appropriate notion of low obser-vation (e.g., is termination low observable). The mechanised development therefore parameterises non-interference by a function on the existing protected view, which contains the residual program, protected memory, and access trace. We define four concrete observers: 
+
+• Protected low memory only 
+
+• The address trace of reads and writes to low locations 
+
+• Terminal status, protected low memory, and the low access trace 
+
+• Protected low memory and the low access trace, but not terminal status The third observer is progress-sensitive because observations are compared at every finite number of steps: it can reveal the exact abstract-machine step at which the residual program first becomes 
+
+skip . Omitting the terminal-status bit does not by itself yield classical termination-insensitive non-interference, since low memory or low accesses observed at successive steps may still reveal progress. The mechanisation therefore makes no claim that its fourth observer is a complete formalisation of classical termination-insensitive non-interference. 
+
+Security policies and low equivalence, protected views and observations. Let Sec ≜ {L, H} and let a security policy be a function 𝛾 : Loc → Sec . The low and high location subtypes are 𝐿 𝛾 ≜ {𝑥 :
+
+Loc | 𝛾 (𝑥 ) = L}, and 𝐻 𝛾 ≜ {𝑥 : Loc | 𝛾 (𝑥 ) = H}. For 𝑚 ∈ Memory , the two restricted views are 
+
+• lowView 𝛾 (𝑚 )( 𝑥 ) ≜ 𝑚 (𝑥 ) assuming (𝑥 ∈ 𝐿 𝛾 )• highView 𝛾 (𝑚 )( 𝑥 ) ≜ 𝑚 (𝑥 ) assuming 𝑥 ∈ 𝐻 𝛾 .Two memories are low equivalent when 
+
+𝑚 1 ≈𝛾 𝑚 2 ⇐⇒ ∀𝑥 : Loc . 𝛾 (𝑥 ) = L =⇒ 𝑚 1 (𝑥 ) = 𝑚 2 (𝑥 ).
+
+The mechanisation proves that this pointwise definition is equivalent to 
+
+lowView 𝛾 (𝑚 1) = lowView 𝛾 (𝑚 2),
+
+and proves reflexivity, symmetry, and transitivity. Let Access contain labels read (𝑥 ), write (𝑥 ), and 
+
+𝜏 . The function accessTrace filters out 𝜏 . For the finite protected set 𝑙𝑜𝑐𝑠 , define 
+
+PView (𝑙𝑜𝑐𝑠 ) ≜ Prog ×  {𝑥 : Loc | 𝑥 ∈ 𝑙𝑜𝑐𝑠 } → Val  × List (Access ).
+
+The protected projection is 
+
+protView 𝑙𝑜𝑐𝑠 (( 𝑄, 𝑚 ), 𝑠 ) ≜  𝑄, 𝑚 |𝑙𝑜𝑐𝑠 , accessTrace (𝑠 ).20 A. Naseredini & M. Berger 
+
+It retains exactly the three components covered by physical semantic collapse: residual syntax, protected memory, and the access trace. The deterministic protected view at step count 𝑛 is 
+
+DView 𝑛 𝑙𝑜𝑐𝑠 (𝑃, 𝑚 ) ≜ protView 𝑙𝑜𝑐𝑠 
+
+ runDTrace 𝑛 (𝑃, 𝑚 ).
+
+The Rowhammer protected-view distribution is 
+
+RHView 𝑛 𝑠𝑒𝑝,𝑓 ,𝑏𝑟,𝑙𝑜𝑐𝑠 (𝑃, 𝑚 ) ≜ Dist .map protView 𝑙𝑜𝑐𝑠 
+
+ runRHTrace 𝑛 𝑠𝑒𝑝,𝑓 ,𝑏𝑟,𝑙𝑜𝑐𝑠 (𝑃, 𝑚 ).
+
+Non-interference definitions. Recall that we do not hard-code just one specific notion of how the program execution is observed. Instead, let Ω be an observation type. A protected observer is a function 
+
+𝑂 : PView (𝑙𝑜𝑐𝑠 ) → Ω.
+
+The two observations used in the definitions below are 
+
+ObsOrd 𝑛 𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 ) ≜ 𝑂  DView 𝑛 𝑙𝑜𝑐𝑠 (𝑃, 𝑚 )
+
+and 
+
+ObsRH 𝑛 𝑠𝑒𝑝,𝑓 ,𝑏𝑟,𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 ) ≜ Dist .map 𝑂  RHView 𝑛 𝑠𝑒𝑝,𝑓 ,𝑏𝑟,𝑙𝑜𝑐𝑠 (𝑃, 𝑚 ).
+
+See the Lean definitions rowhammerProtectedView and rowhammerObservation that match this two-stage definition. We can now define our notion of observer parametric non-interference. 
+
+Definition 8.1 (Ordinary step bound non-interference). The predicate OrdinaryNI (𝛾, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 )
+
+holds when 
+
+∀𝑛 ∈ N. ∀𝑚 1, 𝑚 2 ∈ Memory . 𝑚 1 ≈𝛾 𝑚 2 =⇒ ObsOrd 𝑛 𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 1) = ObsOrd 𝑛 𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 2).
+
+This is the Lean definition OrdinaryNI .
+
+Definition 8.2 (Rowhammer step bound non-interference). For a fixed separation model 𝑠𝑒𝑝 , fault kernel 𝑓 , blast radius 𝑏𝑟 , and protected set 𝑙𝑜𝑐𝑠 , the predicate RowhammerNI (𝛾, 𝑠𝑒𝑝, 𝑓 , 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 )
+
+holds when 
+
+∀𝑛 ∈ N. ∀𝑚 1, 𝑚 2 ∈ Memory . 𝑚 1 ≈𝛾 𝑚 2 =⇒ ObsRH 𝑛 𝑠𝑒𝑝,𝑓 ,𝑏𝑟,𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 1) = ObsRH 𝑛 𝑠𝑒𝑝,𝑓 ,𝑏𝑟,𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 2).
+
+The equality is equality of complete finite distributions. The same fixed kernel 𝑓 is used in both runs. This is the Lean definition RowhammerNI .
+
+Definition 8.3 (Robust Rowhammer non-interference). The predicate RobustRowhammerNI (𝛾, 𝑠𝑒𝑝, 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 
+
+holds when 
+
+∀𝑓 . HasProbFlipFrame (𝑠𝑒𝑝, 𝑓 ) =⇒ RowhammerNI (𝛾, 𝑠𝑒𝑝, 𝑓 , 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ).
+
+Safety of the layout and well-formedness of 𝑃 are deliberately not fields of this definition, they are hypotheses of the preservation theorem. This matches the Lean definition RobustRowhammerNI .For convenience, the mechanisation also defines 
+
+Admissible (𝑠𝑒𝑝, 𝑓 , 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑃 ) ⇐⇒ HasProbFlipFrame (𝑠𝑒𝑝, 𝑓 )∧ 𝑠𝑒𝑝. isSafe (𝑏𝑟, 𝑙𝑜𝑐𝑠 )∧ 𝑃 . WellFormed (𝑙𝑜𝑐𝑠 ).
+
+The checked theorem statements below take these three assumptions as separate arguments, exactly as their Lean counterparts do. We can now define the four concrete checked observers, promised above. Towards that aim, let 
+
+𝐿 𝛾,𝑙𝑜𝑐𝑠 ≜ {𝑥 : Loc | 𝑥 ∈ 𝑙𝑜𝑐𝑠 ∧ 𝛾 (𝑥 ) = L}.Mechanised operational semantics of Rowhammer 21 
+
+The development defines the following protected observers. 
+
+• Protected-low-memory observer. It hides residual syntax, terminal status, and the access trace: 
+
+𝑂 mem  
+
+> 𝛾,𝑙𝑜𝑐𝑠
+
+(𝑄, ¯𝑚, 𝑠 ) ≜ ¯𝑚 |𝐿 𝛾,𝑙𝑜𝑐𝑠 .
+
+• Low-access observer. Since labels contain addresses but not transferred values, this ob-server captures address-trace leakage rather than value-labelled I/O leakage. 
+
+𝑂 access  
+
+> 𝛾
+
+(𝑄, ¯𝑚, 𝑠 ) ≜ lowAccessTrace 𝛾 (𝑠 ),
+
+where the filter retains read (𝑥 ) and write (𝑥 ) exactly when 𝛾 (𝑥 ) = L.
+
+• Progress-sensitive observer. Because the definition compares every finite run, this ob-server reveals exact abstract-machine progress, including the first step-count at which termination is visible. 
+
+𝑂 progress  
+
+> 𝛾,𝑙𝑜𝑐𝑠
+
+(𝑄, ¯𝑚, 𝑠 ) ≜  terminal (𝑄 ), ¯𝑚 |𝐿 𝛾,𝑙𝑜𝑐𝑠 , lowAccessTrace 𝛾 (𝑠 ),
+
+where terminal (𝑄 ) is the Boolean that is true exactly for 𝑄 = skip .
+
+• Terminal-status-hidden observer. This omits the terminal-status bit but is not claimed to formalise classical termination-insensitive non-interference: low memory or low accesses at fixed step count may still reveal progress. 
+
+𝑂 hidden  
+
+> 𝛾,𝑙𝑜𝑐𝑠
+
+(𝑄, ¯𝑚, 𝑠 ) ≜   ¯𝑚 |𝐿 𝛾,𝑙𝑜𝑐𝑠 , lowAccessTrace 𝛾 (𝑠 ).
+
+Checked theorem statements. The following statements are proved in Lean without sorry and without new problem-specific axioms. 
+
+Theorem 8.4 (Protected semantic collapse). Let 𝑓 be frame-local, let 𝑠𝑒𝑝. isSafe (𝑏𝑟, 𝑙𝑜𝑐𝑠 )
+
+hold, and let 𝑃 . WellFormed (𝑙𝑜𝑐𝑠 ) hold. Then, for every memory 𝑚 and 𝑛 ,
+
+RHView 𝑛 𝑠𝑒𝑝,𝑓 ,𝑏𝑟,𝑙𝑜𝑐𝑠 (𝑃, 𝑚 ) = 𝛿  DView 𝑛 𝑙𝑜𝑐𝑠 (𝑃, 𝑚 ).
+
+This is theorem protected_semantic_collapse , a direct restatement of the existing theorem 
+
+physical_separation_sound .
+
+Theorem 8.5 (Observation collapse). Under the same frame-locality, safety, and well-formedness assumptions, for every protected observer 𝑂 , memory 𝑚 , and step count 𝑛 ,
+
+ObsRH 𝑛 𝑠𝑒𝑝,𝑓 ,𝑏𝑟,𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 ) = 𝛿  ObsOrd 𝑛 𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 ).
+
+This is theorem observation_collapse .
+
+Theorem 8.6 (Non-interference eqivalence). Let 𝑓 be frame-local, let 𝑠𝑒𝑝. isSafe (𝑏𝑟, 𝑙𝑜𝑐𝑠 )
+
+hold, and let 𝑃 . WellFormed (𝑙𝑜𝑐𝑠 ) hold. Then, for every security policy 𝛾 and protected observer 
+
+𝑂 ,
+
+OrdinaryNI (𝛾, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ) ⇐⇒ RowhammerNI (𝛾, 𝑠𝑒𝑝, 𝑓 , 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ).
+
+This is theorem noninterference_equivalence .22 A. Naseredini & M. Berger 
+
+Corollary 8.7 (Robust preservation). If 𝑠𝑒𝑝. isSafe (𝑏𝑟, 𝑙𝑜𝑐𝑠 ), 𝑃 . WellFormed (𝑙𝑜𝑐𝑠 ), and 
+
+OrdinaryNI (𝛾, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ) hold, then 
+
+RobustRowhammerNI (𝛾, 𝑠𝑒𝑝, 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ).
+
+Equivalently, every frame-local kernel 𝑓 satisfies 
+
+RowhammerNI (𝛾, 𝑠𝑒𝑝, 𝑓 , 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ).
+
+This is theorem robust_noninterference_preservation .
+
+Corollary 8.8 (Reflection for a fixed kernel). Under frame-locality, safety, and well-formedness, 
+
+¬RowhammerNI (𝛾, 𝑠𝑒𝑝, 𝑓 , 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ) =⇒ ¬ OrdinaryNI (𝛾, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ).
+
+This is theorem rowhammer_interference_reflection .
+
+Corollary 8.9 (Existential reflection). Assume 𝑠𝑒𝑝. isSafe (𝑏𝑟, 𝑙𝑜𝑐𝑠 ) and 𝑃 . WellFormed (𝑙𝑜𝑐𝑠 ).Then  ∃𝑓 . HasProbFlipFrame (𝑠𝑒𝑝, 𝑓 ) ∧ ¬ RowhammerNI (𝛾, 𝑠𝑒𝑝, 𝑓 , 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 )
+
+=⇒ ¬ OrdinaryNI (𝛾, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ).
+
+In the Lean code, this is theorem exists_rowhammer_interference_reflection .
+
+8.2 Proof sketches 
+
+Structural preservation. The existing lemma stepDHat_wf proves that one absorbing determin-istic step preserves well-formedness over 𝑙𝑜𝑐𝑠 . Its proof follows the syntax of the residual pro-gram. Expression reduction preserves expression well-formedness. Sequencing preserves the well-formedness of the untouched continuation. A conditional either reduces its guard or selects an already well-formed branch. Unfolding a loop constructs a conditional and sequence from already well-formed components. This lemma is what allows the step bound simulation invariant to be applied recursively to the successor program. 
+
+One-step agreement. The generic relation Agree (𝑘𝑒𝑒𝑝, 𝑚 𝑓 , 𝑚 𝑑 ) states that the faulty and deter-ministic memories agree at every location satisfying 𝑘𝑒𝑒𝑝 . Lemma stepRHHat_agree assumes that every location used by the program is kept and that every supported fault outcome preserves all kept locations. If the input memories agree on 𝑘𝑒𝑒𝑝 , then every supported Rowhammer successor has exactly the same residual program as the deterministic successor and its memory still agrees with the deterministic memory on 𝑘𝑒𝑒𝑝 . The proof is by structural induction on the program, using corresponding agreement lemmas for arithmetic and Boolean expressions. In a read or write case, frame preservation ensures that the sampled fault cannot alter a kept location. Since values read from kept locations agree, both semantics reduce the same expression, write the same value, select the same branch, and unfold the same control construct. 
+
+Finite step bound invariant. Lemma runRHTrace_protected iterates one-step agreement by induction on 𝑛 . For every outcome 𝑟 in the support of the 𝑛 -step Rowhammer trace run, it proves three facts: 
+
+• The residual program of 𝑟 equals the deterministic residual program. 
+
+• The memories agree on every kept location. 
+
+• The complete accumulated label lists are equal. In the successor case, stepRHHat_agree supplies the next related configuration, stepDHat_wf sup-plies well-formedness of its residual program, and the induction hypothesis supplies the remaining step bound. Mechanised operational semantics of Rowhammer 23 
+
+Instantiation by physical separation. For protected semantic collapse, the proof instantiates 
+
+𝑘𝑒𝑒𝑝 (𝑥 ) with 𝑥 ∈ 𝑙𝑜𝑐𝑠 . The premise that faults preserve kept locations is derived by combin-ing frame-locality with safe separation: for an access to 𝑥 ∈ 𝑙𝑜𝑐𝑠 , safe_disjoint shows that every ℓ ∈ 𝑙𝑜𝑐𝑠 lies outside the victim set, and outside_unchanged therefore preserves ℓ in ev-ery supported fault outcome. The finite step bound invariant then shows that every supported Rowhammer outcome has the same protected view as the deterministic run. The finite-distribution lemma mapD_eq_dirac_of_support turns this support-wise fact into the point mass equation of Theorem 8.4. 
+
+Observation collapse. Unfolding the two observation definitions exposes a map of 𝑂 over the Rowhammer protected-view distribution. Rewriting that distribution with Theorem 8.4 leaves 𝑂 
+
+mapped over a Dirac distribution. The finite-distribution law 
+
+Dist .map 𝑂 (𝛿 (𝑣 )) = 𝛿 (𝑂 (𝑣 )) 
+
+gives Theorem 8.5. 
+
+Non-interference equivalence and its corollaries. For low-equivalent 𝑚 1 and 𝑚 2, observation collapse rewrites the two Rowhammer observation distributions to 
+
+𝛿  ObsOrd 𝑛 𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 1) and 𝛿  ObsOrd 𝑛 𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 2).
+
+Ordinary non-interference implies equality of the two points and hence congruence of their Dirac distributions. Conversely, equality of the two Dirac distributions implies equality of their points by injectivity of 𝛿 . This proves Theorem 8.6. Robust preservation introduces an arbitrary frame-local kernel and applies the forward direction. Fixed-kernel and existential reflection are direct contrapositives of that same direction. 
+
+8.3 No-fault sanity results 
+
+The checked development also proves, without any safety or well-formedness assumption, that the no-fault kernel embeds deterministic execution exactly: 
+
+runRHTrace 𝑛 𝑠𝑒𝑝, noFlip (𝑠𝑒𝑝 ),𝑏𝑟,𝑙𝑜𝑐𝑠 (𝑐 ) = 𝛿  runDTrace 𝑛 (𝑐 ).
+
+The proof is an induction on 𝑛 using the existing one-step no-fault theorem, Dirac bind, and mapping over a Dirac distribution. It yields 
+
+ObsRH 𝑛 𝑠𝑒𝑝, noFlip (𝑠𝑒𝑝 ),𝑏𝑟,𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 ) = 𝛿  ObsOrd 𝑛 𝑙𝑜𝑐𝑠,𝑂 (𝑃, 𝑚 )
+
+and therefore 
+
+OrdinaryNI (𝛾, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ) ⇐⇒ RowhammerNI (𝛾, 𝑠𝑒𝑝, noFlip (𝑠𝑒𝑝 ), 𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑂, 𝑃 ).
+
+In Lean they are runRHTrace_noFlip , noFault_observation , and ordinaryNI_iff_noFaultNI .
+
+9 Conclusion 
+
+This paper has given an abstract, compositional operational semantics for a representative program-ming language in the presence of Rowhammer. The semantics treats Rowhammer as a probabilistic effect on memory accesses, rather than as a direct model of DRAM organisation or semiconductor physics. The no-fault embedding theorem, Theorem 6.4, recovers the ordinary deterministic se-mantics as the point mass special case of the Rowhammer semantics, answering RQ1. The model isolates the Rowhammer effect as a small generalisation from state transformers to probabilistic state transformers: memory reads and writes are intercepted by a fault kernel, while the rest of the operational semantics is lifted compositionally using the probability monad. This gives the small, conceptually non-intrusive interface sought in RQ2. The interface is also largely independent of 24 A. Naseredini & M. Berger 
+
+the ambient programming language. The development uses only that programs perform memory reads and writes, and that the ordinary operational semantics can expose those accesses. This is not by itself a formal semantics for every language or machine model, but it gives a clear route for instantiating the same Rowhammer interface in other languages, intermediate representations, or instruction-set semantics. In this sense, the paper affirms RQ3. The semantic-collapse theorem, Theorem 6.1, proves the soundness of physical separation: if every protected program access has a victim set disjoint from the protected locations, then every admissible Rowhammer kernel induces exactly the deterministic protected behaviour. This justifies physical separation as a Rowhammer defence within the abstract fault contract, answering RQ4. Finally, the information flow results show that the abstraction supports standard semantic security reasoning. In particular, Theorems 8.4, 8.5 and 8.6 transport non-interference reasoning from ordinary executions to Rowhammer-affected executions, and back again, under the same physical separation hypotheses. Thus the model does not merely describe faulty executions, it makes Rowhammer amenable to established semantic security frameworks, addressing RQ5. 
+
+10 Future work 
+
+Refining the Rowhammer model. The fault kernel contract history-freeness (F3) and stationarity (F4) exclude genuinely history-dependent faults such as charge accumulation across repeated activations and refresh-cycle effects. Generalising requires extending the Rowhammer state with an activation history, refresh state, or other hardware state. Our theorems would then quantify over arbitrary stateful kernels satisfying the same protected-region preservation condition, and we expect the parametric-invariant proof architecture to carry over. Moreover, DRAM vendors typically deploy proprietary, undocumented mitigations, most notably Target Row Refresh (TRR), whose opaque nature complicates formal security guarantees. Bridging the gap between our formal models and these black-box defences requires rigorous experimental reverse engineering. Pioneering methodologies such as the U-TRR framework [ 13 ], uncover the internal mechanics of TRR by taking data-retention failures as a side channel. Alongside this, complementary characterisation of DRAM’s disturbance sensitivities [ 30 ] establishes clear empirical boundaries on when such defences succeed or fail, and in turn informs principled mitigations such as BlockHammer [ 40 ]. By experimentally exposing the true behaviour and limitations of in-DRAM mitigations, such efforts provide the precise physical parameters and fault models that a formal framework like ours needs in order to deliver end-to-end software security guarantees. 
+
+Deploying physical separation. Our soundness theorem is conditional on the data placement satisfying physical separation. Establishing that on modern hardware is nontrivial: DRAM vendors do not publish row geometry, in-DRAM address remapping obscures physical adjacency, and the effective blast radius must be measured per device. Empirical work on learning the Rowhammer parameters of a given device [ 28 ] is complementary to our results: it supplies the physical facts that instantiate 𝑏𝑟 and safe , while the theorem turns those facts into a semantic guarantee. The separation between the abstract geometry ( SeparationModel ) and the semantics in our mechanisation is designed exactly for this division of labour. 
+
+Probabilistic non-termination. A natural extension is to complement the finite step bound seman-tics with an explicit account of eventual termination and divergence. This could be done either by taking limits of the finite step bound termination probabilities, by developing a sub-probability semantics over final memories, or by constructing a probability measure on infinite execution paths. A fully event-based treatment, in which divergence is identified with a measurable set of infinite executions, may additionally require the construction of an appropriate probability measure on Mechanised operational semantics of Rowhammer 25 
+
+infinite paths and an adequacy theorem relating that measure to the 𝑛 -step operational semantics. Each route introduces nontrivial order-theoretic or measure-theoretic mechanisation. 
+
+Connections with Shannon-Scott information. A further direction is to relate the present proba-bilistic account of Rowhammer to semantic accounts of information based on both Shannon entropy and Scott domains. Shannon’s theory of communication provides a natural language for noisy channels and probabilistic leakage [ 36 ], while domain-theoretic and topological methods are com-monly used in programming language semantics to model partial information and non-terminating computation. Recent work has connected these two perspectives in the setting of information flow and non-interference [ 14 ]. Our results compare the distributions of low observations after a fixed number of execution steps. It would be interesting to investigate whether this account can be extended to an infinite-horizon semantics in which Rowhammer-induced probabilistic leakage, partial observations, and non-termination are treated in a single Shannon-Scott framework. 
+
+> Acknowledgements
+> Chunyan Mu drew our attention to Rowhammer being an open problem from a non-interference angle. We thank David Clark for numerous discussions about information flow and non-interference, Davide Bartolini and Xubin Tan for helping us to understand memory controllers, and Lev Mukhanov for alerting us to the difficulty of reproducing the Rowhammer attacks. Fredrik Dahlqvist helped us better to understand Kozen-style probabilistic semantics of probabilistic programming languages. We thank Yusuke Izawa and Mohammad M. Ahmadpanah for helpful comments, which greatly improved the presentation of this paper.
+
+26 A. Naseredini & M. Berger 
+
+References 
+
+[1] Anonymous. 2026. Lean proofs for "Mechanised operational semantics of Rowhammer". https://anonymous.4open. science/r/rh_separation_paper_anon_lean-48C7/. [2] Ferdinand Brasser, Lucas Davi, David Gens, Christopher Liebchen, and Ahmad-Reza Sadeghi. 2017. CAn’t Touch This: Software-only Mitigation against Rowhammer Attacks Targeting Kernel Memory. In 26th USENIX Security Symposium (USENIX Security 17) . USENIX Association, Vancouver, BC, Canada, 117–130. https://www.usenix.org/conference/ usenixsecurity17/technical-sessions/presentation/brasser [3] Michael R. Clarkson and Fred B. Schneider. 2010. Hyperproperties. Journal of Computer Security 18, 6 (2010), 1157–1210. doi:10.3233/JCS-2009-0393 [4] Paul J. Cohen. 1963. The Independence of the Continuum Hypothesis. Proceedings of the National Academy of Sciences 
+
+50, 6 (1963), 1143–1148. doi:10.1073/pnas.50.6.1143 [5] Fredrik Dahlqvist, Alexandra Silva, and Dexter Kozen. 2020. Semantics of Probabilistic Programming: A Gentle Introduction . Cambridge University Press, 1–42. doi:10.1017/9781108770750.002 [6] Leonardo de Moura and Sebastian Ullrich. 2021. The Lean 4 Theorem Prover and Programming Language. In Automated Deduction – CADE 28 . Springer, 625–635. doi:10.1007/978-3-030-79876-5_37 [7] Pietro Frigo, Emanuele Vannacci, Hasan Hassan, Victor van der Veen, Onur Mutlu, Cristiano Giuffrida, Herbert Bos, and Kaveh Razavi. 2020. TRRespass: Exploiting the Many Sides of Target Row Refresh. In 2020 IEEE Symposium on Security and Privacy (SP) . 747–762. doi:10.1109/SP40000.2020.00090 [8] Michèle Giry. 1982. A categorical approach to probability theory. In Categorical Aspects of Topology and Analysis .Lecture Notes in Mathematics, Vol. 915. Springer, 68–85. doi:10.1007/BFb0092872 [9] Kurt Gödel. 1940. The Consistency of the Continuum-Hypothesis . Number 3 in Annals of Mathematics Studies. Princeton University Press, Princeton, NJ. doi:10.1515/9781400881635 [10] Joseph A. Goguen and José Meseguer. 1982. Security Policies and Security Models. In Proceedings of the 1982 IEEE Symposium on Security and Privacy . 11–20. doi:10.1109/SP.1982.10014 [11] Daniel Gruss, Clémentine Maurice, and Stefan Mangard. 2016. Rowhammer.js: A Remote Software-Induced Fault Attack in JavaScript. In Detection of Intrusions and Malware, and Vulnerability Assessment (DIMVA) . Springer, 300–321. doi:10.1007/978-3-319-40667-1_15 [12] Kurt Gödel. 1933. On Intuitionistic Arithmetic and Number Theory. Ergebnisse eines mathematischen Kolloquiums 4(1933), 34–38. doi:10.1093/oso/9780195147209.003.0063 English translation by Stefan Bauer-Mengelberg and Jean van Heijenoort. Reprinted in: Kurt Gödel: Collected Works, Volume I , Oxford University Press (1986). [13] Hasan Hassan, Yahya Can Tuğrul, Jeremie S. Kim, Victor van der Veen, Kaveh Razavi, and Onur Mutlu. 2021. Uncovering In-DRAM RowHammer Protection Mechanisms: A New Methodology, Custom RowHammer Patterns, and Implications. In 54th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO-54) . doi:10.1145/3466752.3480110 [14] Sebastian Hunt, David Sands, and Sandro Stucki. 2023. Reconciling Shannon and Scott with a Lattice of Computable Information. Proc. ACM Program. Lang. 7, POPL, Article 68 (jan 2023), 30 pages. doi:10.1145/3571740 [15] Patrick Jattke, Victor van der Veen, Pietro Frigo, Stijn Gunter, and Kaveh Razavi. 2022. BLACKSMITH: Scalable Rowhammering in the Frequency Domain. In 2022 IEEE Symposium on Security and Privacy (SP) . 716–734. doi:10.1109/ SP46214.2022.9833772 [16] Yoongu Kim, Ross Daly, Jeremie Kim, Chris Fallin, Ji Hye Lee, Donghyuk Lee, Chris Wilkerson, Konrad Lai, and Onur Mutlu. 2014. Flipping Bits in Memory Without Accessing Them: An Experimental Study of DRAM Disturbance Errors. In Proceedings of the 41st Annual International Symposium on Computer Architecture (ISCA ’14) . 361–372. doi:10.1109/ISCA.2014.6853210 [17] Andreas Kogler, Jonas Juffinger, Sulaiman Qazi, Yoongu Kim, Moritz Lipp, Nicolas Boichat, Eric Shiu, Matt Nissler, and Daniel Gruss. 2022. Half-Double: Hammering From the Next Row Over. In 31st USENIX Security Symposium (USENIX Security 22) . USENIX Association, 3807–3824. https://www.usenix.org/conference/usenixsecurity22/presentation/ kogler-half-double [18] Radhesh Krishnan Konoth, Marco Oliverio, Andrei Tatar, Dennis Andriesse, Herbert Bos, Cristiano Giuffrida, and Kaveh Razavi. 2018. ZebRAM: Comprehensive and Compatible Software Protection Against Rowhammer Attacks. In 
+
+13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18) . USENIX Association. https: //www.usenix.org/conference/osdi18/presentation/konoth [19] Dexter Kozen. 1981. Semantics of Probabilistic Programs. J. Comput. System Sci. 22, 3 (1981), 328–350. doi:10.1016/0022-0000(81)90036-2 [20] Andrew Kwong, Daniel Genkin, Daniel Gruss, and Yuval Yarom. 2020. RAMBleed: Reading Bits in Memory Without Accessing Them. In IEEE Symposium on Security and Privacy (S&P) . IEEE, 695–711. doi:10.1109/SP40000.2020.00020 [21] Francis William Lawvere. 1962. The Category of Probabilistic Mappings: With Applications to Stochastic Processes, Statistics, and Pattern Recognition. (1962). https://lawverearchives.com/wp-content/uploads/2025/07/1962.probmap. pdf Manuscript, 12 pages. Mechanised operational semantics of Rowhammer 27 
+
+[22] Saunders Mac Lane. 1998. Categories for the Working Mathematician (2 ed.). Graduate Texts in Mathematics, Vol. 5. Springer, New York. doi:10.1007/978-1-4757-4721-8 [23] John McCarthy. 1962. Towards a Mathematical Science of Computation. In Information Processing 1962: Proceedings of IFIP Congress 62 , Cicely M. Popplewell (Ed.). North-Holland, Amsterdam, 21–28. https://www-formal.stanford.edu/ jmc/towards.pdf [24] Eugenio Moggi. 1991. Notions of Computation and Monads. Information and Computation 93, 1 (1991), 55–92. doi:10.1016/0890-5401(91)90052-4 [25] Peter D. Mosses. 2004. Modular Structural Operational Semantics. Journal of Logical and Algebraic Methods in Programming 60–61 (2004), 195–228. doi:10.1016/j.jlap.2004.03.008 [26] Onur Mutlu and Jeremie S. Kim. 2020. RowHammer: A Retrospective. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems 39, 8 (2020), 1555–1571. doi:10.1109/TCAD.2019.2915318 [27] Amir Naseredini. 2024. Towards Automatic Analysis of Microarchitectural Attacks . Ph. D. Dissertation. University of Sussex. https://sussex.figshare.com/articles/thesis/Towards_automatic_analysis_of_microarchitectural_attacks/ 24610929 [28] Amir Naseredini, Martin Berger, Matteo Sammartino, and Shale Xiong. 2023. ALARM: Active LeArning of Rowhammer Mitigations. In Proceedings of the 11th International Workshop on Hardware and Architectural Support for Security and Privacy (Chicago, IL, USA) (HASP ’22) . Association for Computing Machinery, New York, NY, USA, 1–9. doi:10.1145/ 3569562.3569563 [29] Hanne Riis Nielson and Flemming Nielson. 2007. Semantics with Applications: An Appetizer (Undergraduate Topics in Computer Science) . Springer-Verlag, Berlin, Heidelberg. doi:10.1007/978-1-84628-692-6 [30] Lois Orosa, A. Giray Yağlıkçı, Haocong Luo, Ataberk Olgun, Jisung Park, Hasan Hassan, Minesh Patel, Jeremie S. Kim, and Onur Mutlu. 2021. A Deeper Look into RowHammer’s Sensitivities: Experimental Analysis of Real DRAM Chips and Implications on Future Attacks and Defenses. In 54th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO-54) . doi:10.1145/3466752.3480069 [31] Thibaut Pérami, Thomas Bauereiss, Brian Campbell, Zongyuan Liu, Nils Lauermann, Alasdair Armstrong, and Peter Sewell. 2026. ArchSem: Reusable Rigorous Semantics of Relaxed Architectures. Proc. ACM Program. Lang. 10, POPL (2026), 204–234. doi:10.1145/3776650 [32] Gordon Plotkin and John Power. 2002. Notions of Computation Determine Monads. In Foundations of Software Science and Computation Structures (Lecture Notes in Computer Science, Vol. 2303) . Springer, 373–393. doi:10.1007/3-540-45931-6_24 [33] Norman Ramsey and Avi Pfeffer. 2002. Stochastic lambda calculus and monads of probability distributions. In 
+
+Proceedings of the 29th ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL) . ACM, 154–165. doi:10.1145/503272.503288 [34] Andrei Sabelfeld and Andrew C. Myers. 2003. Language-Based Information-Flow Security. IEEE Journal on Selected Areas in Communications 21, 1 (2003), 5–19. doi:10.1109/JSAC.2002.806121 [35] Mark Seaborn and Thomas Dullien. 2015. Exploiting the DRAM rowhammer bug to gain kernel privileges. https: //googleprojectzero.blogspot.com/2015/03/exploiting-dram-rowhammer-bug-to-gain.html Code at https://github. com/google/rowhammer-test. [36] Claude E. Shannon. 1948. A Mathematical Theory of Communication. The Bell System Technical Journal 27, 3 (1948), 379–423. doi:10.1002/j.1538-7305.1948.tb01338.x [37] The mathlib Community. 2020. The Lean Mathematical Library. In Proceedings of the 9th ACM SIGPLAN International Conference on Certified Programs and Proofs (New Orleans, LA, USA) (CPP 2020) . Association for Computing Machinery, New York, NY, USA, 367–381. doi:10.1145/3372885.3373824 [38] Cláudio Vasconcelos and António Ravara. 2016. The While language. arXiv:1603.08949 [cs.PL] doi:10.48550/arXiv. 1603.08949 [39] Andrew Walker, Sungkwon Lee, and Dafna Beery. 2021. On DRAM Rowhammer and the Physics of Insecurity. IEEE Transactions on Electron Devices PP (03 2021), 1–11. doi:10.1109/TED.2021.3060362 [40] A. Giray Yağlıkçı, Minesh Patel, Jeremie S. Kim, Roknoddin Azizi, Ataberk Olgun, Lois Orosa, Hasan Hassan, Jisung Park, Konstantinos Kanellopoulos, Taha Shahroodi, Saugata Ghose, and Onur Mutlu. 2021. BlockHammer: Preventing RowHammer at Low Cost by Blacklisting Rapidly-Accessed DRAM Rows. In IEEE International Symposium on High-Performance Computer Architecture (HPCA) . doi:10.1109/HPCA51647.2021.00037 28 A. Naseredini & M. Berger 
+
+# Supplementary Appendix: Mechanised high-level opera-tional semantics of Rowhammer 
+
+A Material for Section 4: A deterministic small-step operational semantics for a WHILE language 
+
+This appendix presents the full small-step operational semantics that were given only partially in Section 4. For more on small-step operational semantics see any textbook on programming language semantics like e.g., [4–6]. Recall that the syntax (arithmetic expressions, Boolean expressions, programs) are given by 
+
+𝑒 :: = 𝑐 | 𝑥 | 𝑒 + 𝑒 𝑏 :: = true | false | ¬ 𝑏 | 𝑏 ∧ 𝑏 | 𝑒 = 𝑒 𝑃 :: = skip | 𝑥 := 𝑒 | 𝑃 ; 𝑃 | if 𝑏 then 𝑃 else 𝑃 | while 𝑏 do 𝑃 
+
+We identify arithmetic constants with their denoted values. Thus 𝑣, 𝑣 1, 𝑣 2 ∈ Val range over arithmetic values, represented by constants in the expression syntax. Boolean values are 𝑡, 𝑡 1, 𝑡 2 ∈ { true , false }.Evaluation is left-to-right. Conjunction is deliberately non-short-circuiting, matching the ex-pression semantics used elsewhere in the paper. Although deterministic expression reduction does not modify memory, memories are included in expression configurations so that the ordinary and faulty transition systems have the same shape. Transitions carry a label recording the memory access they perform: 
+
+ℓ :: = read (𝑥 ) | write (𝑥 ) | 𝜏 . 
+
+A read of variable 𝑥 is labelled read (𝑥 ), the write performed by an assignment to 𝑥 is labelled 
+
+write (𝑥 ), and every other transition is silent ( 𝜏 ); congruence rules propagate the label of their premise. The labels play no role in the deterministic semantics itself, but they localise the fault points of the probabilistic Rowhammer semantics of Section 5 and make access counting definitional. Single steps are always written with their label; every multi-step notion below is indexed by the 
+
+sequence of labels performed (written with a double arrow), so the labelled judgement is the only transition relation in play. 
+
+A.0.1 Arithmetic expressions. An arithmetic-expression configuration has the form ⟨𝑒, 𝑚 ⟩. The labelled relation 
+
+⟨𝑒, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′, 𝑚 ′⟩
+
+is the least relation generated by the following rules. Arithmetic values have no outgoing transition. 
+
+⟨𝑥, 𝑚 ⟩ read (𝑥 )
+
+−−−−−−→𝑎 ⟨𝑚 (𝑥 ), 𝑚 ⟩
+
+(A-Read )
+
+⟨𝑒 1, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′
+
+> 1
+
+, 𝑚 ′⟩⟨𝑒 1 + 𝑒 2, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′ 
+
+> 1
+
++ 𝑒 2, 𝑚 ′⟩
+
+(A-Plus-L )
+
+⟨𝑒 2, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′
+
+> 2
+
+, 𝑚 ′⟩⟨𝑣 1 + 𝑒 2, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑣 1 + 𝑒 ′
+
+> 2
+
+, 𝑚 ′⟩
+
+(A-Plus-R )
+
+𝑣 = 𝑣 1 + 𝑣 2
+
+⟨𝑣 1 + 𝑣 2, 𝑚 ⟩ 𝜏 
+
+−→𝑎 ⟨𝑣, 𝑚 ⟩
+
+(A-Plus )Mechanised operational semantics of Rowhammer 29 
+
+A.0.2 Boolean expressions. A Boolean-expression configuration has the form ⟨𝑏, 𝑚 ⟩. The labelled relation 
+
+⟨𝑏, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′, 𝑚 ′⟩
+
+is generated by the following rules. The Boolean values true and false have no outgoing transition. 
+
+⟨𝑏, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′, 𝑚 ′⟩⟨¬ 𝑏, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨¬ 𝑏 ′, 𝑚 ′⟩
+
+(B-Not-Step )
+
+⟨¬ true , 𝑚 ⟩ 𝜏 
+
+−→𝑏 ⟨false , 𝑚 ⟩
+
+(B-Not-True )
+
+⟨¬ false , 𝑚 ⟩ 𝜏 
+
+−→𝑏 ⟨true , 𝑚 ⟩
+
+(B-Not-False )
+
+⟨𝑏 1, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′
+
+> 1
+
+, 𝑚 ′⟩⟨𝑏 1 ∧ 𝑏 2, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′ 
+
+> 1
+
+∧ 𝑏 2, 𝑚 ′⟩
+
+(B-And-L )
+
+⟨𝑏 2, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′
+
+> 2
+
+, 𝑚 ′⟩⟨𝑡 1 ∧ 𝑏 2, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑡 1 ∧ 𝑏 ′
+
+> 2
+
+, 𝑚 ′⟩
+
+(B-And-R )
+
+𝑡 = 𝑡 1 ∧ 𝑡 2
+
+⟨𝑡 1 ∧ 𝑡 2, 𝑚 ⟩ 𝜏 
+
+−→𝑏 ⟨𝑡, 𝑚 ⟩
+
+(B-And )
+
+⟨𝑒 1, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′
+
+> 1
+
+, 𝑚 ′⟩⟨𝑒 1 = 𝑒 2, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑒 ′ 
+
+> 1
+
+= 𝑒 2, 𝑚 ′⟩
+
+(B-Eq-L )
+
+⟨𝑒 2, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′
+
+> 2
+
+, 𝑚 ′⟩⟨𝑣 1 = 𝑒 2, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑣 1 = 𝑒 ′
+
+> 2
+
+, 𝑚 ′⟩
+
+(B-Eq-R )
+
+𝑡 = (𝑣 1 = 𝑣 2)⟨𝑣 1 = 𝑣 2, 𝑚 ⟩ 𝜏 
+
+−→𝑏 ⟨𝑡, 𝑚 ⟩
+
+(B-Eq )
+
+A.0.3 Programs. A program configuration has the form ⟨𝑃, 𝑚 ⟩. The labelled program transition relation 
+
+⟨𝑃, 𝑚 ⟩ ℓ
+
+−→𝑝 ⟨𝑃 ′, 𝑚 ′⟩
+
+is the least relation generated by the following rules. An assignment first reduces its right-hand side one expression step at a time. Once the expression is a value, the assignment performs the write. 
+
+⟨𝑒, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′, 𝑚 ′⟩⟨𝑥 := 𝑒, 𝑚 ⟩ ℓ
+
+−→𝑝 ⟨𝑥 := 𝑒 ′, 𝑚 ′⟩
+
+(P-Assign-Step )
+
+⟨𝑥 := 𝑣, 𝑚 ⟩ write (𝑥 )
+
+−−−−−−−→𝑝 ⟨skip , 𝑚 [𝑥 ↦ → 𝑣 ]⟩ 
+
+(P-Assign )Sequential composition reduces its left-hand program until that program has terminated. 30 A. Naseredini & M. Berger 
+
+⟨𝑃, 𝑚 ⟩ ℓ
+
+−→𝑝 ⟨𝑃 ′, 𝑚 ′⟩⟨𝑃 ; 𝑄, 𝑚 ⟩ ℓ
+
+−→𝑝 ⟨𝑃 ′; 𝑄, 𝑚 ′⟩
+
+(P-Seq-Step )
+
+⟨skip ; 𝑄, 𝑚 ⟩ 𝜏 
+
+−→𝑝 ⟨𝑄, 𝑚 ⟩
+
+(P-Seq-Skip )A conditional reduces its guard one Boolean-expression step at a time and then selects the corresponding branch. 
+
+⟨𝑏, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′, 𝑚 ′⟩⟨if 𝑏 then 𝑃 else 𝑄, 𝑚 ⟩ ℓ
+
+−→𝑝 ⟨if 𝑏 ′ then 𝑃 else 𝑄, 𝑚 ′⟩
+
+(P-If-Step )
+
+⟨if true then 𝑃 else 𝑄, 𝑚 ⟩ 𝜏 
+
+−→𝑝 ⟨𝑃, 𝑚 ⟩
+
+(P-If-True )
+
+⟨if false then 𝑃 else 𝑄, 𝑚 ⟩ 𝜏 
+
+−→𝑝 ⟨𝑄, 𝑚 ⟩
+
+(P-If-False )A while loop unfolds by one standard small step. Its guard is subsequently reduced by the conditional rules above. 
+
+⟨while 𝑏 do 𝑃, 𝑚 ⟩ 𝜏 
+
+−→𝑝 if 𝑏 then  𝑃 ; while 𝑏 do 𝑃  else skip , 𝑚 
+
+(P-While )There is no transition from ⟨skip , 𝑚 ⟩; these are the terminal program configurations. 
+
+A.0.4 Finite and terminating executions. A finite execution is indexed by the sequence of labels it performs. Write 
+
+⟨𝑃, 𝑚 ⟩ 𝑠 
+
+=⇒𝑝 
+
+⟨𝑃 ′, 𝑚 ′⟩
+
+for 𝑠 = ℓ1 · · · ℓ𝑘 when there are configurations 
+
+⟨𝑃, 𝑚 ⟩ = 𝐶 0
+
+> ℓ1
+
+−−→𝑝 𝐶 1
+
+> ℓ2
+
+−−→𝑝 · · · ℓ𝑘 
+
+−−→𝑝 𝐶 𝑘 = ⟨𝑃 ′, 𝑚 ′⟩.
+
+The length |𝑠 | is the number of transitions performed. Because expression reductions are propagated through assignments and conditionals one step at a time, it counts both expression reductions and command reductions. The access trace acc (𝑠 ) is the subsequence of non-𝜏 labels of 𝑠 , in order; its length is the number of memory accesses (reads and writes) the run performs. Both are definitions over the label sequence, not counts of rule occurrences inside derivation trees. The analogous trace-indexed relations 𝑠 
+
+==⇒𝑎 
+
+and 𝑠 
+
+==⇒𝑏 
+
+at the expression levels are defined in the same way. A program terminates with final memory 𝑚 ′, written 
+
+⟨𝑃, 𝑚 ⟩ ⇓ 𝑚 ′,
+
+when ⟨𝑃, 𝑚 ⟩ 𝑠 
+
+=⇒𝑝 
+
+⟨skip , 𝑚 ′⟩ for some label sequence 𝑠 . It terminates within at most 𝑛 small steps, written 
+
+⟨𝑃, 𝑚 ⟩ ⇓ ≤𝑛 𝑚 ′,
+
+when moreover some such 𝑠 has |𝑠 | ≤ 𝑛 . A program diverges from 𝑚 , written 
+
+⟨𝑃, 𝑚 ⟩ ⇑ ,Mechanised operational semantics of Rowhammer 31 
+
+when for every 𝑛 ∈ N there are a label sequence 𝑠 with |𝑠 | = 𝑛 and a configuration ⟨𝑃 𝑛 , 𝑚 𝑛 ⟩ such that ⟨𝑃, 𝑚 ⟩ 𝑠 
+
+=⇒𝑝 
+
+⟨𝑃 𝑛 , 𝑚 𝑛 ⟩. The index 𝑛 here is a literal bound on the number of small-step transitions. Sequential composition cannot duplicate or reuse a budget already consumed by its left-hand program. 
+
+A.0.5 Basic metatheory. The lemmas of this subsection are standard and proved on paper. The mechanisation contains those the soundness theorem rests on (determinism and progress in func-tional form, trace realisation, divergence, and well-formedness preservation). The remaining lemmas below are stated for completeness of the presentation and are not part of the Lean development. 
+
+Lemma A.1 (Values are terminal). There are no ℓ and 𝐶 with ⟨𝑣, 𝑚 ⟩ ℓ
+
+−→𝑎 𝐶 ; none with ⟨𝑡, 𝑚 ⟩ ℓ
+
+−→𝑏 
+
+𝐶 ; and none with ⟨skip , 𝑚 ⟩ ℓ
+
+−→𝑝 𝐶 .
+
+Lemma A.2 (Determinism). Each of the labelled relations is a partial function on configurations, including its label: if 𝐶 ℓ1
+
+−−→𝑝 𝐶 1 and 𝐶 ℓ2
+
+−−→𝑝 𝐶 2 then ℓ1 = ℓ2 and 𝐶 1 = 𝐶 2, and likewise for ·
+
+−→𝑎 and ·
+
+−→𝑏 .
+
+Proof. Rule induction. For each syntactic form at most one rule applies: the congruence rules require a non-value in the position being reduced (values are terminal by Theorem A.1, so their premises are otherwise unsatisfiable), and the redex rules require values in all positions. □
+
+Lemma A.3 (Progress). If 𝑒 is not a value then ⟨𝑒, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′, 𝑚 ′⟩ for some ℓ, 𝑒 ′, 𝑚 ′; if 𝑏 is not a value then ⟨𝑏, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′, 𝑚 ′⟩ for some ℓ, 𝑏 ′, 𝑚 ′; and if 𝑃 ≠ skip then ⟨𝑃, 𝑚 ⟩ ℓ
+
+−→𝑝 ⟨𝑃 ′, 𝑚 ′⟩ for some ℓ,
+
+𝑃 ′, 𝑚 ′.
+
+Proof. Induction on the syntax, using totality of memories for A-Read . □
+
+Corollary A.4 (Termination–divergence dichotomy). For every configuration ⟨𝑃, 𝑚 ⟩, exactly one of the following holds: ⟨𝑃, 𝑚 ⟩ ⇓ 𝑚 ′ for a unique 𝑚 ′, or ⟨𝑃, 𝑚 ⟩ ⇑ .
+
+Proof. By Theorem A.2 the maximal transition sequence from ⟨𝑃, 𝑚 ⟩ is unique, and by Theo-rem A.3 it can stop only at a terminal configuration ⟨skip , 𝑚 ′⟩. If that sequence is finite it yields 
+
+⇓ 𝑚 ′, with 𝑚 ′ unique by determinism iterated along the run; if it is infinite, every 𝑛 is realised and 
+
+⇑ holds. The two cases exclude each other because a terminated run has no continuation. □
+
+Lemma A.5 (Memory invariance of deterministic expression steps). If ⟨𝑒, 𝑚 ⟩ ℓ
+
+−→𝑎 ⟨𝑒 ′, 𝑚 ′⟩ or 
+
+⟨𝑏, 𝑚 ⟩ ℓ
+
+−→𝑏 ⟨𝑏 ′, 𝑚 ′⟩, then 𝑚 ′ = 𝑚 .
+
+Deterministically, expression-level small steps are thus redundant: only P-Assign modifies the memory. This lemma is the precise sense in which the fine-grained presentation is overkill for the ordinary semantics; the Rowhammer refinement of Section B breaks exactly this lemma, a read may disturb the blast radius of the accessed location, and nothing else in the design. 
+
+Lemma A.6 (Expression evaluation terminates, with explicit cost). Let 𝑟 (𝑒 ) be the number of variable occurrences plus the number of operators in 𝑒 . Then ⟨𝑒, 𝑚 ⟩ 𝑠 
+
+==⇒𝑎 
+
+⟨𝑣, 𝑚 ⟩ for a unique value 𝑣 
+
+and some 𝑠 with |𝑠 | = 𝑟 (𝑒 ), and similarly for Boolean expressions. Each transition fires exactly one 
+
+A-Read or one redex rule under congruences, so 𝑟 strictly decreases; acc (𝑠 ) is the sequence of reads of 
+
+𝑒 , in left-to-right order. 
+
+Lemma A.7 (Adeqacy of explicit reads). ⟨𝑒, 𝑚 ⟩ 𝑠 
+
+==⇒𝑎 
+
+⟨𝑣, 𝑚 ⟩ for some 𝑠 iff J𝑒 Kord (𝑚 ) = 𝑣 , and 
+
+⟨𝑏, 𝑚 ⟩ 𝑠 
+
+==⇒𝑏 
+
+⟨𝑡, 𝑚 ⟩ for some 𝑠 iff J𝑏 Kord (𝑚 ) = 𝑡 , where J·Kord is the atomic expression evaluation defined above. 32 A. Naseredini & M. Berger 
+
+Each dynamic variable read is exactly one read (𝑥 )-labelled transition and each dynamic assign-ment write exactly one write (𝑥 )-labelled transition, so the number of potential access-triggered Rowhammer events in a run is the length of its access trace. The total transition count is an exact cost for this abstract machine, but it is not the number of memory accesses: it also counts operator reductions, branch selection, sequencing elimination, and loop unfolding, silent ( 𝜏 ) steps that trigger no fault in the semantics of Section 5. 
+
+B Material for Section 5: A probabilistic model of Rowhammer 
+
+This appendix presents the full small-step probabilistic operational semantics that was given only partially in Section 5. For more on probabilistic operational semantics see e.g., [1–3]. The syntax and evaluation order are those of Section A. Throughout, the blast radius 𝑏𝑟 and the protected set 𝑙𝑜𝑐𝑠 are ambient parameters, and pflip is a fault kernel subject to the contract (F1–F4) of Section 5.1. The judgements 
+
+⟨𝑒, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+𝜇, ⟨𝑏, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝜇, ⟨𝑃, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+𝜇 
+
+relate a configuration to a distribution over successor configurations, with 𝜇 ∈ Dist (AExp ×
+
+Memory ), 𝜇 ∈ Dist (BExp × Memory ), and 𝜇 ∈ Dist (Prog × Memory ) respectively. Exactly two rules sample the kernel, RH-A-Read and RH-P-Assign : every redex rule is the Dirac lifting of its deterministic counterpart, and every congruence rule pushes the reduction context through the premise distribution with Dist .𝑚𝑎𝑝 .
+
+B.0.1 Arithmetic expressions. Arithmetic values have no outgoing transition. A variable read first obtains the value 𝑚 (𝑥 ) and then samples the fault triggered by that access. 
+
+⟨𝑥, 𝑚 ⟩ ⇝RH 
+
+> 𝑎
+
+ let 𝑚 ′ ← pflip  adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ), 𝑚  in 𝛿  ⟨𝑚 (𝑥 ), 𝑚 ′⟩ (RH-A-Read )
+
+⟨𝑒 1, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+𝜇 
+
+⟨𝑒 1 + 𝑒 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑒 ′
+
+> 1
+
+, 𝑚 ′⟩. ⟨𝑒 ′ 
+
+> 1
+
++ 𝑒 2, 𝑚 ′⟩ (𝜇 ) (RH-A-Plus-L )
+
+⟨𝑒 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+𝜇 
+
+⟨𝑣 1 + 𝑒 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑒 ′
+
+> 2
+
+, 𝑚 ′⟩. ⟨𝑣 1 + 𝑒 ′
+
+> 2
+
+, 𝑚 ′⟩ (𝜇 ) (RH-A-Plus-R )
+
+𝑣 = 𝑣 1 + 𝑣 2
+
+⟨𝑣 1 + 𝑣 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+𝛿  ⟨𝑣, 𝑚 ⟩ (RH-A-Plus )
+
+B.0.2 Boolean expressions. The Boolean values true and false have no outgoing transition. 
+
+⟨𝑏, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝜇 
+
+⟨¬ 𝑏, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑏 ′, 𝑚 ′⟩. ⟨¬ 𝑏 ′, 𝑚 ′⟩ (𝜇 ) (RH-B-Not-Step )
+
+⟨¬ true , 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝛿  ⟨false , 𝑚 ⟩ (RH-B-Not-True )
+
+⟨¬ false , 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝛿  ⟨true , 𝑚 ⟩ (RH-B-Not-False )
+
+⟨𝑏 1, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝜇 
+
+⟨𝑏 1 ∧ 𝑏 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑏 ′
+
+> 1
+
+, 𝑚 ′⟩. ⟨𝑏 ′ 
+
+> 1
+
+∧ 𝑏 2, 𝑚 ′⟩ (𝜇 ) (RH-B-And-L )
+
+⟨𝑏 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝜇 
+
+⟨𝑡 1 ∧ 𝑏 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑏 ′
+
+> 2
+
+, 𝑚 ′⟩. ⟨𝑡 1 ∧ 𝑏 ′
+
+> 2
+
+, 𝑚 ′⟩ (𝜇 ) (RH-B-And-R )Mechanised operational semantics of Rowhammer 33 
+
+𝑡 = 𝑡 1 ∧ 𝑡 2
+
+⟨𝑡 1 ∧ 𝑡 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝛿  ⟨𝑡, 𝑚 ⟩ (RH-B-And )
+
+⟨𝑒 1, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+𝜇 
+
+⟨𝑒 1 = 𝑒 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑒 ′
+
+> 1
+
+, 𝑚 ′⟩. ⟨𝑒 ′ 
+
+> 1
+
+= 𝑒 2, 𝑚 ′⟩ (𝜇 ) (RH-B-Eq-L )
+
+⟨𝑒 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+𝜇 
+
+⟨𝑣 1 = 𝑒 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑒 ′
+
+> 2
+
+, 𝑚 ′⟩. ⟨𝑣 1 = 𝑒 ′
+
+> 2
+
+, 𝑚 ′⟩ (𝜇 ) (RH-B-Eq-R )
+
+𝑡 = (𝑣 1 = 𝑣 2)⟨𝑣 1 = 𝑣 2, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝛿  ⟨𝑡, 𝑚 ⟩ (RH-B-Eq )
+
+B.0.3 Programs. An assignment first reduces its right-hand side one expression step at a time. Once the expression is a value, the assignment writes that value and samples the fault triggered by the write, on the updated memory. 
+
+⟨𝑒, 𝑚 ⟩ ⇝RH  
+
+> 𝑎
+
+𝜇 
+
+⟨𝑥 := 𝑒, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑒 ′, 𝑚 ′⟩. ⟨𝑥 := 𝑒 ′, 𝑚 ′⟩ (𝜇 ) (RH-P-Assign-Step )
+
+⟨𝑥 := 𝑣, 𝑚 ⟩ ⇝RH 
+
+> 𝑝
+
+ let 𝑚 ′ ← pflip  adj (𝑏𝑟, 𝑙𝑜𝑐𝑠, 𝑥 ), 𝑚 [𝑥 ↦ → 𝑣 ] in 𝛿  ⟨skip , 𝑚 ′⟩ (RH-P-Assign )Sequential composition reduces its left-hand program until that program has terminated. 
+
+⟨𝑃, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+𝜇 
+
+⟨𝑃 ; 𝑄, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+Dist .𝑚𝑎𝑝  𝜆 ⟨𝑃 ′, 𝑚 ′⟩. ⟨𝑃 ′; 𝑄, 𝑚 ′⟩ (𝜇 ) (RH-P-Seq-Step )
+
+⟨skip ; 𝑄, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+𝛿  ⟨𝑄, 𝑚 ⟩ (RH-P-Seq-Skip )A conditional reduces its guard one Boolean-expression step at a time and then selects the corresponding branch. 
+
+⟨𝑏, 𝑚 ⟩ ⇝RH  
+
+> 𝑏
+
+𝜇 
+
+⟨if 𝑏 then 𝑃 else 𝑄, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+Dist .𝑚𝑎𝑝 (𝜆 ⟨𝑏 ′, 𝑚 ′⟩. ⟨if 𝑏 ′ then 𝑃 else 𝑄, 𝑚 ′⟩) ( 𝜇 ) (RH-P-If-Step )
+
+⟨if true then 𝑃 else 𝑄, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+𝛿  ⟨𝑃, 𝑚 ⟩ (RH-P-If-True )
+
+⟨if false then 𝑃 else 𝑄, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+𝛿  ⟨𝑄, 𝑚 ⟩ (RH-P-If-False )A while loop unfolds by one standard small step. Its guard is subsequently reduced by the conditional rules above. 
+
+⟨while 𝑏 do 𝑃, 𝑚 ⟩ ⇝RH  
+
+> 𝑝
+
+𝛿   if 𝑏 then  𝑃 ; while 𝑏 do 𝑃  else skip , 𝑚  (RH-P-While )There is no transition from ⟨skip , 𝑚 ⟩. These are the terminal program configurations. The rules are syntax-directed, so every non-terminal configuration determines a unique one-step distribution, 34 A. Naseredini & M. Berger 
+
+written step RH  
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+(⟨ 𝑃, 𝑚 ⟩) at the program level. The absorbing kernel dstep RH  
+
+> 𝑏𝑟,𝑙𝑜𝑐𝑠
+
+and the finite runs 
+
+run 𝑛 𝑏𝑟,𝑙𝑜𝑐𝑠 and run 𝑛 𝑏𝑟,𝑙𝑜𝑐𝑠, tr built from it are defined in Section 5.5. 
+
+B.1 The mechanised proof of the central theorem 
+
+For reference we reproduce the Lean proof of Theorem 6.1 from Soundness.lean . The prose sketch is in Section 6.4. 
+
+theorem physical_separation_sound : PhysicalSeparationSound := by 
+
+intro sep f hframe br locs hsafe p hwf m n apply Dist.mapD_eq_dirac_of_support intro r hr have hsub : ∀ x ∈ locs, x ∈ locs := fun x hx => hx have hpres : ∀ x ∈ locs, ∀ (m 0 m' : Memory), m' ∈ (f (sep.adj br locs x) m 0).support → ∀ ℓ, ℓ ∈ locs → m' ℓ = m 0 ℓ := fun x hx m 0 m' hm ' ℓ hℓ => hframe.outside_unchanged _ m 0 m' ℓ hm ' (sep.safe_disjoint hsafe hx ℓ hℓ)obtain ⟨h1, h2, h3 ⟩ := runRHTrace_protected (keep := ( · ∈ locs)) hsub hpres n hwf (AgreeP.refl _ m) r hr simp only [protView, Prod.mk.injEq] refine ⟨h1, ?_, ?_ ⟩· funext x exact h2 x.1 x.2 
+
+· rw [h3] 
+
+The script follows the three moves of the sketch. The intro line introduces the separation geometry, the kernel with its frame-locality hypothesis ( hframe , clause F2), the blast radius and protected set, physical separation ( hsafe ), the well-formed program ( hwf ), the initial memory, and the step bound. 
+
+Dist.mapD_eq_dirac_of_support is the support characterisation of the point mass (Section 3): it reduces the distributional equation to showing that every outcome r in the support of the trace-carrying Rowhammer run has the protected view of the deterministic run. The two have s discharge the two clauses of the parametric invariant at keep ≜ (· ∈ 𝑙𝑜𝑐𝑠 ): hsub is clause (i), used locations are kept, trivial at this instantiation, where it is exactly well-formedness, hpres is clause (ii), fault samples preserve kept locations, composed from safe_disjoint (the victim set of a protected access avoids 𝑙𝑜𝑐𝑠 ) and hframe.outside_unchanged (samples fix everything outside the victim set). The iterated invariant runRHTrace_protected , started from the reflexive agreement on the initial memory, then yields the three components of the protected view: h1 , equal residual programs, 
+
+h2 , memories agreeing on 𝑙𝑜𝑐𝑠 , h3 , equal label sequences. The remainder repackages them as an equality of protected views: funext turns pointwise agreement on protected locations into equality of the restricted memories as functions on the subtype, and h3 rewrites the access traces. 
+
+Appendix References            
+
+> [1] Fredrik Dahlqvist, Alexandra Silva, and Dexter Kozen. 2020. Semantics of Probabilistic Programming: A Gentle Introduction .Cambridge University Press, 1–42. doi:10.1017/9781108770750.002 [2] Alessandra Di Pierro, Chris Hankin, and Herbert Wiklicky. 2010. Probabilistic Semantics and Program Analysis. In
+> Lecture Notes in Computer Science . Springer Berlin Heidelberg, 1–42. doi:10.1007/978-3-642-13678-8_1 [3] Ugo Dal Lago and Margherita Zorzi. 2012. Probabilistic operational semantics for the lambda calculus. RAIRO -Theoretical Informatics and Applications 46 (2012), 413–450. doi:10.1051/ita/2012012 [4] Hanne Riis Nielson and Flemming Nielson. 2007. Semantics with Applications: An Appetizer (Undergraduate Topics in Computer Science) . Springer-Verlag, Berlin, Heidelberg. doi:10.1007/978-1-84628-692-6 [5] Tobias Nipkow and Gerwin Klein. 2014. Concrete Semantics: With Isabelle/HOL . Springer. doi:10.1007/978-3-319-10542-0
+
+Mechanised operational semantics of Rowhammer 35 
+
+[6] Glynn Winskel. 1993. The Formal Semantics of Programming Languages . The MIT Press. doi:10.7551/mitpress/3054.001. 0001

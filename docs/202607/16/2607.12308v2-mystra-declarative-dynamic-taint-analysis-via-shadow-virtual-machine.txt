@@ -1,0 +1,639 @@
+Title: Mystra: Declarative Dynamic Taint Analysis via Shadow Virtual Machine
+
+URL Source: https://arxiv.org/pdf/2607.12308v2
+
+Published Time: Thu, 16 Jul 2026 00:25:19 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Mystra: Declarative Dynamic Taint Analysis via Shadow Virtual Machine 
+
+Zhuohao Zhang 
+
+Johns Hopkins University 
+
+Baltimore, MD, USA zzhan381@jhu.edu 
+
+Junkun Liu 
+
+Johns Hopkins University 
+
+Baltimore, MD, USA jliu384@jh.edu 
+
+Rui Yang 
+
+Johns Hopkins University 
+
+Baltimore, MD, USA ryang54@jh.edu 
+
+Yinzhi Cao 
+
+Johns Hopkins University 
+
+Baltimore, MD, USA yinzhi.cao@jhu.edu 
+
+Ziyang Li 
+
+Johns Hopkins University 
+
+Baltimore, MD, USA ziyang@cs.jhu.edu 
+
+Abstract —Dynamic taint analysis (DTA) for interpreted lan-guages like JavaScript and Python requires three capabilities: observing host-runtime operations, maintaining parallel taint states, and defining how taint propagates across host operations. Existing systems couple these capabilities within a particular in-strumentation mechanism—source-rewriting or engine-native— either incurring high runtime overhead or demanding engine-specific embeddings and representations. There is yet to be a runtime-independent abstraction of a general DTA that separates taint semantics and state transitions from how a host runtime observes and executes them. We set out to develop a DTA engine that is extensible, perfor-mant, and accurate. To achieve this goal, we introduce a Shadow Virtual Machine executing alongside diverse host runtimes that tracks register-level taint, heap-level taint, provenance, and cross-invocation context. To drive this machine, we design Mystra, a declarative taint specification language with formal operational semantics. Mystra is designed to be language model friendly, and is equipped with validators that enable trustworthy automated synthesis of rules. Supporting a new vulnerability class requires only adding declarative rules, with no engine modification. Mystra is also the first to express higher-order function taint transfer declaratively, bridging native-callback boundary with formal semantics. Further, Mystra rules are compiled ahead of time to a binary representation and dispatch in constant runtime. We implement our vision into a tool named Shar, which contains a shared core engine and instantiations of the shadow VM on three runtimes along three orthogonal axes: V8 in both Node.js and Chromium (embedding), SpiderMonkey (engine), and CPython (language). Accuracy wise, on SecBench.js (493 in-scope CVEs across four CWE categories), our V8 instantiation achieves 95.5% recall with zero false positives on patched-version testing. Regarding performance, the runtime overhead of Shar is only 1.85 × over vanilla Node.js on NodeMedic’s benchmarks, and is 22.7 × lower than NodeMedic-FINE on identical workloads, all the while producing 33.2% higher recall than NodeMedic-FINE in its supported categories. 
+
+Index Terms —Dynamic taint analysis, program analysis, JavaScript, interpreted languages, runtime instrumentation, domain-specific languages 
+
+I. I NTRODUCTION 
+
+Dynamic taint analysis (DTA) has become a central tech-nique for detecting security-relevant data flows in modern soft-wares. In JavaScript systems, DTA underpins DOM-XSS and injection detection [1], server-side Node.js vulnerability analy-sis and exploit generation [2]–[4], and prototype pollution and gadget discovery [5], [6]. In the age of AI-for-security, DTA serves as the key infrastructure for LLM-guided vulnerability detection and proof-of-concept (PoC) synthesis [7]–[9]. Across these settings, the common task is to follow selected runtime values through framework code, native APIs, and runtime-managed objects until they reach security-sensitive operations. Despite the demand, DTA systems for JavaScript and sim-ilar interpreted languages remain architecturally fragmented. Source-rewriting systems [10]–[12] instrument JavaScript be-fore execution, avoiding engine modification but introducing a source-transformation boundary: analyzed modules must be available, successfully transformed, and often transpiled through Babel to handle modern syntax. This approach for-goes native and JIT-compiled execution, incurring order-of-magnitude slowdowns. Engine-native systems [13], [14] modify runtime representations or execution handlers. They gain runtime visibility, but their shadow state, propagation logic, and instrumentation are implemented together inside one engine. Neither approach provides a runtime-independent shadow execution model and declarative taint semantics that can be fast and reusable across execution tiers, embeddings, engines, and languages. The underlying problem is the absence of a runtime-independent execution model for DTA. Different runtimes expose operations through different bytecodes, stacks, layouts, and compilation strategies, a taint analysis needs the same logical information from each operation: its identity, argu-ments, result, nesting context, and affected runtime values. Likewise, the taint transition itself does not inherently depend on whether the host operation was observed in an interpreter or a JIT. Separating these concerns would allow the observation mechanism to vary while the analysis remain fixed. We introduce a Shadow Virtual Machine, a runtime-independent abstract machine for DTA. Runtime adapters translate concrete execution into uniform operation-entry and arXiv:2607.12308v2 [cs.PL] 15 Jul 2026 operation-exit events, while the Shadow VM maintains the analysis state: shadow stack, shadow heap, provenance graph, and persistent context. This separates where an operation is observed from how taint state is updated. We make this separation explicit through a host interface covering operation events, operand addressing, operation identity, object lifecycle, runtime queries, and asynchronous continuation. As the same operation event model covers interpreted and JIT-compiled execution alike, taint is preserved through JIT-optimized code rather than forcing a deoptimizing fallback to the interpreter, making the engine performant. While the runtime execution is instrumented by the Shadow VM, the precise taint behaviors of diverse runtimes and li-braries are specified in Mystra, a compiled declarative domain-specific language with formal semantics over the Shadow VM. Mystra’s basic syntax allows to describe sources, sinks, propagation, sanitization, and guarded runtime predicates. Its novel inject and extract actions model native higher-order functions such as Array.map without engine-specific callback policies. We implement this design in Shar, a multi-lingual DTA framework for JavaScript and Python. We evaluate Shar on SecBench.js [15], NodeMedic’s benchmark [12], and 19 recent vulnerabilities, measuring recall, false positives, end-to-end runtime overhead, and portability. On JS, Shar is faster than state-of-the-art DTA engines by at least 22.7 ×, incurring only 1.85 × overhead from the host engine. Accuracy wise, Shar achieves 95 .5% recall on three curated benchmarks, reporting zero false positives on patched-version cases (§VI). In summary, this work makes the following contributions:  
+
+> •
+
+The Shadow VM abstraction and host interface that separate runtime observation from taint state and transitions (§III).  
+
+> •
+
+Mystra, a compiled declarative taint specification language with formal operational semantics (§IV).  
+
+> •
+
+Shar, a Node.js DTA framework which is ported across Chromium, Spidermonkey, and CPython (§V).  
+
+> •
+
+An extensive and systematic evaluation of Shar on runtime performance and detection accuracy (§VI). Our tool Shar and the specification language Mystra, in-cluding their instantiations on the three interpreters, are made publicly available at https://github.com/MM0n5Ter/Mystra. II. M OTIVATING EXAMPLE 
+
+A. Vulnerability Context 
+
+We introduce the capability of Shar and Mystra through the detection of a vulnerability, CVE-2025-61686 [16], found in React-router, which is the most widely used routing framework in the Node.js ecosystem [17]. The vulnerability affects its server-side session storage API: createFileSessionStorage 
+
+uses an unsigned cookie value as a filesystem path. The attacker could set session cookie to path traversal payload and use it to read arbitrary files without authentication. Figure 1 shows the simplified data flow from HTTP input to file-system read. From the application level, a single await getSession(cookieHeader) call hides seven native operations across four trust domains. The cookie decoder chains four router.get('/profile', catchAsync(async (req, res) => {const cookieHeader = req.headers.cookie; // ← SOURCE const session = await getSession(cookieHeader); res.json({ data: session.data }); })); async function getSession(cookieHeader) {let ids = await cookie.parse(cookieHeader); let data = await readData(ids); return createSession(data, ids); }async function parse(cookieHeader) {// npm 'cookie': StringPrototypeSlice let cookies = cookieParse(cookieHeader); let value = cookies["session"]; return JSON.parse(decodeURIComponent( myEscape(atob(value)))); }async function readData(ids) {let entries = ids.map(id => ({ // HOF: Array.map id, file: path.join(dir, id.slice(0,4), id.slice(4)) })); return Promise.all(entries.map(async ({ id, file }) => {let content = JSON.parse( await fsp.readFile(file, "utf-8")// ← SINK (CWE-22) ); // ...... })); }
+
+> 12345678910 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+
+(a) Simplified code pattern of CVE-2025-61686.          
+
+> 1rule buffer.atob(str):
+> 2propagate str -> @ret
+> 3rule JsonParse(str):
+> 4propagate str -> @ret
+> 5rule ArrayMap(self, callback):
+> 6inject @self[*] -> callback.param[0]
+> 7extract callback.ret -> @ret[*]
+> 8rule openFileHandle(_, path):
+> 9sink path @cwe(22)
+
+(b) Mystra rules covering the flow. 
+
+Fig. 1: Motivating example: data flow and taint specification. operations in a single expression: a third-party library call (cookieParse ), a Node.js native call ( atob ), and two V8 runtime intrinsics calls ( decodeURIComponent , JSON.parse ). The file storage uses Array.map to process session identi-fiers through path.join before reaching the sink, readFile 
+
+(line 24), via Promise.all . The entire chain executes asyn-chronously: taint must survive across multiple await bound-aries to reach the final readFile call. 
+
+B. Challenges and Solutions a) Compound operations demanding expressive taint se-mantics: Native and runtime-managed operations do not al-ways induce simple argument-to-return dependencies. Some invoke user callbacks or reconstruct containers, transferring taint in ways a fixed propagation table cannot describe. Exist-ing DTA engines either encode such behavior as imperative, framework-specific models [11], [12], or hardcode taint prop-agation inside the native implementation [14]. Shar instead describes operation-specific taint behavior declaratively over a uniform operation model expressed in a DSL. In Mystra, we employ rules like inject and extract to express how taint transfer across callbacks in native higher-order functions such as Array.map (Fig. 1b, lines 5-7). b) Anchoring taint semantics to a uniform execution model: Expressive rules are only useful if they attach to a faithful, uniform execution model. Source-rewriting systems define taint over a transformed program, so the operations visible to their rules are not the operations that run: Ba-bel’s desugaring procedure rewrites callback structure, async scheduling, property accesses, and exception paths before analysis begins [10], [12]. Engine-native systems observe real execution but bind their taint logic to implementation-specific program points, so the semantics are inseparable from the engine’s internals [13], [14]. Shar separates observation from semantics: a runtime adapter instruments execution while the taint semantics live in rules defined over an event model with formal operational semantics. For instance, Shar handles the asynchronous functions in the motivating example (Fig. 1a, lines 1, 6, 11, and 18) as a fixed continuation transition, which NodeMedic reports as a known limitation [12]. The rules are anchored to operations, not to rewritten syntax or engine-specific hook code, so the same semantics apply unchanged across interpreted, native, and JIT execution. Together, Shar turns taint behavior from instrumentation code into a portable semantics: visible as operation events, specified as declarative rules, and executed by a Shadow VM. III. S HADOW VIRTUAL MACHINE 
+
+We present the Shadow VM, a parallel virtual machine that tracks taint alongside a host runtime (Figure 2). A host adapter projects concrete execution onto operation boundaries, and the Shadow VM updates the parallel state σ = ⟨S, H, G, C ⟩
+
+through generic hook and bridge transitions with rules. We formally define these states in Figure 3. 
+
+A. Abstraction 
+
+Every host operation is modeled uniformly as λ(args ) →
+
+result . An entry event exposes the operation and arguments, and the matching exit event exposes its result. Internal exe-cution may contain nested operation events. The Shadow VM therefore observes the same abstraction regardless of whether the host executes source code, bytecode, or machine code. Whether an operation requires a taint rule follows from this observability. A transparent operation exposes its data flow through nested operations and needs no summary. An opaque operation hides some data flow: universal operations such as arithmetic and property access use fixed transitions, while runtime- and library-specific operations use Mystra rules. Both follow the same entry–exit lifecycle. For example, a native higher-order function is opaque internally, but its user defined callbacks may remain visible as nested operations. 
+
+B. Shadow States 1) Shadow Stack: The shadow stack S stores active op-eration frames in event-nesting order: entry pushes a frame and the matching exit pops it. A frame maps operands to taint identifiers and stores higher-order bridge metadata. For transparent functions, operands correspond to runtime registers or stack slots. Implementations may elide frames for atomic operations while preserving these transitions. Normal returns pop the current shadow frame, but ex-ceptions and asynchronous suspension may transfer control non-locally. Before processing subsequent operation events, the adapter synchronizes S with the host’s logical contin-uation. Exception synchronization discards unwound frames and installs the thrown-value taint in the handler activation; asynchronous synchronization restores the saved operand-taint environment of a suspended activation. 
+
+2) Shadow Heap: The shadow heap H tracks object proper-ties that persist across operation frames. It maps object-address and property-key pairs to taint identifiers. Per-key tracking avoids tainting an entire object from one field; wildcard keys represent unobservable element placement. Entries follow host-object lifetime through the GC adapter. Taint resolution consults S first and uses H as fallback. 
+
+3) Provenance DAG: While S and H record where taint resides, the provenance DAG G records its origin. When an operation derives taint, the Shadow VM appends a flow node whose parents reference its operand taints. Traversing these edges from an alert reconstructs its source-to-sink provenance. 
+
+4) Specification Context: State in S and H is tied to active operations and live objects, so taint is lost across external boundaries such as file I/O. The specification context C pro-vides named stores that persist across such boundaries. Each store maps a typed key tuple to a value: C(x, k 1, . . . , k n) ⇀
+
+Val . We describe its language constructs in §IV-C. 
+
+C. Host Interface 
+
+The interaction between the Shadow VM and the host runtime is mediated by an adapter that implements a single host interface of six capabilities: 1) Operation events. Well-bracketed entry and exit bound-aries, including nested and reentrant operations. 2) Operand addressing. Mapping arguments, returns, regis-ters, and stack slots to shadow locations. 3) Operation identity. Stable identities for rule dispatch and higher-order bridge matching. 4) Object lifecycle. Stable heap identities plus relocation and finalization notifications. 5) Runtime queries. Values and metadata required by loca-tors, references, and guards. 6) Continuation synchronization. Identifying non-local con-trol transfers and restoring the target activation’s live shadow operands. The shared core contains the taint engine, rule interpreter, DAG, and specification context. Adapters, operation bindings, and runtime-specific rules form the porting surface. We de-scribe three instantiations in §VI-D. IV. L ANGUAGE DESIGN 
+
+We provide an overview of Mystra, the declarative taint specification language we previously illustrated in Figure 1b. Here, we illustrate each key construct using examples of taint rules for common JavaScript operations. function getSession(ch) {let id = parse(ch); let data = readData(id);     
+
+> // ......
+> }function parse(ch) {let cookies = Parse(ch); let value = cookies["session"];
+> let raw = atob(value);
+> return raw ;}function readData(id) {let file = path.join( dir, id.slice(0,4), id.slice(4));
+> fs.open(file);
+> // ...... }
+
+Target Source Code      
+
+> Call atob
+> Native execution
+> Host Runtime Execution
+> Pre-call Hook
+> Post-call Hook
+> Return
+> Shadow VM Execution
+> Lookup atob in RuleSet
+> rule hostapi::atob(str): propagate str -> @ret rule hostapi::open(file): sink file @cwe(22)
+> Host Runtime Shadow VM
+> RuleSet Database
+> S: Shadow
+> Stack
+> H: Shadow
+> Heap
+> G: Provenance DA G
+> C: Specification
+> Context
+> Lookup open in RuleSet
+
+Alert 
+
+Message 
+
+Mystra Rules              
+
+> Call fs.open
+> Native execution
+> Pre-call Hook
+> Post-call Hook
+> Return
+> Lookup taint of cookie in S/H
+> Create new taint node in G
+> Bind taint to raw in S/H
+> Lookup taint of file in S/H
+> Raise alert of CWE-22
+> Path Traversal Vuln (CWE-22) found on fs.open (line 467 of ...
+> Source
+
+fs.open   
+
+> atob
+> Array.slice
+> propagate cookie →raw
+> sink file @cwe(22)
+> compiler
+> Parse
+> Array.slice
+> Array.join
+
+Provenance Fig. 2: Overview of the proposed architecture. 
+
+(Shadow Stack) S ∈ Frame ∗
+
+(Shadow Heap) H : Addr × Key → TaintId 
+
+(Prov. DAG) G : List ⟨FlowNode ⟩
+
+(Spec. Context) C : VarName × Val ∗ ⇀ Val 
+
+(Values) Val ∈ TaintId ∪ Ref ∪ Z ∪ Str ∪ Bool 
+
+Fig. 3: Shadow VM state domains. 
+
+A. Rules and Actions 
+
+A taint analysis begins with two questions: where does un-trusted data enter, and where is it dangerous. Mystra introduces 
+
+source and sink to define these boundaries as shown in the following two rules. Each rule begins with the rule keyword and a namespaced signature using a :: to separate a namespace from an actual function signature. Named parameters bind to arguments in the function signature. The arrow -> separates sources from destinations and keywords prefixed with @ are built-in constructs of the language.  
+
+> 1
+
+rule V8_hostapi::CreateHTTPServer.request:  
+
+> 2
+
+source -> @ret  
+
+> 3
+
+rule V8_native::openFileHandle(_, path):  
+
+> 4
+
+sink path @cwe(22) 
+
+The first rule marks the return value of the function request 
+
+as a taint source (line 2): the action source creates a fresh taint and writes it to the return value @ret . The second rule checks whether argument path carries taint when the function 
+
+openFileHandle is called. If so, an alert of path traversal is raised as annotated by @cwe(22) (line 4). Together, these two rules define a minimal end-to-end detection. Between source and sink, taint must propagate through intermediate operations. Action propagate models this flow, and clear models sanitization:  
+
+> 1
+
+rule V8_native::StringPrototypeConcat(...parts):  
+
+> 2
+
+propagate @self, parts -> @ret  
+
+> 3
+
+rule V8_native::StringPrototypeStartsWith:  
+
+> 4
+
+clear 
+
+The first rule reads: the return value @ret is tainted if either the receiver @self or any of the variadic arguments parts 
+
+carries taint. The second rule uses clear : startsWith returns a boolean not derived from the input content, so taint is removed. A rule can contain multiple actions and conditional guards. The following rule for Object.defineProperty combines propagation with a guarded sink:  
+
+> 1
+
+rule V8_native::ObjectDefineProperty(tar, key, desc):  
+
+> 2
+
+propagate desc.value -> tar[key]  
+
+> 3
+
+sink desc @cwe(1321) where tar.is_proto 
+
+The propagate reads taint from desc.value and writes it to 
+
+tar[key] , where the bracketed key is resolved at runtime to the actual property name being defined. The sink raises a CWE-1321 alert if tar is a prototype object. The where clause conditions an action on a runtime predicate, preventing false alerts on non-dangerous cases. 
+
+B. Higher-order Function 
+
+Higher-order functions are pervasive in modern interpreted languages: map , filter , and reduce appear in JavaScript, Python, and Ruby alike. In an operation such as Array.map ,the native loop and result assembly are opaque, while each user-function invocation remains visible as a nested operation. Mystra provides inject and extract to bridge taint across these nested boundaries:  
+
+> 1
+
+rule V8_native::ArrayPrototypeMap(callback, arg):  
+
+> 2
+
+inject @self[*] -> callback.param[0]  
+
+> 3
+
+extract callback.ret -> @ret[*] 
+
+Here, callback is the rule parameter bound to the user func-tion. inject registers a bridge from the container’s element taint @self[*] to its first parameter. Each matching entry realizes this transfer, and matching exits accumulate return taints. When Array.map exits, extract writes the merged taint to @ret[*] . The user function itself is transparent and needs no declarative summary. We formalize this lifecycle in §IV-D. Structure and Actions 
+
+(Program) P ::= d ; r
+
+(Var Decl) d ::= let x [τ ] -> τ
+
+(Rule) r ::= rule ns :: sig (p): s
+
+(Sub-rule) s ::= a [ g ]
+
+(Action) a ::= propagate ℓ -> ℓ
+
+| source -> ℓ
+
+| sink ℓ @cwe (n)
+
+| inject ℓ -> f .param [i]
+
+| extract f .ret -> ℓ
+
+| set x[v] = v
+
+| clear 
+
+(Value) v ::= ℓ.taint | ℓ.ref | ℓ.value 
+
+| c | x[v] | v ⊕ v
+
+Locators and Predicates 
+
+(Locator) ℓ ::= b [ π ]
+
+(Base) b ::= @self | @ret | @args [i] | p
+
+(Path) π ::= ϵ | [*] | .k | [k]
+
+(Guard) g ::= where ϕ
+
+(Predicate) ϕ ::= e | e op c | ϕ and ϕ
+
+| ϕ or ϕ | not ϕ
+
+(Guard Expr) e ::= ℓ.type | ℓ.is_fn | ℓ.is_proto 
+
+| @argc | @is_ctor 
+
+(Namespace) ns ∈ Namespace 
+
+(Type) τ ∈ {taint , ref , str , bool , num }
+
+(Constant) c ∈ Literal 
+
+(Identifier) p, x, f, k ∈ Name 
+
+Fig. 4: Core Abstract syntax of Mystra. · denotes a sequence. [ · ] denotes optional. 
+
+C. Specification Context Extension 
+
+Taint in the shadow stack S and heap H is tied to live ob-jects and active operation frames. When a tainted value crosses an invocation boundary, the connection is lost: writeFile and a subsequent readFile execute in different frames with no surviving taint. Mystra provides specification context variables in C to bridge these gaps:           
+
+> 1let filelist[string] -> taint;
+> 2rule writeFile(path, data):
+> 3set filelist[path.value] = data.taint
+> 4rule readFile(path):
+> 5propagate filelist[path.value] -> @ret
+
+The let action declares a global storage space filelist keyed by string and mapping to datatype taint. When writeFile is called, set records the taint of data under the path . When  
+
+> readFile
+
+is later called with the same path, propagate recovers the stored taint into @ret . Variable key and value types are checked at compile time, preventing mismatched lookups. 
+
+D. Operational Semantics 
+
+We formalize Mystra over host execution state ( R) and a host-generated event stream ( E) (Figure 5). Each dynamic operation is divided into an entry event, a finite body event sequence, and an exit event. The entry event occurs after the operation and its arguments are resolved but before its body executes; the pre-hook prepares and pushes the corresponding shadow frame. The exit event occurs after the result is pro-duced but before control returns to the enclosing operation; the post-hook processes the result and pops the frame. A τ event represents host execution that requires no Shadow VM state transition. The body sequence may contain nested operation events and τ events. 
+
+a) Augmented reduction.: E-E NTER , E-I NTERNAL , and E-E XIT synchronize host execution with the Shadow VM. At entry, the pre-hook runs immediately before the host transfers control into the operation. Internal execution advances only R.At exit, the result v is available to the post-hook, which runs immediately before the host returns to the enclosing operation. Each reduction consumes exactly the head of E; the Shadow VM does not generate or rewrite the remaining event stream. 
+
+b) Hook evaluation.: PRE -H OOK looks up the opera-tion’s rule, creates a frame for its arguments, and pushes it 
+
+Algorithm 1 Hierarchical Taint Resolution                                                                                                          
+
+> Require: Locator ℓ; host state R; shadow state σ=⟨S, H, G, C ⟩
+> Ensure: Taint set T
+> 1: if ℓ=x[v]and x∈Globals then
+> 2: k=eval (¯ v, σ, R)
+> 3: return {C[x, k ]|C[x, k ]̸= 0 }
+> 4: end if
+> 5: q←top (S)▷active operation frame 6: b←base (ℓ)
+> 7: tS←S[q, b ]▷current-frame lookup 8: tH←H[addr (b),*]▷shadow heap fallback 9: t←if tS̸= 0 then tSelse tH
+> 10: if ℓ=bthen
+> 11: return {t|t̸= 0 }
+> 12: else if ℓ=b.kor ℓ=b[k]then
+> 13: return {H[addr (b), k ]|H[addr (b), k ]̸= 0 }
+> 14: else if ℓ=b[*] then
+> 15: return {H[addr (b),∗]|H[addr (b),∗]̸= 0 }
+> 16: end if
+
+onto S. The entry bridge then transfers any registered taint from the immediately enclosing frame into parameters of the new frame, after which the rule’s pre-actions execute. P OST -HOOK executes post-actions while the current frame and result remain addressable. The exit bridge then transfers the current operation’s return taint into a matching accumulator in the immediately enclosing frame, and the current frame is popped. Thus every activation follows push → bridgein → pre →
+
+execution → post → bridgeout → pop .
+
+c) Rule evaluation.: A rule body is a sequence of guarded actions. E MPTY leaves the state unchanged, and S EQ 
+
+threads it through actions from left to right. G UARD evaluates an action only when its where predicate holds; otherwise it preserves the incoming state. The judgment carries R and the current operation as read-only context, allowing guards and actions to query runtime values and properties. 
+
+d) Action rules.: Each action transforms only shadow state under the read-only context ⟨R, op ⟩. The resolution function R(ℓ, σ ) (Algorithm 1) reads from the active frame at the top of S, using the shadow heap as fallback. The write function W(ℓ, t, ⟨S, H ⟩) updates the active frame or shadow heap according to the destination locator. Both use R as an implicit read-only context for concrete references, values, and dynamic keys. The action rules follow their surface syntax: E-P ROPAGATE Notation. σ = ⟨S, H, G, C ⟩; R is the host-runtime state; E is the host-event stream; Γ is the compiled rule library. R and W resolve and write taint; 
+
+newnode (T, G ) creates a provenance node with parents T . register , bridgein , bridgeout , and accum implement HOF bridging. 
+
+Augmented Reduction. R, e :: E → R′, E: original host language reduction; R, τ :: E, σ ⇒ R′, E, σ : the augmented reduction with Shadow VM. 
+
+(Event ) e ::= enter (op, ¯a) | τ | exit (op, v ) lookup Γ(op ) = 
+
+(
+
+¯r, if ⟨op, ¯r⟩ ∈ Γ,ϵ, otherwise. 
+
+R, op, σ ⊢ prehook (¯ a) ⇓ σ′
+
+R, enter (op, ¯a) :: E → R′, ER, enter (op, ¯a) :: E, σ ⇒ R′, E, σ ′ [E-E NTER ] R, τ :: E → R′, ER, τ :: E, σ ⇒ R′, E, σ [E-I NTERNAL ]
+
+R, op, σ ⊢ posthook (v) ⇓ σ′
+
+R, exit (op, v ) :: E → R′, ER, exit (op, v ) :: E, σ ⇒ R′, E, σ ′ [E-E XIT ]
+
+Hook Evaluation. R, op, σ ⊢ h ⇓ σ′, h is a hook. 
+
+bridgein (op, σ ) = σ[Stop .param [i] 7 → T ] for each ⟨op, i, T ⟩ ∈ Sparent .bridges bridgeout (op, σ ) = σ[Sparent .acc [op ] 7 → Sparent .acc [op ] ∪ R (@ret , σ )] for each ⟨op, i, T ⟩ ∈ Sparent .bridges 
+
+¯r = lookup Γ(op ) σ′ = σ[S 7 → push (σ.S, newframe (σ, ¯a))] σ′′ = bridgein (op, σ ′) R, op, σ ′′ ⊢ pre (¯ r) ⇓ σ′′′ 
+
+R, op, σ ⊢ prehook (¯ a) ⇓ σ′′′ [P RE -H OOK ]
+
+¯r = lookup Γ(op ) R, op, σ ⊢ post (¯ r, v ) ⇓ σ′ σ′′ = bridgeout (op, σ ′) σ′′′ = σ′′ [S 7 → pop (σ′′ .S )] 
+
+R, op, σ ⊢ posthook (v) ⇓ σ′′′ [P OST -H OOK ]
+
+Rule Evaluation. R, op, σ ⊢ ¯r ⇓ σ′, ¯r is a set of rules. 
+
+R, op, σ ⊢ ϵ ⇓ σ [E MPTY ] R, op, σ ⊢ r ⇓ σ′ R, op, σ ′ ⊢ ¯r ⇓ σ′′ 
+
+R, op, σ ⊢ (r :: ¯ r) ⇓ σ′′ [S EQ ]
+
+eval (ϕ, σ, R) = ⊤ R, op, σ ⊢ a ⇓ σ′
+
+R, op, σ ⊢ (a where ϕ) ⇓ σ′ [G UARD -T] eval (ϕ, σ, R) = ⊥
+
+R, op, σ ⊢ (a where ϕ) ⇓ σ [G UARD -F] 
+
+Action Evaluation. R, op, σ ⊢ r ⇓ σ′, r is a single rule. 
+
+T = S 
+
+> ℓ∈ℓsrc
+
+R(ℓ, σ ) T̸ = ∅ n = newnode (T, G ) ⟨S′, H ′⟩ = W(ℓdst , n, ⟨S, H ⟩)
+
+R, op, ⟨S, H, G, C ⟩ ⊢ propagate ℓsrc -> ℓdst ⇓ ⟨ S′, H ′, G ∪ { n}, C ⟩ [E-P ROPAGATE ]
+
+n = newnode (∅, G ) ⟨S′, H ′⟩ = W(ℓdst , n, ⟨S, H ⟩)
+
+R, op, ⟨S, H, G, C ⟩ ⊢ source -> ℓdst ⇓ ⟨ S′, H ′, G ∪ { n}, C ⟩ [E-S OURCE ] ⟨S′, H ′⟩ = W(@ret , 0, ⟨S, H ⟩)
+
+R, op, ⟨S, H, G, C ⟩ ⊢ clear ⇓ ⟨ S′, H ′, G, C ⟩ [E-C LEAR ]
+
+T = S 
+
+> ℓ∈ℓsrc
+
+R(ℓ, σ ) T̸ = ∅ Alert (c, T )
+
+R, op, σ ⊢ sink ℓsrc @cwe (c) ⇓ σ [E-S INK ] k = eval (vkey , σ, R) u = eval (vrhs , σ, R)
+
+R, op, σ ⊢ set x[vkey ] = vrhs ⇓ σ[C[x, k ] 7 → u] [E-S ET ]
+
+T = S 
+
+> ℓ∈ℓsrc
+
+R(ℓ, σ ) op f = Ref (f, R) S′ = register (S, ⟨op f , i, T ⟩)
+
+R, op, ⟨S, H, G, C ⟩ ⊢ inject ℓsrc -> f .param [i] ⇓ ⟨ S′, H, G, C ⟩ [E-I NJECT ]
+
+op f = Ref (f, R) T = accum (S, op f ) T̸ = ∅ n = newnode (T, G ) ⟨S′, H ′⟩ = W(ℓdst , n, ⟨S, H ⟩)
+
+R, op, ⟨S, H, G, C ⟩ ⊢ extract f .ret -> ℓdst ⇓ ⟨ S′, H ′, G ∪ { n}, C ⟩ [E-E XTRACT ]
+
+Fig. 5: Core operational semantics of Mystra calls and actions; actions are treated as no-ops when there is no taint. merges source taints into a fresh provenance node, E-S OURCE 
+
+creates a parentless node, E-S INK emits an alert without changing state, E-C LEAR clears @ret , and E-S ET updates C.E-I NJECT registers a HOF bridge, and E-E XTRACT flushes the bridge accumulator to its destination. Empty taint sets are no-ops, except that inject still registers the function identity so taint created inside the nested function can be extracted. Thus, Mystra provides a trace-relative guarantee: for any event trace satisfying the portability contract, if the loaded rules conservatively summarize the explicit dependencies of all opaque operations encountered, then all modeled explicit source-to-sink flows are propagated to sinks. 
+
+E. Compilation 
+
+Mystra rules are compiled ahead of time into a binary representation ( .tbin ) loaded once at VM startup. The com-piler type-checks locators, guards, parameter names, and specification-context keys/values, then schedules actions by action type and locator availability into pre- and post-hook instruction lists. sink and inject execute before the host operation; clear and extract execute after the result is available; source , propagate , and set are placed at the earliest phase in which their referenced locators can be resolved. Within each phase, actions of the same type retain source order. The emitted binary uses builtin-ID arrays for native functions and host-signature hash maps for host APIs, giving O(1) dispatch with no runtime parsing or string comparison. V. I MPLEMENTATION 
+
+We instantiate the Shadow VM in V8 through both the Ignition interpreter and Maglev JIT. The implementation comprises a runtime-independent core—taint engine, Mystra interpreter, rule loader, provenance graph, and specification context—from a V8 adapter satisfying the portability contract (§III-C). Ignition hooks and Maglev IR nodes realize the same operation events and Shadow VM transitions; the JIT introduces no separate taint semantics. 
+
+Shadow-state realization. The shadow stack S is a pre-allocated stack of fixed-size frames storing operand taints and higher-order bridge metadata. Ignition addresses operands by register index; Maglev realizes the same logical locations through compiled shadow operations. The shadow heap H is an external hash map keyed by object identity. Relocation and finalization hooks maintain its entries as objects move or die. The append-only provenance graph G and typed specification context C reside outside V8’s managed heap. 
+
+Operation events. V8 pre- and post-hooks realize operation entry and exit. The pre-hook observes the operation and arguments and executes entry-phase actions; after the result is available, the post-hook executes exit-phase actions. Nested calls produce nested hook pairs. Atomic operations such as arithmetic and property access inline both transitions in one bytecode handler and elide the semantic frame. Calls use a post-call bytecode to match exit transition. 
+
+Continuation synchronization. Exceptions and asynchronous suspension bypass normally paired operation exits. The adapter therefore synchronizes S to the resumed host continua-tion: exception unwinding discards abandoned shadow frames and transfers the exception taint to the handler, while Promise-associated state restores operand taints after await or callback resumption. Both preserve H, G, and C.
+
+Tier-independent execution. Ignition realizes Shadow VM transitions through bytecode hooks, whereas Maglev lowers the same transitions into compiled IR nodes. We introduce 11 Maglev nodes that update the same shadow state and invoke the same rule semantics as the interpreter implementation. The performance-critical DtaCallPreHook classifies calls using a runtime-function lookup table, a user-function metadata bit, and a builtin bitmap. Calls requiring no rule work continue in two to three machine instructions without entering C++. These fast paths keep common untainted execution inline; §VI-B evaluates their end-to-end effect. 
+
+Other instantiations. The V8 instantiation also supports Chromium through DOM-specific rules and host-operation bindings. SpiderMonkey and CPython reuse the shared core through separate adapters and runtime-specific operation bind-ings. We evaluate portability in §VI-D. VI. E VALUATION 
+
+We aim to answer the following research questions: 
+
+RQ1 Detection Accuracy: How accurately does Shar detect vulnerabilities, measured by recall and false positives? 
+
+RQ2 Performance: What is the runtime overhead of Shar compared to existing approaches? 
+
+RQ3 Expressiveness: Can Mystra express taint behavior of real-world APIs, and can LLMs synthesize valid rules? 
+
+RQ4 Portability: Can Shar be ported to a new runtime without modifying its shared core? 
+
+Setup. All experiments run on a virtual machine with 16-core x86_64 vCPU, 64GB RAM, Ubuntu 24.04. We evaluate on SecBench.js [15], NodeMedic’s benchmark [12] and 19 real-world vulnerabilities disclosed in 2024–2026 spanning the Node.js, CPython, and browser runtimes (Table II). The Shadow VM runs with the full 303-LoC Mystra specification which was manually authored and iteratively refined using TABLE I: Vulnerability detection accuracy on SecBench.js. Shar consistently outperforms the baseline NodeMedic-FINE.                                      
+
+> SecBench Shar NodeMedic-F Category CWE In-Scope TP Recall TP Recall Code Inj. 94 40 39 97.5% 19 47.5% Cmd Inj. 78 96 93 96.9% 68 70.8% Path Trav. 22 167 167 100.0% ––Proto. Poll. 1321 190 172 90.5% ––
+> Total 493 471 95.5% 87 63.9%
+
+API-level tests. For NodeMedic-FINE, we measure its dy-namic taint-analysis stage as the latest maintained NodeMedic rather than its fuzzing and exploit-synthesis pipeline. 
+
+A. RQ1: Detection Accuracy 
+
+We evaluate detection accuracy along two dimensions: effectiveness—whether Shar detects known vulnerabilities— and precision—whether the alerts it produces are true pos-itives. We count a true positive when the proof-of-concept exploit triggers an alert at a security-critical sink in its exploit chain, with a provenance DAG traceable to the taint source. A handful of cases alert at a different sink than the benchmark’s nominal CWE label; these are detections of real dangerous flows, and we note the CWE divergence where relevant. 
+
+1) Detection Effectiveness: We evaluate effectiveness on three benchmarks: SecBench.js, NodeMedic’s benchmark, and a curated set of twelve real-world application vulnerabilities. 
+
+SecBench.js: SecBench.js contains 503 CVEs across 4 CWE categories; 10 are not validated cases (package removed from npm, or core-API removal that crashes the library), leaving 493 in-scope cases against which we report the result in Table I. Shar achieves 95.5% overall recall. The 22 missed cases share a few structural root causes. Eighteen are prototype-pollution misses: 16 lose per-element taint when the library decomposes a tainted compound value into fresh per-key bindings before the prototype write, and 2 are selection flows where the tainted key only navigates to Object.prototype 
+
+while the written value is constant—which an explicit value-flow DTA does not flag. The remaining four are injection misses: two command-injection cases that pass intermittently under async timing and two cases lose taint in an AST parser. To compare against prior work on a larger scale, we run the dynamic taint-analysis stage of NodeMedic-FINE [3] on the same SecBench.js exploits. Its taint engine declares sinks only for code injection and command injection, so we compare on the 136 cases in those two categories. Drivers are translated to its instrumentation interface, reusing the identical installed packages. NodeMedic-FINE’s DTA detects 87 of 136 in-scope cases (63.9%); Shar detects 132 of 136 (97.1%) on the same categories. NodeMedic-FINE uniquely detects only 1 case (timing-flaky under our engine), while Shar uniquely detects 46—28 where NodeMedic-FINE loses taint before the sink, and 18 where its Babel layer cannot instrument the package. 
+
+NodeMedic dataset reproduction. To provide a direct com-parison against prior work, we reproduce the 21-package evaluation dataset from NodeMedic [12]. This dataset, curated TABLE II: End-to-end detection on real-world vulnerabilities (2024–2026) across multiple platforms.                                                                                                                                                 
+
+> #Platform(s) Application CVE / GHSA CWE CWE Name DAG Nodes Det.
+> 1Node.js FUXA v1.2.9 CVE-2025-69983 94 Code Injection 15 Full 2Node.js FUXA v1.2.9 CVE-2026-25895 22 Path Traversal 37 Full 3Node.js PsiTransfer GHSA-xphh-5v4r-r3rx 22 Path Traversal 258 Full 4Node.js n8n v1.123 CVE-2026-27493 94 Code Injection 278 Partial 5Node.js Signal K plugin CVE-2026-23515 78 OS Command Injection 4Full 6Node.js NestJS devtools CVE-2025-54782 94 Code Injection 3Full 7Node.js Flowise v3.0.7 GHSA-jv9m-vf54-chjj 22 Path Traversal 9Full 8Node.js Flowise v3.0.7 GHSA-j44m-5v8f-gc9c 22 Path Traversal 9Full 9Node.js @react-router/node CVE-2025-61686 22 Path Traversal 53 Full 10 Node.js set-in v2.0.4 CVE-2026-26021 1321 Prototype Pollution 1Full 11 Node.js deepHas v1.0.7 CVE-2026-25047 1321 Prototype Pollution 1Full 12 Node.js locutus v2.0.38 CVE-2026-25521 1321 Prototype Pollution 13 Full 13 Chromium + SpiderMonkey n8n CVE-2025-52478 79 Cross-Site Scripting 1Full 14 Chromium + SpiderMonkey openwebui CVE-2025-65959 79 Cross-Site Scripting 1Full 15 Chromium + SpiderMonkey Prometheus CVE-2026-40179 79 Cross-Site Scripting 95 Full 16 CPython Open WebUI 0.6.9 CVE-2026-44565 22 Path Traversal 3Full 17 CPython Astrbot CVE-2025-55449 94 Code Injection 2Partial 18 CPython crawl4ai CVE-2026-26216 94 Code Injection 2Full 19 CPython DB-GPT CVE-2024-10835 89 SQL Injection 11 Full Det.: Full = primary/expected sink reached; Partial = an intermediate sink fires but the highest-severity sink is missed.
+
+TABLE III: Precision evaluation on 141 patched packages.                   
+
+> CWE Category Tests True Neg. False Pos.
+> Code Injection (CWE-94) 16 16 0Command Injection (CWE-78) 29 29 0Path Traversal (CWE-22) 990Prototype Pollution (CWE-1321) 87 87 0
+> Total 141 141 0
+
+from Ichnaea [11] and Synode [2], contains 18 confirmed vulnerabilities and 3 true negatives. Package node-libnotify 
+
+has been removed from the npm registry so we evaluate the remaining 20. Shar detects all 17 true positives and correctly produces no alert on all 3 true negatives. 
+
+Real-world applications: We evaluate detection on 12 vulner-abilities disclosed in 2024–2026 across 10 production Node.js applications (Table II), ranging from IoT plugins to enterprise platforms. Each case is instrumented with a single %SetTaint 
+
+call at the HTTP boundary; no application code is modified. Shar fully detects 11 of the 12 vulnerabilities at their expected security-sensitive sinks. The remaining case (n8n) is a two-stage attack. We analyze the limitation in the case study below. 
+
+2) Precision: For each SecBench.js case with an available patched version, we install the fixed package and rerun the identical exploit input; an alert on patched code is counted as a false positive. Table III shows no alerts on 141 patched-version runs. For vulnerable-version runs, we manually inspect each alert’s sink and provenance DAG; all counted detections carry attacker taint to a security-sensitive operation in the exploit chain. Some alerts reach a different dangerous sink than the benchmark’s nominal CWE, which we record as CWE divergence rather than a false positive. 
+
+3) Case Study: n8n: n8n [18] is an 8,772-file Type-Script workflow platform built on Express, TypeORM, SQLite, and an expression engine. Its vulnerability is a two-stage attack: an unauthenticated form payload is first saved to SQLite, then later read back and evaluated as code. TABLE IV: Performance on NodeMedic’s benchmark.                             
+
+> Configuration Node Version Base (ms) Time (ms) Overhead
+> Node, full JITs 24.13.1 68.5 68.5 1.00 ×
+> Node, Maglev 24.13.1 68.5 87.8 1.28 ×
+> Shar 24.13.1 68.5 126.4 1.85 ×
+> Jalangi 15.5.0 69.2 1,991.8 28.78 ×
+> NodeMedic 15.5.0 69.2 3,516.6 50.82 ×
+> NodeMedic-FINE 20.20.2 78.8 3,307.6 41.95 ×
+
+Shar tracks the first-stage flow from HTTP input to three  
+
+> node_sqlite3.Statement
+
+database writes, producing prove-nance DAGs up to 278 nodes using general propagation rules. The run produces five alerts: three expected database-write alerts and two false filesystem alerts caused by over-propagation through TypeORM object merging, where tainted field values bleed onto metadata strings that later reach 
+
+> existsSync
+
+. We classify the CVE as partially detected because Shar observes the write-side flow but cannot reconnect it to the later read path reaching new Function() ; unlike file I/O, SQL persistence requires recovering the storage key space from queries, which would require SQL-aware bridging. 
+
+B. RQ2: Performance 
+
+We adopt NodeMedic’s performance benchmark [12] which is the same as the reproduced benchmark in RQ1. For each package, we reproduce NodeMedic’s methodology: discover and freeze the public entry points, load the package, and invoke every entry point once with the same object supplied to each argument. Each DTA configuration marks this object as tainted through its respective source interface. Following NodeMedic’s protocol, each configuration uses three warmups and ten fresh-process runs per package, in-terleaved with the baseline and timed externally. Installation, entry-point discovery, and driver generation are excluded. We first compute each package’s mean runtime and overhead, then report the geometric mean across the 20 packages. TABLE V: Rule distribution by API category. Numbers denote action occurrences; P, C, and IE denote propagate , clear , and 
+
+> inject
+
+/extract , respectively.                                           
+
+> Category Libraries PCIE Sink Set
+> String manip. String.prototype 49 84
+> Container/HOF Array, Map, Set 24 34 1
+> Encoding Buffer, URI, RegExp 23 1
+> Async flow Promise, Generator 24
+> Object/JSON Object, JSON 41
+> Code injection eval, Function, vm 7
+> Command inj. child_process 2
+> Filesystem fs 315 2
+> DOM/Browser Element, Document... 917 1
+> Network/SQL http, sqlite3 12
+> Proto. poll. bytecode property store 210 2
+
+TABLE VI: Node.js API coverage compared with CodeQL.             
+
+> Language APIs Shared Missing LoC
+> CodeQL [19] 139 135 81,149 Mystra 143 135 463
+
+We directly measure six configurations on the same machine and frozen workload as shown in Table IV. Source-rewriting tools run on their required Node versions, so we compare normalized slowdowns rather than absolute times. Table IV reports 1.85 × end-to-end overhead for Shar. Of this, Maglev-only execution accounts for 1.28 ×, leaving 1.44 ×
+
+over the matched Maglev baseline for DTA. On the same workload, source-rewriting systems are 22.7–27.5 × slower on the identical workflow; the Jalangi-Babel instrumentation with no taint tracking already costs 15.6 ×. We report only our direct reruns because artifacts, dependencies, hardware, and package availability differ from the original NodeMedic study. 
+
+C. RQ3: Expressiveness and Automatic Synthesis 
+
+RQ3 evaluates the declarative rule layer itself. We study whether its actions cover diverse API behaviors and whether new rules can be synthesized with minimal effort. 
+
+Rule coverage. Table V summarizes Mystra action usage across 11 API categories in the final 303-LoC specifica-tion, covering both Node.js and Chromium contexts. Library summaries rely mainly on propagate and inject /extract ;detection rules use guarded sink actions; and set models cross-boundary state such as file I/O. New detection surfaces required rule changes only: CWE-89 support added one sink 
+
+rule for node_sqlite3.Statement , while DOM support added DOM rules without changing the Shadow VM core. 
+
+Coverage comparison with CodeQL. We also compare LLM-synthesized Mystra rules for Node.js standard-library against CodeQL’s taint specification rules (Table VI). Our rules cover 97 .2% of the APIs modeled in CodeQL with 18 ×
+
+fewer LoC, indicating that Mystra is expressive enough while being a lot more concise. Further, our rules have source, sink, and summary models 97% match that provided by CodeQL, underpinning AI-friendliness of Mystra. The few discrepancies reflect a difference in analysis style rather than coverage: where CodeQL abstracts an operation as a sink or source TABLE VII: LLM-assisted rule authoring by Claude Opus 4.8 with one diagnostic feedback step.                     
+
+> Metric Initial After feedback
+> Public APIs covered 56 56 (±0) Compiled generated rules 68 72 (+4) Compiling candidate patterns 32 /32 32 /32 (±0) Provided action-class realization 30 /32 30 /32 (±0) Runtime candidate behaviors passed 19 /32 29 /32 (+10) Raw smoke-test checks passed 41 /54 51 /54 (+10)
+
+TABLE VIII: Statistics of lines-of-code (LoC) in the engine implementation language (C++) across three runtime instanti-ations for Shar adaptation. “—” indicates not applicable.                                        
+
+> Component V8 CPython SpiderMonkey
+> Shared (unchanged across runtimes) Taint engine + graph 1,004 1,004 1,004 Mystra interpreter 1,494 1,494 1,494 Rule compiler 433 433 433 Logger 1,010 1,010 1,010 Per-runtime adapter Adapter layer 2,181 446 661 Interpreter hooks 1,685 528 236 JIT integration 1,278 ——Runtime stubs 530 98 225 Host state + IPC + GC 497 20 64
+> Shared core 3,941 3,941 3,941 Engine-specific 6,171 1,092 1,186
+> Mystra 303 235 138
+
+(e.g., treating every file read as tainted), Mystra tracks the actual data through a precise I/O bridge, trading CodeQL’s soundness-oriented over-approximation for runtime precision. 
+
+LLM-assisted rule authoring. What if LLM synthesizes buggy Mystra rules due to unfamiliarity? The synthesis under-goes a validation process: when we task LLMs to synthesize Mystra rules, the model is asked to simultaneously generate smoke tests, which will be executed alongside Shar and the rule. After execution, it receives one optional missing-model diagnostic containing the observed host event and arity, but not the rule or taint locations. As such, feedbacks from the validator can be used to help LLMs refine their generation. Table VII shows a partial result on 32 taint-behavior patterns covering 56 public APIs from Buffer , zlib ,
+
+> URLSearchParams
+
+, and Array . Initial synthesis is already com-piling, and one round of feedback produces a gain of ten passing behaviors ( 19 /32 to 29 /32 ), mainly by binding rules to lower-level host events. The three remaining failures involve callback-return association in Array higher-order functions. 
+
+D. RQ4: Portability 
+
+The Shadow VM is built against a general host interface (§III-C), and a new runtime needs only (i) an adapter that satisfies the interface and (ii) runtime-specific rules. We test this along three axes: embedding (same engine, different host), engine (same language, different engine), and language (different language). For each axis we report porting cost in Table VIII and CVE detection in Table II. Embedding: V8 in Chromium. The same V8 implementation runs unmodified in Chromium’s renderer process. The only ad-ditions are 27 DOM rules and the host-operation bindings. The Shadow VM core and all propagation rules are unchanged. The instantiation passes 21/22 DOM XSS test cases and detects three client-side XSS CVEs (Table II). The single failing test is a serialization boundary: Blink’s SerializedScriptValue 
+
+path for postMessage bypasses V8’s serializer hooks, so taint is dropped as data crosses into Blink. 
+
+Engine: SpiderMonkey. The SpiderMonkey port reuses the shared core and adds 1,186 engine-specific LoC. Rule reuse is the main result: the complete V8 rule file compiles unchanged on SpiderMonkey’s toolchain, and every rule body ports byte-for-byte. Only the operation keys are rebound to Spidermonkey builtins or intrinsics. SpiderMonkey implements as self-hosted JavaScript, the key must target SpiderMonkey’s intrinsic name rather than the V8 builtin name. With rebinding, 18 of 19 ported behaviors fire; the failure is concat , whose Spider-Monkey implementation does not expose a call boundary and therefore needs a fixed opcode transition. The same three client-side CVEs are also detected on SpiderMonkey. 
+
+Language: CPython. Porting to CPython required a 446-LoC adapter and 528 LoC of bytecode instrumentation hooks in 
+
+> ceval.c
+
+. LLM authored 138-LoC Mystra rules and pass 222 tests. End to end, the CPython instantiation fully detects three real-world CVEs and partially detects one (Table II). The partial case, Astrbot [20], is a two-stage attack whose taint is lost at the file-write boundary because f.write does not expose the destination path attached to f to the rule; bridging it would require querying additional object metadata in Mystra. Table VIII shows the shared core (3,941 LoC) is identical across all three runtimes; porting effort is concentrated in adapters, operation bindings, and rules. These per-runtime figures are not directly comparable: V8 includes JIT integra-tion and Chromium’s IPC, whereas the CPython and Spider-Monkey ports cover the interpreter path only. The remaining misses across axes are unbridged serialization or persistence boundaries rather than failures to reuse taint semantics. VII. D ISCUSSION 
+
+Scope. Shar focuses on six CWEs. Additional vulnerability classes require new rules to describe the oracle. Shar, as related analyses [2], [11], [12] does not consider implicit flows. Implicit flow tracking produces no demonstrated detection improvement for this vulnerability class [21], [22] while incurring substantial overhead (36.7 × in [14]). A future extension is a condition mark action that marks tainted branch conditions in provenance, combined with concolic exploration to determine sink reachability along controlled paths. Like related tools [2], [11], [12], Shar relies on rules by precise analysis of native operations. This is a shared limitation of all instrumentation-based dynamic analyses [23]. Future work includes LLM-assisted rule generation for unmodeled native APIs and selective instrumentation that activates hooks only on code reachable from taint sources to reduce overhead. 
+
+Engineering limitations. Our performance evaluation mea-sures short, end-to-end package-analysis executions and does not characterize sustained CPU-intensive workloads. Always-on hooks for frequent operations, particularly property ac-cesses and function calls, can impose higher overhead on computation-heavy applications. We leave selective instrumen-tation and full Turbofan-tier JIT integration for future work. Whole-payload tainting may conflate tainted and untainted fields through object spread or Object.assign ; field-sensitive source tainting eliminates this without engine modification. The dominant false-negative pattern is string decomposition: operations like String.split produce new values that lose association with the original tainted input. This is shared by all explicit-flow DTA tools; character-level tracking [13] addresses it at engine-specific cost. Taint does not survive external storage boundaries without explicit bridging rules, which we leave to future work. 
+
+Threats to validity. SecBench.js contains CVEs from 2017– 2022; many are small single-file packages that may not repre-sent modern application complexity. We mitigate this with the NodeMedic dataset [12] and 19 manually collected vulnerabil-ities from 2024–2026 in larger-scale production applications up to 8,772 files. VIII. R ELATED WORKS 
+
+A. Dynamic Taint Analysis 
+
+Dynamic taint analysis has been formalized by Schwartz et al. [23] and instantiated across execution environments: binary-level [24]–[27], managed runtimes [28], [29], and JavaScript engines. All uniformly hardcode taint seman-tics into their instrumentation layer. For JavaScript, source-rewriting tools like Jalangi2 [10] and its extensions [3], [12] are engine-agnostic, but require analyzed modules to pass a source-transformation pipeline and model native builtins externally; NodeMedic adds Babel to broaden syntax sup-port. Engine-native tools embed taint tracking directly: Fox-hound [13] modifies SpiderMonkey’s string representation; PanoptiChrome [14] instruments V8’s Ignition interpreter with implicit flow tracking. Client-side analyses [5], [6], [30], [31] target DOM XSS and prototype pollution in browsers. Shar differs from prior DTA tools for stock JavaScript engines in separating taint semantics (what to track) from mechanism (how to track): the Shadow VM provides observation infras-tructure while Mystra rules specify propagation behavior. 
+
+B. Function Summaries and Taint Specification Languages 
+
+Interprocedural taint analysis relies on function sum-maries that abstract callees into input-to-output transfer func-tions [32], [33]. In static analysis, FlowDroid [34] precomputes summaries for Android framework methods; DroidSafe [35] and JN-SAF [36] extend summaries across native boundaries; CompTaint [37] demonstrates industrial scaling at AWS via cached API models. DSLs externalize summary authoring: CodeQL [19], [38] encodes taint flow as Datalog queries, PQL [39] matches taint patterns across object histories, and fluentTQL [40], [41] embeds taint queries as typed Java method chains. Recent work has also begun to synthesize such taint specifications for CodeQL with LLMs [42], [43], mirroring our language-model-friendly rule authoring. These approaches resolve specifications at analysis time via static solvers, not at program runtime. For dynamic execution, Ichnaea [11] is closest: it replays taint on a Jalangi-level abstract machine and models native functions with imperative hooks. TruffleTaint [44], Augur [45], and ALDA [46] also externalize analysis logic, but as pro-grammatic policies tied to their host framework; Whamm [47] shows that probes can be compiled into engine hooks, but provides no taint-specific semantics. Shar differs by combining a stock-runtime Shadow VM with a compiled taint-specific language: Mystra rules are executed by the Shadow VM, include formal inject /extract semantics for native/callback transfer, and reuse rule bodies across V8, SpiderMonkey, and CPython after operation rebinding. IX. C ONCLUSION 
+
+We present Mystra, a declarative taint specification lan-guage, and Shar, an extensible, performant, and accurate Node.js dynamic taint analysis framework that executes Mys-tra over a runtime-independent Shadow Virtual Machine, which could be ported across Chromium, Spidermonkey and CPython. In future work, we plan to improve precision across decomposition and persistence boundaries and to automate rule synthesis for unmodeled native APIs. ACKNOWLEDGMENT 
+
+This research is in part based upon work supported by cred-its supported through Amazon Nova AI Challenge: Trusted Software Agents. Any opinions, findings, and conclusions or recommendations expressed in this material are those of the author(s) and do not necessarily reflect the views of the sponsors. Language model assistants were used to help polish the paper. REFERENCES [1] W. Melicher, A. Das, M. Sharif, L. Bauer, and L. Jia, “Riding out DOMsday: Towards detecting and preventing DOM cross-site scripting,” in NDSS, 2018. [2] C.-A. Staicu, M. Pradel, and B. Livshits, “Understanding and auto-matically preventing injection attacks on node. js,” in Network and Distributed System Security Symposium (NDSS), 2018. [3] D. Cassel, N. Sabino, M.-C. Hsu, R. Martins, and L. Jia, “NodeMedic-FINE: Automatic detection and exploit synthesis for Node.js vulnera-bilities,” in NDSS, 2025. [4] F. Marques, M. Ferreira, A. Nascimento, M. E. Coimbra, N. Santos, L. Jia, and J. F. Santos, “Automated exploit generation for Node.js packages,” Proc. ACM Program. Lang., vol. 9, no. PLDI, pp. 1341– 1366, 2025. [5] Z. Kang, S. Li, and Y. Cao, “Probe the proto: Measuring client-side prototype pollution vulnerabilities of one million real-world websites,” in NDSS, 2022. [6] Z. Kang, M. Lyu, Z. Liu, J. Yu, R. Fan, S. Li, and Y. Cao, “Follow my flow: Unveiling client-side prototype pollution gadgets from one million real-world websites,” in 2025 IEEE Symposium on Security and Privacy (SP). IEEE, 2025, pp. 991–1008. [7] J. Zhu, C. Shen, Z. Li, J. Yu, Y. Chen, and K. Pei, “Locus: Agentic pred-icate synthesis for directed fuzzing,” arXiv preprint arXiv:2508.21302, 2025. [8] J. Wang, T. Ni, W.-B. Lee, and Q. Zhao, “A contemporary survey of large language model assisted program analysis,” arXiv preprint arXiv:2502.18474, 2025. [9] D. Simsek, A. Eghbali, and M. Pradel, “Pocgen: Generating proof-of-concept exploits for vulnerabilities in npm packages,” arXiv preprint arXiv:2506.04962, 2025. [10] K. Sen, S. Kalasapur, T. G. Brutch, and S. Gibbs, “Jalangi: A selec-tive record-replay and dynamic analysis framework for JavaScript,” in ESEC/FSE, 2013, pp. 488–498. [11] R. Karim, F. Tip, A. Sochurkova, and K. Sen, “Platform-independent dynamic taint analysis for javascript,” IEEE Transactions on Software Engineering, vol. 46, no. 12, pp. 1364–1379, 2018. [12] D. Cassel, W. T. Wong, and L. Jia, “NodeMedic: End-to-end analysis of Node.js vulnerabilities with provenance graphs,” in 2023 IEEE 8th European Symposium on Security and Privacy (EuroS&P), 2023, pp. 1101–1127. [13] D. Klein, T. Barber, S. Bensalim, B. Stock, and M. Johns, “Hand sanitizers in the wild: A large-scale study of custom javascript sanitizer functions,” in Proc. of the IEEE European Symposium on Security and Privacy, Jun. 2022. [14] R. Kanyal and S. R. Sarangi, “PanoptiChrome: A modern in-browser taint analysis framework,” in WWW, 2024. [15] M. H. M. Bhuiyan, A. S. Parthasarathy, N. Vasilakis, M. Pradel, and C.-A. Staicu, “Secbench.js: An executable security benchmark suite for server-side javascript,” in 2023 IEEE/ACM 45th International Conference on Software Engineering (ICSE), 2023, pp. 1059–1070. [16] “Cve-2025-61686,” https://nvd.nist.gov/vuln/detail/CVE-2025-61686, 2026, accessed: 2026-05-17. [17] “React router,” https://reactrouter.com/, 2026, accessed: 2026-05-17. [18] “n8n - secure workflow automation for technical teams,” https://github. com/n8n-io/n8n/, 2026, accessed: 2026-05-17. [19] GitHub, “CodeQL: Semantic code analysis engine,” https://codeql. github.com/, 2024. [20] “Cve-2025-55449,” https://nvd.nist.gov/vuln/detail/CVE-2025-55449, 2026, accessed: 2026-05-17. [21] S. Calzavara, S. Casarin, and R. Focardi, “Dynamic security analysis of JavaScript: Are we there yet?” in WWW, 2025, pp. 1105–1115. [22] C.-A. Staicu, D. Schoepe, M. Balliu, M. Pradel, and A. Sabelfeld, “An empirical study of information flows in real-world javascript,” in Proceedings of the 14th ACM SIGSAC Workshop on Programming Languages and Analysis for Security, 2019, pp. 45–59. [23] E. J. Schwartz, T. Avgerinos, and D. Brumley, “All you ever wanted to know about dynamic taint analysis and forward symbolic execution (but might have been afraid to ask),” in 2010 IEEE symposium on Security and privacy. IEEE, 2010, pp. 317–331. [24] J. Newsome, D. X. Song et al., “Dynamic taint analysis for automatic detection, analysis, and signaturegeneration of exploits on commodity software.” in NDSS, vol. 5, 2005, pp. 3–4. [25] V. P. Kemerlis, G. Portokalidis, K. Jee, and A. D. Keromytis, “libdft: Practical dynamic data flow tracking for commodity systems,” in Proceedings of the 8th ACM SIGPLAN/SIGOPS conference on Virtual Execution Environments, 2012, pp. 121–132. [26] J. Clause, W. Li, and A. Orso, “Dytan: a generic dynamic taint analysis framework,” in Proceedings of the 2007 international symposium on Software testing and analysis, 2007, pp. 196–206. [27] S. Chen, Z. Lin, and Y. Zhang, “{SelectiveTaint }: Efficient data flow tracking with static binary rewriting,” in 30th USENIX Security Symposium (USENIX Security 21), 2021, pp. 1665–1682. [28] W. Enck, P. Gilbert, S. Han, V. Tendulkar, B.-G. Chun, L. P. Cox, J. Jung, P. McDaniel, and A. N. Sheth, “Taintdroid: an information-flow tracking system for realtime privacy monitoring on smartphones,” ACM Transactions on Computer Systems (TOCS), vol. 32, no. 2, pp. 1–29, 2014. [29] M. G. Kang, S. McCamant, P. Poosankam, D. Song et al., “Dta++: dynamic taint analysis with targeted control-flow propagation.” in Ndss, 2011. [30] S. Khodayari and G. Pellegrino, “Jaw: Studying client-side csrf with hybrid property graphs and declarative traversals,” in 30th USENIX Security Symposium (USENIX Security 21). Vancouver, B.C.: USENIX Association, 2021. [31] W. Melicher, A. Das, M. Sharif, L. Bauer, and L. Jia, “Riding out domsday: Towards detecting and preventing dom cross-site scripting,” in 2018 Network and Distributed System Security Symposium (NDSS), 2018. [32] T. Reps, S. Horwitz, and M. Sagiv, “Precise interprocedural dataflow analysis via graph reachability,” in Proceedings of the 22nd ACM SIGPLAN-SIGACT symposium on Principles of programming languages, 1995, pp. 49–61. [33] M. Pnueli and M. Sharir, “Two approaches to interprocedural data flow analysis,” Program flow analysis: theory and applications, pp. 189–234, 1981. [34] S. Arzt, S. Rasthofer, C. Fritz, E. Bodden, A. Bartel, J. Klein, Y. Le Traon, D. Octeau, and P. McDaniel, “Flowdroid: Precise context, flow, field, object-sensitive and lifecycle-aware taint analysis for android apps,” ACM sigplan notices, vol. 49, no. 6, pp. 259–269, 2014. [35] M. I. Gordon, D. Kim, J. H. Perkins, L. Gilham, N. Nguyen, and M. C. Rinard, “Information flow analysis of android applications in droidsafe.” in NDSS, vol. 15, no. 201, 2015, p. 110. [36] F. Wei, X. Lin, X. Ou, T. Chen, and X. Zhang, “Jn-saf: Precise and efficient ndk/jni-aware inter-language static analysis framework for secu-rity vetting of android applications with native code,” in Proceedings of the 2018 ACM SIGSAC Conference on Computer and Communications Security, 2018, pp. 1137–1150. [37] S. Banerjee, S. Cui, M. Emmi, A. Filieri, L. Hadarean, P. Li, L. Luo, G. Piskachev, N. Rosner, A. Sengupta et al., “Compositional taint analysis for enforcing security policies at scale,” in Proceedings of the 31st ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering, 2023, pp. 1985–1996. [38] P. Avgustinov, O. De Moor, M. P. Jones, and M. Schäfer, “Ql: Object-oriented queries on relational data,” in 30th European Conference on Object-Oriented Programming (ECOOP 2016). Schloss Dagstuhl– Leibniz-Zentrum für Informatik, 2016, pp. 2–1. [39] M. Martin, B. Livshits, and M. S. Lam, “Finding application errors and security flaws using pql: a program query language,” Acm Sigplan Notices, vol. 40, no. 10, pp. 365–383, 2005. [40] G. Piskachev, J. Späth, I. Budde, and E. Bodden, “Fluently specifying taint-flow queries with fluent tql,” Empirical Software Engineering, vol. 27, no. 5, p. 104, 2022. [41] G. Piskachev, R. Krishnamurthy, and E. Bodden, “Secucheck: Engineer-ing configurable taint analysis for software developers,” in 2021 IEEE 21st International Working Conference on Source Code Analysis and Manipulation (SCAM). IEEE, 2021, pp. 24–29. [42] Z. Li, S. Dutta, and M. Naik, “IRIS: LLM-assisted static analysis for detecting security vulnerabilities,” arXiv preprint arXiv:2405.17238, 2024. [43] C. Wang, Z. Li, S. Dutta, and M. Naik, “QLCoder: A query syn-thesizer for static analysis of security vulnerabilities,” arXiv preprint arXiv:2511.08462, 2025. [44] J. Kreindl, D. Bonetta, L. Stadler, D. Leopoldseder, and H. Mössenböck, “Multi-language dynamic taint analysis in a polyglot virtual machine,” in Proceedings of the 17th International Conference on Managed Programming Languages and Runtimes, ser. MPLR ’20. New York, NY, USA: Association for Computing Machinery, 2020, p. 15–29. [45] M. W. Aldrich, A. Turcotte, M. Blanco, and F. Tip, “Augur: Dy-namic taint analysis for asynchronous javascript,” in Proceedings of the 37th IEEE/ACM International Conference on Automated Software Engineering, 2022, pp. 1–4. [46] X. Cheng and D. Devecsery, “Creating concise and efficient dynamic analyses with alda,” in Proceedings of the 27th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, 2022, pp. 740–752. [47] E. Gilbert, M. Schneider, Z. An, S. Thalanki, W. Bowman, A. Y. Bai, B. L. Titzer, and H. Miller, “Debugging webassembly? put some whamm on it!” Proceedings of the ACM on Programming Languages, vol. 9, no. OOPSLA2, pp. 2058–2086, 2025.
