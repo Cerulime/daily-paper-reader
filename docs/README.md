@@ -6,32 +6,37 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-17
-- 运行时间：2026-07-17 20:42:55 UTC
+- 最新运行日期：2026-07-18
+- 运行时间：2026-07-18 21:04:01 UTC
 - 运行状态：成功
-- 本次总论文数：3
-- 精读区：3
-- 速读区：0
+- 本次总论文数：5
+- 精读区：2
+- 速读区：3
 
 ### 今日简报（AI）
-今日精读两篇顶会论文，聚焦内存漏洞的动态防御策略与AI安全沙箱的现实真伪测量。  
-《Dynamic Rowhammer Threshold Management》揭示温度自适应刷新能无痛提升Rowhammer防御性能，《A Measurement Study》则实测发现主流AI沙箱在恶意软件分析中存在显著环境拟真缺口。  
-建议对内存安全攻防与仿真平台评估感兴趣的读者，重点关注温度感知阈值算法和AI环境构建的真实性基准测试。
-- 详情：[/202607/17/README](/202607/17/README)
+今日聚焦AI代码安全：深入解析漏洞检测模型的结构优化与LLM安全知识的内在机制。  
+最值得关注的是“路由天花板”领域无关性，注入结构先验可突破检测瓶颈，同时探针研究揭示了LLM中识别恶意代码的特定神经元。  
+建议读者跟进这类结构先验在真实开源漏洞库中的泛化表现，并思考神经元探针技术能否直接用于模型安全对齐。
+- 详情：[/202607/18/README](/202607/18/README)
 
 ### 精读区论文标签
-1. [Dynamic Rowhammer Threshold Management:Temperature-Aware Threshold Degradation for In-DRAM Defenses](/202607/17/2607.10392v2-dynamic-rowhammer-threshold-managementtemperature-aware-threshold-degradation-for-in-dram-defenses)  
+1. [Routing Ceilings Are Domain-Independent: Structural Prior Injection in Code Security Vulnerability Detection](/202607/18/2607.14628v1-routing-ceilings-are-domain-independent-structural-prior-injection-in-code-security-vulnerability-detection)  
    标签：评分：9.0/10、query:sys-security
-   evidence：动态Rowhammer阈值管理防御内核提权攻击。
-2. [A Measurement Study of AI-Environment Realism Gaps in Malware-Analysis Sandboxes](/202607/17/2607.14434v1-a-measurement-study-of-ai-environment-realism-gaps-in-malware-analysis-sandboxes)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：系统化测量AI环境遗留作为沙箱逃避的新特征面
-3. [Automated Template-free Synthesis of Instruction-Centric Leakage Contracts for Black-Box CPUs](/202607/17/2607.15118v1-automated-template-free-synthesis-of-instruction-centric-leakage-contracts-for-black-box-cpus)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：通过观察CPU执行自动合成指令中心泄露合约，支持对微架构侧信道的动态分析
+   evidence：利用结构先验改进基于LLM的代码漏洞检测
+2. [Which Neurons Detect Malicious Code? A Probing Study of LLM Security Knowledge](/202607/18/2607.10221v1-which-neurons-detect-malicious-code-a-probing-study-of-llm-security-knowledge)  
+   标签：评分：8.0/10、query:sys-security
+   evidence：探究LLM神经元检测恶意代码的行为
 
 ### 速读区论文标签
-- 本次无速读推荐。
+1. [Baselines Before Architecture: Evaluating Coding Agents for Autonomous Penetration Testing](/202607/18/2607.13085v1-baselines-before-architecture-evaluating-coding-agents-for-autonomous-penetration-testing)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：评估编码代理用于自主渗透测试，推进漏洞检测技术。
+2. [The Distributed Open-Source Vulnerability Ecosystem](/202607/18/2607.14900v1-the-distributed-open-source-vulnerability-ecosystem)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：理解漏洞管理异质性的概念框架
+3. [Disintegration Temporal Logic for Probabilistic Hyperproperties](/202607/18/2607.15223v1-disintegration-temporal-logic-for-probabilistic-hyperproperties)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：新时序逻辑可表达概率非干扰等安全超属性
 
 
 <div class="dpr-home-promo-card">
