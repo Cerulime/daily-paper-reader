@@ -1,0 +1,4233 @@
+Title: A Modular Framework for Stack-Heap and Value Abstractions (Extended Version)
+
+URL Source: https://arxiv.org/pdf/2607.15932v1
+
+Published Time: Mon, 20 Jul 2026 01:15:29 GMT
+
+Number of Pages: 63
+
+Markdown Content:
+# A Modular Framework for Stack-Heap and Value Abstractions (Extended Version) 
+
+Giacomo Boldini [0009 −0006 −4741 −0033] , Luca Negrini ∗[0000 −0001 −9930 −8854] , Luca Olivieri [0000 −0001 −8074 −8980] , and Pietro Ferrara [0000 −0002 −4678 −933 X]
+
+Ca’ Foscari University of Venice, Venice, Italy 
+
+{giacomo.boldini, luca.negrini, luca.olivieri, pietro.ferrara}@unive.it  
+
+> ∗
+
+Corresponding author 
+
+Abstract. Advanced static program analysis requires reasoning on the semantics of non-trivial program behaviors (e.g., pointers and complex data structures such as lists and sets, functions, and objects) and how they affect the memory. In most programming languages, static and dy-namic allocations are typically managed by the stack and the heap, re-spectively. However, how allocations behave and how the memory is man-aged at runtime can vary significantly depending on the programming language being analyzed. Proper handling of these aspects is essential, as an accurate memory model enables the detection of critical issues such as buffer overflows and underflows, use-after-free errors, and null pointer exceptions prior to execution, that is, before such erroneous behaviors occur. In this paper, we propose and formalize a generic memory framework to handle stack and heap memory during the analysis, that is able to sup-port various behaviors from different programming languages (e.g., C, C++ , Java, and Python), while remaining parametric, allowing different memory and value analyses to be independently chosen and combined. It relies on the Abstract Interpretation theory and enables sound approxi-mation of different memory models and program behaviors. We introduce a split state abstraction that separates value and memory analyses into two modular abstract domains. These domains interact through a set of memory identifiers , along with a set of operations defined by the do-mains to manipulate them, allowing the framework to capture both value information and structural memory relationships. 
+
+Keywords: Abstract interpretation · Static analysis · Memory handling 
+
+· Heap analysis · Value analysis · Program semantics. 
+
+## 1 Introduction 
+
+During execution, a program uses memory to store and retrieve data. This mem-ory is typically split into the stack and heap . Stack memory is used for static 
+
+allocation with a bounded size, such as local variables within functions. In con-trast, heap memory handles dynamic allocation, making it suitable for data and arXiv:2607.15932v1 [cs.PL] 17 Jul 2026 2 G. Boldini et al. 
+
+objects whose size can change at runtime or that need to persist beyond the life-time of a single function call. Both kinds of memory can contain several types of values: from so-called primitive types such as integers or floating point numbers, to arbitrarily complex data structures such as lists, sets, functions, and objects. Depending on the programming language, memory management can be com-pletely different. In languages like C or C ++ , developers have complete control over memory: allocations and deallocations are manual, and it is the developer’s responsibility to ensure that memory is used correctly (e.g., that a buffer is only accessed within its allocated bounds, or that memory is deallocated when it is no longer needed). In contrast, languages like Java or Python use automatic mem-ory management, where the runtime environment handles memory allocation and deallocation, often through a garbage collection mechanism. In static program analysis, precisely approximating the memory is crucial. An accurate memory model enables detection of issues such as buffer overflows or underflows, use-after-free, or null pointer dereferences. Some of these issues also require a precise analysis of the values stored in memory, such as the size of a buffer or the address of a pointer. Conversely, properties targeting the values handled by the program, such as the absence of overflows or arithmetic errors, require a precise analysis of the memory layout of the program to retrieve the necessary information about values stored in memory. Despite this close relation, the fields of memory analyses and value analy-ses have developed orthogonally to one another, with several options to pick for both [1,37,26,31,30,16]. Any value analysis can be combined with any mem-ory analysis, and it is well-known that such a combination is required for any meaningful program analysis [38]. Over the past decade, two main approaches have dominated the static analy-sis of programs: (i) analyzers that focus on value information, which first prepro-cess the program using a dedicated heap analysis and then replace heap accesses with symbolic variables for example Clousot [17], and (ii) heap abstraction tech-niques for example TVLA [27] that either do not track value information or re-quire manual extensions such as adding specific predicates to capture particular value properties. While recent work (see Section 2) has advanced the integration of heap and value analyses, truly generic and fully automatic analyzers, that is, approaches not bound to a specific heap or value domain and not requiring user provided annotations, are still limited. 
+
+Motivating Example. Before introducing the formal framework, we present a mo-tivating example that highlights common challenges in heap memory analysis, including dynamic allocations, pointer aliasing, and complex structures. Con-sider the code snippet written in C of Listing 1, coming from the SV-COMP benchmark 1. The code repeatedly allocates heap nodes around a stack-allocated object list . Two pointers, x and tail , are both initialised to &list (lines 7 and 
+
+8), suggesting that both are intended to track the evolving structure. One would    
+
+> 1https://github.com/sosy-lab/sv-benchmarks/blob/master/c/ heap-manipulation/dancing.c Accessed (05/2026) A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 3
+
+expect both to be updated as the data structure grows. In practice, however, only x is ever updated (line 21 ), while tail is never reassigned, tail->R = n al-ways overwrites list.R with the address of the latest node (line 18 ). Specifically, after k iterations list.R points to the k-th node, while all earlier nodes (except possibly the one pointed to by x) are unreachable. Similarly, n->L = tail sets every node’s L field to &list (line 16 ), so each heap node independently points back to list . The pointer x may therefore alias list or any heap node allocated during any previous iteration. Verifying this kind of issues is non-trivial in program static analysis. Captur-ing such behaviours demands accurate stack and heap management, and without it an analysis can easily miss lost references or unintended aliasing. At the same time, it requires abstractions, but excessive over-approximation may render the analysis impractically imprecise, obscuring the very behaviours it aims to cap-ture and thereby weakening its usefulness in practice.   
+
+> Listing 1. C slice from dancing.c .
+
+1 struct node { struct node *L; struct node *R; }; 
+
+23 struct node list; 
+
+4 list.L=0; 
+
+5 list.R=0; 
+
+67 struct node *x=&list; 
+
+8 struct node *tail=&list; 
+
+910 while(__VERIFIER_nondet_bool()) 
+
+11 {
+
+12 struct node *n=malloc(sizeof(struct node)); 
+
+13 if(n==0) 
+
+14 break; 
+
+15 16 n->L=tail; 
+
+17 n->R=0; 
+
+18 tail->R=n; 
+
+19 20 if(__VERIFIER_nondet_bool()) 
+
+21 x=n; 
+
+22 }
+
+Contributions. This work presents a modular framework for the combined static analysis of stack and heap memory, formalised over μLL , a small imperative language extending μJS [3] with explicit pointers, address-of, dereference, field access, and heap allocation. Our main technical contributions are as follows: 
+
+– A formal operational semantics for μLL modelling both stack and heap, with support to novel language features introduced. 4 G. Boldini et al. 
+
+– A split state adapting the construction of whole value analysis proposed in Negrini [34]. We reformulate the concrete state as a Galois isomorphism separating value and address information with no loss of precision. 
+
+– A parametric abstract framework in which a value domain and a memory do-main cooperate via a lightweight interface and a substitution mechanism, in-spired by generic object-oriented memory frameworks [19,18]. Whereas those works target object-oriented languages with a single heap, our framework supports a broader range of memory models, including languages such as C, where diverse forms of memory manipulation are possible and execution is not constrained by object-oriented abstractions. 
+
+– A framework instantiation with non-relational numerical domains [31] and Andersen-style points-to analysis [1]. 
+
+Paper Structure. The structure of the paper is as follows. Section 2 deals with related work. Section 3 provides the necessary background information. Sec-tion 4 introduces the μLL language and its semantics. Section 5 and Section 6 present our main contribution defining and formalizing the split state and ab-stract state. Section 7 demonstrates the modularity and practical applicability of the proposed framework by instantiating it with concrete abstract domains. Section 8 concludes the paper. 
+
+## 2 Related Work 
+
+In this section, we provide a brief overview of existing frameworks and tools for memory management. The literature can be divided into approaches tai-lored to specific memory problems and more general-purpose frameworks. For instance, Gopan et al. [21,22] propose a solution specialized for numerical anal-ysis and array operations, which inherently require reasoning about both heap and value domains, since arrays combine memory structure with indexes and content-dependent properties. However, these kinds of problems are orthogonal to our study, since we focused on how to combine heap and value analyses for more general purposes, data structures, and memory models. The broader difficulty of reasoning about memory and pointers has long been recognized. As early as 2001, Hind [24] observed that, despite the substantial body of research available at the time, memory management and pointer-related issues remained complex and challenging problems. This observation continues to motivate subsequent work in the area. In particular, Kanvar et al. [26] provide a systematic taxonomy of heap memory models used in static analysis, classifying them as storeless, store-based, and hybrid, and surveying summarization tech-niques such as k-limiting, allocation-site based, pattern-based, variable-based, and other instrumentation predicates, as well as higher-order logic approaches. About abstract interpretation approaches, to the best of our knowledge, only a limited number of prior works have addressed a general integration of heap and value management. Chang and Rival [10] proposed an abstract domain that in-tegrates data abstraction with user-provided specifications of data structures. In A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 5
+
+contrast, our approach is based on heap identifiers and does not require explicit specifications of data structures. They also introduced a modular integration of shape and numerical abstract domains [11], where shape analysis is based on points-to predicates, and the numerical domain tracks information using a sym-bolic representation of data stored in the heap. This differs slightly from our notion of memory identifiers, which are designed to abstract memory locations. Moreover, their approach focuses on shape analyses based on summarization and materialization of nodes. As a result, when a node is materialized, the analysis requires to maintain a disjunctive abstraction represented by a set of possible shapes. Blazy et al. [8] present an abstract memory functor inspired by the memory model of C programs. Basically, they design an abstract memory do-main that is able to handle points-to information and it is parameterized by a numerical abstract domain. Then, they implemented it into a formally verified static analyzer that is not dealing precisely with memory [7]. Their evaluation considers both non-relational (intervals [15]) and relational (polyhedra [16]) nu-merical abstract domains. Miné [29] proposes a memory abstraction that trans-lates the semantics of all memory accesses into a semantics over a set of scalar variables. In this abstraction, a cell represents a memory region holding a scalar value together with its type. The approach is parameterized by a numerical do-main, but it does not support summary nodes or dynamic allocation. It was initially implemented in ASTRÉE [6], and has more recently been adopted and extended in MOPSA [25]. To handle pointer dereferences, MOPSA builds on the cell domain, and relies on recency abstractions [5] to model dynamic memory allocation. For each allocation site, recency abstraction distinguishes the most recently allocated block from all previous ones, which are summarized into a sin-gle weak memory block. Allocation sites are configurable [33] and are typically defined by program locations. However, this summarization can reduce preci-sion, then alternative abstractions are required to preserve separation between memory blocks during loop unrolling, as in the analysis of C programs [32]. Mi-lanese and Miné [28] also proposed an under-approximation backward analysis for the memory model of MOPSA to enhance both precision and efficiency in the analysis of C programs. Recency abstraction has also been applied for other languages and specific contexts. For instance, Calzavara et al. [9] leverage ideas from recency abstraction to design a sound, flow-sensitive heap abstraction for the static analysis of Android applications written in Java language. Finally, our work builds upon Ferrara [19,18] and Negrini [34]. The main idea of [19,18] is to introduce an intermediate abstraction for heap and value analyses, by defining a split state, which rewrites the concrete state (i.e., program memory and concrete semantics) to separate values of different data types into distinct maps. The heap analysis aims to abstract the heap structure, while the value domain abstracts the values of non-reference variables, as well as heap locations. Intuitively, the heap analysis approximates concrete locations through heap identifiers, while the value analysis tracks information on these identifiers. This provides several advantages: (i) a more convenient state representation that simplifies definitions and proofs, (ii) a modular design where existing abstract 6 G. Boldini et al. 
+
+domains can be applied independently to each sub-memory, reusing standard operations with minimal changes, and (iii) semantic preservation, since proving soundness/completeness is equivalent between the split and concrete states. We extend this setting by widening the set of supported operations to arbitrary references and dereferences, and to dynamic field accesses. This broadens the scope of the framework beyond object-oriented languages. Moreover, we improve on its formalization and soundness proofs borrowing the isomorphism approach from [34]. In particular, instead of building a Galois Connection between the concrete and split states, followed by a second Galois Connection between the split and abstract states, we enforce a Galois Isomorphism between the concrete and split states, ensuring that no loss in precision occurs when moving from the concrete to the split state. This is a key weakness of the original framework, that instead has two possible sources of imprecision. 
+
+## 3 Background 
+
+Sets. A set X is a (possibly infinite) collection of elements. We write x ∈ X for membership, ∅ for the empty set, |X| for cardinality, and ℘(X) for the powerset. Given sets X and Y , we use standard notation: X ⊆ Y for subset, X ∪ Y for union, X ∩ Y for intersection, X \ Y for set difference, and X × Y = {(x, y ) | x ∈
+
+X ∧ y ∈ Y } for the Cartesian product. Sets can be defined extensionally, e.g., 
+
+{x0, x 1, . . . }, or in terms of a predicate, e.g., {x | ϕ(x)}, meaning all x such that a predicate ϕ(x) holds. 
+
+Functions. A function f : X → Y is a subset of the Cartesian product X×Y such that ∄(x, y ), (z, w ) ∈ f : x = z ∧ y̸ = w, meaning that each x ∈ X is associated with at most one y ∈ Y . The set X is called domain , denoted as dom (f ),the set Y is called co-domain , denoted as codom (f ). The identity function is denoted by id . Similarly to sets, functions can be defined extensionally, e.g., 
+
+{(x0, y 0), (x1, y 1), . . . }, or in terms of a predicate, e.g., {(x, y ) | ϕ(x, y )}, meaning all pairs (x, y ) such that a predicate ϕ(x, y ) holds. Given a function f and two elements x and y, the update operator f [x 7 → y] denotes f \ { (x, f (x)) } ∪ { (x, y )}
+
+when x ∈ dom (f ), and f ∪ { (x, y )} otherwise. Abusing notation, we also use chained updates f [x1 7 → y1, . . . , x n 7 → yn], which denotes successive application of the function update, i.e., f 0 = f, f i = f i−1[xi 7 → yi], whose result is f n.
+
+Ordered Structures. A set X with a partial ordering relation ⊑X ⊆ X × X
+
+is a poset, denoted by ⟨X, ⊑X ⟩. If a poset has a bottom element ⊥X and is closed under finitary applications of the least upper bound (lub, ⊔X ) operator of X, it is called a complete partial order (cpo), denoted as ⟨X, ⊑X , ⊔X , ⊥X ⟩.Moreover, a lattice ⟨X, ⊑X , ⊔X , ⊓X ⟩ is a poset having a minimum element (bot-tom, ⊥X ∈ X), a maximum element (top, ⊤X ∈ X) and closed under fini-tary applications of the least upper bound (lub, ⊔X ) and the greatest lower bound (glb, ⊓X ) operators. A complete lattice is closed under arbitrary lub and glb, so that F Y ∈ X and d Y ∈ X, for all Y ⊆ X, and it is denoted as A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 7
+
+⟨X, ⊑X , ⊔X , ⊓X , ⊤X , ⊥X ⟩. Provided there is no ambiguity, we will omit sub-scripts of each operator for clarity. Complete lattices can be derived from other structures. For instance, given a set X, ⟨℘(X), ⊆, ∪, ∩, X, ∅⟩ is a complete lat-tice since ⊆ is a partial ordering relation, ∪ and ∩ are closed w.r.t. ℘(X), and 
+
+∀Y ∈ ℘(X) : ∅ ⊆ Y ⊆ X. By duality, ⟨℘(X), ⊇, ∩, ∪, ∅, X ⟩ is also complete. Moreover, given ⟨X, ⊑, ⊔, ⊓, ⊤, ⊥⟩ and a set Y , the functional lift [13] of X w.r.t. 
+
+Y is the complete lattice ⟨Y → X, ˙⊑, ˙⊔, ˙⊓, ˙⊥, ˙⊤⟩ of total functions Y → X, that is, of functions defined on all elements of Y . Lattice operators are defined as point-wise applications of operators over X on all y ∈ Y . Lastly, given a finite set of complete lattices ⟨Yi, ⊑Yi , ⊔Yi , ⊓Yi , ⊥Yi , ⊤Yi ⟩, i ∈ ∆ ⊂ N, their Cartesian product [14] is the complete lattice ⟨×i∈∆ Yi, ⊑, ⊔, ⊓, ⊥, ⊤⟩ , where lattice op-erators are component-wise applications of the operators over each Yi. Given a poset ⟨X, ⊑X ⟩, an increasing chain C ⊆ X is a possibly infinite sequence of elements x0, x 1, . . . of X such that x0 ⊑X x1 ⊑X . . . .
+
+Abstract Interpretation. Abstract Interpretation [15,14] is a theoretical frame-work for sound reasoning on semantic properties of a program, establishing a correspondence between the semantics of a program, called concrete semantics, and an approximation of it, called abstract semantics. Let C and A be com-plete lattices, a pair of functions α : C → A and γ : A → C forms a Galois Connection between C and A, written ⟨C, ⊑C ⟩ − −−→←−−−
+
+> αγ
+
+⟨A, ⊑A⟩, if ∀ c ∈ C, a ∈
+
+A : α(c) ⊑A a ⇔ c ⊑C γ(a). Equivalently, the Galois Connection exists if α ◦ γ
+
+is reductive (i.e., if ∀ a ∈ A : α ◦ γ(a) ⊑A a), and γ ◦ α is extensive (i.e., if 
+
+∀ c ∈ C : c ⊑C γ ◦ α(c)). In addition, if α ◦ γ = id , then α and γ form a Galois Embedding , written ⟨C, ⊑C ⟩ − −−→ −→ ←−−−−
+
+> αγ
+
+⟨A, ⊑A⟩, where no two abstract elements have the same concretization. Furthermore, if also γ ◦ α = id , then α and γ
+
+form a Galois Isomorphism , written ⟨C, ⊑C ⟩ − −−→ −→ ←←− −−−
+
+> αγ
+
+⟨A, ⊑A⟩, where A is simply a reshaping of C and no abstraction (i.e., loss of precision) happens. Note that Abstract Interpretation can be employed also when a Galois Connection does not exist: in fact, it is sufficient that C and A are complete partial orders, and that a monotone concretization γ exists. 
+
+Soundness. Given ⟨C, ⊑C ⟩ − −−→←−−−
+
+> αγ
+
+⟨A, ⊑A⟩, a concrete function f : C → C is, in general, not computable. Hence, a function f ♯ : A → A that must correctly 
+
+approximate the function f is needed. If so, we say that the function f ♯ is sound .Given ⟨C, ⊑C ⟩ − −−→←−−−
+
+> αγ
+
+⟨A, ⊑A⟩ and a concrete function f : C → C, an abstract function f ♯ : A → A is sound w.r.t. f if ∀c ∈ C : α(f (c)) ⊑A f ♯(α(c)) , or equivalently ∀a ∈ A : f (γ(a)) ⊑C γ(f ♯(a)) . Note that the latter relation can be used to prove soundness even when a Galois Connection does not exist. 
+
+Abstract Domains. In the Abstract Interpretation framework, abstractions are defined through so-called abstract domains . These are composed by a partial or-der ⟨X, ⊑X ⟩, possibly extended to a complete partial order, a lattice, or a com-plete lattice, an upper bound operator ⊔X on X, a bottom element ⊥X ∈ X, a widening operator ∇X that over-approximates ⊔X and ensures the convergence 8 G. Boldini et al. 
+
+on increasing chains, an abstract transformer Lst M♯ : X → X for evaluating state-ments, and an abstract transformer LASM (b)M♯ : X → X for traversing conditions. The purpose of the transformers is to evolve an instance of the domain according to the semantics of the statement st to be executed, and to refine an instance of the domain assuming that a condition b holds. 
+
+Disjoint-Domain Unions. For functions f : A → Y and g : B → Z with A ∩ B =
+
+∅, we write f ˙∪ g : A ∪ B → Y ∪ Z for their disjoint-domain union, defined by 
+
+(f ˙∪ g)( x) = f (x) if x ∈ A, and (f ˙∪ g)( x) = g(x) if x ∈ B.For second-order maps f : A → (B → C) and g : D → (E → F ), we write 
+
+f ¨∪ g : A ∪ D → (B ∪ E) → (C ∪ F ) for their second-order disjoint-domain union, defined when inner maps are domain-disjoint at overlapping outer keys: 
+
+∀x ∈ A ∩ D : f (x) ∩ g(x) = ∅. For each outer key x ∈ A ∪ D, (f ¨∪ g)( x) = f (x)
+
+if x ∈ A \ D, (f ¨∪ g)( x) = g(x) if x ∈ D \ A, and (f ¨∪ g)( x) = f (x) ˙ ∪ g(x) if 
+
+x ∈ A ∩ D.
+
+Restrictions on Maps. For f : K → V , X ⊆ K, and Y ⊆ V , we define the restriction on the domain as f ↾X = {(x, f (x)) | x ∈ X}, the restriction on the co-domain as f ↾Y = {(x, f (x)) | x ∈ K, f (x) ∈ Y }, and the general restriction as 
+
+f ↾Y 
+
+> X
+
+= {(x, f (x)) | x ∈ X, f (x) ∈ Y }. For second-order maps f : K → (L → V ),with X ⊆ K and Y ⊆ V , we define the outer-domain restriction as f ↾↾X =
+
+{(k, f (k)) | k ∈ X}, the inner-co-domain restriction as f ↾↾Y = {(k, f (k)↾Y ) | k ∈
+
+K}, and the combined double restriction as f ↾↾Y 
+
+> X
+
+= {(k, f (k)↾Y ) | k ∈ X}. In both cases, the combined form equals any composition of the two: f ↾Y 
+
+> X
+
+= f ↾X ↾Y =
+
+f ↾Y ↾X , and f ↾↾Y 
+
+> X
+
+= f ↾↾X ↾↾Y = f ↾↾Y ↾↾X , which follow trivially from the definitions. Let f : K → V , g : A → B with K ∩ A = ∅, X1, X 2 ⊆ K, Y1, Y 2 ⊆ V
+
+with Y1 ∩ Y2 = ∅, and second-order maps M1 : D1 → (L1 → V1), M2 : D2 →
+
+(L2 → V2) with ∀k ∈ D1 ∩ D2 : dom (M1(k)) ∩ dom (M2(k)) = ∅. In this setting, the following properties hold: (i) f ↾X1 ∪f ↾X2 = f ↾X1 ∪ X2 (domain additivity ); (ii) f ↾Y1 ∪ f ↾Y2 = f ↾Y1 ∪ Y2 (co-domain additivity ); (iii) (f ˙∪ g) ↾Z 
+
+> X
+
+= ( f ↾Z   
+
+> X∩K
+
+) ˙ ∪
+
+(g ↾Z  
+
+> X∩A
+
+) for any X ⊆ K ∪ A, Z ⊆ V ∪ B (distribution of ↾ over ˙∪); (iv) (M1 ¨∪
+
+M2) ↾↾Y = M1 ↾↾Y ¨∪M2 ↾↾Y , for any Y ⊆ V1∪V2 (distribution of ↾↾ over ¨∪). Properties 
+
+(i) and (iii) also hold with ↾↾ in place of ↾. Property (ii) holds for ↾↾ as f ↾↾Y1 ¨∪
+
+f ↾↾Y2 = f ↾↾Y1 ∪ Y2 (requiring Y1 ∩ Y2 = ∅). Proofs in Section B.1. 
+
+## 4 The μLL Language 
+
+The μLL language is a small, imperative language for studying memory and pointer abstractions. It extends the core of μJS [3] with a new set of features for explicit memory management and pointer manipulation, yielding a simple model that is closer to a C ++ -like memory model (chosen because it includes pointers, clearly defines when memory is created and accessed, and remains expressive enough to cover a wide range of programming languages), while remaining com-pact for formal treatment. The syntax of μLL is defined in Figure 1. The core expressions of μJS for arithmetic ( Ae ), boolean ( Be ), string ( Se ), and object ( Oe ) expressions are A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 9
+
+mostly retained, and the language is extended with memory- and pointer-specific constructs. In particular, we introduce (i) dynamic memory allocation through the new construct, used to allocate memory on the heap for primitive values and objects, (ii) the address-of operation &x, which retrieves the memory address of a variable x, (iii) the dereference operation *p, which accesses the value stored at the memory address denoted by p, (iv) static field access p.f , which allows direct access to a field of an object, and (v) dynamic field access p[s], which allows access to a field whose name is determined by evaluating a string expression. The last four additions form the class of pointer expressions (Pe ). For presentation purposes, we introduce some syntactic subgroups of expres-sions. When objects are first defined, their fields can only contain field expres-sions ( Fe ), which may include both primitive expressions and pointer expres-sions. Nested objects can then be added through field assignments. Heap alloca-tion via new is restricted to heap-allocable expressions ( He ), namely primitive expressions and objects. The non-terminal Lhs denotes the set of assignable expressions. Although pointer expressions are recursive, only a syntactically re-stricted subset of them may occur as left-hand sides. In particular, Lhs admits variables, field accesses, and dereferences, but requires the base of any field ac-cess to be an identifier, so write-mode targets are always directly addressable. Read-mode field access, by contrast, admits arbitrary pointer expressions as base, covering chains of intermediate dereferences. Since μLL has no C ++ -style arrow operator ( -> ), reading a field through a pointer requires an explicit dereference, as in (*p).f . Writing a field of a heap object is not directly expressible with dot notation; it requires an explicit load, field update, and write-back via deref-erence. This distinction will be formalized in the semantics. The non-terminal v
+
+groups expressions of primitive types, while e denotes the set of all expressions of the language, namely those that may occur on the right-hand side of a standard (non-new ) assignment. We assume μLL programs to be statically typed .As discussed in the assignment semantics (Section 4.1), the new operation allocates memory on the heap, while standard assignment stores values on the stack. 
+
+4.1 Concrete Semantics 
+
+In μLL , expressions evaluate to a value v in the set Val ≜ Val ∪ Addr ∪ Obj ∪{⊥} , containing values ( Val ≜ Z ∪ { true , false } ∪ Σ∗), memory addresses (Addr ), objects ( Obj ), and a special value ⊥ to denote the result of invalid computations (e.g., an access to a non-existing field of an object, the dereference of an invalid memory address, or the division by zero). Z denotes the set of integers, while Σ∗ denotes the set of strings over the alphabet Σ. The ⊥ value is propagated during expression evaluation: if one of the arguments of an expression is ⊥, then the result of the whole expression is ⊥. Identifiers are elements of the set Id and serve as both variable names and object field names; they follow the C ++ naming convention (strings of letters, digits, and underscores, starting with a letter or underscore). Addresses distinguish between memory locations in the stack and in the heap, namely Addr ≜ Addr S ∪ Addr H, such that 10 G. Boldini et al.                                                                                                                                                                               
+
+> a∈Ae ::= x|n|a+a|a-a|a*a|a/ab∈Be ::= x|true |false |b&& b|b|| b|!b|a<a|a== a|s== ss∈Se ::= x|"s"|concat( s1,s2)
+> o∈Oe ::= x|{ } |{f0:f0,f1:f1, . . . , fn:fn}
+> p∈Pe ::= x|p[s]|p.f |&x|*pv∈Ve ::= a|b|sf∈Fe ::= v|ph∈He ::= v|oe∈e::= v|p|olhs ∈Lhs ::= x|x[s]|x.f |*pst ∈Stmt ::= st st |skip; |lhs =e;|lhs =new h;|if b{st }else {st }|while b{st }where x∈Id (identifiers), n∈Z,s∈Σ∗,f0, f 1, . . . , f n∈Id .
+> Fig. 1. μLL syntax.
+
+Addr S ∩ Addr H = ∅. Addr S denotes the set of stack memory addresses, where each variable x ∈ Id is associated with a unique stack address ax, thus Addr S =
+
+{ax | x ∈ Id }. Addr H are memory locations in the heap, represented as hn for each n ∈ N, thus Addr H = {hn | n ∈ N}. The objects Obj are structured values, represented as partial maps from field names to values, addresses, or other objects, Obj : Id → Val . Thus, we can represent an object literal as 
+
+{f0 : v0, f 1 : v1, . . . , f n : vn}, where for i ∈ [0 , n ], fi ∈ Id are field names and 
+
+vi ∈ Val are the values associated with the fields. The notation { } represents the empty object. We write o[f 7 → v] for the standard partial map override of 
+
+o at field f with value v, leaving all other fields unchanged. We define the field access operator as o(f ) ≜ v if f ∈ dom (o) and ⊥ otherwise, that retrieves the value of field f in object o.Program memories χ = ⟨κ, η ⟩ ∈ C ≜ K × H are tuples composed of a stack 
+
+κ (i.e., a map from identifiers to values, memory addresses, or objects, namely 
+
+K ≜ Id → Val ) and a heap η (i.e., a map from heap memory addresses to values, addresses, or objects, namely H ≜ Addr H → Val ). The lattice structure is given by ⟨℘(C), ⊆⟩ .By static typing, each entry of κ and η consistently holds values of a single type throughout execution (a primitive value Val , an address Addr , or an object Obj ) and never switches between them. Abusing notation, we denote as 
+
+⊥ ∈ C an invalid state resulting from the assignment of a variable to ⊥, that is propagated from one statement to the next one. The concrete semantics of μLL statements is formalized by function Jst K :
+
+C → C . Abusing notation, we use JeK : C → Val to capture the semantics of expressions, which are evaluated without side effects on the state (i.e., expression semantics does not modify the stack or heap). Note that, for all st ∈ Stmt ,A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 11                                                                                               
+
+> ∀i∈[0 , n ].JfiK(κ, η ) = vi
+> J{f0:f0, . . . , f n:fn}K(κ, η ) = {f0:v0, . . . , f n:vn}(1)
+> J{ } K(κ, η ) = { } (2)
+> x∈dom (κ)
+> JxK(κ, η ) = κ(x)(3)
+> x∈dom (κ)
+> J&xK(κ, η ) = ax
+> (4)
+> JpK(κ, η ) = ay∈Addr S
+> J*pK(κ, η ) = κ(y)(5)
+> JpK(κ, η ) = a∈Addr H
+> J*pK(κ, η ) = η(a)(6)
+> JpK(κ, η ) = o∈Obj
+> Jp.f K(κ, η ) = o(f)(7)
+> JpK(κ, η ) = o∈Obj JsK(κ, η ) = f
+> Jp[s]K(κ, η ) = o(f)(8)
+> Ja1K(κ, η ) = n1Ja2K(κ, η ) = n2n2̸= 0 n1mod n2= 0
+> Ja1/a2K(κ, η ) = n1/n 2
+> (9)
+> Fig. 2. Semantics of relevant expressions in C.
+
+Jst K⊥ = ⊥ and Jst K(κ, η ) = ⊥ if there exists at least one sub-expression e ∈ e
+
+in st such that JeK(κ, η ) = ⊥. To avoid cluttering the notation, we only define 
+
+J K on well-formed expressions and statements, that is, ones whose evaluation does not produce ⊥ (i.e., where none of the arguments are ⊥ and that produce a valid result). 
+
+Relevant Expressions. The semantic rules for relevant expressions are sum-marized in Figure 2. The evaluation of object expressions involves evaluating the fields of the object, associating them with their corresponding string keys. The semantics of a non-empty object (1) evaluates each expression vi to its concrete value vi and assigns it to their respective key fi in the map, while the semantics of an empty object (2) evaluates to an empty map. The semantics of an identi-fier x (3) retrieves the value stored in the variable x in the stack. The address-of operator (4) returns the stack memory address of the variable x, which is ax
+
+by definition. The dereference operator (5) and (6) retrieves the value stored at the memory address (both on stack or heap) given by the evaluation of p. If p
+
+does not evaluate to a valid address, the result is ⊥. Field accesses, both static (7) and dynamic (8), retrieve the value of the field in the object, with dynamic access first evaluating the expression s used to compute the field name. If p does not evaluate to a valid object or if the field does not exist, the result is ⊥. The arithmetic division computes the integer division of two arithmetic expressions. If the division does not yield an integer result or if the divisor is zero, the result is ⊥.
+
+Assignments. Since most statements are standard, we omit their semantics from this paper, focusing only on assignments. Figures 3 and 4 summarize the 12 G. Boldini et al.                                                                                                 
+
+> JeK(κ, η ) = v
+> Jx=eK(κ, η ) = ( κ[x7→v], η )(10)
+> JpK(κ, η ) = ay∈Addr SJeK(κ, η ) = v
+> J*p=eK(κ, η ) = ( κ[y7→v], η )(11)
+> JpK(κ, η ) = a∈Addr HJeK(κ, η ) = v∈Val ∪Addr
+> J*p=eK(κ, η ) = ( κ, η [a7→v]) (12)
+> κ(x) = o∈Obj JeK(κ, η ) = v
+> Jx.f =eK(κ, η ) = ( κ[x7→o[f7→v]] , η )(13)
+> κ(x) = o∈Obj JeK(κ, η ) = vJsK(κ, η ) = f∈Id
+> Jx[s] = eK(κ, η ) = ( κ[x7→o[f7→v]] , η )(14)
+> Fig. 3. Semantics of expression assignments lhs =ein C.
+
+semantics of assignment statements for two different cases: the stack assignment 
+
+lhs = e, and the heap assignment lhs = new h, with the latter dynamically allocating memory (on the heap) for a variable using a fresh address. This address is obtained from the function fresh H 
+
+> C
+
+: H → Addr H, which returns a new heap address af ∈ Addr H that is not already in use in the heap. Each figure outlines the possible left-hand side targets of the assignment: to a variable (10) and (15), to a pointer dereference (11), (12), (16) and (17), to a static field of an object (13) and (18), and to a dynamic field of an object (14) and (19). In general, every assignment operation evaluates the expression on the right-hand side, which results in a value v ∈ Val . In the case of heap allocations, a fresh address af ∈ Addr H is computed, and the value produced by the evaluation of the right-hand side is stored as image of that address in 
+
+η. In the following, we refer to the result of the right-hand side evaluation in stack assignments and to the freshly generated address in heap assignments as the assigned value , to unify the presentation of the semantics of the two types of assignments. Variable assignments store the assigned value as the variable’s image in the stack. Dereference assignments store the assigned value at the variable (on the stack) or address (on the heap) obtained by evaluating the left-hand side dereference. Field assignments require the base identifier to hold an object directly on the stack: the object is retrieved, updated to map the desired field to the assigned value, and stored back. To assign a field of a heap-allocated object (or a stack-allocated object pointed to by a pointer), an explicit load/store sequence is required: load the object via dereference, update the field, and write it back. Note that objects stored at heap addresses are always flat, i.e., their field values lie in Val ∪ Addr : this is enforced jointly by rule (12), which restricts the right-hand side of a heap dereference assignment to Val ∪ Addr , and by the grammar, which limits the fields of object literals to Fe (primitive values and pointer expressions). A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 13 
+
+af = fresh H 
+
+> C
+
+(η) J h K(κ, η ) = v
+
+J x = new h K(κ, η ) = ( κ[x 7 → af ], η [af 7 → v]) (15) 
+
+J p K(κ, η ) = ay ∈ Addr S af = fresh H 
+
+> C
+
+(η) J h K(κ, η ) = v
+
+J *p = new h K(κ, η ) = ( κ[y 7 → af ], η [af 7 → v]) (16) 
+
+J p K(κ, η ) = a ∈ Addr H af = fresh H 
+
+> C
+
+(η) J h K(κ, η ) = v
+
+J *p = new h K(κ, η ) = ( κ, η [a 7 → af , a f 7 → v]) (17) 
+
+af = fresh H 
+
+> C
+
+(η) J h K(κ, η ) = v κ(x) = o ∈ Obj 
+
+J x.f = new h K(κ, η ) = ( κ[x 7 → o[f 7 → af ]] , η [af 7 → v]) (18) 
+
+af = fresh H 
+
+> C
+
+(η) J h K(κ, η ) = v κ(x) = o ∈ Obj J s K(κ, η ) = f
+
+J x[s] = new h K(κ, η ) = ( κ[x 7 → o[f 7 → af ]] , η [af 7 → v]) (19) 
+
+Fig. 4. Semantics of new assignments lhs = new h in C
+
+Assume Statement. The ASM (b) statement is an auxiliary construct, not part of the μLL syntax, used when analyzing conditionals and loops to restrict the program state to traces satisfying a guard. Its concrete semantics is: (assume) JbK(κ, η ) = true 
+
+JASM (b)K(κ, η ) = ( κ, η )
+
+States for which the guard evaluates to false are mapped to ⊥.
+
+Example 1 ( μLL Running Example). We now encode the motivating C snippet from Listing 1 into μLL . The translation follows a few systematic choices. First, the C struct initialisation list.L=0; list.R=0; becomes simply list = {} :since μLL is statically typed and L and R are address-typed fields, they cannot hold the integer 0 as a null placeholder without violating the typing invariant. Instead, a null-initialised pointer field is represented as absent from the object. Second, pointer declarations ( struct node *x = &list ) map directly to x = &list , using the address-of operator already in the language. Third, the malloc 
+
+call combined with field initialisation ( n->L=tail; n->R=0 ) is folded into a sin-gle heap-allocation statement n = new { L:tail } ,2 which atomically allocates a fresh heap address and stores the object; the R field is omitted for the same reason as above. Fourth, mutation through a pointer – the C idiom tail->R = n 
+
+– requires an explicit load/store sequence: tmp = *tail loads the object, tmp.R = n updates the field, and *tail = tmp writes it back. Finally, the two non-deterministic booleans __VERIFIER_nondet_bool() are replaced by the predi-cates nd_loop() and nd_pick() that yield non-deterministic values. 3 
+
+> 2
+
+The μLL language does not support uninitialized data structures, so we perform explicit initialisation of all fields at allocation time. However, this is not a limitation of the framework, but rather a stylistic choice to simplify the presentation.  
+
+> 3
+
+While μLL does not support predicates, we rely on an intuitive definition to faithfully replicate the running example. As these do not represent operations of interest for our framework, we omit their definition. 14 G. Boldini et al. 
+
+Table 1. Concrete state annotations for Listing 2. κl and ηl denote the stack and heap at line l. Inside the loop body, a if = fresh H 
+
+> C
+
+(η i 
+
+> 6
+
+) and i ≥ 1.
+
+Line κ η
+
+1 [list 7 → { } ]
+
+∅2 κ1[x 7 → alist ]
+
+3 κ2[tail 7 → alist ]
+
+6 κ i−117 η i−117 
+
+7 κ i 
+
+> 6
+
+[n 7 → a if ]
+
+η i 
+
+> 6
+
+[a if 7 → { L : alist }]
+
+8 κ i 
+
+> 7
+
+[tmp 7 → κ i 
+
+> 7
+
+(list )] 
+
+9 κ i 
+
+> 8
+
+[tmp 7 → κ i 
+
+> 8
+
+(tmp )[ R 7 → a if ]] 
+
+10 κ i 
+
+> 9
+
+[list 7 → κ i 
+
+> 9
+
+(tmp )] 
+
+13 κ i
+
+> 10
+
+[x 7 → a if ]
+
+15 κ i
+
+> 10
+
+17 κ i 
+
+> 13
+
+∪ κ i
+
+> 15
+
+Listing 2. μLL translation of Listing 1 with concrete state annotations. 
+
+1 list = {}; 
+
+2 x = &list; 
+
+3 tail = &list; 
+
+45 /* nd_loop() and nd_pick() denote nondeterministic booleans */ 
+
+6 while nd_loop() { 
+
+7 n = new { L:tail }; 
+
+8 tmp = *tail; 
+
+9 tmp.R = n; 
+
+10 *tail = tmp; 
+
+11 12 if nd_pick() { 
+
+13 x = n; 
+
+14 } else { 
+
+15 skip; 
+
+16 }
+
+17 }
+
+The state annotations in Table 1 track the concrete state at each program point. Before the loop (lines 1–3), the stack maps list to an empty object and both x and tail to alist , with the heap empty. At each iteration i, a fresh heap address aif is allocated for the new node (line 7), list.R is updated to aif via the load/store sequence on lines 8–10, and x either advances to aif (line 13) or retains its previous value (line 15), so after the loop x may hold alist or any of 
+
+a1 
+
+> f
+
+, . . . , a kf .A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 15 
+
+4.2 Collecting Semantics 
+
+The concrete semantics is lifted pointwise to sets of states X ⊆ C . For a state-ment st , Jst K℘ : ℘(C) → ℘(C) is defined as Jst K℘(X) = {Jst K(χ) | χ ∈ X};for the auxiliary construct ASM (b), JASM (b)K℘ : ℘(C) → ℘(C) is defined as 
+
+JASM (b)K℘(X) = {χ′ | χ ∈ X ∧ JASM (b)K(χ) = χ′ ∧ χ′̸ = ⊥} ; and for an ex-pression e, JeK℘ : ℘(C) → ℘(Val ) is defined as JeK℘(X) = {JeK(χ) | χ ∈ X}.
+
+## 5 Split State 
+
+A state σ ∈ S is a tuple (ν, μ ) ∈ V × M where locations ( Id or Addr H) are partitioned by the kind of information they contain: (i) if the location con-tains a concrete value, it is stored in V, (ii) otherwise, if it contains an ad-dress, it is stored in M. Moreover, if a location contains an object, the lat-ter is exploded into entries identified by the location and the field name, each stored in V or M using the same reasoning (each object is flattened to per-field mappings via our explode function, see Section 5.1). Here, Addr R = {rn |
+
+n ∈ N} is a set of addresses disjoint from all concrete addresses and identifiers (Addr R ∩ Addr = ∅, Addr R ∩ Id = ∅), generated during object decomposition to represent the locations of subobjects within stack-allocated objects. We define 
+
+Addr + ≜ Addr ∪ Addr R as the extended address set of the split state. The S
+
+subcomponents are formalized as: 
+
+V = Vih × V f
+
+Vih : ( Id ∪ Addr H) → Val 
+
+Vf : ( Id ∪ Addr H ∪ Addr R) → (Id → Val )
+
+M = Mih × M f
+
+Mih : ( Id ∪ Addr H) → Addr 
+
+Mf : ( Id ∪ Addr H ∪ Addr R) → (Id → Addr +)
+
+where the subscript ih represents storage for variables and heap locations, and 
+
+f for object fields. A split state can be equivalently referred to as σ, as the pair (ν, μ ), or as the expanded form (( νih , ν f ), (μih , μ f )) . The lattice structure is given by ⟨℘(S), ⊆⟩ .Throughout, all states are assumed to satisfy the following well-formedness condition. 
+
+Definition 1 (Well-Formed Split State). Consider an arbitrary split state 
+
+σ = (( νih , ν f ), (μih , μ f )) . We say that σ is well-formed iff: 
+
+– the pairs of functions (νih , μ ih ), (νih , ν f ), (νih , μ f ), (μih , ν f ), (μih , μ f ) have disjoint domains, and 
+
+– ∀l ∈ dom (νf ) ∪ dom (μf ), the pair of functions (νf (l), μ f (l)) have disjoint domains. 16 G. Boldini et al. 
+
+Note that this is a reasonable assumption, since in a concrete state, a location can only be mapped to a value, an address, or an object. Thus, when partitioning this state, each location can only end up in one of the split components. Since 
+
+↾↾ retains all keys (as used in ˙αS , Section 5.1), every object-holding location l
+
+appears in both dom (νf ) and dom (μf ), while each object–field pair (l, f ) occurs in exactly one of the two inner maps. Concretely: 
+
+– Empty object { } : νf (l) = ∅ and μf (l) = ∅.
+
+– Only value-typed fields (e.g., {f : v}, v ∈ Val ): νf (l)̸ = ∅ and μf (l) = ∅.
+
+– Only reference-typed fields (e.g., {f : a}, a ∈ Addr +): νf (l) = ∅ and μf (l)̸ =
+
+∅.
+
+– Mixed fields : both νf (l)̸ = ∅ and μf (l)̸ = ∅.
+
+Example 2 (Split State Benefit). Consider the program p = new 5; tmp = *p; y = tmp + 1 . After all three statements, the concrete state is the pair (κ, η ) with 
+
+κ = {p 7 → a, tmp 7 → 5, y 7 → 6} and η = {a 7 → 5}; within κ, an address and two integer values coexist in the same map. The split state separates these by type into two components: μih = {p 7 → a} captures the memory structure, while 
+
+νih = {a 7 → 5, tmp 7 → 5, y 7 → 6} captures the numerical values; the fields components μf and νf are empty here. This separation is not merely convenient but necessary from a formalization standpoint: each abstraction step can then focus exclusively on the relevant component of the state, i.e., memory structure μ
+
+or numerical values ν, without needing to inspect the other. 
+
+5.1 Concrete-Split Equivalence 
+
+To ensure that the split state and semantics are just a reformulation of the concrete state and semantics, it is necessary to show that there is no loss of precision in the abstraction/concretization process, nor in the split semantics. This reduces to showing: (i) there exist a pair of monotone functions αS and 
+
+γS such that ⟨℘(C), ⊆⟩ − −− → −→ ←←− −−−
+
+> γS
+> αS
+
+⟨℘(S), ⊆⟩ , and (ii) for all statements st and split states (ν, μ ), Jst K(γS (ν, μ )) = γS (Lst M(ν, μ )) .
+
+Exploding and Imploding Objects. In order to define the relationship be-tween concrete and split states, we introduce two mutually inverse helper func-tions explode : (( Id ∪ Addr H) → Obj ) → (( Id ∪ Addr H ∪ Addr R) → ˜Obj )
+
+and implode : (( Id ∪ Addr H ∪ Addr R) → ˜Obj ) → (( Id ∪ Addr H) → Obj ),where ˜Obj ≜ Id → (Val ∪ Addr + ∪ ⊥ ) denotes an exploded object – a flat field map with no nested objects. Intuitively, explode flattens nested objects replac-ing each sub-object with a fresh address r ∈ Addr R, while implode reassembles them back. More precisely, explode introduces Addr R addresses only for stack 
+
+objects (indexed by Id ), and acts as the identity on heap objects (indexed by 
+
+Addr H): the latter are already flat, since the new construct allocates each nested object at a fresh heap address in Addr H (see Section 4.1). Formal definitions and proofs are in Section A. A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 17 
+
+Concretization and Abstraction. In the following definitions we use disjoint-domain union f ˙∪ g, second-order disjoint-domain union f ¨∪ g, restriction f ↾X ,
+
+f ↾Y , f ↾Y 
+
+> X
+
+, and double restriction f ↾↾Y 
+
+> X
+
+, as introduced in Section 3. 
+
+Definition 2 (Concretization of Split States). The function γS : ℘(S) →
+
+℘(C) maps a set of split states Σ to a set of concrete states. It is defined as: 
+
+γS (Σ) = [
+
+σ∈Σ
+
+{ ˙γS (σ)},
+
+where ˙γS : S → C is the concretization function for a single split state. Given a split state σ = ( ν, μ ), the corresponding concrete state is: 
+
+˙γS (σ) =  νi ˙∪ μi ˙∪ implode (νsf ¨∪ μsf ), ν h ˙∪ μh ˙∪ implode (νhf ¨∪ μhf ) .
+
+where 
+
+νi = νih ↾Id , νh = νih ↾Addr H , νsf = νf ↾(Id ∪ Addr R), νhf = νf ↾Addr H ,μi = μih ↾Id , μh = μih ↾Addr H , μsf = μf ↾(Id ∪ Addr R), μhf = μf ↾Addr H .
+
+Definition 3 (Abstraction of Concrete States). The function αS : ℘(C) →
+
+℘(S) maps a set of concrete states X to a set of split states. It is defined as: 
+
+αS (X) = [
+
+χ∈X
+
+{ ˙αS (χ)},
+
+where ˙αS : C → S is the abstraction function for a single concrete state. Given a concrete state χ = ( κ, η ), the corresponding split state is: 
+
+˙αS (χ) = (( νih , ν f ), (μih , μ f )) ,
+
+where, letting ˜O ≜ explode (κ↾Obj ˙∪ η↾Obj ):
+
+νih = κ↾Val ˙∪ η↾Val , νf = ˜O ↾↾Val ,μih = κ↾Addr ˙∪ η↾Addr , μf = ˜O ↾↾Addr +
+
+.
+
+Theorem 1 (Concrete-Split Galois Isomorphism). The functions αS and 
+
+γS form a Galois isomorphism between the concrete state lattice and the split state lattice: ⟨℘(C), ⊆⟩ − −−−→ −→ ←←− −−−−
+
+> αS
+> γS
+
+⟨℘(S), ⊆⟩ . The proof is provided in Section B.2. 
+
+Split Semantics. Rather than defining new semantics directly on the split state, we follow [34] and leverage the fact that αS and γS form a Galois iso-morphism between concrete and split states (Theorem 1). This property ensures that applying γS to a split state, computing semantics in the concrete domain, and then lifting the result back via αS yields the most precise abstraction of the concrete outcome [13]. Note that this does not make our semantics computable, 18 G. Boldini et al. 
+
+but allows direct reuse of the concrete semantics as a specification for the split semantics without creating a new one. Successive abstractions can thus compare their abstract semantics to the concrete one by applying αS and γS . Formally, the split semantics of a statement st , auxiliary construct ASM (b), and expression 
+
+e are respectively: Lst M = αS ◦ Jst K ◦ γS , LASM (b)M = αS ◦ JASM (b)K ◦ γS , and 
+
+LeM = JeK ◦ γS . Note that for expressions, αS is unnecessary since JeK already produces a concrete value. Since γS and αS are inverses of each other (as shown in Section B.2), the following equivalence holds trivially. 
+
+Theorem 2 (Split and Concrete Semantics Equivalence). For any split state σ ∈ S , the following holds: (i) for any st ∈ Stmt : Jst KγS (σ) = γS (Lst M(σ)) ;(ii) for any b ∈ Be : JASM (b)KγS (σ) = γS (LASM (b)M(σ)) ; (iii) for any e ∈ e:
+
+JeK(γS (σ)) = LeM(σ). (Proof in Section B.4). 
+
+Thus, the split state is a rephrasing of the concrete state, with no loss of precision in both the commutation between the representations and the seman-tics. Abstractions over the concrete semantics are challenging: the program state is composed by two functions that mix value information with points-to infor-mation. Instead, the split state provides a setting in which value and points-to information are well separated: this lays the ground for modular abstractions of the split state, in which each component can focus on one kind of information only, either points-to or values. Since the split state is a simple rephrasing, being sound w.r.t. the split semantics entails being sound w.r.t. the concrete semantics. 
+
+5.2 Collecting Semantics 
+
+The split semantics is lifted pointwise to sets of split states Σ ⊆ S . For a state-ment st , Lst M℘ : ℘(S) → ℘(S) is defined as Lst M℘(Σ) = {Lst M(σ) | σ ∈ Σ};for the auxiliary construct ASM (b), LASM (b)M℘ : ℘(S) → ℘(S) is defined as 
+
+LASM (b)M℘(Σ) = {σ′ | σ ∈ Σ ∧ LASM (b)M(σ) = σ′ ∧ σ′̸ = ⊥} ; and for an ex-pression e, LeM℘ : ℘(S) → ℘(Val ) is defined as LeM℘(Σ) = {LeM(σ) | σ ∈ Σ}. By pointwise application of Theorem 2 over all σ ∈ Σ, the split collecting semantics commutes with concretization: γS (Lst M℘(Σ)) = Jst K℘(γS (Σ)) .
+
+## 6 Abstract State 
+
+In this section, we define a general framework in which two abstract domains, one abstracting values and one abstracting memory, can cooperate modularly to form a sound over-approximation of the split state and semantics. Specifically, we consider a value domain V♯, which abstracts the value component ν of the split state (ν, μ ) ∈ V × M , and a memory domain M♯, which abstracts the memory component μ. Intuitively, the value domain approximates the values stored in program variables and memory locations, while the memory domain approximates the structure of memory, including allocation, indirection, aliasing, and object fields. Although M♯ is often referred to in the literature as a heap domain/state , in our framework it abstracts all program memory locations, both A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 19 
+
+stack- and heap-allocated. For this reason, we consistently use the terms memory domain/state to refer to M♯.
+
+Memory Identifiers and Domain Interaction. The cooperation between the two domains is mediated through a set of memory identifiers , denoted by MemID ,along with a set of operations defined by the domains to manipulate them. These identifiers represent abstract memory locations corresponding to one or more split locations in the memory of the analyzed program, including both stack-allocated and heap-allocated entities. They are treated as abstract names without internal structure. Their concrete interpretation and allocation strategy are determined by the chosen memory domain implementation. During abstract execution, memory operations may reorganize memory iden-tifiers, for instance by materializing new locations or merging existing ones. Such structural changes are communicated to the value domain through substitutions ,ensuring that the combined abstract state remains consistent and sound. 
+
+Domain Requirements. Since the framework is parametric in the choice of V♯
+
+and M♯, we require each abstract domain X ∈ {V ♯, M♯} to satisfy the following minimal properties, using the abstract interpretation terminology recalled in Section 3: 
+
+– it should form a partial order, denoted ⟨X , ⊑X ⟩, with bottom element ⊥X ,and should define an upper bound operator ⊔X ;
+
+– it should provide a widening operator ▽X (if not needed by the domain itself, it can simply delegate to ⊔X ). In addition, we require the domains to provide monotone concretization func-tions γV♯ and γM♯ whose purpose is not to directly abstract parts of the split state, but to provide partial views of the program memory that can be combined to produce an overall concretization of the abstract state. Furthermore, instead of defining standard abstract transformers, we require each domain to expose a small operational interface that the framework can use to evolve the two domains consistently during the analysis. These requirements are detailed in Sections 6.2 and 6.3, respectively. 
+
+6.1 Abstract State Construction 
+
+The overall abstract state is obtained by combining the value and memory do-mains into a single state. It is defined as S♯ ≜ V♯ ⊗ M ♯, where ⊗ denotes the 
+
+smash product of abstract domains [2], a form of reduced product [12] that prop-agates the bottom element of one component to all others. An abstract state is therefore a pair σ♯ = ( ν♯, μ ♯) ∈ S ♯, where ν♯ ∈ V ♯ and μ♯ ∈ M ♯. Since the smash product is a special form of Cartesian product, the ordering and lattice operators on S♯ are defined component-wise: 
+
+– (ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) ⊑S♯ (ν♯
+
+> 2
+
+, μ ♯
+
+> 2
+
+) ⇐⇒ ν♯ 
+
+> 1
+
+⊑V♯ ν♯ 
+
+> 2
+
+∧ μ♯ 
+
+> 1
+
+⊑M♯ μ♯
+
+> 2
+
+;
+
+– (ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) ⊔S♯ (ν♯
+
+> 2
+
+, μ ♯
+
+> 2
+
+) = ( ν♯ 
+
+> 1
+
+⊔V♯ ν♯
+
+> 2
+
+, μ ♯ 
+
+> 1
+
+⊔M♯ μ♯
+
+> 2
+
+);20 G. Boldini et al. 
+
+– (ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+)▽S♯ (ν♯
+
+> 2
+
+, μ ♯
+
+> 2
+
+) = ( ν♯
+
+> 1
+
+▽V♯ ν♯
+
+> 2
+
+, μ ♯
+
+> 1
+
+▽M♯ μ♯
+
+> 2
+
+).For the same reason, S♯ inherits the lattice properties of its components: ⊑S♯
+
+is a partial order, ⊔S♯ is an upper bound operator, ⊥S♯ is the bottom element, and ▽S♯ is a widening operator. 
+
+6.2 Concretization Function 
+
+The concretization function γS♯ : S♯ → ℘(S) maps an abstract state to the set of all possible split states it represents. 
+
+γV♯ is a monotone function that produces split value environments in which split addresses are abstracted by memory identifiers. Concretely, we write: 
+
+γV♯ : V♯ → ℘(VId × V MemID ),
+
+where VMemID : MemID → Val is a mapping that associates split values to mem-ory identifiers, while VId denotes the Id -indexed part of the value split state, i.e. the restriction of both Vih and Vf to keys in Id (so dom (VId ) ⊆ Id ). To relate abstract memory identifiers to split memory locations, the concretization of the memory domain provides, together with split memory structure, a mapping that connects abstract identifiers to split addresses. Formally, we define: 
+
+γM♯ : M♯ → ℘(M × γMemID × γMemID f ),
+
+as a monotone function. Intuitively, for each abstract memory state μ♯, ev-ery element (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯) describes: (i) a possible split mem-ory structure μ, and (ii) how abstract memory identifiers are implemented by split memory locations in μ. Here, γMemID : MemID → ℘(Addr H) maps ab-stract memory identifiers to sets of heap addresses, while γMemID f : MemID →
+
+℘(( Addr H ∪ Addr R) × Id ) maps abstract memory identifiers to sets of split field locations (only heap- and stack-nested objects carry fields). γMemID and 
+
+γMemID f have disjoint domains, namely dom (γMemID ) ∩ dom (γMemID f ) = ∅: by the static typing assumption (Section 4), the abstract memory identifiers for base locations (domain of γMemID ) and for field locations (domain of γMemID f ) are always distinct. To concretize the MemID -indexed value component VMemID , we need to replace each memory identifier in the state with the split locations it may denote. We thus define two helper concretizations that replace memory identifiers in ν ∈VMemID by split bindings induced by γMemID and γMemID f , defined as: 
+
+ρb : ( VMemID × γMemID ) → (Addr H → Val )
+
+ρb(ν, γ MemID ) = {(a, v ) : ( ι, v ) ∈ ν ∧ a ∈ γMemID (ι)}
+
+ρf : ( VMemID × γMemID f ) → (( Addr H ∪ Addr R) → Id → Val )
+
+ρf (ν, γ MemID f ) = {(a, {(fi, v i)}) : ( ι, v i) ∈ ν ∧ (a, f i) ∈ γMemID f (ι)}A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 21 
+
+Both functions are trivially monotone, since their definitions only add bindings to the output as the inputs grow. Finally, the concretization of the full abstract state (ν♯, μ ♯) is defined as 
+
+γS♯ (ν♯, μ ♯) = {(ν, μ ) : ( νid , ν mid ) ∈ γV♯ (ν♯) ∧ (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯)
+
+∧ νid mid = ρb(νmid , γ MemID ) ∧ νidf mid = ρf (νmid , γ MemID f )
+
+∧ ν = νid ˙∪ νid mid ˙∪ νidf mid }
+
+Here, (νid , ν mid ) ∈ γV♯ (ν♯) is a pair produced by the value concretization, where 
+
+νid ∈ V Id provides the Id -keyed bindings directly, and νmid ∈ V MemID provides the MemID -keyed bindings that still need to be resolved to split addresses. The helpers ρb and ρf perform that resolution: νid mid maps memory identifiers to base-address bindings, while νidf mid maps them to location-field bindings. The final split value environment ν is the disjoint union of all three components. 
+
+Lemma 1 (Monotonicity of γS♯ ). The concretization function γS♯ is mono-tone, that is: 
+
+∀σ♯
+
+> 1
+
+, σ ♯ 
+
+> 2
+
+∈ S ♯ : σ♯ 
+
+> 1
+
+⊑S♯ σ♯ 
+
+> 2
+
+=⇒ γS♯ (σ♯
+
+> 1
+
+) ⊆ γS♯ (σ♯
+
+> 2
+
+)
+
+Intuitively, since S♯ is a product domain, monotonicity follows if γV♯ and γM♯ are monotone. Proof in Section B.3. 
+
+6.3 Abstract Semantics 
+
+To formalize the semantics of our framework, we require that the value and memory domains provide specialized abstract transformers that the framework exploits to provide a sound over-approximation of the split semantics. These are either slight modifications of the standard transformers required by abstract interpretation, or new operators that extract information from the domains. To simplify the presentation of such transformers we introduce the following auxiliary sets: (i) ˜V ≜ MemID ∪ Ve , the set of value expressions that can also contain memory identifiers; (ii) Rhs ≜ e | o | new (a | b | s | o), the set of expressions that may occur on the right-hand side of assignments and that may contain memory operations; we let rhs ∈ Rhs ; (iii) ˜S, a lattice structure that models string values that is produced by the value domain (used to resolve dynamic accesses). Intuitively, ˜S is an abstraction of the set of possible string values that over-approximate the string argument s in e[s].Operations marked with (⋆) are specific to this framework; the remaining ones are standard abstract interpretation transformers, slightly modified to ac-commodate information exchange between the domains. The value domain must provide the following operations: 
+
+– assign V♯ : ( MemID ∪ Id ) × ˜V × V ♯ × { true | false } → V ♯, which assigns the abstract value denoted by the second argument to the (memory) iden-tifier given as first argument in the abstract value state; the boolean flag selects between a strong update (overwrite) and a weak update (join with the existing value); 22 G. Boldini et al. 
+
+– assume V♯ : Be × V ♯ → V ♯, which refines the abstract value state according to a boolean guard. 
+
+– (⋆)eval V♯ : Se × V ♯ → ˜S, which evaluates string expressions and returns a abstract set of values used to resolve dynamic memory accesses; Note that, while the existence of an evaluation function such as eval V♯ is typical of non-relational domains, relational domains employed in whole-value analy-ses must also produce an abstraction of an expression’s value to interact with other domains. Therefore, the framework is not restricted to non-relational value domains. For instance, a relational domain like the polyhedra domain can still produce a non relational interval reporting the range of values an expression can evaluate to. It follows that the value domain must be able to over-approximate string values to properly support the e[s] instruction. If it cannot, the set ˜S
+
+can be instantiated with a trivial lattice (e.g., {⊤} ) that over-approximates all strings, and the eval V♯ operator can be defined as a no-op that always returns ⊤.Instead, the memory domain must provide the following operations: 
+
+– assign M♯ : Lhs ×Rhs ×M ♯ → Sub ×M ♯, which updates the abstract memory structure by assigning the second argument to the first, and returns any substitutions required to keep the value domain consistent; the first argument may be either a syntactic left-hand side (an element of Lhs ) or an explicit memory identifier (an element of MemID ); 
+
+– assume M♯ : Be × M ♯ → M ♯, which refines the abstract memory state ac-cording to a boolean guard; 
+
+– (⋆)pointsTo M♯ : ℘(Id ∪ MemID ) × M ♯ → ℘(Id ∪ MemID ), which yields the set of memory identifiers that a set of identifiers and memory identifers may point to in the current memory state; 
+
+– (⋆)addrOf M♯ : Id × M ♯ → MemID , which yields the memory identifier that abstracts the address of the given program variable in the current memory state; 
+
+– (⋆)access M♯ : ℘(MemID ) × Σ∗ × M ♯ → ℘(MemID ) × Sub × M ♯, where Σ∗ is the set of string literals, which resolves field accesses starting from a set of base memory identifiers and a statically known field name to a new set of memory identifiers; since an access on the left-hand side of an assignment might define new fields, access M♯ has agency to update the memory structure and return a new instance of M♯, together with any substitutions required to keep the value domain consistent; 
+
+– (⋆)access M♯ : ℘(MemID ) × ˜S × M ♯ → ℘(MemID ) × Sub × M ♯ that models a field access in the same way as its previous overload, but starting from a dynamically evaluated field name that has already been abstracted to an instance of ˜S by the value domain; 
+
+– (⋆)fresh K 
+
+> M♯
+
+: M♯ → MemID × M ♯, which allocates fresh memory identifiers corresponding to a stack-allocated abstract location; since the memory ab-straction might need update to track the new location, fresh K 
+
+> M♯
+
+returns an updated instance of M♯ together with the fresh identifier, but no substitu-A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 23 
+
+tions since the location is fresh and cannot be referenced by the value domain yet; 4
+
+– (⋆)fresh H 
+
+> M♯
+
+: M♯ → MemID × M ♯, that performs the same role as fresh K 
+
+> M♯
+
+but for heap-allocated abstract locations; 
+
+– (⋆)memId M♯ : M♯ → ℘(MemID ), which returns the set of memory identi-fiers currently tracked in the given abstract memory state; used to state the coverage condition on γMemID and γMemID f (see C1 below); 
+
+– (⋆)isSum M♯ : MemID × M ♯ → { true | false }, which returns true if the memory identifier may represent more than one concrete location (a sum-mary node), and false otherwise (represent exactly one, i.e., a singleton node). 
+
+6.4 Substitutions 
+
+The memory domain may reorganize abstract memory identifiers during abstract computations, for instance by materializing (or splitting), merging and renaming locations. These identifier changes must be communicated to the value domain so the two components remain consistent. We adopt the substitution concept from [19], and specialize it to our setting. A substitution sub = [ I1 → I′
+
+> 1
+
+, . . . , In → I′
+
+> n
+
+] ∈ Sub is a finite sequence of replace-ments, where each Ij , I′ 
+
+> j
+
+⊆ MemID . A binding I → I′ states that the post-state identifiers in I derive from the pre-state identifiers in I′; identifiers in I′ not ap-pearing in any I are killed. The three canonical cases are: (i) rename : I and I′ are both singletons; (ii) merge : I is a singleton, |I′| > 1 (e.g., {ι1} → { ι2, ι 3} merges 
+
+ι2 and ι3); (iii) split/materialization : |I| > 1, I′ is a singleton (e.g., {ι1, ι 2} → { ι3}
+
+splits ι3). When a memory domain transformer returns a substitution sub , the value domain applies it via applySub (sub , ν ♯, μ ♯), defined as: 
+
+applySub (sub , ν ♯, μ ♯) = ν♯n where sub = [ I1 → I′
+
+> 1
+
+, . . . , In → I′
+
+> n
+
+], ν ♯ 
+
+> 0
+
+= ν♯
+
+∧ ∀ j ∈ [1 , n ] : ν♯j = ⊔ι′∈I′
+
+> j
+
+{ν♯′ 
+
+> m
+
+: Ij = {ι1, . . . , ι m}, ν ♯′ 
+
+> 0
+
+= ν♯j−1,
+
+∀ k ∈ [1 , m ] : ν♯′ 
+
+> k
+
+= assign V♯ (ιk, ι ′, ν ♯′
+
+> k−1
+
+, ¬isSum M♯ (ιk, μ ♯)) }
+
+6.5 Expression Rewriting 
+
+During abstract computations, the right-hand side of an assignment may contain memory-related sub-expressions (e.g., pointer dereferences, field accesses, object allocations) that must be rewritten to memory identifiers since the value domain cannot handle them. The function RM♯ : Rhs × V ♯ × M ♯ → ℘( ˜V ) × V ♯ × M ♯
+
+handles this rewriting: it traverses a right-hand-side expression, resolves every  
+
+> 4
+
+Note that fresh K 
+
+> M♯
+
+does not need to return an unused memory identifier at every call, but rather an address for a particular allocation: for instance, an allocation-site based analysis will generate one identifier for each location in the program, but will always generate the same identifier for the same location at each loop iteration. 24 G. Boldini et al. 
+
+memory-sensitive sub-expression to a set of abstract value references, and threads the updated abstract state through the process. To avoid cluttering the defini-tion, we will pass sets in ℘( ˜V ) to functions that expect as arguments sets of 
+
+℘(MemID ), implictly assuming that any element of the argument that is not a memory identifier is ignored by the function. Function RM♯ is defined by struc-tural induction on the syntax of the input expression as: 
+
+RM♯ (x, ν ♯, μ ♯) = ( {x}, ν ♯, μ ♯)
+
+RM♯ (a | b | s, ν ♯, μ ♯) = ( {a | b | s}, ν ♯, μ ♯)
+
+RM♯ (&x , ν ♯, μ ♯) = ( {addrOf M♯ (x, μ ♯)}, ν ♯, μ ♯)
+
+RM♯ (*p , ν ♯, μ ♯) = 
+
+
+
+I1, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+
+
+where (I, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) = RM♯ (p, ν ♯, μ ♯) ∧
+
+I1 = pointsTo M♯ (I, μ ♯
+
+> 1
+
+)
+
+RM♯ (p.f , ν ♯, μ ♯) = ( ac, applySub (sub , ν ♯
+
+> 1
+
+, μ ♯
+
+> 2
+
+), μ ♯
+
+> 2
+
+)
+
+where (ids, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) = RM♯ (p, ν ♯, μ ♯) ∧
+
+(ac, sub , μ ♯
+
+> 2
+
+) = access M♯ (ids, f, μ ♯
+
+> 1
+
+)
+
+RM♯ (p[s] , ν ♯, μ ♯) = ( ac, applySub (sub , ν ♯
+
+> 1
+
+, μ ♯
+
+> 2
+
+), μ ♯
+
+> 2
+
+)
+
+where (ids, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) = RM♯ (p, ν ♯, μ ♯) ∧
+
+S = eval V♯ (s, ν ♯
+
+> 1
+
+) ∧
+
+(ac, sub , μ ♯
+
+> 2
+
+) = access M♯ (ids, S, μ ♯
+
+> 1
+
+)
+
+RM♯ ({ } , ν ♯, μ ♯) = ( {ℓ}, ν ♯, μ ♯
+
+> 1
+
+)
+
+where (ℓ, μ ♯
+
+> 1
+
+) = fresh K 
+
+> M♯
+
+(μ♯)
+
+RM♯ ({f_i:v_i} ni=1 , ν ♯
+
+> 0
+
+, μ ♯) = ( {ℓ}, ν ♯n, μ ♯n)
+
+where (ℓ, μ ♯
+
+> 0
+
+) = fresh K 
+
+> M♯
+
+(μ♯) ∧
+
+for i = 1 ..n :(Ii, sub i, μ ♯i ) = access M♯ ({ℓ}, fi, μ ♯i−1) ∧
+
+ν♯si = applySub (sub i, ν ♯i−1, μ ♯i ) ∧
+
+ν♯i = G
+
+> ι∈
+
+Ii
+
+assign V♯ (ι, vi, ν ♯si , ¬isSum M♯ (ι, μ ♯i )) 
+
+RM♯ (new a|b|s , ν ♯, μ ♯) = ( {ℓ}, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+)
+
+where (ℓ, μ ♯
+
+> 1
+
+) = fresh H 
+
+> M♯
+
+(μ♯) ∧
+
+ν♯ 
+
+> 1
+
+= assign V♯ (ℓ, a|b|s , ν ♯, ¬isSum M♯ (ℓ, μ ♯)) 
+
+RM♯ (new { } , ν ♯, μ ♯) = ( {ℓ}, ν ♯, μ ♯
+
+> 1
+
+)
+
+where (ℓ, μ ♯
+
+> 1
+
+) = fresh H 
+
+> M♯
+
+(μ♯)A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 25 
+
+RM♯ (new {f_i:v_i} ni=1 , ν ♯
+
+> 0
+
+, μ ♯) = ( {ℓ}, ν ♯n, μ ♯n)
+
+where (ℓ, μ ♯
+
+> 0
+
+) = fresh H 
+
+> M♯
+
+(μ♯) ∧
+
+for i = 1 ..n :(Ii, sub i, μ ♯i ) = access M♯ ({ℓ}, fi, μ ♯i−1) ∧
+
+ν♯si = applySub (sub i, ν ♯i−1, μ ♯i ) ∧
+
+ν♯i = G
+
+> ι∈
+
+Ii
+
+assign V♯ (ι, vi, ν ♯si , ¬isSum M♯ (ι, μ ♯i )) 
+
+6.6 Statement Semantics 
+
+The abstract semantics is defined to abstract the split semantics while operat-ing over abstract states. For each statement st , we define an abstract transfer function Lst M♯ : σ♯ → σ♯. The semantics of assignment statements is defined as follows: (assign) 
+
+(sub m, μ ♯
+
+> 1
+
+) = assign M♯ (lhs , rhs , μ ♯) ν♯m = applySub (sub m, ν ♯, μ ♯
+
+> 1
+
+)(ids r , ν ♯r , μ ♯r ) = RM♯ (rhs , ν ♯m, μ ♯
+
+> 1
+
+) (ids l, ν ♯l , μ ♯l ) = RM♯ (lhs , ν ♯r , μ ♯r )
+
+ν♯ 
+
+> 2
+
+= F  
+
+> id l∈ids l,id r∈ids r
+
+assign V♯ (id l, id r , ν ♯l , ¬isSum M♯ (id l, μ ♯l )) 
+
+Llhs = rhs M♯(ν♯, μ ♯) = ( ν♯
+
+> 2
+
+, μ ♯l )
+
+Note that we can call RM♯ on lhs since Lhs ⊆ Rhs . Also, we can call assign V♯
+
+on id l since the function RM♯ always returns a set of memory identifiers MemID 
+
+when called on a lhs expression. Finally, the assignment on id l is strong if it is not a summary node, and weak otherwise. The abstract counterpart of ASM (b) refines both domain components indepen-dently using the assume V♯ and assume M♯ operations provided by each domain: (assume) ν♯ 
+
+> 1
+
+= assume V♯ (b, ν ♯) μ♯ 
+
+> 1
+
+= assume M♯ (b, μ ♯)
+
+LASM (b)M♯(ν♯, μ ♯) = ( ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+)
+
+Note that, since b cannot contain memory expressions, function RM♯ does not need to be applied in assume operations. 
+
+Example 3 (Value–Memory Interaction). Similarly to Example 2, consider the program p = new 5; tmp = *p; y = tmp + 1 . We assume the memory do-main is the Andersen-style points-to analysis (Section 7.2) and the value do-main is constant propagation; Table 2 shows the resulting abstract state after each statement. To show the interaction between the value and memory do-mains, consider the second statement tmp = *p , where the abstract assignment rule (Section 6) proceeds as follows. 1. assign M♯ (tmp , *p , μ ♯): a load does not change pointer structure, so it returns an empty substitution and μ♯ unchanged. 26 G. Boldini et al. 
+
+Table 2. Abstract state at each program point. The memory domain determines which 
+
+location is read ( ιℓ, step 2); the value domain determines what is stored there ( 5, step 4). 
+
+After statement ν♯ μ♯
+
+p = new 5 [ιℓ 7 → 5] [p 7 → { ιℓ}]
+
+tmp = *p [ιℓ 7 → 5, tmp 7 → 5] [p 7 → { ιℓ}]
+
+y = tmp + 1 [ιℓ 7 → 5, tmp 7 → 5, y 7 → 6] [ p 7 → { ιℓ}]
+
+2. RM♯ (*p , ν ♯, μ ♯): the dereference rule evaluates RM♯ (p, ν ♯, μ ♯) = ( {p}, ν ♯, μ ♯)
+
+first, then queries pointsTo M♯ ({p}, μ ♯) = {ιℓ}. The memory domain supplies the identifier to read: ids r = {ιℓ}.3. RM♯ (tmp , ν ♯, μ ♯) = ( {tmp }, ν ♯, μ ♯): the variable rule gives ids l = {tmp }.4. assign V♯ (tmp , ι ℓ, ν ♯, ¬isSum M♯ (tmp , μ ♯)) : since tmp is a concrete variable (not a summary node), isSum M♯ (tmp , μ ♯) = false and the assignment is strong; constant propagation reads ν♯(ιℓ) = 5 and sets ν♯(tmp ) ← 5.For y = tmp + 1 all four steps follow the same structure, with the memory domain playing no role: 1. assign M♯ (y, tmp+1 , μ ♯): an arithmetic assignment does not change pointer structure; returns an empty substitution and μ♯ unchanged. 2. RM♯ (tmp+1 , ν ♯, μ ♯): the scalar rule returns the expression as-is, so ids r =
+
+{tmp+1 }.3. RM♯ (y, ν ♯, μ ♯) = ( {y}, ν ♯, μ ♯): the variable rule gives ids l = {y}.4. assign V♯ (y, tmp+1 , ν ♯, ¬isSum M♯ (y, μ ♯)) : the operation isSum M♯ (y, μ ♯) returns 
+
+false because y is a concrete variable, resulting in a strong assignment; constant propagation evaluates ν♯(tmp ) + 1 = 6 and sets ν♯(y) ← 6.
+
+6.7 Soundness 
+
+The soundness of our abstract domain can be established by assuming some conditions over the transformers provided by the value and memory domains. Specifically, we assume two conditions on how memory identifiers are concretized in order to prove the soundness of the analysis. These are adapted from C1 and C3 of [19]. C1. γMemID and γMemID f must together cover all memory identifiers tracked in the concretized memory state. Formally, ∀μ♯ ∈ M ♯, ∀(μ, γ MemID , γ MemID f ) ∈
+
+γM♯ (μ♯) : dom (γMemID ) ∪ dom (γMemID f ) = memId M♯ (μ♯).
+
+C2. Different memory identifiers represent disjoint portions of memory, that is, 
+
+dom (γMemID ) ∩ dom (γMemID f ) = ∅ (since intuitively one concretizes locations and the other concretizes object fields) and for any ι1, ι 2 ∈ dom (γMemID f ),
+
+γMemID f (ι1) ∩ γMemID f (ι2) = ∅ (since different identifiers must represent disjoint fields). A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 27 
+
+For the value abstraction, we employ the usual requirements of Abstract Interpretation: the assign V♯ must correctly over-approximate the effect of assign-ments, the assume V♯ must correctly refine the abstract state according to boolean guards, and eval V♯ must over-approximate the possible values of string expres-sions. The same requirements are also employed for assign M♯ and assume M♯ in the memory domain. To state requirements on framework-specific operators uniformly, we define for any ι ∈ dom (γMemID ) ∪ dom (γMemID f ), with (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯):
+
+locs (ι) ≜
+
+(
+
+γMemID (ι) if ι ∈ dom (γMemID ),
+
+{a : ( a, f ) ∈ γMemID f (ι)} if ι ∈ dom (γMemID f ).
+
+The framework-specific operators must satisfy the following: M1. pointsTo M♯ must correctly include all possible points-to targets of the given set of identifiers: ∀I ⊆ Id ∪ MemID , μ ♯ ∈ M ♯ : S 
+
+> i′∈pointsTo M♯(I,
+
+μ♯) locs (i′) ⊇{a : ∃i ∈ I : a ∈ locs (i)};M2. addrOf M♯ must correctly produce the memory identifier that abstracts the address of the given program variable: ∀x ∈ Id , μ ♯ ∈ M ♯ : addrOf M♯ (x, μ ♯) = 
+
+i where i is the unique memory identifier such that locs (i) = {ax};M3. both overloads of access M♯ must correctly resolve field accesses starting from a set of base memory identifiers and a statically known field name: ∀I ⊆
+
+MemID , f ∈ Σ∗, μ ♯ ∈ M ♯ : access M♯ (I, f, μ ♯) = ( I′, sub , μ ♯′) where I′ is a set of memory identifiers such that S 
+
+> i∈I′
+
+locs (i) ⊇ { a′ : ( μ, γ MemID , γ MemID f ) ∈
+
+γM♯ (μ♯′) ∧ ∃ i ∈ I, a ∈ locs (i) : ( a, f, a ′) ∈ μ}; a similar condition must hold for the second overload, where f is taken from the concretization of ˜S; it is also required that both access M♯ overloads do not change what was already tracked by the domain (i.e., μ♯ ⊑M♯ μ♯′). M4. both fresh K 
+
+> M♯
+
+and fresh H 
+
+> M♯
+
+must produce fresh memory identifiers that do not overlap with any existing identifier in the input memory state, and must return an updated memory state that tracks the new identifier; formally, 
+
+∀μ♯ ∈ M ♯ : fresh K 
+
+> M♯
+
+(μ♯) = ( ι, μ ♯′) and fresh H 
+
+> M♯
+
+(μ♯) = ( ι, μ ♯′′ ) where ι̸ ∈
+
+memId M♯ (μ♯), memId M♯ (μ♯′) = memId M♯ (μ♯′′ ) = memId M♯ (μ♯) ∪ { ι}, and μ♯′
+
+and μ♯′′ are consistent with μ♯ on all identifiers in memId M♯ (μ♯) (i.e., μ♯ ⊑M♯
+
+μ♯′ and μ♯ ⊑M♯ μ♯′′ ). M5. predicate isSum M♯ must correctly identify summary nodes and singletons; formally, ∀ι ∈ dom (γMemID ) : isSum M♯ (ι, μ ♯) = false =⇒ ∥γMemID (ι)∥ = 1 ,i.e., if ι is not a summary node then it concretizes to exactly one heap address. M6. following [19], we expect all substitutions produced by the memory domain to be coherent with the modifications that happened therein [19, Prop. 4.1]. Our framework uses two auxiliary functions in its semantics: applySub and 
+
+RM♯ . The former is sound by [19, Lem. C.1], since M5 holds and assign V♯ is sound by assumption, while the latter is novel. In Lemma 10 we show that RM♯ is sound, 28 G. Boldini et al. 
+
+that is, that the values computed by the expression passed as its argument are over-approximated by the set of values computed by the rewritten expressions. In general, soundness can be established by showing that ∀σ♯ ∈ S ♯, st ∈
+
+Stmt : Lst M(γS♯ (σ♯)) ⊆ γS♯ (Lst M♯(σ♯)) . Intuitively, every concrete behavior ad-mitted by a split state is also admitted by its abstract counterpart after executing the same statement. 
+
+Theorem 3 (Soundness of the Abstract Semantics). If conditions C1–C2 and M1–M6 hold, then the abstract semantics is sound with respect to the split semantics. Concretely, for any abstract state σ♯ = ( ν♯, μ ♯) ∈ S ♯, the following must hold: 
+
+– Llhs = rhs M γS♯ (σ♯) ⊆ γS♯
+
+ Llhs = rhs M♯(σ♯), and 
+
+– LASM (b)M γS♯ (σ♯) ⊆ γS♯
+
+ LASM (b)M♯(σ♯).Proof in Section B.5. 
+
+6.8 Practical Benefits of Modularity 
+
+The modular design of the framework delivers three concrete practical benefits. 
+
+– Reusability : an existing value domain or memory domain can be plugged into the framework at the cost of adapting it to the common interface. As the instantiation of Section 7 shows, this corresponds to implementing a modest set of operators ( assign V♯ , assume V♯ , and eval V♯ for the value side; assign M♯ ,
+
+assume M♯ , memId M♯ , pointsTo M♯ , addrOf M♯ , access M♯ , fresh K 
+
+> M♯
+
+, and fresh H 
+
+> M♯
+
+for the memory side), each of which usually maps naturally to operations the domain already performs. 
+
+– Tunable precision and efficiency : both the value and memory domains can be swapped for a cheaper or a more precise abstraction independently of the other component; the example at the end of this Section demonstrates this for constants vs. intervals vs. constant sets on the same program. 
+
+– Compositional soundness : each domain only needs to satisfy a set of local conditions (Section 6.7, Theorem 3); if both domains satisfy them, the com-bined analysis is automatically sound, i.e., there is no need to prove the correctness of the combination from scratch since the framework guarantees it by construction. Implementation-wise, a modular implementation following our framework en-courages reuse and testing, and removes the need for defining custom combina-tions for each pair of domains. Compared to running the memory and value analyses in a Cartesian product (or in isolation), the framework presents a clear tradeoff. On the one hand, the value domain tracks information not only on the variables but also on the memory locations. Since the complexity of value domains usually depends on the number of variables, our approach increases this value by adding all possible memory identifiers, thus producing a less efficient analysis. However, any analysis A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 29 
+
+that combines memory and value information will incur in this additional cost. On the other hand, it allows tracking of value information on memory locations, something that would not be possible in the Cartesian product (or running the analyses in isolation), thus sensibly improving the precision of the analysis. 
+
+Example 4 (Modularity in Action). The following example showcases the modu-larity of our approach by plugging a different value domain into the framework, while keeping the memory domain fixed, directly affects the precision of the result, without any other change to the analysis. 
+
+Program. Consider the μLL program below. It allocates a single heap cell ini-tialised to 0, non-deterministically overwrites it with either 1 or 3, and then loads the result into q. 
+
+> Listing 3. Program for the three-domain modularity example.
+
+1 p = new 0; 
+
+2 if nd { 
+
+3 *p = 1; 
+
+4 } else { 
+
+5 *p = 3; 
+
+6 }
+
+7 q = *p; 
+
+Memory Domain. To analyze this program, we use the Andersen-style points-to domain of Section 7.2. The single new expression at line 1 gives rise to one abstract memory identifier ιℓ ∈ MemID . After line 1, the memory state is μ♯ =[p 7 → { ιℓ}] and this state is preserved unchanged throughout the if-else block and the final load: neither branch adds or removes pointer targets. The value stored at ιℓ is tracked entirely by the value domain. 
+
+Value Domain 1 – Constant Propagation ( CP ). The CP domain represents each identifier by either a known integer constant c or the top element ⊤ (value unknown). The join of two distinct constants is ⊤.
+
+– After line 1 : ν♯(ιℓ) = 0 .
+
+– After line 3 (then-branch): ν♯(ιℓ) = 1 .
+
+– After line 5 (else-branch): ν♯(ιℓ) = 3 .
+
+– After the join : ν♯(ιℓ) = 1 ⊔CP 3 = ⊤.
+
+– After line 7 : ν♯(q) = ⊤.Constant propagation cannot bound the value of q in any way. 
+
+Value Domain 2 – Intervals ( Int ). The interval domain represents each identifier by a range [l, u ]. The join of two singletons [1 , 1] and [3 , 3] is [1 , 3] .
+
+– After line 1 : ν♯(ιℓ) = [0 , 0] .
+
+– After line 3 (then-branch): ν♯(ιℓ) = [1 , 1] .30 G. Boldini et al. 
+
+– After line 5 (else-branch): ν♯(ιℓ) = [3 , 3] .
+
+– After the join : ν♯(ιℓ) = [1 , 1] ⊔Int [3 , 3] = [1 , 3] .
+
+– After line 7 : ν♯(q) = [1 , 3] .The interval analysis establishes q ∈ [1 , 3] , in particular q ≥ 1 and q ≤ 3.
+
+Value Domain 3 – Constant Sets ( CSet k). We use the bounded variant of the constant-set domain [31], which represents each identifier by a finite set of integer constants of cardinality at most k, or ⊤ otherwise. Join and widening both collapse to ⊤ when |A ∪ B| > k ; within the bound, join is set union. In this example, having k ≥ 2 is sufficient to capture the exact set of possible values. 
+
+– After line 1 : ν♯(ιℓ) = {0}.
+
+– After line 3 (then-branch): ν♯(ιℓ) = {1}.
+
+– After line 5 (else-branch): ν♯(ιℓ) = {3}.
+
+– After the join : ν♯(ιℓ) = {1} ⊔ CSet {3} = {1, 3}.
+
+– After line 7 : ν♯(q) = {1, 3}.The constant-set analysis yields the exact set of possible values, establishing 
+
+q ∈ { 1, 3} precisely.                                            
+
+> Table 3. Abstract states at key points for the three instantiations. The memory state
+> μ♯is identical throughout; only the value domain changes the precision of the result.
+> Program point μ♯ν♯
+> CP (ιℓ)ν♯
+> Int (ιℓ)ν♯
+> CSet (ιℓ)
+> After line 1 [p7→ { ιℓ}]0[0 ,0] {0}
+> After line 3 (then) [p7→ { ιℓ}]1[1 ,1] {1}
+> After line 5 (else) [p7→ { ιℓ}]3[3 ,3] {3}
+> After join [p7→ { ιℓ}]⊤[1 ,3] {1,3}
+> After line 7 ( ν♯(q))[p7→ { ιℓ}]⊤[1 ,3] {1,3}
+
+The memory state μ♯ is identical in all three analyses. Swapping the value domain requires no change to the memory domain or to the abstract semantics of the framework; it affects only the precision of the inferred value information, as summarised in Table 3. This demonstrates concretely that the modular design of the framework allows independent selection of value and memory abstractions. 
+
+## 7 Instantiations 
+
+This section instantiates the framework of Section 6 with concrete abstract do-mains. Note that, as this framework is an extension of [19], all instantiations supported by the latter can also be employed in our framework. To showcase the differences in the integration of abstract domains w.r.t. [19], we present two instantiations: classical non-relational numerical domains [31] as value domains 
+
+V♯, and Andersen-style points-to analysis [1] as the memory domain M♯. To-gether they yield a concrete, sound analysis for μLL .A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 31 
+
+7.1 Non-relational Numerical Domains 
+
+For each x ∈ Id and ι ∈ MemID , the domain maintains a non-relational abstract value v♯ over-approximating the set of numerical values that an identifier may hold at run-time. Non-relational means that the domain tracks information on each identifier independently, that is, without tracking (e.g., symbolic) relations between different identifiers. 
+
+Abstract Values. We assume [31, Sect. 4.1.1] that the domain defines a set of abstract values V ♯ together with a partial order ⊑V , least upper bound ⊔V ,greatest lower bound ⊓V , and widening ∇V operators, and concretization γV
+
+and abstraction αV functions. These operators form a complete lattice, and a Galois connection with a concrete domain representing the set of numerical val-ues whose lattice structure is defined with set operators. In addition, we assume that sound abstract operators for standard arithmetic operations (such as eval-uating constant values, addition, multiplication, etc.) are provided. 
+
+Abstract States. The abstract state maps each identifier to an abstract value. The various operators are defined as the point-wise lifting of the operators over abstract values [31, Sect. 4.1.2]. 
+
+Abstract Semantics. First of all, the non-relational abstract domain defines an 
+
+deval (expr, ν ♯) function that evaluates expressions. This relies on the sound ab-stract operators defined by abstract values. Assignments then link the value resulting from the evaluation of the expression to the assigned identifier; when the boolean parameter of the assign V♯ is true , the assignment is a strong update (overwrite), and when false , a weak update (join, ⊔, with the previous abstract value) [31, Sect. 4.1.3]. 
+
+Examples. In the literature, several non-relational numerical abstract domains have been formalized. The most popular ones are: 
+
+– the Sign domain [31, Sect. 4.2], tracking the sign of each identifier (e.g., if it is positive, negative, or zero); 
+
+– the constant propagation domain [31, Sect. 4.3], tracking if an identifier always has a constant numerical value; 
+
+– the interval domain [31, Sect. 4.5] tracking the minimum and maximum value of each identifier; and 
+
+– the congruence domain [23] tracking if the value assigned to an identifier is always congruent to n modulo m.All these domains define the abstract values described in this Section and can therefore be used in our framework. 32 G. Boldini et al. 
+
+7.2 Andersen-Style Points-To Analysis 
+
+We instantiate M♯ with an Andersen-style points-to analysis [1]. For each ab-stract memory identifier in MemID , the domain tracks the set of identifiers it may point to. Since the framework is flow-sensitive, the points-to sets are threaded through the abstract semantics, growing monotonically at each statement and being joined at merge points; this subsumes the precision of the original flow-insensitive Andersen analysis. 
+
+Identifier Naming Convention. We fix a static naming scheme for MemID that makes the analysis deterministic and finitely bounded: 
+
+– For each program variable x ∈ Id , a distinguished base identifier ιx ∈ MemID 
+
+represents the abstract memory location of x.
+
+– For each syntactic allocation site ℓ (a new -expression or object literal oc-curring in the program text), a distinguished base identifier ιℓ ∈ MemID 
+
+represents all objects born at that site ( allocation-site abstraction ): every execution of the same new collapses to the same abstract identifier. 
+
+– For each base identifier ι and field name f ∈ Id , a distinguished field iden-tifier ιι,f ∈ MemID represents the abstract memory cell for field f of the object ι.All such identifiers are pairwise distinct. We write MemID b ⊂ MemID for the set of base identifiers and MemID f ⊂ MemID for the set of field identifiers; these two sets are disjoint. The total set of identifiers is finite (bounded by |Id | plus the number of allocation sites times the number of field names), so no widening is needed for the memory domain. 
+
+Domain Definition. The abstract memory domain is the set of finite partial functions 
+
+M♯PT = ( MemID ∪ Id ) ⇀ ℘ (MemID ).
+
+An element μ♯ ∈ M ♯PT maps each currently tracked identifier (either a program variable or a memory identifier) to its points-to set : the over-approximation of the concrete addresses that the corresponding identifier may refer to. A non-tracked identifier ι / ∈ dom (μ♯) is treated as having an empty points-to set (it does not hold a pointer, or it has not yet been allocated). The partial order and lattice operators are pointwise: 
+
+μ♯ 
+
+> 1
+
+⊑ μ♯ 
+
+> 2
+
+⇐⇒ dom (μ♯
+
+> 1
+
+) ⊆ dom (μ♯
+
+> 2
+
+) ∧ ∀ ι ∈ dom (μ♯
+
+> 1
+
+) : μ♯
+
+> 1
+
+(ι) ⊆ μ♯
+
+> 2
+
+(ι),
+
+(μ♯ 
+
+> 1
+
+⊔ μ♯
+
+> 2
+
+)( ι) = μ♯
+
+> 1
+
+(ι) ∪ μ♯
+
+> 2
+
+(ι) (treating missing entries as ∅),
+
+⊥M♯PT = ∅ (empty domain ),
+
+⊤M♯PT (ι) = MemID for all ι ∈ MemID .
+
+Since MemID is finite, every ascending chain stabilises; widening reduces to join: 
+
+μ♯
+
+> 1
+
+▽μ♯ 
+
+> 2
+
+= μ♯ 
+
+> 1
+
+⊔ μ♯
+
+> 2
+
+.A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 33 
+
+Abstract Memory State and Concretization. The concretization γM♯ : M♯PT →
+
+℘(M × γMemID × γMemID f ) maps each abstract state to the set of concrete memory structures consistent with it. For a given μ♯ ∈ M ♯PT , a triple (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯) must satisfy: 1. Separation : γMemID is defined on base (μ♯) ≜ dom (μ♯)∩MemID b and maps each base identifier to a non-empty set of concrete addresses: γMemID (ι) ⊆ Addr +.
+
+γMemID f is defined on field (μ♯) ≜ dom (μ♯) ∩ MemID f and maps each field identifier to a set of concrete field locations: γMemID f (ι) ⊆ (Addr H ∪Addr R)×
+
+Id .2. Soundness : for every tracked identifier ι ∈ dom (μ♯) and every concrete loca-tion ℓ ∈ locs (ι) (where locs is as in condition C2 of Section 6), if the concrete memory holds a pointer at ℓ (i.e., ℓ appears in dom (μih ) or dom (μf )), then the pointed-to concrete address belongs to S
+
+> ι′∈
+
+μ♯(ι) locs (ι′):
+
+μih (ℓ) ∈ [
+
+> ι′∈
+
+μ♯(ι)
+
+locs (ι′) or μf (ℓ, f ) ∈ [
+
+> ι′∈
+
+μ♯(ι)
+
+locs (ι′)
+
+(whichever applies to ℓ). We now verify the two structural conditions required by the framework. 
+
+Lemma 2 (C1 for M♯PT ). For every μ♯ ∈ M ♯PT and (μ, γ MemID , γ MemID f ) ∈
+
+γM♯ (μ♯): dom (γMemID ) ∪ dom (γMemID f ) = memId M♯ (μ♯). Proof in Section B.6. 
+
+Lemma 3 (C2 for M♯PT ). For every μ♯ ∈ M ♯PT and (μ, γ MemID , γ MemID f ) ∈
+
+γM♯ (μ♯), and distinct ι1, ι 2 ∈ dom (γMemID ) ∪ dom (γMemID f ): locs (ι1) ∩ locs (ι2) = ∅;moreover, for field identifiers with the same parent base, γMemID f (ι1)∩γMemID f (ι2) = 
+
+∅ as sets of (a, f ) pairs. Proof in Section B.7. 
+
+Lemma 4 (Monotonicity of γM♯ ). If μ♯ 
+
+> 1
+
+⊑ μ♯ 
+
+> 2
+
+then γM♯ (μ♯
+
+> 1
+
+) ⊆ γM♯ (μ♯
+
+> 2
+
+). Proof in Section B.8. 
+
+Required Operations. 
+
+memId M♯ . The set of memory identifiers known to the domain can be formalized as memId M♯ (μ♯) =  dom (μ♯) ∪ S codom (μ♯) ∩ MemID .
+
+fresh K 
+
+> M♯
+
+and fresh H 
+
+> M♯
+
+. For an allocation site ℓ (determined by the program point of the call), both functions return the canonical identifier ιℓ:
+
+fresh K 
+
+> M♯
+
+(μ♯) = fresh H 
+
+> M♯
+
+(μ♯) = ιℓ,
+
+extending the domain of μ♯ with ιℓ 7 → ∅ if not already present. 34 G. Boldini et al. 
+
+isSum M♯ . Every node in the Andersen points-to graph is a summary node, as the analysis does not distinguish between different concrete objects allocated at the same site. Thus, isSum M♯ (ι) = true for all ι ∈ MemID . Note that the analysis could easily be improved by (i) generating strong identifiers when a location is first created (i.e., it is not already part of the points-to graph), and (ii) turning the strong identifier into a summary one (by updating the internal mapping and producing the appropriate substitution) when a second object is allocated at the same site. 
+
+addrOf M♯ . Computing the set of identifiers that may point to a given identifier 
+
+ι is straightforward: 
+
+addrOf M♯ (x, μ ♯) = 
+
+(
+
+{ιx} ∪ { ι ∈ dom (μ♯) | x ∈ μ♯(ι)} if x ∈ Id ;
+
+{ι ∈ dom (μ♯) | x ∈ μ♯(ι)} otherwise .
+
+That is, if x is a program variable, we include its base identifier ιx. Then, we also include any identifier ι in the domain of μ♯ whose points-to set contains x.
+
+pointsTo M♯ . As the Andersen points-to graph is represented by μ♯ itself, this function simply returns the points-to set of the given identifier: 
+
+pointsTo M♯ (ι, μ ♯) = μ♯(ι).
+
+access M♯ . For a set of base identifiers I and a statically known field name f :
+
+access M♯ (I, f, μ ♯) = 
+
+[ 
+
+> ι∈
+
+I
+
+{ιι,f }, [] , μ ♯
+
+> ext
+
+
+
+,
+
+where μ♯ 
+
+> ext
+
+extends μ♯ with ιι,f 7 → ∅ for each ι whose field identifier is not yet tracked. For a lattice element S ∈ ˜S:
+
+– If S concretizes to a finite set of field names, apply the static case to each; 
+
+– If S = ⊤ ˜S (unknown selector), return all field identifiers of all objects in I
+
+currently tracked in μ♯.No substitution is returned since field identifiers are pre-determined by the nam-ing convention; no memory reorganization occurs. Note that this case could be further refined with techniques such as [4] to operate directly with the lattice element S without concretizing it. 
+
+assume M♯ . Boolean guards constrain values but do not affect the pointer struc-ture: 
+
+assume M♯ (b, μ ♯) = μ♯.A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 35 
+
+assign M♯ . This is the core operation. It updates the points-to relation based on the syntactic form of the assignment, implementing the Andersen inclusion constraints in a flow-sensitive manner. All updates are accumulative (we only add to points-to sets, never remove), ensuring soundness at the cost of possible imprecision. The substitution returned is always [] (no identifier renaming is needed), so the value domain is not disturbed. Because the naming convention makes fresh K 
+
+> M♯
+
+/fresh H 
+
+> M♯
+
+deterministic, assign M♯
+
+can pre-compute the identifier ιℓ that will be allocated for any allocation site 
+
+ℓ in the rhs , and update the points-to set of the lhs accordingly before RM♯ is invoked. The main cases are: 
+
+– Address-of (lhs = x ∈ Id , rhs = &y with y ∈ Id ) records the Andersen address-of constraint, that is, that x may point to y’s abstract location ιy :
+
+assign M♯ (x, &y, μ ♯) =  [] , μ ♯[x 7 → μ♯(x) ∪ { ιy }].
+
+– Pointer copy (lhs = x ∈ Id , rhs = y ∈ Id ) propagates y’s points-to set into 
+
+x’s; if y is not a pointer, μ♯(ιy ) = ∅ and the update is a no-op: 
+
+assign M♯ (x, y, μ ♯) =  [] , μ ♯[x 7 → μ♯(x) ∪ μ♯(y)] .
+
+– Pointer load (lhs = x ∈ Id , rhs = *p, with p ∈ Id ) records that x may point to anything that the targets of p itself point to: 
+
+assign M♯ (x, *p, μ ♯) = 
+
+
+
+[] , μ ♯h
+
+x 7 → μ♯(x) ∪ [
+
+> ι∈
+
+μ♯(p)
+
+μ♯(ι)
+
+i 
+
+.
+
+– Pointer store (lhs = *p, rhs = y, with p ∈ Id ) adds y’s points-to set to all possible targets, since p may alias multiple concrete locations: 
+
+assign M♯ (*p, y, μ ♯) = 
+
+
+
+[] , G
+
+> ι∈
+
+μ♯(p)
+
+μ♯h
+
+ι 7 → μ♯(ι) ∪ μ♯(y)
+
+i 
+
+.
+
+– Object creation (lhs = x ∈ Id , rhs ∈ { {f i:v i}, new {f i:v i}} at allocation site ℓ) records that x may now point to the freshly allocated object ιℓ and initialises its field identifiers: 
+
+assign M♯ (x, rhs , μ ♯) =  [] , μ ♯[x 7 → μ♯(x) ∪ { ιℓ}, ι ℓ 7 → ∅ , ι ιℓ,f i 7 → ∅ | i].
+
+– Field assignment (lhs = x.f or lhs = x[s], rhs = y) is analogous to the pointer-store case, propagating y’s points-to set into the appropriate field identifiers of x’s targets. 
+
+– Non-pointer assignment (rhs is a Ve or Ae expression that cannot yield an address) behaves like a no-op on the memory domain: 
+
+assign M♯ (lhs , rhs , μ ♯) = ([] , μ ♯).
+
+Example 5 (Application to the Running Example). We trace the points-to anal-ysis on the μLL program of Listing 2. 36 G. Boldini et al. 
+
+Identifiers. The naming convention introduces one base identifier per variable and one per allocation site: 
+
+– ιlist , ι x, ι tail , ι n, ι tmp — variable identifiers; 
+
+– ιℓ1 — stack allocation site for list = {} , an empty object: no field identifiers exist until a field is first written; 
+
+– ιℓ7 — heap allocation site for new {L : tail } (fixed across loop iterations by allocation-site abstraction). Field identifiers are written ιι,f for field f of object ι.
+
+After Initialisation (Lines 1–3). Starting from μ♯ 
+
+> 0
+
+= ∅:
+
+Line 1 (list = {} ): assign M♯ (object-creation case) extends the state with 
+
+list 7 → { ιℓ1 } and ιℓ1 7 → ∅ . Since the object literal declares no fields, no field identifiers are created yet. 
+
+Line 2 (x = &list ): assign M♯ (address-of case) sets x 7 → { ιlist }. RM♯ (&list )
+
+calls addrOf M♯ (list , μ ♯) and returns {x, ι list } directly. 
+
+Line 3 (tail = &list ): analogous, giving tail 7 → { ιlist }.The state after line 3 is: 
+
+μ♯ 
+
+> 3
+
+= {list 7 → { ιℓ1 }, x 7 → { ιlist }, tail 7 → { ιlist }, ι ℓ1 7 → ∅} 
+
+Loop Body (Lines 7–10). Line 7 (n = new {L : tail }): assign M♯ (object-creation) adds n 7 → { ιℓ7 } and ιℓ7 7 → ∅ , initialising the field identifier ιιℓ7 ,L 7 → ∅ (there is no 
+
+R field this time, since the literal only declares L). Then access M♯ ({ιℓ7 }, L, μ ♯) pro-duces ιιℓ7 ,L, and the field-assignment case of assign M♯ propagates tail ’s points-to set into it: 
+
+ιιℓ7 ,L 7 → μ♯(tail ) = {ιlist }.
+
+Line 8 (tmp = *tail ): pointer-load case of assign M♯ :
+
+tmp 7 → [
+
+> ι∈
+
+μ♯(tail )
+
+μ♯(ι) = μ♯(list ) = {ιℓ1 }.
+
+After this, tmp and list both point to ιℓ1 : tmp is an alias of list ’s object. 
+
+Line 9 (tmp.R = n): field-assignment (weak update). access M♯ resolves tmp ’s target to ιℓ1 and selects the field identifier ιιℓ1 ,R, not yet tracked at this point since list ’s object had no R field until now. By the domain’s convention, a non-tracked identifier has an empty points-to set, so the update introduces it directly with n’s points-to set: 
+
+ιιℓ1 ,R 7 → ∅ ∪ μ♯(n) = {ιℓ7 }.
+
+This is an over-approximation : a strong update would replace the old value, but since |γMemID (ιℓ1 )| > 1 is possible, we conservatively join. 
+
+Line 10 (*tail = tmp ): pointer-store case. μ♯(tail ) = {ιlist }, so the weak update adds μ♯(tmp ) = {ιℓ1 } to μ♯(list ), which already contains ιℓ1 : no change. 
+
+Lines 12–16 (if-branch x = n at line 13, else skip at line 15): pointer-copy in the true branch gives x 7 → { ιlist } ∪ { ιℓ7 }. After joining the two branches at the loop head (line 17): x 7 → { ιlist , ι ℓ7 }.A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 37 
+
+Fixpoint. Re-entering the loop with the end-of-body state, no entry grows further (allocation-site abstraction collapses all heap nodes created at line 7 into the single ιℓ7 ; all points-to sets are already at their join values). The analysis reaches a fixpoint after one iteration. The final abstract memory state is: 
+
+μ♯∗ =
+
+ list 7 → { ιℓ1 }, ι ιℓ1 ,R 7 → { ιℓ7 }, x 7 → { ιlist , ι ℓ7 }, tail 7 → { ιlist },
+
+n 7 → { ιℓ7 }, ι ιℓ7 ,L 7 → { ιlist }, tmp 7 → { ιℓ1 }, . . . 
+
+
+
+Soundness. The operations above are sound with respect to γM♯ because each one can only grow points-to sets: it adds identifiers to sets but never removes them. Since γM♯ is monotone (Lemma 4), any concrete state that was consistent with the pre-state remains consistent with the post-state. More precisely: 
+
+– addrOf M♯ : returns the set of identifiers referring to the given ι, which by the soundness condition on μ♯ over-approximates all concrete referrers. The state is unchanged. 
+
+– pointsTo M♯ : returns the set μ♯(ι), which by the soundness condition on μ♯
+
+over-approximates all concrete targets. The state is unchanged. 
+
+– isSum M♯ : always returns true , since all identifiers are summaries. The state is unchanged. 
+
+– fresh K 
+
+> M♯
+
+/fresh H 
+
+> M♯
+
+: adds ιℓ 7 → ∅ . The empty points-to set is a sound over-approximation of a freshly allocated location (which holds no pointer yet); concrete executions that later store a pointer will be captured by subsequent 
+
+assign M♯ calls. 
+
+– access M♯ : adds field identifiers with empty points-to sets; soundness follows as for fresh K 
+
+> M♯
+
+.
+
+– assign M♯ (pointer copy/load/store/object-creation) : each case adds identifiers to the target’s points-to set, over-approximating the concrete semantics: any concrete address that can reach x after the assignment is covered by the updated μ♯(ιx). For the weak store case *p = y, updating all potential targets of p (rather than exactly one) is a sound over-approximation. 
+
+– assume M♯ : the identity is trivially sound since boolean guards do not modify memory structure. By Theorem 3, these per-operation soundness arguments together guarantee that the combined analysis (interval domain for values, points-to domain for memory) is sound for μLL .
+
+7.3 Combining the Instantiations 
+
+To demonstrate how the two instantiations cooperate on a concrete setting, we extend the running example of Listing 2 so that each allocated node also carries an integer field val . A counter variable count is initialised to 1 before the loop. At line 7, the heap allocation becomes n = new {L : tail , val : 1 }, and two new statements n.val = count followed by count = count + 1 are inserted at the end of the loop body. In this variant, we describe the cooperation between M♯38 G. Boldini et al. 
+
+and V♯ in a mixed pointer/integer setting, demonstrating how Andersen analysis interacts with non-relational value domains, such as Sign and Interval, within the proposed framework. 
+
+Effect on the Memory Domain. The val field is integer-typed and holds no pointer. 
+
+– Line 7 : the object-creation case of assign M♯ introduces a field identifier ιιℓ7 ,val 
+
+into μ♯, mapped to ∅. Its points-to set remains ∅ throughout the analysis, so the points-to graph is unaffected. 
+
+– Counter increment and store (count = count + 1 then n.val = count ): both right-hand sides are arithmetic expressions, so the non-pointer assign-ment case of assign M♯ applies to each. No structural change occurs and no substitution is emitted by either statement. Consequently, the abstract memory state is identical to that of the original example, and the points-to fixpoint is still reached after one loop iteration. 
+
+Effect on the Value Domain and Domain Interaction. The interaction between 
+
+M♯ and V♯ is mediated by the rewriting function RM♯ and the operations access M♯
+
+and assign V♯ , as defined in Section 6. We trace the processing of the two new statements in turn. 
+
+Step A: n.val = count .
+
+1. Memory domain first. assign M♯ returns ([ ] , μ ♯); the empty substitution leaves 
+
+ν♯′ unchanged. 2. Right-hand-side rewriting. RM♯ (count , ν ♯, μ ♯) resolves count directly (it is a concrete identifier; no access M♯ call is needed) and returns its current abstract value from ν♯.3. Left-hand-side rewriting. RM♯ (n.val , ν ♯, μ ♯) calls access M♯ ({ιℓ7 }, val , μ ♯), re-turning the field identifier ιιℓ7 ,val .4. Value update. Since isSum M♯ (ιℓ7 , μ ♯) = true (every identifier is a summary node in the Andersen domain), the boolean flag passed to assign V♯ is false ,forcing a weak update (join with the existing abstract value): 
+
+ν♯′ = assign V♯
+
+ ιιℓ7 ,val , count , ν ♯, false .
+
+Step B: count = count + 1 . count ∈ Id is a concrete program variable, so no 
+
+access M♯ call is needed. RM♯ (count + 1 , ν ♯′, μ ♯) leaves the expression unchanged as count + 1 . Because count is not behind any pointer, isSum M♯ is not consulted and assign V♯ applies a strong update :
+
+ν♯′′ = assign V♯
+
+ count , count + 1 , ν ♯, true .
+
+Sign domain. Instantiating V♯ with the sign domain, the abstract sign of count 
+
+is + (strictly positive) from initialisation, since count = 1 > 0. After the strong A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 39 
+
+update count = count + 1 , the sign remains +: adding one to a positive integer is still positive. At the loop head, joining + with + gives +; the ascending chain is already stable after the first iteration and no widening is required. The weak update n.val = count propagates the sign into the field identifier: 
+
+ιιℓ7 ,val 7 → +
+
+|{z} 
+
+> creation
+
+⊔V♯ + = + .
+
+The combined state (ν♯, μ ♯) ∈ S ♯ reaches a fixpoint after one loop iteration. 
+
+Interval domain. Instantiating V♯ with the interval domain, the abstract value of count evolves across loop iterations via strong updates: 
+
+[1 , 1] 
+
+|{z} 
+
+> init
+> +1
+
+−−→ [2 , 2] +1 
+
+−−→ [3 , 3] → · · · 
+
+This ascending chain (the pre-loop value [1 , 1] is joined with the post-body value at the loop head) does not stabilise without widening. Applying ▽V♯ at the loop head gives: 
+
+[1 , 1] ▽V♯ [2 , 2] = [1 , +∞].
+
+With count stabilised at [1 , +∞), the weak update n.val = count yields: 
+
+ιιℓ7 ,val 7 → [1 , 1] 
+
+|{z} 
+
+> creation
+
+⊔V♯ [1 , +∞] = [1 , +∞],
+
+after which no further growth occurs and the combined state (ν♯, μ ♯) ∈ S ♯ reaches a fixpoint. 
+
+Summary of Domain Cooperation. The two instantiations above highlight the modularity of the framework. In both cases μ♯ stabilises after one loop it-eration. The value domain V♯, however, behaves differently: the sign domain converges immediately (no widening required), while the interval domain pro-duces a diverging chain and requires one widening step to stabilise count to 
+
+[1 , +∞], after which ιιℓ7 ,val follows to [1 , +∞] via the weak update. This ex-ample also illustrates the distinction between strong and weak updates: count ,a concrete program variable, receives a strong (overwriting) update, whereas 
+
+ιιℓ7 ,val , a field of a summary node, receives a weak (joining) update because 
+
+isSum M♯ (ιℓ7 , μ ♯) = true . Crucially, neither component waits for the other: the memory domain reaches its fixpoint regardless of what the value domain does with count or val , and the value domain widens (or not) without triggering any structural change in μ♯. This independent convergence is precisely the mod-ular design the V♯ ⊗ M ♯ construction is intended to exploit. The two compo-nents interact exclusively through the shared vocabulary of memory identifiers: the memory domain creates the field identifier ιιℓ7 ,val via access M♯ , and signals through isSum M♯ that the corresponding node is a summary, thereby forcing a weak update in V♯. The memory domain never inspects interval values; the value 40 G. Boldini et al. 
+
+domain never inspects the points-to graph. This separation is the defining prop-erty of the smash-product construction S♯ = V♯ ⊗ M ♯ of Section 6: each domain is responsible for its own fragment of the program state, and cooperation reduces to exchanging memory identifiers and substitutions. 
+
+## 8 Conclusions 
+
+Stack and heap management is challenging in program static analysis. Precise reasoning about dynamic and static memory allocations and their interactions remains a fundamental difficulty in designing scalable and accurate analyses. In this paper, we propose a generic framework for handling heap and stack that is agnostic to both memory and value analyses. The framework is parametric, al-lowing different abstractions to be instantiated and composed depending on the precision and performance requirements of the analysis. By clearly separating concerns and enabling modular combination of memory and value reasoning com-ponents, our approach provides a flexible foundation for building static analyses that can be adapted to different programming languages and analysis domains. In future work, we plan to integrate this framework into a general-purpose static analysis platform supporting multiple programming languages, such as LiSA (Library for Static Analysis) [36,20,35]. The framework of [19] is already implemented therein, providing modular interfaces for advanced memory and value analyses. The code 5 can be used as a starting point for an implementa-tion of this work. Once such development is completed, we aim at providing support to C, C ++ , Rust, and other low-level languages such as LLVM-IR, in LiSA. Furthermore, we aim at integrating support for pointer arithmetics in the framework by exploiting eval V♯ .  
+
+> Acknowledgments. This work has been partially supported by Regione Veneto: RIR project SATCO (CUP D19J24000750007), and RIR project SUPREME (CUP D19J24000810007), and by PR Veneto FESR 2021-2027, Az. 1.4.1 ID 251382_008101 “SmartCycle – Cybersecurity”, CUP: H73C25001340002.
+> Disclosure of Interests. The authors have no competing interests to declare that are relevant to the content of this article.
+
+## References   
+
+> 1. Andersen, L.O.: Program Analysis and Specialization for the C Programming Language. Ph.D. thesis, DIKU, University of Copenhagen (May 1994), https: //www.cs.aau.dk/~amoeller/papers/andersen/andersen94.pdf
+> 2. Arceri, V., Maffeis, S.: Abstract domains for type juggling. In: Mastroeni, I. (ed.) Proceedings of the Sixth Workshop on Numerical and Symbolic Abstract Domains,
+> 5https://github.com/lisa-analyzer/lisa/blob/master/lisa/lisa-sdk/src/ main/java/it/unive/lisa/analysis/SimpleAbstractDomain.java
+
+A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 41 NSADSAS 2016, Edinburgh, UK, September 11, 2016. Electronic Notes in Theoret-ical Computer Science, vol. 331, pp. 41–55. Elsevier (2016). https://doi.org/10. 1016/J.ENTCS.2017.02.003 , https://doi.org/10.1016/j.entcs.2017.02.003 
+
+3. Arceri, V., Mastroeni, I.: Static program analysis for string manipulation lan-guages. Electronic Proceedings in Theoretical Computer Science 299 , 19–33 (Aug 2019). https://doi.org/10.4204/eptcs.299.5 , http://dx.doi.org/10. 4204/EPTCS.299.5 
+
+4. Arceri, V., Pasqua, M., Mastroeni, I.: An abstract domain for objects in dynamic programming languages. In: Sekerinski, E., Moreira, N., Oliveira, J.N., Ratiu, D., Guidotti, R., Farrell, M., Luckcuck, M., Marmsoler, D., Campos, J., Astarte, T., Gonnord, L., Cerone, A., Couto, L., Dongol, B., Kutrib, M., Monteiro, P., Del-mas, D. (eds.) Formal Methods. FM 2019 International Workshops. pp. 136–151. Springer International Publishing, Cham (2020) 5. Balakrishnan, G., Reps, T.: Recency-abstraction for heap-allocated storage. In: Yi, K. (ed.) Static Analysis. pp. 221–239. Springer Berlin Heidelberg, Berlin, Heidel-berg (2006) 6. Blanchet, B., Cousot, P., Cousot, R., Feret, J., Mauborgne, L., Miné, A., Monniaux, D., Rival, X.: A static analyzer for large safety-critical software. SIGPLAN Not. 
+
+38 (5), 196–207 (May 2003). https://doi.org/10.1145/780822.781153 
+
+7. Blazy, S., Laporte, V., Maroneze, A., Pichardie, D.: Formal verification of a c value analysis based on abstract interpretation. In: International Static Analysis Symposium. pp. 324–344. Springer (2013) 8. Blazy, S., Laporte, V., Pichardie, D.: An abstract memory functor for verified c static analyzers. In: Proceedings of the 21st ACM SIGPLAN International Con-ference on Functional Programming. pp. 325–337 (2016) 9. Calzavara, S., Grishchenko, I., Koutsos, A., Maffei, M.: A sound flow-sensitive heap abstraction for the static analysis of android applications. In: 2017 IEEE 30th Computer Security Foundations Symposium (CSF). pp. 22–36 (2017). https: //doi.org/10.1109/CSF.2017.19 
+
+10. Chang, B.E., Rival, X.: Relational inductive shape analysis. In: Necula, G.C., Wadler, P. (eds.) Proceedings of the 35th ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages, POPL 2008, San Francisco , California, USA, January 7-12, 2008. pp. 247–260. ACM (2008). https://doi.org/10.1145/ 1328438.1328469 , https://doi.org/10.1145/1328438.1328469 
+
+11. Chang, B.E., Rival, X.: Modular construction of shape-numeric analyzers. In: Banerjee, A., Danvy, O., Doh, K., Hatcliff, J. (eds.) Semantics, Abstract Interpre-tation, and Reasoning about Programs: Essays Dedicated to David A. Schmidt on the Occasion of his Sixtieth Birthday, Manhattan, Kansas, USA, 19-20th Septem-ber 2013. pp. 161–185. EPTCS (2013). https://doi.org/10.4204/EPTCS.129.11 ,
+
+https://doi.org/10.4204/EPTCS.129.11 
+
+12. Cortesi, A., Costantini, G., Ferrara, P.: A survey on product operators in abstract interpretation. In: Banerjee, A., Danvy, O., Doh, K., Hatcliff, J. (eds.) Seman-tics, Abstract Interpretation, and Reasoning about Programs: Essays Dedicated to David A. Schmidt on the Occasion of his Sixtieth Birthday, Manhattan, Kansas, USA, 19-20th September 2013. EPTCS, vol. 129, pp. 325–336 (2013). https: //doi.org/10.4204/EPTCS.129.19 , https://doi.org/10.4204/EPTCS.129.19 
+
+13. Cousot, P., Cousot, R.: Systematic design of program analysis frameworks. In: Conference Record of the Sixth Annual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages. pp. 269–282. ACM Press, New York, NY, San Antonio, Texas (1979) 42 G. Boldini et al. 14. Cousot, P.: Principles of Abstract Interpretation. MIT Press (2021) 15. Cousot, P., Cousot, R.: Abstract interpretation: A unified lattice model for static analysis of programs by construction or approximation of fixpoints. In: Gra-ham, R.M., Harrison, M.A., Sethi, R. (eds.) Conference Record of the Fourth ACM Symposium on Principles of Programming Languages, Los Angeles, Califor-nia, USA, January 1977. pp. 238–252. ACM (1977). https://doi.org/10.1145/ 512950.512973 , https://doi.org/10.1145/512950.512973 
+
+16. Cousot, P., Halbwachs, N.: Automatic discovery of linear restraints among variables of a program. In: Proceedings of the 5th ACM SIGACT-SIGPLAN Symposium on Principles of Programming Languages. p. 84–96. POPL ’78, Association for Computing Machinery, New York, NY, USA (1978). https://doi.org/10.1145/ 512760.512770 , https://doi.org/10.1145/512760.512770 
+
+17. F"ahndrich, M., Logozzo, F.: Static contract checking with abstract interpretation. In: Beckert, B., March’e, C. (eds.) Formal Verification of Object-Oriented Software. pp. 10–30. Springer Berlin Heidelberg, Berlin, Heidelberg (2011) 18. Ferrara, P.: Generic combination of heap and value analyses in abstract inter-pretation. In: International Conference on Verification, Model Checking, and Ab-stract Interpretation. pp. 302–321. Springer (2014). https://doi.org/10.1007/ 978-3-642-54013-4_17 
+
+19. Ferrara, P.: A generic framework for heap and value analyses of object-oriented pro-gramming languages. Theor. Comput. Sci. 631 , 43–72 (2016). https://doi.org/ 10.1016/J.TCS.2016.04.001 , https://doi.org/10.1016/j.tcs.2016.04.001 
+
+20. Ferrara, P., Negrini, L., Arceri, V., Cortesi, A.: Static analysis for dummies: expe-riencing lisa. In: Proceedings of the 10th ACM SIGPLAN International Workshop on the State Of the Art in Program Analysis. p. 1–6. SOAP 2021, Association for Computing Machinery, New York, NY, USA (2021). https://doi.org/10.1145/ 3460946.3464316 , https://doi.org/10.1145/3460946.3464316 
+
+21. Gopan, D., DiMaio, F., Dor, N., Reps, T.W., Sagiv, S.: Numeric domains with summarized dimensions. In: Jensen, K., Podelski, A. (eds.) Tools and Algorithms for the Construction and Analysis of Systems, 10th International Conference, TACAS 2004, Held as Part of the Joint European Conferences on Theory and Practice of Software, ETAPS 2004, Barcelona, Spain, March 29 - April 2, 2004, Proceedings. pp. 512–529. Lecture Notes in Computer Science, Springer (2004). 
+
+https://doi.org/10.1007/978-3-540-24730-2_38 , https://doi.org/10.1007/ 978-3-540-24730-2%5F38 
+
+22. Gopan, D., Reps, T.W., Sagiv, S.: A framework for numeric analysis of ar-ray operations. In: Palsberg, J., Abadi, M. (eds.) Proceedings of the 32nd ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages, POPL 2005, Long Beach, California, USA, January 12-14, 2005. pp. 338–350. ACM (2005). https://doi.org/10.1145/1040305.1040333 , https://doi.org/ 10.1145/1040305.1040333 
+
+23. Granger, P.: Static analysis of arithmetical congruences. International Journal of Computer Mathematics 30 (3-4), 165–190 (1989) 24. Hind, M.: Pointer analysis: haven’t we solved this problem yet? In: Proceedings of the 2001 ACM SIGPLAN-SIGSOFT Workshop on Program Analysis for Software Tools and Engineering. p. 54–61. PASTE ’01, Association for Computing Machin-ery, New York, NY, USA (2001). https://doi.org/10.1145/379605.379665 
+
+25. Journault, M., Miné, A., Monat, R., Ouadjaout, A.: Combinations of reusable abstract domains for a multilingual static analyzer. In: Working Conference on Verified Software: Theories, Tools, and Experiments. pp. 1–18. Springer (2019) A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 43 26. Kanvar, V., Khedker, U.P.: Heap abstractions for static analysis. ACM Comput. Surv. 49 (2) (Jun 2016). https://doi.org/10.1145/2931098 , https://doi.org/ 10.1145/2931098 
+
+27. Lev-Ami, T., Sagiv, M.: Tvla: A system for implementing static analyses. In: In-ternational Static Analysis Symposium. pp. 280–301. Springer (2000) 28. Milanese, M., Miné, A.: Under-approximating memory abstractions. In: Interna-tional Static Analysis Symposium. pp. 300–326. Springer (2024) 29. Miné, A.: Field-sensitive value analysis of embedded c programs with union types and pointer arithmetics. In: Proceedings of the 2006 ACM SIGPLAN/SIGBED Conference on Language, Compilers, and Tool Support for Embedded Systems. p. 54–63. LCTES ’06, Association for Computing Machinery, New York, NY, USA (2006). https://doi.org/10.1145/1134650.1134659 , https://doi.org/10. 1145/1134650.1134659 
+
+30. Miné, A.: The octagon abstract domain. Higher Order Symbol. Comput. 19 (1), 31–100 (Mar 2006). https://doi.org/10.1007/s10990-006-8609-1 
+
+31. Miné, A.: Tutorial on static inference of numeric invariants by abstract interpre-tation. Found. Trends Program. Lang. 4(3-4), 120–372 (2017). https://doi.org/ 10.1561/2500000034 
+
+32. Monat, R., Milanese, M., Parolini, F., Boillot, J., Ouadjaout, A., Miné, A.: Mopsa-c: Improved verification for c programs, simple validation of correctness witnesses (competition contribution). In: Finkbeiner, B., Kovács, L. (eds.) Tools and Algo-rithms for the Construction and Analysis of Systems. pp. 387–392. Springer Nature Switzerland, Cham (2024) 33. Monat, R., Ouadjaout, A., Miné, A.: Value and allocation sensitivity in static python analyses. In: Proceedings of the 9th ACM SIGPLAN International Work-shop on the State Of the Art in Program Analysis. p. 8–13. SOAP 2020, Associ-ation for Computing Machinery, New York, NY, USA (2020). https://doi.org/ 10.1145/3394451.3397205 , https://doi.org/10.1145/3394451.3397205 
+
+34. Negrini, L.: Whole-value analysis by abstract interpretation. Frontiers in Com-puter Science Volume 7 - 2025 (2026). https://doi.org/10.3389/fcomp. 2025.1655377 , https://www.frontiersin.org/journals/computer-science/ articles/10.3389/fcomp.2025.1655377 
+
+35. Negrini, L., Arceri, V., Olivieri, L., Cortesi, A., Ferrara, P.: Teaching through practice: Advanced static analysis with lisa. In: Sekerinski, E., Ribeiro, L. (eds.) Formal Methods Teaching. pp. 43–57. Springer Nature Switzerland, Cham (2024) 36. Negrini, L., Ferrara, P., Arceri, V., Cortesi, A.: LiSA: A Generic Framework for Multilanguage Static Analysis, pp. 19–42. Springer Nature Singapore, Singapore (2023). https://doi.org/10.1007/978-981-19-9601-6_2 , https://doi.org/10. 1007/978-981-19-9601-6_2 
+
+37. Sagiv, M., Reps, T., Wilhelm, R.: Parametric shape analysis via 3-valued logic. ACM Trans. Program. Lang. Syst. 24 (3), 217–298 (May 2002). https://doi.org/ 10.1145/514188.514190 , https://doi.org/10.1145/514188.514190 
+
+38. Venet, A.: Towards the Integration of Symbolic and Numerical Static Analysis, pp. 227–236. Springer Berlin Heidelberg, Berlin, Heidelberg (2008). https://doi. org/10.1007/978-3-540-69149-5_24 44 G. Boldini et al. 
+
+## A Exploding and Imploding Objects 
+
+We provide the formal definitions of the explode and implode functions introduced in Section 5.1, together with their key invertibility lemmas. 
+
+Definition 4 (Explode Function). Let decompose : (( Id ∪Addr H ∪Addr R)
+
+× Obj ) → (( Id ∪ Addr H ∪ Addr R) → ˜Obj ) be a function that, given a pair 
+
+(k, o ) where k is the key of a concrete object o = {fi : vi}, returns an exploded object as a set of new mappings representing o in which each field value is either left unchanged (if it is a primitive value or an address) or replaced by a fresh recursive address (if it is a nested object): 
+
+decompose (k, {fi : vi}) = 
+
+(
+
+(k, {fi : ˜ vi}) ˜vi =
+
+(vi, if vi ∈ Val ∪ Addr ,ri, if vi ∈ Obj ,
+
+)
+
+˙∪ ˙[
+
+> vi∈
+
+Obj 
+
+decompose (ri, v i).
+
+where ri ∈ Addr R is a fresh recursive address. The function generates a fresh recursive address ri (that does not occur elsewhere in the state) for each field fi
+
+with vi ∈ Obj and then applies decompose recursively to vi with key ri. Then, let O : ( Id ∪ Addr H) → Obj be a mapping from keys to concrete objects. The function explode : (( Id ∪ Addr H) → Obj ) → (( Id ∪ Addr H ∪ Addr R) → ˜Obj )
+
+is defined as: 
+
+explode (O) = ˙[
+
+> k∈dom (O)
+
+decompose (k, O (k)) 
+
+Lemma 5 (Key Generation in explode ). Let O : ( Id ∪ Addr H) → Obj be a concrete object mapping. Then, the following properties hold: 1. dom (O) ⊆ Id =⇒ dom (explode (O)) ⊆ (Id ∪ Addr R);2. dom (O) ⊆ Addr H =⇒ dom (explode (O)) ⊆ Addr H.
+
+In other words, concrete objects identified by Id generate an exploded object mapping with keys in Id ∪ Addr R, while concrete objects identified by Addr H
+
+generate an exploded object mapping with keys only in Addr H. Both properties follow from the definition of decompose : since it only introduces keys in Addr R
+
+for nested objects, and it does not modify the original keys, the resulting ex-ploded mapping can only contain keys in Id ∪ Addr R if the input mapping only contains keys in Id . Conversely, if the input mapping only contains keys in 
+
+Addr H, nested objects cannot be part of the mapping (recall from Section 4.1 that nested heap objects are always created by storing the address generated by the semantics of new inside an object’s field, and are thus already flat in memory using addresses in Addr H), and thus decompose will never add any address in 
+
+Addr R.A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 45 
+
+Definition 5 (Implode Function). Let compose : (( Id ∪ Addr H ∪ Addr R) ×
+
+(( Id ∪Addr H ∪Addr R) → ˜Obj )) → Obj be a function that, given a pair (k, M )
+
+where k is a key in the domain of the mapping M = {(ki, {f ij : ˜ vij )}, collapses the exploded object at key k by replacing each field value ˜vij with its corresponding object if ˜vij ∈ Addr R, recursively: 
+
+compose (k, M ) = {fi : vi} :{fi : ˜ vi} ∈ M (k)
+
+∧ vi =
+
+(
+
+compose (˜ vi, M ) if ˜vi ∈ Addr R,vi otherwise. In other words, the exploded object {fi : ˜ vi} corresponding to the key k in M is reassembled by replacing each field value ˜vi with its resolved value. Specifically, if ˜vi ∈ Addr R is a recursive address, then it is replaced by the (recursively) composed object compose (˜ vi, M ); otherwise, the field value remains unchanged. Then, we define the function implode : (( Id ∪ Addr H ∪ Addr R) → ˜Obj ) →
+
+(( Id ∪ Addr H) → Obj ) as: 
+
+implode (M ) = ˙[    
+
+> k∈dom (M↾Id ∪Addr H)
+
+{(k, compose (k, M )) }
+
+that is, it returns the object mapping obtained by recomposing only the keys of 
+
+M that correspond to identifiers and heap addresses, but not recursive addresses in Addr R.
+
+Moreover, explode and implode are inverses of each other in the following sense. 
+
+Lemma 6 (Invertibility of decompose and compose ). Consider a concrete object o ∈ Obj and a mapping ˜o = ( Id ∪ Addr H ∪ Addr R) → ˜Obj repre-senting the exploded version of o, namely ˜o = decompose (k, o ) for some k ∈
+
+(Id ∪ Addr H). We have that (i) compose (k, decompose (k, o )) = o, and that (ii) decompose (k, compose (k, ˜o)) = ˜ o.Proof. The lemma is proven by induction on the structure of the concrete or exploded objects that the functions are applied to. The proof is split into two parts, one for each direction of the invertibility. Each part formally defines the notion of depth of an object, which is used as the induction metric. 
+
+Part 1: compose (k, decompose (k, o )) = o. Let’s first define the depth of a con-crete object {fi : vi} as follows: 
+
+depth ({fi : vi}) = 
+
+(0 if ∀vi : vi ∈ Val ∪ Addr ∪ ⊥ ,
+
+max 
+
+> vi∈Obj
+
+depth (vi) + 1 otherwise. W.l.o.g., we assume that each object considered in this proof has exactly one nested object, stored in its first field. Let o0 = {f 00 : v00 , . . . , f 0 
+
+> m0
+
+: v0 
+
+> m0
+
+} be a 46 G. Boldini et al. 
+
+non-recursive object with m0 fields, each mapped to a value in Val ∪ Addr ∪ ⊥ .Then, we construct objects of depth d as od = {f d 
+
+> 0
+
+: od−1, f d 
+
+> 1
+
+: vd 
+
+> 1
+
+, . . . , f dmd : vdmd },where vdi ∈ Val ∪ Addr ∪ ⊥ for all i ∈ [1 , m d]. Using such notation, the object 
+
+on+1 has depth n+1 . The proof can be easily extended to multiple nested objects by applying the same reasoning to each of them. We will prove the lemma by induction on the depth of the object o = {fi : vi}.
+
+Base Case: o = o0, depth (o0) = 0 .
+
+compose (k, decompose (k, o 0)) = compose (k, {(k, o 0)}) Hdef. decompose , depth (o0) = 0 I
+
+= o0 Hdef. compose I ⊓⊔
+
+Inductive Step: o = on+1 , depth (on+1 ) = n+1 . During the proof, we assume that 
+
+compose can correctly reconstruct decomposed objects obtained from decompose 
+
+of depth at most n.
+
+compose (k, decompose (k, o n+1 )) = compose (k, decompose (k, 
+
+{f n+1 0 : on, f n+1 1 : vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: vn+1  
+
+> mn+1
+
+}) Hdef. on+1 I
+
+= compose (k, {(k, 
+
+{f n+1 0 : rn, f n+1 1 : vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: vn+1  
+
+> mn+1
+
+})}
+
+˙∪ decompose (rn, o n)) Hdef. decompose I
+
+= {f n+1 0 : compose (rn, decompose (rn, o n)) ,f n+1 1 : vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: vn+1  
+
+> mn+1
+
+}) Hdef. compose I
+
+= {f n+1 0 : on, f n+1 1 : vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: vn+1  
+
+> mn+1
+
+}) Hhypothesis I
+
+= on+1 Hdef. on+1 I ⊓⊔
+
+Part 2: decompose (k, compose (k, ˜o)) = ˜ o. Let’s first define the depth of a de-composed object mapping ˜o = {(k0, {f 0 
+
+> i
+
+: ˜ v0 
+
+> i
+
+}), . . . , (kl, {f li : ˜ vli})} as follows: 
+
+depth (k, ˜o) = 
+
+
+
+0 if ˜o(k) = {fi : ˜ vi}∧ ∀ ˜vi : ˜ vi /∈ Addr R,
+
+max 
+
+> ˜vi∈codom (˜ o(k)) ∩Addr R
+
+depth (˜ vi, ˜o) + 1 otherwise. W.l.o.g., we assume that each decomposed object considered in this proof has exactly one nested decomposed object, stored in its first field. Let ˜ok 
+
+> 0
+
+= {(k, {f 00 :˜v00 , . . . , f 0 
+
+> m0
+
+: ˜ v0 
+
+> m0
+
+})} be an object mapping containing exactly one non-recursive object with m0 fields, each mapped to a value not in Addr R, whose entry object is indexed with k. Then, we construct mappings of depth d as ˜okd =A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 47 
+
+{(k, {f d 
+
+> 0
+
+: rd−1, f d 
+
+> 1
+
+: ˜ vd 
+
+> 1
+
+, . . . , f dmd : ˜ vdmd }), . . . , (r0, {f 00 : ˜ v00 , . . . , f 0 
+
+> m0
+
+: ˜ v0 
+
+> m0
+
+})},where ˜vli /∈ Addr R for all l ∈ [d, 1] , i ∈ [1 , m l], and where the object mapped to r0 corresponds to ˜ok 
+
+> 0
+
+(k). Using such notation, the mapping ˜on+1 has depth 
+
+n + 1 . The proof can be easily extended to multiple nested objects by applying the same reasoning to each of them. We will prove the lemma by induction on the depth of the object ˜o.
+
+Base Case: ˜o = ˜ ok 
+
+> 0
+
+, depth (˜ ok 
+
+> 0
+
+) = 0 .
+
+decompose (k, compose (k, ˜ok 
+
+> 0
+
+)) = decompose (k, {f 0 
+
+> i
+
+: ˜ v0 
+
+> i
+
+}) Hdef. compose , depth (˜ ok 
+
+> 0
+
+) = 0 I
+
+= {(k, {f 0 
+
+> i
+
+: ˜ v0 
+
+> i
+
+})} Hdef. decompose I
+
+= ˜ ok 
+
+> 0
+
+Hdef. ˜ok 
+
+> 0
+
+I ⊓⊔
+
+Inductive Step: ˜o = ˜ okn+1 , depth (˜ okn+1 ) = n + 1 . During the proof, we assume that decompose can correctly decompose reconstructed objects obtained from 
+
+compose of depth at most n. The proof starts from the object mapping ˜okn+1 ,whose extended form is {(k, {f n+1 0 : rn, f n+1 1 : ˜vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: ˜vn+1  
+
+> mn+1
+
+}),
+
+(rn, {f n 
+
+> 0
+
+: rn−1, f n 
+
+> 1
+
+: ˜ vn 
+
+> 1
+
+, . . . , f nmn : ˜ vnmn }), . . . , (r0, {f 00 : ˜ v00 , f 11 : ˜ v01 , . . . , f 0 
+
+> m0
+
+:˜v0 
+
+> m0
+
+})}. For the sake of clarity, during the proof we will represent the all pairs having ri as the key by using the overlined key ri. For instance, we will write 
+
+˜okn+1 as {(k, {f n+1 0 : rn, f n+1 1 : ˜ vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: ˜ vn+1  
+
+> mn+1
+
+}), r n, . . . , r 0}.
+
+decompose (k, compose (k, ˜okn+1 )) = decompose (k, compose (k, 
+
+{(k, {f n+1 0 : rn, f n+1 1 : ˜ vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: ˜ vn+1  
+
+> mn+1
+
+}),rn, . . . , r 0})) Hdef. ˜okn+1 I
+
+= decompose (k, {f n+1 0 : compose (rn, {rn, . . . , r 0}),f n+1 1 : ˜ vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: ˜ vn+1  
+
+> mn+1
+
+}) Hdef. compose I
+
+= {(k, {f n+1 0 : rn, f n+1 1 : ˜ vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: ˜ vn+1  
+
+> mn+1
+
+})}
+
+˙∪ decompose (rn, compose (rn, {rn, . . . , r 0})) Hdef. decompose I
+
+= {(k, {f n+1 0 : rn, f n+1 1 : ˜ vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: ˜ vn+1  
+
+> mn+1
+
+})}
+
+˙∪ { rn, . . . , r 0} Hhypothesis I
+
+= {(k, {f n+1 0 : rn, f n+1 1 : ˜ vn+1 1 , . . . , f n+1  
+
+> mn+1
+
+: ˜ vn+1  
+
+> mn+1
+
+}),rn, . . . , r 0} Hdef. ˙∪I
+
+= on+1 Hdef. on+1 I ⊓⊔
+
+In the proof above, on−1 is the object reconstructed by compose (rn, ˜okn+1 )
+
+from the subtree of ˜okn+1 rooted at rn.48 G. Boldini et al. 
+
+Lemma 7 (Invertibility of explode and implode ). For any concrete object mapping O : ( Id ∪ Addr H) → Obj , we have implode (explode (O)) = O. Further-more, for any exploded object mapping M : ( Id ∪ Addr H ∪ Addr R) → ˜Obj that is well-formed (i.e., without unreachable recursive addresses in Addr R), it holds that explode (implode (M )) = M .Proof. 
+
+implode (explode (O)) = implode (explode ({(k0, {f 0 
+
+> j
+
+: v0 
+
+> j
+
+}), . . . , (kl, {f lj : vlj })})) Hdef. OI
+
+= implode (decompose (k0, {f 0 
+
+> j
+
+: v0 
+
+> j
+
+}) ˙ ∪ . . . 
+
+˙∪ decompose (kl, {f lj : vlj })) Hdef. explode I
+
+Let A denote the whole argument of implode 
+
+= implode (A)= {(k0, compose (k0, A )) ˙ ∪ · · · ˙∪ (kl, compose (kl, A )) } Hdef. implode I
+
+= {(k0, compose (k0, decompose (k0, {f 0 
+
+> j
+
+: v0 
+
+> j
+
+}))) ˙ ∪ . . . 
+
+˙∪ (kl, compose (kl, decompose (kl, {f lj : vlj }))) } Hsee note below I
+
+= {(k0, {f 0 
+
+> j
+
+: v0 
+
+> j
+
+}) ˙ ∪ · · · ˙∪ (kl, {f lj : vlj })} Hby Lemma 6 I
+
+= O Hdef. OI ⊓⊔
+
+Note. By Definition 4, we know that decompose (ki, ·) generates a tree of bindings rooted at ki and containing only fresh addresses that are unique in the whole exploded mapping. Also, by (Definition 5) we know that compose (ki, ·) traverses only bindings reachable from ki in its argument. Therefore, during the execution of compose (ki, A ), the only bindings in A reachable from ki are exactly those produced by decompose (ki, ·), so the reduction is valid. Note that for ki ∈ Addr H
+
+(heap objects), decompose acts as the identity by Lemma 5, so these entries pass through unchanged. 
+
+explode (implode (M )) = explode ({(k0, compose (k0, M )) , . . . , (kl, compose (kl, M )) }) Hdef. implode I
+
+= decompose (k0, compose (k0, M )) ˙ ∪ . . . 
+
+˙∪ decompose (kl, compose (kl, M )) Hdef. explode I
+
+= {(k0, M (k0)) , . . . , (kl, M (kl)) } Hby Lemma 6 I
+
+= M Hdef. M I ⊓⊔
+
+Lemma 8 (Distributivity of implode over ¨∪). Let M1 : D1 → ˜Obj and 
+
+M2 : D2 → ˜Obj be two well-formed exploded object mappings (i.e., obtained by 
+
+explode ) with disjoint domains D1 ∩D2 = ∅. Then implode (M1) ¨ ∪implode (M2) = 
+
+implode (M1 ¨∪ M2).A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 49 
+
+Proof. Let Ki = dom (Mi ↾Id ∪ Addr H ) for i = 1 , 2. Since D1 ∩D2 = ∅, we have K1 ∩
+
+K2 = ∅ and dom (( M1 ¨∪M2) ↾Id ∪ Addr H ) = K1 ∪K2. Being M1 well-formed, we have that for any k ∈ K1 the Addr R-addresses reachable from k lie entirely within 
+
+D1, so (M1 ¨∪M2)( r) = M1(r) for every such r, and hence compose (k, M 1 ¨∪M2) = 
+
+compose (k, M 1). The same holds for M2, and thus we have that compose (k, M 1 ¨∪
+
+M2) = compose (k, M 2) for k ∈ K2.
+
+implode (M1 ¨∪ M2)= ˙[
+
+> k∈K1∪K2
+
+{(k, compose (k, M 1 ¨∪ M2)) } Hdef. implode I
+
+= ˙[
+
+> k∈K1
+
+{(k, compose (k, M 1)) }
+
+¨∪ ˙[
+
+> k∈K2
+
+{(k, compose (k, M 2)) } Habove; K1 ∩ K2 = ∅I
+
+= implode (M1) ¨ ∪ implode (M2) Hdef. implode I ⊓⊔
+
+Lemma 9 (Distributivity of explode over ˙∪). Let O1 : D1 → Obj and 
+
+O2 : D2 → Obj be concrete object mappings with D1∩D2 = ∅. Then explode (O1 ˙∪
+
+O2) = explode (O1) ˙ ∪ explode (O2).Proof. Let O1 and O2 be two object mappings with disjoint domains D1 and 
+
+D2, respectively. 
+
+explode (O1 ˙∪ O2)= ˙[
+
+> k∈D1∪D2
+
+decompose (k, (O1 ˙∪ O2)( k)) Hdef. explode I
+
+= ˙[
+
+> k∈D1
+
+decompose (k, O 1(k)) ˙∪ ˙[
+
+> k∈D2
+
+decompose (k, O 2(k)) Hdef. ˙∪; D1 ∩ D2 = ∅I
+
+= explode (O1) ˙ ∪ explode (O2) Hdef. explode , decompose I ⊓⊔
+
+Remember that decompose introduces only fresh Addr R addresses via a global fresh address generator that maintains state across all invocations. This ensures that decompositions of O1 and O2 generate disjoint sets of addresses, making their union a valid ˙∪.50 G. Boldini et al. 
+
+## B Proofs 
+
+B.1 Proof of ↾ and ↾↾ Properties (Section 3) 
+
+Throughout, let first-order f : K → V , g : A → B, and second-order M1 : D1 →
+
+(L1 → V1), M2 : D2 → (L2 → V2). Conditions are stated per proof. Properties (i)–(iii) each show both the ↾ case and the ↾↾ variant; for (ii), the ↾↾ variant uses 
+
+¨∪ in place of ∪; property (iv) only involve ↾↾.
+
+(i) Domain Additivity. For X1, X 2 ⊆ K:
+
+f ↾X1 ∪f ↾X2
+
+= {(x, f (x)) | x ∈ X1} ∪ { (x, f (x)) | x ∈ X2} Hdef. ↾I
+
+= {(x, f (x)) | (x ∈ X1) ∨ (x ∈ X2)} Hprop. ∪I
+
+= {(x, f (x)) | x ∈ X1 ∪ X2} Hdef. ∪I
+
+= f ↾X1 ∪ X2 Hdef. ↾I ⊓⊔
+
+For X1, X 2 ⊆ D1:
+
+M1 ↾↾X1 ∪M1 ↾↾X2
+
+= {(k, M 1(k)) | k ∈ X1} ∪ { (k, M 1(k)) | k ∈ X2} Hdef. ↾↾I
+
+= {(k, M 1(k)) | (k ∈ X1) ∨ (k ∈ X2)} Hprop. ∪I
+
+= {(k, M 1(k)) | k ∈ X1 ∪ X2} Hdef. ∪I
+
+= M1 ↾↾X1 ∪ X2 Hdef. ↾↾I ⊓⊔
+
+(ii) Co-domain Additivity. For Y1, Y 2 ⊆ V with Y1 ∩ Y2 = ∅:
+
+f ↾Y1 ∪ f ↾Y2
+
+= {(x, f (x)) | f (x) ∈ Y1} ∪ { (x, f (x)) | f (x) ∈ Y2} Hdef. ↾I
+
+= {(x, f (x)) | (f (x) ∈ Y1) ∨ (f (x) ∈ Y2)} Hprop. ∪I
+
+= {(x, f (x)) | f (x) ∈ Y1 ∪ Y2} Hdef. ∪I
+
+= f ↾Y1 ∪ Y2 Hdef. ↾I ⊓⊔
+
+For Y1, Y 2 ⊆ V1 with Y1 ∩ Y2 = ∅ (so that inner maps M1(k)↾Y1 and M1(k)↾Y2 are domain-disjoint, making ¨∪ valid): 
+
+M1 ↾↾Y1 ¨∪M1 ↾↾Y2
+
+= {(k, M 1(k)↾Y1 ) | k ∈ D1} ¨∪ { (k, M 1(k)↾Y2 ) | k ∈ D1} Hdef. ↾↾I
+
+= {(k, M 1(k)↾Y1 ˙∪ M1(k)↾Y2 ) | k ∈ D1} Hdef. ¨∪; Y1 ∩ Y2 = ∅I
+
+= {(k, M 1(k)↾Y1 ∪ Y2 ) | k ∈ D1} Hco-domain add. ↾I
+
+= M1 ↾↾Y1 ∪ Y2 Hdef. ↾↾I ⊓⊔A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 51 
+
+(iii) Distribution over ˙∪. For K ∩ A = ∅:
+
+(f ˙∪ g) ↾Z
+
+> W
+
+= { (x, (f ˙∪ g)( x)) | x ∈ W ∧ (f ˙∪ g)( x) ∈ Z } Hdef. ↾I
+
+= { (x, (f ˙∪ g)( x)) | x ∈ (W ∩ K)
+
+∪ (W ∩ A) ∧ (f ˙∪ g)( x) ∈ Z } HW ⊆ K ∪ AI
+
+= { (x, f (x)) | x ∈ W ∩ K ∧ f (x) ∈ Z }∪ { (x, g (x)) | x ∈ W ∩ A ∧ g(x) ∈ Z } Hdef. ˙∪I
+
+= f ↾Z   
+
+> (W∩K)
+
+∪ g ↾Z   
+
+> (W∩A)
+
+Hdef. ↾I
+
+= ( f ↾Z  
+
+> (W∩K)
+
+) ˙∪ (g ↾Z  
+
+> (W∩A)
+
+) HK ∩ A = ∅I ⊓⊔
+
+For D1 ∩ D2 = ∅:
+
+(M1 ˙∪ M2) ↾↾Z
+
+> W
+
+= {(x, (M1 ˙∪ M2)( x)↾Z ) | x ∈ W } Hdef. ↾↾I
+
+= {(x, M 1(x)↾Z ) | x ∈ W ∩ D1}∪ { (x, M 2(x)↾Z ) | x ∈ W ∩ D2} Hdef. ˙∪I
+
+= M1 ↾↾Z   
+
+> (W∩D1)
+
+∪M2 ↾↾Z   
+
+> (W∩D2)
+
+Hdef. ↾↾I
+
+= ( M1 ↾↾Z  
+
+> (W∩D1)
+
+) ˙∪ (M2 ↾↾Z  
+
+> (W∩D2)
+
+) HD1 ∩ D2 = ∅I ⊓⊔
+
+(iv) Distribution of ↾↾ over ¨∪. With ∀k ∈ D1 ∩ D2 : dom (M1(k)) ∩ dom (M2(k)) = 
+
+∅ and Y ⊆ V1 ∪ V2:
+
+(M1 ¨∪ M2) ↾↾Y
+
+= {(k, (M1 ¨∪ M2)( k)↾Y ) | k ∈ dom (M1 ¨∪ M2)} Hdef. ↾↾I
+
+= {(k, M 1(k)↾Y ) | k ∈ D1 \ D2}
+
+¨∪ { (k, M 2(k)↾Y ) | k ∈ D2 \ D1}
+
+¨∪ { (k, (M1(k) ˙ ∪ M2(k)) ↾Y ) | k ∈ D1 ∩ D2} Hdef. ¨∪I
+
+= {(k, M 1(k)↾Y ) | k ∈ D1 \ D2}
+
+¨∪ { (k, M 2(k)↾Y ) | k ∈ D2 \ D1}
+
+¨∪ { (k, M 1(k)↾Y ˙∪ M2(k)↾Y ) | k ∈ D1 ∩ D2} Hdistr. ↾ over ˙∪I
+
+= M1 ↾↾Y ¨∪ M2 ↾↾Y Hdef. ↾↾, ¨∪I ⊓⊔
+
+B.2 Proof of Galois Isomorphism (Theorem 1) 
+
+For ⟨℘(C), ⊆⟩ − −− → −→ ←←− −−−
+
+> γS
+> αS
+
+⟨℘(S), ⊆⟩ to exist, αS and γS must be monotone func-tions, and αS ◦ γS = γS ◦ αS = id . These properties are proven in the following paragraphs, thus the Galois isomorphism exists. 52 G. Boldini et al. 
+
+Proof of Monotonicity of γS . To be monotone, it must hold that for all sets 
+
+Σ1, Σ 2 with Σ1 ⊆ Σ2: γS (Σ1) ⊆ γS (Σ2). By definition, we have Σ1 ⊆ Σ2 =⇒
+
+Σ2 = Σ1 ∪ Σ′ for some set Σ′. Assume Σ′̸ = ∅, since otherwise the proof is trivial. 
+
+γS (Σ2)= γS (Σ1 ∪ Σ′) HΣ1 ⊆ Σ2I
+
+= γS ({σ10, . . . , σ 1
+
+> n
+
+, σ ′
+
+> 0
+
+, . . . , σ ′
+
+> m
+
+}) Hset expansion I
+
+= { ˙γS (σ10), . . . , ˙γS (σ1
+
+> n
+
+), ˙γS (σ′
+
+> 0
+
+), . . . , ˙γS (σ′
+
+> m
+
+)} Happl. γS I
+
+= { ˙γS (σ10), . . . , ˙γS (σ1
+
+> n
+
+)} ∪ { ˙γS (σ′
+
+> 0
+
+), . . . , ˙γS (σ′
+
+> m
+
+)} Hdef. ∪I
+
+= γS (Σ1) ∪ γS (Σ′) Hdef. γS I ⊓⊔
+
+Proof of Monotonicity of αS . Analogous to the proof for γS above. 
+
+Proof of Composition of αS and γS . Let X = {χ0, . . . , χ n} be a set of concrete states, where each χi is a concrete state defined as χ = ( κ, η ). For each X, it must hold that γS (αS (X)) = X.We can assume for each χ ∈ X that ˙γS ( ˙ αS (χ)) = χ.
+
+˙γS ( ˙ αS (χ)) = ˙γS (( κ↾Val ˙∪ η↾Val , explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Val ),
+
+(κ↾Addr ˙∪ η↾Addr , explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Addr +
+
+)) Happl. ˙αS I
+
+= ((( κ↾Val ˙∪ η↾Val ) ↾Id ˙∪(κ↾Addr ˙∪ η↾Addr ) ↾Id ˙∪
+
+implode (explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Val   
+
+> Id ∪Addr R
+
+¨∪ explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Addr +   
+
+> Id ∪Addr R
+
+)) ,
+
+(( κ↾Val ˙∪ η↾Val ) ↾Addr H ˙∪(κ↾Addr ˙∪ η↾Addr ) ↾Addr H
+
+˙∪ implode (explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Val 
+
+> Addr H
+
+¨∪ explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Addr + 
+
+> Addr H
+
+))) Happl. ˙γS I
+
+= ((( κ ↾Val  
+
+> Id
+
+˙∪η ↾Val  
+
+> Id
+
+) ˙ ∪ (κ ↾Addr  
+
+> Id
+
+˙∪η ↾Addr  
+
+> Id
+
+)˙∪ implode (explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Val   
+
+> Id ∪Addr R
+
+¨∪ explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Addr +   
+
+> Id ∪Addr R
+
+)) ,
+
+(( κ ↾Val 
+
+> Addr H
+
+˙∪η ↾Val  
+
+> Addr H
+
+) ˙ ∪ (κ ↾Addr 
+
+> Addr H
+
+˙∪η ↾Addr  
+
+> Addr H
+
+)˙∪ implode (explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Val 
+
+> Addr H
+
+¨∪ explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Addr + 
+
+> Addr H
+
+))) Hdistr. ↾ over ˙∪I
+
+= (( κ↾Val ˙∪ κ↾Addr ˙∪ implode (explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Val   
+
+> Id ∪Addr R
+
+¨∪ explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Addr +   
+
+> Id ∪Addr R
+
+)) ,
+
+(η↾Val ˙∪ η↾Addr ˙∪ implode (explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Val 
+
+> Addr H
+
+A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 53 
+
+¨∪ explode (κ↾Obj ˙∪ η↾Obj ) ↾↾Addr + 
+
+> Addr H
+
+))) Hdef. κ, η I
+
+= (( κ↾Val ˙∪ κ↾Addr 
+
+˙∪ implode (( explode (κ↾Obj ) ˙ ∪ explode (η↾Obj )) ↾↾Val   
+
+> Id ∪Addr R
+
+¨∪ (explode (κ↾Obj ) ˙ ∪ explode (η↾Obj )) ↾↾Addr +   
+
+> Id ∪Addr R
+
+)) ,
+
+(η↾Val ˙∪ η↾Addr 
+
+˙∪ implode (( explode (κ↾Obj ) ˙ ∪ explode (η↾Obj )) ↾↾Val 
+
+> Addr H
+
+¨∪ (explode (κ↾Obj ) ˙ ∪ explode (η↾Obj )) ↾↾Addr + 
+
+> Addr H
+
+))) HLemma 9I
+
+= (( κ↾Val ˙∪ κ↾Addr ˙∪ implode (( explode (κ↾Obj ) ↾↾Val   
+
+> Id ∪Addr R
+
+˙∪ explode (η↾Obj ) ↾↾Val    
+
+> Id ∪Addr R
+
+)¨∪ (explode (κ↾Obj ) ↾↾Addr +  
+
+> Id ∪Addr R
+
+˙∪ explode (η↾Obj ) ↾↾Addr +   
+
+> Id ∪Addr R
+
+))) ,
+
+(η↾Val ˙∪ η↾Addr 
+
+˙∪ implode (( explode (κ↾Obj ) ↾↾Val 
+
+> Addr H
+
+˙∪explode (η↾Obj ) ↾↾Val  
+
+> Addr H
+
+)¨∪ (explode (κ↾Obj ) ↾↾Addr +
+
+> Addr H
+
+˙∪ explode (η↾Obj ) ↾↾Addr + 
+
+> Addr H
+
+)))) Hdistr. ↾↾ over ˙∪I
+
+= (( κ↾Val ˙∪ κ↾Addr 
+
+˙∪ implode (explode (κ↾Obj ) ↾↾Val ¨∪explode (κ↾Obj ) ↾↾Addr +
+
+)) ,
+
+(η↾Val ˙∪ η↾Addr 
+
+˙∪ implode (explode (η↾Obj ) ↾↾Val ¨∪explode (η↾Obj ) ↾↾Addr +
+
+))) HLemma 5I
+
+= (( κ↾Val ˙∪ κ↾Addr ˙∪ implode (explode (κ↾Obj ) ↾↾Val ∪ Addr +
+
+)) ,
+
+(η↾Val ˙∪ η↾Addr ˙∪ implode (explode (η↾Obj ) ↾↾Val ∪ Addr +
+
+))) Hcodom. add. ↾↾I
+
+= (( κ↾Val ˙∪ κ↾Addr ˙∪ implode (explode (κ↾Obj ))) ,
+
+(η↾Val ˙∪ η↾Addr ˙∪ implode (explode (η↾Obj )))) Hdef. explode ,
+
+def. ˜Obj I
+
+= (( κ↾Val ˙∪ κ↾Addr ˙∪ κ↾Obj ),
+
+(η↾Val ˙∪ η↾Addr ˙∪ η↾Obj )) HLemma 7I
+
+= ( κ, η ) Hdef. κ, η I
+
+= χ Hdef. χI ⊓⊔
+
+Then, for each X, we have: 
+
+γS (αS (X)) = γS (αS ({χ0, . . . , χ n})) Hset expansion I
+
+= γS ({ ˙αS (χ0), . . . , ˙αS (χn)}) Happl. αS I
+
+= { ˙γS ( ˙ αS (χ0)) , . . . , ˙γS ( ˙ αS (χn)) } Happl. γS I54 G. Boldini et al. 
+
+= {χ0, . . . , χ n} Hhypothesis I
+
+= X Hset compression I ⊓⊔
+
+Proof of Composition of γS and αS . Let Σ = {σ0, . . . , σ n} be a set of split states, where each split state σ is defined as σ = ( ν, μ ) = (( νih , ν f ), (μih , μ f )) . For each 
+
+Σ, it must hold that αS (γS (Σ)) = Σ.We can assume for each σ ∈ Σ that ˙αS ( ˙ γS (σ)) = σ.
+
+˙αS ( ˙ γS (σ)) = ˙αS (( νih ↾Id ˙∪μih ↾Id ˙∪implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )) ,
+
+(νih ↾Addr H ˙∪μih ↾Addr H ˙∪implode (νf ↾Addr H ¨∪μf ↾Addr H ))) Happl. ˙γS I
+
+= (( νih ↾Id ˙∪μih ↾Id 
+
+˙∪ implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )) ↾Val 
+
+˙∪ (νih ↾Addr H ˙∪μih ↾Addr H
+
+˙∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )) ↾Val ,
+
+explode (( νih ↾Id ˙∪μih ↾Id 
+
+˙∪ implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )) ↾Obj 
+
+¨∪ (νih ↾Addr H ˙∪μih ↾Addr H
+
+˙∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )) ↾Obj ) ↾↾Val ),
+
+(( νih ↾Id ˙∪μih ↾Id 
+
+˙∪ implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )) ↾Addr 
+
+˙∪ (νih ↾Addr H ˙∪μih ↾Addr H
+
+˙∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )) ↾Addr ,
+
+explode (( νih ↾Id ˙∪μih ↾Id 
+
+˙∪ implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )) ↾Obj 
+
+¨∪ (νih ↾Addr H ˙∪μih ↾Addr H
+
+˙∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )) ↾Obj ) ↾↾Addr +
+
+)) Happl. ˙αS I
+
+= (( νih ↾Val  
+
+> Id
+
+˙∪μih ↾Val  
+
+> Id
+
+˙∪implode (νf ↾Val    
+
+> Id ∪Addr R
+
+)↾Val 
+
+˙∪ νih ↾Val 
+
+> Addr H
+
+˙∪μih ↾Val 
+
+> Addr H
+
+˙∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )↾Val ,
+
+explode (( νih ↾Obj  
+
+> Id
+
+˙∪μih ↾Obj 
+
+> Id
+
+˙∪ implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )↾Obj )¨∪ (νih ↾Obj 
+
+> Addr H
+
+˙∪μih ↾Obj 
+
+> Addr H
+
+˙∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )↾Obj )) ↾↾Val ),
+
+(νih ↾Addr  
+
+> Id
+
+˙∪μih ↾Addr 
+
+> Id
+
+˙∪ implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )↾Addr A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 55 
+
+˙∪ νih ↾Addr 
+
+> Addr H
+
+˙∪μih ↾Addr 
+
+> Addr H
+
+˙∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )↾Addr ,
+
+explode (( νih ↾Obj  
+
+> Id
+
+˙∪μih ↾Obj 
+
+> Id
+
+˙∪ implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )↾Obj )¨∪ (νih ↾Obj 
+
+> Addr H
+
+˙∪μih ↾Obj 
+
+> Addr H
+
+˙∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )↾Obj )) ↾↾Addr +
+
+)) Hdistr. ↾ over ˙∪I
+
+= (( νih ↾Id ˙∪νih ↾Addr H ,
+
+explode (implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )¨∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )) ↾↾Val ),
+
+(μih ↾Id ˙∪μih ↾Addr H ,
+
+explode (implode (νf ↾Id ∪ Addr R ¨∪μf ↾Id ∪ Addr R )¨∪ implode (νf ↾Addr H ¨∪μf ↾Addr H )) ↾↾Addr +
+
+)) Hdef. implode ,
+
+def. νih , μ ih I
+
+= (( νih ↾Id ˙∪νih ↾Addr H , explode (implode (νf ↾Id ∪ Addr R
+
+¨∪ μf ↾Id ∪ Addr R ¨∪νf ↾Addr H ¨∪μf ↾Addr H )) ↾↾Val ),
+
+(μih ↾Id ˙∪μih ↾Addr H , explode (implode (νf ↾Id ∪ Addr R
+
+¨∪ μf ↾Id ∪ Addr R ¨∪νf ↾Addr H ¨∪μf ↾Addr H )) ↾↾Addr +
+
+)) HLemma 8I
+
+= (( νih ↾Id ˙∪νih ↾Addr H , explode (implode (νf ¨∪ μf )) ↾↾Val ),
+
+(μih ↾Id ˙∪μih ↾Addr H , explode (implode (νf ¨∪ μf )) ↾↾Addr +
+
+)) Hdom. add. ↾↾,
+
+def. ν, μ I
+
+= (( νih ↾Id ˙∪νih ↾Addr H , (νf ¨∪ μf ) ↾↾Val ),
+
+(μih ↾Id ˙∪μih ↾Addr H , (νf ¨∪ μf ) ↾↾Addr +
+
+)) HLemma 7I
+
+= (( νih ↾Id ˙∪νih ↾Addr H , ν f ), (μih ↾Id ˙∪μih ↾Addr H , μ f )) Hdistr. ↾↾ over ¨∪I
+
+= (( νih , ν f ), (μih , μ f )) Hdom. add. ↾,
+
+def. ν, μ I
+
+= σ Hdef. σI ⊓⊔
+
+Then, for each Σ, we have: 
+
+αS (γS (Σ)) = αS (γS ({σ0, . . . , σ n})) Hset expansion I
+
+= αS ({ ˙γS (σ0), . . . , ˙γS (σn)}) Happl. γS I
+
+= { ˙αS ( ˙ γS (σ0)) , . . . , ˙αS ( ˙ γS (σn)) } Happl. αS I
+
+= {σ0, . . . , σ n} Hhypothesis I
+
+= Σ Hset compression I ⊓⊔56 G. Boldini et al. 
+
+B.3 Proof of Monotonicity of γS♯ (Lemma 1) 
+
+Let σ♯
+
+1 = ( ν♯
+
+1, μ ♯
+
+1) and σ♯
+
+2 = ( ν♯
+
+2, μ ♯
+
+2) with σ♯
+
+1 ⊑S♯ σ♯
+
+2. By the component-wise definition of ⊑S♯ , this implies ν♯
+
+1 ⊑V♯ ν♯
+
+2 and μ♯
+
+1 ⊑M♯ μ♯
+
+2.
+
+σ♯
+
+1 ⊑S♯ σ♯
+
+2
+
+=⇒ ν♯
+
+1 ⊑V♯ ν♯
+
+2 ∧ μ♯
+
+1 ⊑M♯ μ♯
+
+2 Hdef. ⊑S♯ I
+
+=⇒ γV♯ (ν♯
+
+1) ⊆ γV♯ (ν♯
+
+2) ∧ γM♯ (μ♯
+
+1) ⊆ γM♯ (μ♯
+
+2) HγV♯ , γ M♯ monot. I
+
+=⇒ γV♯ (ν♯
+
+1) ⊆ γV♯ (ν♯
+
+1) ∪ (γV♯ (ν♯
+
+2) \ γV♯ (ν♯
+
+1)) 
+
+∧ γM♯ (μ♯
+
+1) ⊆ γM♯ (μ♯
+
+1) ∪ (γM♯ (μ♯
+
+2) \ γM♯ (μ♯
+
+1)) Hdef. ⊆I
+
+=⇒ { (ν, μ ) : ( νid , ν mid ) ∈ γV♯ (ν♯
+
+1)
+
+∧ (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯
+
+1)
+
+∧ ν = νid ˙∪ ρb(νmid , γ MemID ) ˙ ∪ ρf (νmid , γ MemID f )}⊆ { (ν, μ ) : ( νid , ν mid ) ∈ γV♯ (ν♯
+
+1)
+
+∧ (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯
+
+1)
+
+∧ ν = νid ˙∪ ρb(νmid , γ MemID ) ˙ ∪ ρf (νmid , γ MemID f )}∪ { (ν, μ ) : ( νid , ν mid ) ∈ γV♯ (ν♯
+
+2) \ γV♯ (ν♯
+
+1)
+
+∧ (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯
+
+2) \ γM♯ (μ♯
+
+1)
+
+∧ ν = νid ˙∪ ρb(νmid , γ MemID ) ˙ ∪ ρf (νmid , γ MemID f )} Hρb, ρ f monot. I
+
+=⇒ { (ν, μ ) : ( νid , ν mid ) ∈ γV♯ (ν♯
+
+1)
+
+∧ (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯
+
+1)
+
+∧ ν = νid ˙∪ ρb(νmid , γ MemID ) ˙ ∪ ρf (νmid , γ MemID f )}⊆ { (ν, μ ) : ( νid , ν mid ) ∈ γV♯ (ν♯
+
+2)
+
+∧ (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯
+
+2)
+
+∧ ν = νid ˙∪ ρb(νmid , γ MemID ) ˙ ∪ ρf (νmid , γ MemID f )} HγV♯ (ν♯
+
+1) ⊆ γV♯ (ν♯
+
+2),γM♯ (μ♯
+
+1) ⊆ γM♯ (μ♯
+
+2)I
+
+=⇒ γS♯ (σ♯
+
+1) ⊆ γS♯ (σ♯
+
+2) Hdef. γS♯ I
+
+B.4 Proof of Split and Concrete Semantics Equivalence (Theorem 2) 
+
+γS (Lst Mσ)= γS (αS (Jst KγS (σ))) Hdef Lst MI A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 57 
+
+= Jst KγS (σ) HγS ◦ αS = id I
+
+γS (LASM (b)Mσ)= γS (αS (JASM (b)KγS (σ))) Hdef LASM (b)MI 
+
+= JASM (b)KγS (σ) HγS ◦ αS = id ILeM(σ)= JeK(γS (σ)) Hdef LeMI 
+
+B.5 Proof of Abstract Semantic Soundness 
+
+Before proving soundness, we first show the correctness of function RM♯ used in the abstract semantics of assignment. Let us define an auxiliary function 
+
+eval : ( Rhs ∪ Addr + ∪ (Addr + ∪ Id ) × Σ∗) × ℘(S) → ℘(Val ∪ Addr +) × ℘(S)
+
+that evaluates a right-hand side expression, and address, or a pair of address and field name in a set of split states. This function mimicks the concrete expression evaluation without leaving the split state: the values it produces are concrete, but are paired with a side-effected state that stores new relations between variables and addresses. eval is defined as: 
+
+eval (a | s | b, {σi}ni=1 ) = {(vi, σ i)ni=1 | Ja | s | bK ◦ γS (σi) = vi}
+
+eval ({ } , {σi}ni=1 ) = {(r, σ i
+
+> 1
+
+)ni=1 | r ∈ Addr R
+
+∧ σi 
+
+> 1
+
+= ( νiih , ν if [r 7 → {} ], μ iih , μ if [r 7 → {} ]) }
+
+eval ({fk : fk}jk=1 , {σi}ni=1 ) = {(r, σ i
+
+> 1
+
+)ni=1 | r ∈ Addr R
+
+∧ J{fk : fk}jk=1 K ◦ γS (σi) = {fk : vik}jk=1 
+
+∧ σi 
+
+> 1
+
+= ( νiih , ν if [r 7 → { fk : vik}jk=1 ],μiih , μ if [r 7 → {} ]) }
+
+eval (new { } , {σi}ni=1 ) = {(h, σ i
+
+> 1
+
+)ni=1 | h ∈ Addr H
+
+∧ σi 
+
+> 1
+
+= ( νiih , ν if [h 7 → {} ], μ iih , μ if [h 7 → {} ]) }
+
+eval (new {fk : fk}jk=1 , {σi}ni=1 ) = {(h, σ i
+
+> 1
+
+)ni=1 | h ∈ Addr H
+
+∧ J{fk : fk}jk=1 K ◦ γS (σi) = {fk : vik}jk=1 
+
+∧ σi 
+
+> 1
+
+= ( νiih , ν if [h 7 → { fk : vik}jk=1 ],μiih , μ if [h 7 → {} ]) }
+
+eval (new a | s | b, {σi}ni=1 ) = {(h, σ i
+
+> 1
+
+)ni=1 | h ∈ Addr H
+
+∧ Ja | s | bK ◦ γS (σi) = vi}58 G. Boldini et al. 
+
+∧ σi 
+
+> 1
+
+= ( νiih , ν if , μ iih [h 7 → vi], μ if )}
+
+eval (&x , {σi}ni=1 ) = {(vi, σ i)ni=1 | J&x K ◦ γS (σi) = vi}
+
+eval (*p, {σi}ni=1 ) = {(vi
+
+> 2
+
+, σ i
+
+> 1
+
+)ni=1 | eval (p, {σi}ni=1 ) = {(vi
+
+> 1
+
+, σ i
+
+> 1
+
+)}ni=1 
+
+∧ (( vi 
+
+> 1
+
+∈ dom (νi
+
+> 1ih
+
+) ∧ νi
+
+> 1ih
+
+(vi
+
+> 1
+
+) = vi
+
+> 2
+
+)
+
+∨ (vi 
+
+> 1
+
+∈ dom (μi
+
+> 1ih
+
+) ∧ μi
+
+> 1ih
+
+(vi
+
+> 1
+
+) = vi
+
+> 2
+
+)) }
+
+eval (p.f, {σi}ni=1 ) = {(vi
+
+> 2
+
+, σ i
+
+> 1
+
+)ni=1 | eval (p, {σi}ni=1 ) = {(vi
+
+> 1
+
+, σ i
+
+> 1
+
+)}ni=1 
+
+∧ (( vi 
+
+> 1
+
+∈ dom (νi 
+
+> 1f
+
+) ∧ νi 
+
+> 1f
+
+(vi
+
+> 1
+
+)( f ) = vi
+
+> 2
+
+)
+
+∨ (vi 
+
+> 1
+
+∈ dom (μi 
+
+> 1f
+
+) ∧ μi 
+
+> 1f
+
+(vi
+
+> 1
+
+)( f ) = vi
+
+> 2
+
+)) }
+
+eval (p[s], {σi}ni=1 ) = {(vi
+
+> 2
+
+, σ i
+
+> 1
+
+)ni=1 | eval (p, {σi}ni=1 ) = {(vi
+
+> 1
+
+, σ i
+
+> 1
+
+)}ni=1 
+
+∧ JsK ◦ γS (σi
+
+> 1
+
+) = fi
+
+∧ (( vi 
+
+> 1
+
+∈ dom (νi 
+
+> 1f
+
+) ∧ νi 
+
+> 1f
+
+(vi
+
+> 1
+
+)( fi) = vi
+
+> 2
+
+)
+
+∨ (vi 
+
+> 1
+
+∈ dom (μi 
+
+> 1f
+
+) ∧ μi 
+
+> 1f
+
+(vi
+
+> 1
+
+)( fi) = vi
+
+> 2
+
+)) }
+
+Intuitively, whenever no new bindings need to be introduced into the split state, eval delegates to the concrete semantics. Instead, when evaluating an object literal or a new expression, eval produces a fresh address and updates the split state to reflect the new bindings between this address and the values of the fields (for object literals) or the value of the initializer (for new expressions). Additionally, let us define ˜γ : ℘(MemID ) × M ♯ → ℘(Addr +) as: 
+
+˜γ(I, μ ♯) = [
+
+> i∈I
+
+
+
+l (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯) ∧ (i ∈ dom (γMemID )
+
+∧ l ∈ γMemID (i)) ∨ (i ∈ dom (γMemID f ) ∧ (l, f ) ∈ γMemID f (i)) 
+
+
+
+Function ˜γ resolves all memory identifiers in I to their corresponding concrete locations, based on the memory abstraction μ♯.
+
+Lemma 10 (Correctness of RM♯ ). Function RM♯ is sound, that is, for any 
+
+rhs ∈ Rhs and σ♯ ∈ S ♯, if RM♯ (rhs , ν ♯, μ ♯) = ( I, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) and eval (rhs , γ S♯ (σ♯)) = 
+
+{(vi, σ i)}ni=1 , then: 1. {σi}ni=1 ⊆ γS♯ (( ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+)) ;2. {vi}ni=1 \ Addr + ⊆ { v′ | ∃ i ∈ I ∩ Ve : ( v′, σ ′) ∈ eval (i, γ S♯ (ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+)) };3. {vi}ni=1 ∩ Addr + ⊆ { v′ | v′ ∈ ˜γ(I \ Ve , μ ♯
+
+> 1
+
+)}.
+
+Informally, the soundness of RM♯ states that, if the same expression was to be evaluated on the concretized split state, (i) the resulting abstract state correctly model all side effects, (ii) when evaluating the expression produces concrete values, they are included in the ones of the evaluation of the rewritten expressions, and (iii) when the expression produces addresses, they are included in the ones of the evaluation of the rewritten expressions. 
+
+Proof. The proof proceeds by induction on the structure of rhs .A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 59 
+
+Base Case 1: rhs = x | a | s | b. In this case, we have RM♯ (rhs , ν ♯, μ ♯) = ({rhs }, ν ♯, μ ♯), and eval (rhs , γ S♯ (σ♯)) = {(vi, σ i)}ni=1 where vi is the value of 
+
+rhs in σi. As both RM♯ and eval are side-effect free, {σi}ni=1 ⊆ γS♯ (( ν♯, μ ♯)) 
+
+trivially holds, satisfying condition 1. Moreover, since rhs ∈ Ve , its evaluation only produces concrete values: condition 3 is satisfied as the left-hand side is empty, and condition 2 is satisfied as the eval call in the right-hand side is applied to the same arguments. 
+
+Base Case 2: rhs = & x. Here, RM♯ (rhs , ν ♯, μ ♯) = ( {addrOf M♯ (x, μ ♯)}, ν ♯, μ ♯), and 
+
+eval (rhs , γ S♯ (σ♯)) = {(ax, σ i)}ni=1 for each σi ∈ γS♯ (σ♯). As in the previous case, both RM♯ and eval are side-effect free, and thus condition 1 trivially holds. Fur-thermore, condition 2 is satisfied as the left-hand side is empty. By the soundness requirement of addrOf M♯ , we have that locs (addrOf M♯ (x, μ ♯)) = {ax}, and thus 
+
+˜γ(addrOf M♯ (x, μ ♯), μ ♯) = {ax}. Hence, condition 3 is satisfied with an equality. 
+
+Base Case 3: rhs = { } . For empty object allocations, we have RM♯ (rhs , ν ♯, μ ♯) = ({ℓ}, ν ♯, μ ♯
+
+> 1
+
+) with (ℓ, μ ♯
+
+> 1
+
+) = fresh K 
+
+> M♯
+
+(μ♯), and eval (rhs , γ S♯ (σ♯)) = {(r, σ i
+
+> 1
+
+)ni=1 |
+
+r ∈ Addr R} with γS♯ (σ♯) = {(νiih , ν if , μ iih , μ if )}ni=1 and σi 
+
+> 1
+
+= (νiih , ν if [r 7 →{} ], μ iih , μ if [r 7 → {} ]) . By the soundness requirement of fresh K 
+
+> M♯
+
+, we have that 
+
+μ♯ ⊑M♯ μ♯
+
+> 1
+
+, that ℓ̸ ∈ memId M♯ (μ♯), and that memId M♯ (μ♯
+
+> 1
+
+) = memId M♯ (μ♯) ∪ { ℓ}.W.l.o.g., we assume that ˜γ({ℓ}, μ ♯
+
+> 1
+
+) = {r}, as both addresses are fresh. Con-dition 1 is satisfied as each σi 
+
+> 1
+
+corresponds to the respective σi with the new binding between r and {} : since σi ∈ γS♯ (σ♯) and σ♯ ⊑S♯ (ν♯, μ ♯
+
+> 1
+
+), σi 
+
+> 1
+
+is included in γS♯ (( ν♯, μ ♯
+
+> 1
+
+)) if the new binding is included in the concretization of μ♯
+
+> 1
+
+. Being part of μ♯
+
+> 1
+
+, ℓ will appear in the domain of all γMemID f generated by γM♯ (μ♯
+
+> 1
+
+), and thus r will be included in the concretization of μ♯ 
+
+> 1
+
+as required by condition 1. Condition 2 is satisfied as the left-hand side is empty. Instead, the left-hand side of condition 3 is the set {r}, that corresponds to the result if ˜γ as per our previous assumption. 
+
+Base Case 4: rhs = new { } . This case is analogous to the previous one, but uses a fresh H 
+
+> M♯
+
+instead of fresh K 
+
+> M♯
+
+.
+
+Base Case 5: rhs = {fk : fk}jk=1 . Here, RM♯ (rhs ) = ( {ℓ}, ν ♯j , μ ♯j ) where (ℓ, μ ♯
+
+> 0
+
+) = 
+
+fresh K 
+
+> M♯
+
+(μ♯), and for each i from 1 to j, (Ii, sub i, μ ♯i ) = access M♯ ({ℓ}, fi, μ ♯i−1),
+
+ν♯si = applySub (sub i, ν ♯i−1, μ ♯i ), and ν♯i = F
+
+> ι∈
+
+Ii assign V♯ (ι, vi, ν ♯si , ¬isSum M♯ (ι, μ ♯i )) .Instead, on the split state, eval (rhs , γ S♯ (σ♯)) = {(r, σ i
+
+> 1
+
+)ni=1 | r ∈ Addr R} where 
+
+γS♯ (σ♯) = {(νiih , ν if , μ iih , μ if )}ni=1 and J{fk : fk}jk=1 K ◦ γS (σi) = {fk : vik}jk=1 and 
+
+σi 
+
+> 1
+
+= ( νiih , ν if [r 7 → { fk : vik}jk=1 ], μ iih , μ if [r 7 → {} ]) }. Following the same logic of base case 3, we assume that ˜γ({ℓ}, μ ♯
+
+> 1
+
+) = {r}. Note that, as shown in base case 3, the abstract memory yielded by fresh K 
+
+> M♯
+
+is structured to correctly over-approximate an empty object corresponding to the location ℓ. At each iteration of the loop, we have that: 60 G. Boldini et al. 
+
+– by the soundness requirement of access M♯ , the function produces an abstract memory where the field fi of ℓ is tracked and associated with a memory identifier in the returned set Ii, together with the necessary substitutions; 
+
+– by the soundness requirement of applySub (which holds by [19, Lemma C.1], since M5 holds and assign V♯ is sound), the value state ν♯si correctly reflects the substitutions returned by access M♯ ;
+
+– by the soundness requirement of assign V♯ , and the definition of ⊔, the value state ν♯i stores the correct over-approximation of the values of field fi of ℓ.Therefore, at each iteration, the obtained abstract state correctly abstracts the structure of the object being allocated and the values of its fields up to field i,with (ν♯n, μ ♯n) containing the whole object. Thus, condition 1 is satisfied as each 
+
+σi 
+
+> 1
+
+corresponds to the respective σi with the new binding between r and {fk :
+
+vik}jk=1 : since σi ∈ γS♯ (σ♯) and σ♯ ⊑S♯ (ν♯n, μ ♯n), σi 
+
+> 1
+
+is included in γS♯ (( ν♯n, μ ♯n)) 
+
+if the new binding is included in the concretization of μ♯n. Being part of μ♯n, ℓ
+
+will appear in the domain of all γMemID f generated by γM♯ (μ♯n), and thus r will be included in the concretization of μ♯n as required by condition 1. Each field will be associated with a memory identifier in μ♯n (soundness of access M♯ ), and the values of the fields will be tracked by ν♯n (soundness of assign V♯ ). Thus, condidion 1 is satisfied as the new bindings are included in the concretization of μ♯n and 
+
+ν♯n. Condition 2 is satisfied as the left-hand side is empty. Instead, the left-hand side of condition 3 is the set {r} that corresponds to the result if ˜γ as per our previous assumption. 
+
+Base Case 6: rhs = new {fk : fk}jk=1 . This case is analogous to the previous one, but uses a fresh H 
+
+> M♯
+
+instead of fresh K 
+
+> M♯
+
+.
+
+Base Case 7: rhs = new a | s | b. This case is analogous to the previous one, assigning the value of the initializer to the new location instead of the fields of an object. 
+
+Inductive Case 1: rhs = *p. Here, we have that RM♯ (rhs , ν ♯, μ ♯) = ( I1, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+),where (I, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) = RM♯ (p, ν ♯, μ ♯) and I1 = pointsTo M♯ (I, μ ♯
+
+> 1
+
+). Instead, on the split state, eval (rhs , γ S♯ (σ♯)) = {(vi
+
+> 2
+
+, σ i
+
+> 1
+
+)}ni=1 where eval (p, γ S♯ (σ♯)) = {(vi
+
+> 1
+
+, σ i
+
+> 1
+
+)}ni=1 
+
+and (( vi 
+
+> 1
+
+∈ dom (νi
+
+> 1ih
+
+) ∧ νi
+
+> 1ih
+
+(vi
+
+> 1
+
+) = vi
+
+> 2
+
+) ∨ (vi 
+
+> 1
+
+∈ dom (μi
+
+> 1ih
+
+) ∧ μi
+
+> 1ih
+
+(vi
+
+> 1
+
+) = vi
+
+> 2
+
+)) }. We inductively assume that {σi
+
+> 1
+
+}ni=1 ⊆ γS♯ (( ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+)) : this already satisfies condition 1 since neither RM♯ nor eval produce side effects on the state when evaluating 
+
+*p. For rhs to be valid, p must evaluate to an address, and thus vi 
+
+> 1
+
+∈ Addr + for all i. By the inductive hypothesis, we have that vi 
+
+> 1
+
+∈ ˜γ(I, μ ♯
+
+> 1
+
+) for all i. Combining the two, we have that the state in which pointsTo M♯ is applied is a sound over-approximation of the corresponding split states, and the identifiers it is applied to are a superset of the concrete addresses used in eval . Thanks to the soundness requirement of pointsTo M♯ , we have that each element of I1 is either (i) a variable (part of Ve ) that, when evaluated, will produce an over-approximation of the possible concrete values it can assume (satisfying condition 2), or (ii) a memory identifier that, when resolved through ˜γ, will produce a set of addresses that A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 61 
+
+includes all the possible concrete addresses produced by eval on p (satisfying condition 3). 
+
+Inductive Case 2: rhs = p.f . In this case, we have that RM♯ (rhs , ν ♯, μ ♯) = (ac, applySub (sub , ν ♯
+
+> 1
+
+, μ ♯
+
+> 2
+
+), μ ♯
+
+> 2
+
+), with (ids, ν ♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) = RM♯ (p, ν ♯, μ ♯) and (ac, sub , μ ♯
+
+> 2
+
+)= access M♯ (ids, f, μ ♯
+
+> 1
+
+). On the split state, eval (rhs , γ S♯ (σ♯)) = {(vi
+
+> 2
+
+, σ i
+
+> 1
+
+)ni=1 },where eval (p, γ S♯ (σ♯)) = {(vi
+
+> 1
+
+, σ i
+
+> 1
+
+)}ni=1 , and either vi 
+
+> 1
+
+∈ dom (νi 
+
+> 1f
+
+) ∧ νi 
+
+> 1f
+
+(vi
+
+> 1
+
+)( f ) = 
+
+vi 
+
+> 2
+
+or vi 
+
+> 1
+
+∈ dom (μi 
+
+> 1f
+
+) ∧ μi 
+
+> 1f
+
+(vi
+
+> 1
+
+)( f ) = vi 
+
+> 2
+
+hold. We inductively assume that 
+
+{σi
+
+> 1
+
+}ni=1 ⊆ γS♯ (( ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+)) , and that vi 
+
+> 1
+
+∈ ˜γ(ids, μ ♯
+
+> 1
+
+) for all i (recall that p must evaluate to an address for rhs to be valid). If the field f is already part of μ♯
+
+for every address in ids , access M♯ simply resolves it and yields the corresponding memory identifiers, and μ♯ 
+
+> 2
+
+= μ♯
+
+> 1
+
+. Otherwise, access M♯ adds the field f to the abstract memory for the relevant identifiers, yielding an updated state with the respective substitutions that are soundly applied to ν♯
+
+> 1
+
+. In the latter case, by the soundness requirement of access M♯ , μ♯ 
+
+> 2
+
+is an over-approximation of the split memories where the new field has been added, while in the former case μ♯ 
+
+> 2
+
+is sound by induction. Thus, condition 1 is satisfied. Instead, by the soundness re-quirement of access M♯ , the memory identifiers in ac are either (i) variables (part of Ve ) that, when evaluated, will produce an over-approximation of the possible concrete values they can assume (satisfying condition 2), or (ii) memory identi-fiers that, when resolved through ˜γ, will produce a set of addresses that includes all the possible concrete addresses produced by eval on p.f (satisfying condition 3). 
+
+Inductive Case 3: rhs = p[s]. This case is analogous to the previous one, but the field name is given by a lattice element obtained trough the eval V♯ function. ⊓⊔
+
+We can now prove Theorem 3. 
+
+Proof (Theorem 3). 
+
+We proceed by case analysis of (1) ASM (b), and (2) lhs = rhs . To avoid unnecessary verbosity, we present only the main steps, because a similar full soundness proof can be found in [19, Theorem C.1]. 
+
+Case 1: ASM (b). We recall that assume V♯ and assume M♯ are required to be sound. Following the definition of the abstract assume operation, executing ASM (b) pro-duces the abstract state (ν♯
+
+> 1
+
+, μ ♯
+
+> 1
+
+) obtained by applying the assume functions on both the value and memory components. Since assume V♯ and assume M♯ are sound, the resulting state is a correct over-approximation of the concrete semantics. Therefore, soundness of LASM (b)M♯ holds trivially. 
+
+Case 2: lhs = rhs . We prove soundness by showing that each operation in-volved in the semantics is sound and preserves over-approximation. First, the memory update produced by assign M♯ is sound by assumption, since it correctly over-approximates the concrete effect of the assignment on memory, yielding 
+
+(sub m, μ ♯
+
+> 1
+
+) = assign M♯ (lhs , rhs , μ ♯). By [19, Lemma C.1], since M5 holds and 62 G. Boldini et al. 
+
+assign V♯ is sound by assumption, applySub is sound. For this reason, ν♯m =
+
+applySub (sub m, ν ♯, μ ♯
+
+> 1
+
+) shares the same structure of the input ν♯ modulo the renamings provided in sub m. The functions RM♯ applied to both rhs and lhs are correct by Lemma 10, meaning that the expressions returned by the calls to 
+
+RM♯ evaluate to the same values and addresses of the original expressions. How-ever, memory-related expressions are replaced with their corresponding memory identifiers, making it possible for the value abstraction to process them. Finally, 
+
+ν♯ 
+
+> 2
+
+is defined as a join of multiple assignments: by assumption, each individual assignment is sound, and ⊔ computes an over-approximation of all assignments. It follows that the resulting value state over-approximates all possible assign-ments. Therefore, every step in the semantics preserves soundness, and the re-sulting state (ν♯
+
+> 2
+
+, μ ♯l ) is a sound over-approximation of the concrete execution of 
+
+lhs = rhs . ⊓⊔
+
+B.6 Proof of C1 for the Points-to Domain (Lemma 2) 
+
+memId M♯ (μ♯) = dom (μ♯) by definition. The separation condition in γM♯ sets 
+
+dom (γMemID ) = base (μ♯) and dom (γMemID f ) = field (μ♯). Since MemID b and MemID f
+
+partition dom (μ♯), we have base (μ♯) ∪ field (μ♯) = dom (μ♯), so dom (γMemID ) ∪
+
+dom (γMemID f ) = memId M♯ (μ♯). The invariant holds for all operations: fresh K 
+
+> M♯
+
+,
+
+fresh H 
+
+> M♯
+
+, and addrOf M♯ add base identifiers; access M♯ adds field identifiers; no operation changes an identifier’s classification. ⊓⊔
+
+B.7 Proof of C2 for the Points-to Domain (Lemma 3) 
+
+We must show that for every μ♯ ∈ M ♯PT , (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯), and distinct ι1, ι 2 ∈ dom (γMemID ) ∪ dom (γMemID f ), the locations locs (ι1) and locs (ι2)
+
+are disjoint; and, for field identifiers sharing the same parent base identifier, 
+
+γMemID f (ι1) ∩ γMemID f (ι2) = ∅ as sets of (a, f ) pairs. We proceed by case analysis on the kinds of ι1 and ι2.
+
+Case 1: Both Base ( ι1, ι 2 ∈ dom (γMemID )). Base identifiers are either variable identifiers ιx or allocation-site identifiers ιℓ. The concretization γM♯ requires each base identifier to be mapped to a disjoint subset of Addr H: distinct base iden-tifiers correspond to distinct allocation sites or distinct stack variables, which by the well-formedness of the split state μ occupy disjoint address ranges. Since 
+
+locs (ιi) = γMemID (ιi) for base identifiers, locs (ι1) ∩ locs (ι2) = ∅ follows directly. 
+
+Case 2: One Base, One Field ( ι1 ∈ dom (γMemID ), ι2 = ιb,f ∈ dom (γMemID f )). The field identifier ι2 has parent base b.
+
+– b̸ = ι1: then locs (ι2) = γMemID (b), and locs (ι1) = γMemID (ι1). By Case 1, 
+
+γMemID (ι1) ∩ γMemID (b) = ∅, so locs (ι1) ∩ locs (ι2) = ∅.
+
+– b = ι1: then locs (ι2) = γMemID (ι1) = locs (ι1), so these two identifiers share the same locations. However, γMemID (ι1) ⊆ Addr H indexes the base cells of μ,A Modular Framework for Stack-Heap and Value Abstractions (Ext. Ver.) 63 
+
+while γMemID f (ι2) indexes field cells of μ. By the split-state well-formedness condition, the base-location component and the field-slot component of μ are stored in disjoint parts of the concrete store; hence the two identifiers refer to distinct memory cells. In this subcase the locs-disjointness requirement is vacuously superseded by the (a, f )-pair disjointness requirement for field identifiers, which is established in Case 3 below. 
+
+Case 3: Both Field ( ι1 = ιb1,f 1 , ι2 = ιb2,f 2 ). 
+
+– b1̸ = b2: then locs (ι1) = γMemID (b1) and locs (ι2) = γMemID (b2), which are dis-joint by Case 1. 
+
+– b1 = b2 =: b, f1̸ = f2: both identifiers share the same locs value γMemID (b),so locs-disjointness fails. Nevertheless, the concretization requires that, for each i, γMemID f (ιb,f i ) ⊆ (Addr H ∪ Addr R) × { fi}. Since f1̸ = f2, the two sets of (a, f ) pairs lie in disjoint fibers over the field dimension: 
+
+γMemID f (ιb,f 1 ) ∩ γMemID f (ιb,f 2 ) ⊆  (Addr H ∪ Addr R) × { f1}
+
+∩  (Addr H ∪ Addr R) × { f2} = ∅.
+
+This establishes the (a, f )-pair disjointness required by C2 for this subcase. In all cases, the required disjointness condition holds. ⊓⊔
+
+B.8 Proof of Monotonicity of γM♯ (Lemma 4) 
+
+Let μ♯ 
+
+> 1
+
+⊑ μ♯ 
+
+> 2
+
+and (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯
+
+> 1
+
+). For every ι ∈ dom (μ♯
+
+> 1
+
+), μ♯
+
+> 1
+
+(ι) ⊆
+
+μ♯
+
+> 2
+
+(ι), so S
+
+> ι′∈
+
+μ♯ 
+
+> 1(ι)
+
+locs (ι′) ⊆ S
+
+> ι′∈
+
+μ♯ 
+
+> 2(ι)
+
+locs (ι′). The soundness condition for μ♯ 
+
+> 2
+
+is therefore inherited from μ♯
+
+> 1
+
+. Since dom (μ♯
+
+> 1
+
+) ⊆ dom (μ♯
+
+> 2
+
+), the coverage condition C1 also holds, so (μ, γ MemID , γ MemID f ) ∈ γM♯ (μ♯
+
+> 2
+
+). ⊓⊔
