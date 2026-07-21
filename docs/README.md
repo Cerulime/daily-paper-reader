@@ -6,37 +6,46 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-20
-- 运行时间：2026-07-20 20:49:29 UTC
+- 最新运行日期：2026-07-21
+- 运行时间：2026-07-21 20:21:32 UTC
 - 运行状态：成功
-- 本次总论文数：5
-- 精读区：2
-- 速读区：3
+- 本次总论文数：8
+- 精读区：4
+- 速读区：4
 
 ### 今日简报（AI）
-今日精读聚焦智能合约攻击自动化与程序抽象框架，两份9分研究揭示前沿突破。  
-最值得关注：一是用AI模拟合约攻击可系统发现深层漏洞，二是模块化的堆-值抽象框架让程序验证更普适。  
-建议开发者留意智能合约安全测试的自动化趋势，初学者可先理解抽象框架如何简化复杂程序分析。
-- 详情：[/202607/20/README](/202607/20/README)
+今日从8篇安全论文里精读了污点式漏洞检测和轻量级认证加密两项高亮工作，速读了信息流降级、内核崩溃诊断等方向。  
+最值得关注：TaintRadar（9.0）用增强代码属性图实现语义感知的漏洞发现，SABLE（9.0）为受限环境设计了极简指令级认证加密，两者都在各自场景给出实用突破。  
+建议对代码安全感兴趣的读者优先复现TaintRadar的图增强思路，关注机密计算的读者可沿着SABLE的极简设计评估在物联网设备的落地可能。
+- 详情：[/202607/21/README](/202607/21/README)
 
 ### 精读区论文标签
-1. [Beyond Detection: Agentic Attack Synthesis and Simulation for Smart Contracts](/202607/20/2607.15673v1-beyond-detection-agentic-attack-synthesis-and-simulation-for-smart-contracts)  
+1. [TaintRadar: Semantic-Aware Taint-Style Vulnerability Detection via Augmented Code Property Graphs](/202607/21/2607.16456v1-taintradar-semantic-aware-taint-style-vulnerability-detection-via-augmented-code-property-graphs)  
    标签：评分：9.0/10、query:sys-security
-   evidence：面向智能合约漏洞利用与验证的多智能体框架
-2. [A Modular Framework for Stack-Heap and Value Abstractions (Extended Version)](/202607/20/2607.15932v1-a-modular-framework-for-stack-heap-and-value-abstractions-extended-version)  
+   evidence：语义增强的污点分析用于精准漏洞检测
+2. [SABLE: Minimalist Instruction-Level Authenticated Encryption for Constrained Confidential Computing](/202607/21/2607.16771v1-sable-minimalist-instruction-level-authenticated-encryption-for-constrained-confidential-computing)  
    标签：评分：9.0/10、query:sys-security
-   evidence：面向内存错误检测的静态分析框架，支持执行前发现缓冲区溢出等漏洞
+   evidence：面向机密计算的指令级认证加密
+3. [Isolation Failure From Shared Storage: Characterizing and Exploiting Page-Cache SCA Leakage Across Containers and VMs](/202607/21/2607.17518v1-isolation-failure-from-shared-storage-characterizing-and-exploiting-page-cache-sca-leakage-across-containers-and-vms)  
+   标签：评分：8.0/10、query:sys-security
+   evidence：利用宿主机页缓存共享打破容器与虚拟机间的隔离
+4. [Self-State Attacks on Self-Hosted AI Agents: How Far Can OS Defenses Go?](/202607/21/2607.17986v1-self-state-attacks-on-self-hosted-ai-agents-how-far-can-os-defenses-go)  
+   标签：评分：8.0/10、query:sys-security
+   evidence：研究操作系统对通过系统调用实现的自状态攻击的弹性
 
 ### 速读区论文标签
-1. [Open-Source Intelligence for Code Provenance and the Security Patterns that Separate Human and Large-Language-Model Implementations of Common Programming Tasks](/202607/20/2607.12524v1-open-source-intelligence-for-code-provenance-and-the-security-patterns-that-separate-human-and-large-language-model-implementations-of-common-programming-tasks)  
+1. [The Duality of Information Flow: Reconciling Robust Downgrading with Non-Interference](/202607/21/2607.17445v1-the-duality-of-information-flow-reconciling-robust-downgrading-with-non-interference)  
    标签：评分：7.0/10、query:sys-security
-   evidence：分析代码片段的安全模式，区分人类与LLM代码，属于安全静态分析
-2. [SQUIRO: A Framework for Security-Aware Quantum-Classical Scheduling on Kubernetes](/202607/20/2607.16089v1-squiro-a-framework-for-security-aware-quantum-classical-scheduling-on-kubernetes)  
+   evidence：安全编程的信息流控制，非干扰与降级
+2. [KernelDiag: Agent-Based Root Cause Diagnosis for Kernel Crashes](/202607/21/2607.17722v1-kerneldiag-agent-based-root-cause-diagnosis-for-kernel-crashes)  
    标签：评分：7.0/10、query:sys-security
-   evidence：提出针对量子-经典异构工作负载的安全感知调度器
-3. [Ciphertext- and Polynomial-Level Optimization for Fully Homomorphic Encryption](/202607/20/2607.15750v1-ciphertext--and-polynomial-level-optimization-for-fully-homomorphic-encryption)  
+   evidence：基于智能体的内核崩溃根因诊断
+3. [Trust but Verify? Uncovering the Security Debt of Autonomous Coding Agents](/202607/21/2607.12428v2-trust-but-verify-uncovering-the-security-debt-of-autonomous-coding-agents)  
    标签：评分：6.0/10、query:sys-security
-   evidence：优化全同态加密编译器以实现加密数据上的实用机密计算。
+   evidence：实证研究表征AI代理生成拉取请求中的安全代码异味
+4. [SlotGuard: Stop Oversharing Private Local Context in LLM Agent Transcri](/202607/21/2607.17147v1-slotguard-stop-oversharing-private-local-context-in-llm-agent-transcri)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：利用可信运行时恢复秘密，防止上下文泄露
 
 
 <div class="dpr-home-promo-card">
