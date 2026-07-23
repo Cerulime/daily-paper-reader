@@ -6,37 +6,37 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-22
-- 运行时间：2026-07-22 21:17:23 UTC
+- 最新运行日期：2026-07-23
+- 运行时间：2026-07-23 21:46:29 UTC
 - 运行状态：成功
 - 本次总论文数：5
-- 精读区：3
-- 速读区：2
+- 精读区：1
+- 速读区：4
 
 ### 今日简报（AI）
-今日聚焦AI安全与系统防护：剖析了用确定性验证对抗XSS漏洞奖励黑客的RECEIPT框架，以及通过指针-对象权限实现C/C++内存安全的PTSan工具。  
-最值得关注的是白盒代理在漏洞挖掘中如何避免被“奖励黑客”误导，以及用硬件模型检查反向验证C程序的新思路。  
-建议开发者从RECEIPT的抗作弊验证和PTSan的权限模型入手，提升自动化安全测试与底层代码的防御能力。
-- 详情：[/202607/22/README](/202607/22/README)
+今天扫描了 5 篇安全论文，核心发现来自共享存储页缓存的跨容器与虚拟机隔离失效攻击。  
+最值得关注：共享存储泄露可绕过沙箱窃取敏感数据，以及模型扫描器被隐蔽的 Pickle 反序列化攻击绕过。  
+建议普通读者优先理解第一类风险：即使容器/虚拟化隔离，共享文件缓存也可能暴露密码、密钥等内存残留。
+- 详情：[/202607/23/README](/202607/23/README)
 
 ### 精读区论文标签
-1. [RECEIPT: Deterministic, Reward-Hacking-Resistant Verification for White-Box Agentic XSS Discovery](/202607/22/2607.18575v1-receipt-deterministic-reward-hacking-resistant-verification-for-white-box-agentic-xss-discovery)  
+1. [Isolation Failure From Shared Storage: Characterizing and Exploiting Page-Cache SCA Leakage Across Containers and VMs](/202607/23/2607.17518v2-isolation-failure-from-shared-storage-characterizing-and-exploiting-page-cache-sca-leakage-across-containers-and-vms)  
    标签：评分：9.0/10、query:sys-security
-   evidence：针对代理报告的XSS漏洞的确定性验证框架，防止奖励黑客行为
-2. [PTSan: A Practical Memory Safety Sanitizer for C/C++ with Pointer-Object Authority](/202607/22/2607.19246v1-ptsan-a-practical-memory-safety-sanitizer-for-cc-with-pointer-object-authority)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：基于指针-对象权限的内存安全净化器，防止内存错误被利用
-3. [A Non-Intrusive Traffic Analysis Framework for Authorization Risk Detection and Coordinated Response in Web Applications](/202607/22/2607.16754v1-a-non-intrusive-traffic-analysis-framework-for-authorization-risk-detection-and-coordinated-response-in-web-applications)  
-   标签：评分：8.0/10、query:sys-security
-   evidence：提出非侵入式流量分析实现Web应用实时授权风险检测
+   evidence：特征化并利用跨容器/虚拟机的页缓存侧信道，揭示共享存储中的隔离失效
 
 ### 速读区论文标签
-1. [Efficient and Privacy Aware Edge Cloud Collaborative Inference for Large Language Models](/202607/22/2607.13093v2-efficient-and-privacy-aware-edge-cloud-collaborative-inference-for-large-language-models)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：提出利用端点认证KV缓存的隐私边缘云协同LLM推理
-2. [BTOR2-Based C Program Verification via Hardware Model Checking](/202607/22/2607.17622v1-btor2-based-c-program-verification-via-hardware-model-checking)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：将C程序转化为BTOR2模型进行硬件模型检查以验证安全断言，实现静态分析用于漏洞检测。
+1. [From Neural Intent to Cryptographic Authorization: Governing Agentic Workflows](/202607/23/2607.15596v1-from-neural-intent-to-cryptographic-authorization-governing-agentic-workflows)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：神经符号密码授权防止LLM代理遭受提示注入劫持
+2. [ShadowPickle: Evading Machine Learning Model Scanners via Stealthy Pickle Deserialization Attacks](/202607/23/2607.17503v1-shadowpickle-evading-machine-learning-model-scanners-via-stealthy-pickle-deserialization-attacks)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：隐蔽的pickle反序列化攻击规避机器学习模型扫描器
+3. [Trusted Credentials, Untrusted Behavior: Benchmarking LLM-Agent Security in High-Performance Computing](/202607/23/2607.18485v1-trusted-credentials-untrusted-behavior-benchmarking-llm-agent-security-in-high-performance-computing)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：在高性能计算环境中，LLM代理被劫持的安全威胁
+4. [Integrity of peer-to-peer distributed LLM inference under malicious nodes](/202607/23/2607.19490v1-integrity-of-peer-to-peer-distributed-llm-inference-under-malicious-nodes)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：利用可信硬件在分布式LLM推理中检测恶意节点的完整性校验
 
 
 <div class="dpr-home-promo-card">
