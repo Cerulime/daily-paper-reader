@@ -1,0 +1,1365 @@
+Title: Buzz to Boom: Detecting Message Progression Vulnerabilities in Electron Applications via Segmented Directed Fuzzing
+
+URL Source: https://arxiv.org/pdf/2607.20698v1
+
+Published Time: Fri, 24 Jul 2026 00:14:05 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Buzz to Boom: Detecting Message Progression Vulnerabilities in Electron Applications via Segmented Directed Fuzzing 
+
+## Jianjia Yu, Zhengyu Liu, Ziyang Li, Yu Sun, and Yinzhi Cao {jyu122, zliu192, ziyang, ysun227, yinzhi.cao}@jhu.edu Johns Hopkins University 
+
+## Abstract 
+
+Electron is a popular framework for building cross-platform desktop applications using web technologies. Such applica-tions consist of multiple processes with different privilege levels that communicate via message passing. When inter-process messages carry attacker-controlled inputs, they can propagate across processes and reach privileged APIs, e.g., command execution. Such a message propagation behavior is characterized as Message Progression Vulnerabilities (MPVs). The exploitation of MPVs is challenging because it often re-quires multiple steps, e.g., first arbitrary code execution in one process via message passing, and then command injec-tion in another process using another message crafted in the first process. To our knowledge, existing works on Electron security only study unsafe configurations and malicious Doc-ument Object Model (DOM) content, i.e., they cannot detect or exploit these vulnerabilities that need to be triggered by complex cross-process exploits via message passing. We present Proton, a segmented directed fuzzing frame-work for detecting MPVs. Our key insight is to decompose end-to-end fuzzing into per-process segments along message-passing boundaries, where the goals of fuzzing each segment are either: (i) reaching a sink in the current process or (ii) propagating the payload to the next process, to enable the ex-ploration of another process. In the second case, the messages seed the corpus of the next segment. Finally, Proton synthe-sizes crash inputs from each process to validate end-to-end exploits. We evaluate Proton against 589 real-world Electron applications, resulting in 23 zero-day MPVs. Among them, 22 lead to OS command execution, including projects with over 50k GitHub stars. We responsibly disclosed all findings. To date, we have received 13 acknowledgments, 11 fixes, and 11 CVEs, including a bug bounty from Vercel. 
+
+## 1 Introduction 
+
+Electron is a widely adopted framework for building cross-platform desktop applications using web technologies, pow-ering popular applications such as Visual Studio Code, Slack, and Discord. Electron applications consist of browser-like renderer processes and a privileged Node.js-enabled main process that can access local files, spawn processes, and di-rectly execute OS commands. These processes communi-cate through message-passing interfaces, e.g., Inter-Process Communication (IPC), as well as other cross-process oper-ations including script execution, window navigation, and custom protocol handlers. When such cross-process chan-nels carry attacker-controlled inputs, those inputs can pro-gressively propagate across processes and reach privileged APIs, e.g., command execution. We characterize such cross-process propagation of attacker-controlled data as Message Progression Vulnerabilities (MPV S). A noteworthy property of a Message Progression Vulnerability—differentiating it from existing ones [1, 2]—is the involvement of multiple Electron processes, leading to chaining two or more vulnerabilities through multi-step mes-sage passing, to the final consequence. Here is a three-step example. First, the message starts with a custom URI click in an external browser, and is then passed to the Electron main process for a client-side request forgery. Second, the message progresses from the main process to the render in Electron applications to exploit an arbitrary code execution vulnerability in the render. This still is not enough, though, because the render process is isolated without access to priv-ileged APIs. Therefore, lastly, another message progression from the render back to the main process is needed to exploit another command injection vulnerability in the main. The chaining of these three vulnerabilities consists of a Message Progression Vulnerability, whereas prior message-related vul-nerabilities [1 –5] only need at most one-step exploitation from one process to another. Due to this property, the end-to-end detection and exploita-tion of MPV are challenging, and none of the prior works can achieve them. First, existing Electron security studies mainly focus on unsafe configuration checks [6 – 8] and mitigation of malicious Document Object Model (DOM) content [9, 10], or unsafe cross-context communication [11]. None of them de-tects the progression of attacker-controlled messages across arXiv:2607.20698v1 [cs.CR] 22 Jul 2026 alert Electron app Renderer Process  
+
+> r(request) {
+> Remote resource download
+
+o User 
+
+3. Host a malicious (second loading) 2. Local file 3. Remote server 
+
+> Remote Server
+
+# 😈    
+
+> https://gitlab.com/mal/repo
+> Features:
+> -Please click on this link
+
+1 
+
+> Features:
+> - Please click on this link
+
+proxy?hidden=1&redirect_uri=file://google.com//System/Applications/Calculator.app/Contents/ MacOS/Calculator 
+
+AFFiNE launches Sending request Local RCE 
+
+> paperlib://embed/badurl
+
+A
+
+ii  
+
+> Embeds a malicious link on a site Custom URI Handled by an Electron app
+
+B
+
+C      
+
+> contents.on('will-navigate',(e, url ) => { if (isInternalUrl(url)) { return; } e.preventDefault(); shell.openExternal( url )...; });
+> Executes arbitrary command
+> // main.ts (Main Process) app.on('open-url', (event, uri) => { const { host, pathname} = new URL(uri); utilityPort.postMessage({ channel: host, url: pathname }); });
+> this.pty = spawn(shell, args, opts); if (this.pty) { this.pty.write(data); } else { /* ... */ } }
+> Chrome
+> https://gitlab.com
+> Features:
+> -Please click on this link
+> Open Paperlib?
+> https://gitlab.com/ wants to open this app.
+> Cancel Open
+> Chrome
+
+2    
+
+> https://gitlab.com/malicious/r epo
+> Features:
+> - Please click on this link
+> Chrome
+> Paperlib
+> Welcome to paperlib! Authors: xxx DOI: xxx
+> https://gitlab.com/malicious/repo
+> Features:
+> - Please click on this link
+> Chrome
+> Paperlib
+> <script>xxx Authors:xxx DOI: xxx
+> Calculator.app
+
+÷%AC 
+
+🤡 1337 
+
+C Executes arbitrary command through DOM XSS 
+
+> <div v-html="item.content"></div>
+
+D Arbitrary command execution  
+
+> <!-- view.vue (Renderer Process) --> port.onmessage = msg => {slot.push({content: msg.data.content}); }; <div v-html="item.content"></div>
+
+C Client-side Request Forgery  
+
+> // utility.ts (Utility Process) port.onmessage = msg => { const text = await (await fetch(msg.data.url)).text(); rendererPort.postMessage({ content: text });}
+
+Figure 1: An illustration of a zero-day MPV found by Proton in Paperlib: a victim clicks on a malicious custom URI link 
+
+➀ embedded in a webpage, which launches Paperlib after browser confirmation ➁. The URI payload progresses across three Electron processes, main (B), utility (C), and renderer (D), via message passing, ultimately yielding arbitrary command execution. multiple Electron processes, let alone MPV. Second, it is challenging to adapt existing techniques to detect MPV as well. On the one hand, cross-context static analyses [1, 2] can identify suspicious message handlers or privileged API uses, but they struggle with the dynamic message construction and asynchronous message passing, which makes it difficult to de-termine whether a flagged path can be a feasible cross-process exploit chain or synthesize an exploit. On the other hand, ex-isting dynamic techniques such as web fuzzing [12 –14] are monolithic and do not coordinate across Electron’s process boundaries. More specifically, inputs at each boundary are constrained by what survives the preceding boundary, i.e., existing fuzzers often waste their budget on inputs that fail to propagate past the first boundary. In this paper, we present Proton, a segmented directed fuzzing framework for detecting and exploiting Message Pro-gression Vulnerabilities in Electron applications. The key insight of Proton is to decompose the end-to-end fuzzing— potentially spanning over multiple processes—into indepen-dent segments along message-passing boundaries, to effi-ciently explore deeper program states. More specifically, the fuzzing segmentation has two phases. Phase I performs static progression analysis to identify candidate vulnerable paths and segment boundaries by reasoning about payload injection points, IPC message flows, and dangerous API sinks. Then, Phase II performs coverage-guided fuzzing on each segment independently. There are two objectives: reaching a security-related, terminal sink in the current process, or reaching an intermediate sink , or so-called Progression API 
+
+that propagates the payload through messaging to another process. When a fuzzing process on one segment successfully reaches a Progression API, the message it produces becomes the corpus for the next segment. Proton will then mutate the message content driven by a harness generated by Large Language Models (LLMs) to fuzz the next segment. After all per-segment fuzzing, Proton synthesizes end-to-end exploits and validates them against the whole application. We evaluate Proton on 589 real-world Electron applica-tions and discover 23 previously unknown vulnerabilities, including 22 that can be escalated to full RCE. The vulnera-ble applications include highly popular projects with over 50k GitHub stars. We responsibly disclosed all findings, receiv-ing 13 acknowledgments, 11 fixes, and 11 CVE identifiers to date, including a bug bounty from Vercel for a vulnerability in Hyper. Compared to end-to-end fuzzing, Proton discovers 17 more zero-day vulnerabilities. 
+
+Contributions. This paper makes three main contributions: 
+
+• We characterize Message Progression Vulnerabilities (MPV S) in Electron applications, where attacker-controlled inputs propagate across multiple processes via message passing, chaining two or more vulnerabilities through multi-step exploitation to ultimately reach privileged APIs such as command execution. 
+
+• We propose segmented directed fuzzing as a detection strat-egy for MPV S and realize it in Proton, a framework that decomposes multi-process exploit chains into segments at message-passing boundaries and fuzzes each segment toward either a local sink or a downstream-bound message. 
+
+• We evaluate Proton on 589 real-world Electron applications, uncovering 23 zero-day MPV S, with 22 RCE exploits, and received 11 CVEs with 11 fixes and 13 acknowledgments, along with a bug bounty from Vercel. We open-source Proton to support future research. 
+
+## 2 Message Progression Vulnerability 
+
+In this section, we begin with the description of Message Progression Vulnerability in §2.1. Then, we present a sys-tematization of Message Progression Vulnerabilities in §2.2, including Electron’s process model and execution contexts ( §2.2.1), the payload sources ( §2.2.2), and sinks ( §2.2.3). Finally, §2.3 illustrates the threat model. 
+
+## 2.1 Vulnerability Description 
+
+Figure 1 illustrates a zero-day MPV in Paperlib: a victim clicks a malicious paperlib:// URI embedded in a webpage (box A), which triggers a chain of three vulnerabilities across Electron’s processes via message passing — an unintended function invocation in the main process (box B), a client-side request forgery in the utility process (box C), and DOM-based XSS in the renderer (box D) — ultimately yielding arbitrary command execution. This four-step chain, spanning three Electron processes, is a MPV. The chaining of vulnerabilities through message progression turns a browser click into full RCE. We present the vulnerability in detail in Section 3.1. To MPV generalize beyond this example, we next describe the process model and execution context of Electron applications, and then systematize MPV’s sources and sinks. 
+
+## 2.2 Vulnerability Systematization 
+
+2.2.1 Process Model and Execution Context 
+
+Electron employs a multi-process architecture consisting of a privileged main process and multiple utility and renderer processes. The main process runs in Node.js with full native API access, controlling the application lifecycle. Utility pro-cesses are spawned by the main to handle background tasks such as network requests and file access, and also run with Node.js access. Renderer processes display web content and interact with users. Furthermore, to facilitate communication with the main process, Electron provides a group of privi-leged APIs through preload scripts configured per window. Under the default secure configuration, each renderer main-tains two isolated JavaScript contexts: (1) the preload context 
+
+executes with access to privileged APIs (e.g., process and 
+
+ipcRenderer ) and selectively exposes functionality to web content via contextBridge ; (2) the main world context ex-ecutes web page code with access only to standard browser APIs and the APIs exposed by preload scripts. This isolation prevents web content from directly accessing privileged APIs while enabling main-process services via IPC. The different processes and execution contexts with distinct privilege levels define the boundaries across which message progression happens, and determine which inputs can be po-tential payload sources and whether an API is a progression API or a terminal sink. We next categorize sources and sinks along these dimensions in §2.2.2 and §2.2.3. 
+
+2.2.2 Sources 
+
+Attacker-controlled payloads that originate outside the appli-cation’s trust boundary can enter an Electron application via OS-level handlers or application logic. We identify three such source types, as shown in Table 1. 
+
+• Custom URI (U). The attacker embeds a malicious payload within a URI using the application’s registered custom scheme, e.g., app://action?content=payload . When a victim clicks the link in a browser, such as Chrome, the OS invokes the Electron application and delivers the URI to its 
+
+open-url handler, where attacker-controlled parameters enter the application and may propagate to downstream sinks via IPC and other message progression channels. 
+
+• Remote Server Response (S). The application fetches content from an attacker-controlled server when attacker-controlled values flow to network APIs such as fetch .In MPV chains, this source commonly arises when an intermediate vulnerability, such as a client-side request forgery (CSRF), happens. For example, the initial custom URI app://install?url=evil.com causes the applica-tion to fetch and process attacker-controlled content from 
+
+evil.com through CSRF, and the server response is fur-ther processed. This pattern commonly appears in appli-cations supporting plugin installation, remote file loading, and MCP server imports. 
+
+• Local File Access (F). The application loads content from the local file system at an attacker-specified path, when attacker-controlled values flow to file system APIs (e.g., fs.readFile ) or BrowserWindow methods (e.g., 
+
+win.loadFile ). No prior file system compromise is re-quired: an attacker can exploit browser auto-download to silently place a malicious file in the default downloads direc-tory, then trigger a custom URI to cause the application to load it, e.g., app://open?path=~/Downloads/evil.js .
+
+2.2.3 Sinks 
+
+In Table 1, we list the MPV sinks across Electron’s multiple processes and execution contexts. We distinguish them by their effects: intermediate sinks forward attacker-controlled data into a message destined for another process; terminal sinks directly cause the security consequence (e.g., OS com-mand execution). Note that some APIs act as either inter-mediate or terminal sinks depending on the process and the execution context — e.g., whether it has Node.js access, as listed at lines 3-7. In the following paragraphs, we classify each sink by its primary role and note conditional behavior where applicable. 
+
+Intermediate Sinks. Intermediate sinks are the APIs that forward attacker-controlled content to another process, to-ward a terminal sink. They define the segment boundaries at which Proton decomposes exploit chains for per-segment fuzzing, and also serve as one of the two subjects of segment fuzzing. Specifically, we identify two types of intermediate sinks, the IPC-related APIs and the window navigation/em-bedding APIs. First, IPC communications. These are the most preva-lent intermediate sink in our dataset. The most com-mon patterns are ipcRenderer.send(C, Msg) and port. postMessage(Msg) , where C is the channel field that routes the message, and Msg is the content field. A summary of all types of IPC communication mechanisms in Electron appli-cations can be found in Table 8 in the Appendix. Table 1: Categorization of Message Progression Vulnerability sinks across Electron’s multi-process architecture. We distinguish them by their effects: intermediate sinks (↗) forward attacker-controlled data into a message destined for another process; 
+
+terminal sinks (□) directly cause the security consequence (e.g., OS command execution); a single API may act as either depending on the runtime context ( ↗ / □). For each sink type, we show: its effect, its availability across processes and execution contexts, potential payload sources, vulnerable code patterns, and exploitation conditions, where T denotes tainted data.                                                                                                                                       
+
+> Description Effect API Location Payload (U/F/S) Code Patterns Conditions Main Proc. Util. Proc. Renderer Proc. Preload Main
+> Inter-Process Communication ↗U/F/S ipcRenderer.send(C, T) Tcontains attack-controlled payload
+> port.postMessage(T)
+> Remote Source Fetching ↗U/F/S fetch(T) Tcontains attack-controlled payload
+> https.get(T)
+> Window Navigation ↗/□
+> ###U/(F) 2/(S) 3win.loadURL(T) Tis URL pointing to attacker-controlled resource
+> ###U/F contents.loadFile(T) Tis path pointing to attacker-controlled local file
+> ##U/(F) 2/S window.location.href=T Tis URL pointing to attacker-controlled resource Subview Embedding ↗/□##U/(F) 2/S iframe.src=T; webview.src=T Tis URL pointing to attacker-controlled resource Window Script Execution ↗/□###Ucontents.executeJavaScript(T) Tcontains attacker-controlled JavaScript code
+> ###UwebFrame.executeJavaScript(T) Tcontains attacker-controlled JavaScript code DOM-based Script Exec. ↗/□##Uelement.innerHTML=T Tcontains attacker-controlled HTML/JS code Code Execution ↗/□Unew Function(T); eval(T) Tcontains attacker-controlled JS code Command Execution □G#G#Uexec(T); spawn(T, {shell:true}) T contains attacker-controlled shell commands Module Loading □G#G#U/(F) 1require(T); import(T) Tis path to attacker-controlled local JS file External Open Service □#G#G#U/S shell.openExternal(T) Tis URL to attacker-controlled resource
+> #G#G#U/F shell.openPath(T) Tis path to attacker-controlled local file File System Write □G#G#Ufs.writeFile(T 1, T 2)T1(path) and T2(content) are attacker-controlled
+> Effect: ↗: Intermediate sink, □: Terminal sink; API Location: : Sink available under default secure configuration ( nodeIntegration=false ,contextIsolation=true , and
+> sandbox=true ); G#: Sink available under insecure configuration ( nodeIntegration=true ,contextIsolation=false , or sandbox=false ); #: Sink not available under any configuration. Payload: U=Custom URI, S=Remote Server Response, F=Local File Access; parentheses indicate optional. 1: Local file not necessary for import as it supports data:
+> protocol. 2: File protocol may be necessary to bypass CSP. 3: Remote server not necessary when Tuses javascript: or data: protocol.
+
+Second, navigation and embedding APIs. These cause a process to load new content into an execution context, im-plicitly forwarding attacker-controlled URLs or paths, such as win.loadURL(T) and iframe.src=T . These APIs act as intermediate sinks when the loaded content introduces further sinks in a new execution context. They become terminal when the loaded resource directly causes a security consequence. For example, when T starts with javascript: , so the code is directly executed, or T is a file:// path to a local HTML file and Node is enabled, in which case the file can embed JavaScript code calling Node APIs. 
+
+Terminal Sinks Terminal sinks directly cause the final secu-rity consequence without further message progression, includ-ing OS command execution, module loading, and external service invocation. Beyond direct code execution sinks, we also consider arbitrary file write operations, as they can be readily escalated to code execution by overwriting application source code or system configuration files (e.g., .bashrc and desktop autostart entries) that execute during application or system startup. The one type that is conditionally terminal are the code execution APIs, as shown in lines 4-6 in Table 1. APIs such as contents.executeJavaScript(T) and eval(T) evalu-ate attacker-controlled JavaScript. When reached in a process with Node.js access, i.e., main, utility, or a renderer with Node enabled, these APIs yield remote code execution directly and act as terminal sinks. When reached in a sandboxed renderer without Node.js access, they instead act as intermediate sinks. The attacker uses the gained JavaScript execution to invoke IPC APIs exposed via the preload script, progressing the pay-load to a privileged process where a terminal sink can be reached. 
+
+## 2.3 Threat Model 
+
+We consider an end user with a vulnerable Electron desktop application that has registered a custom URI scheme with the OS. Unlike prior works [7, 9 –11] that assume attackers already control renderer content, we consider a remote web attacker operating entirely outside the application, who can publish or embed crafted URIs on third-party sites or their own webpage without injecting content into the app directly. When the victim clicks a crafted link or visits an attacker-controlled page in a standalone browser, the OS invokes the target Electron application to handle the URI, leading to arbi-main.ts (Main Process)                               
+
+> app.on("open-url", (event, uri) => {const {protocol, hostname, search }=new URL(uri); const [api, service, method] =hostname.split("."); const params =new URLSearchParams(search); const args =JSON.parse(params.get("args") || "[]"); global[api][service][method](args); }); global.PLAPI.commandService.run =function(args){ utilityPort.postMessage(args); };
+> 123456789
+
+util.ts (Utility Process)                            
+
+> 123456789
+> port.onmessage =msg => {const [methodName, ...methodArgs] =msg.data; const fn =utilityMethods[methodName]; fn(...methodArgs); }; const utilityMethods ={"import-from": async (webUrl) => {const text =await (await fetch(webUrl)).text(); rendererPort.postMessage({ content: text }); }, ... };
+
+paper-detail-view.vue (Renderer Process)               
+
+> 12345678
+> port.onmessage =msg => {slot1.push({ content: msg.data.content }); }; <Section /* Vue Template */ v-for="(item, index) in slot1" :id="`detailspanel-slot1-${index}`" :title="item.title"> <div v-html="item.content"></div> </Section>
+
+CSRF 
+
+Segment A 
+
+Segment B 
+
+Segment C 
+
+Segment D 
+
+Segment E 
+
+Fuzzing Harness 
+
+Input Reconstructor 
+
+mentation Analysis Input: uri                                                       
+
+> Output: api ,service ,
+> method ,args
+> Input: api ,service ,
+> method ,args
+> Output: args
+> Input: msg
+> Output: webUrl
+> Input: fetch(…)
+> Output: msg
+> Input: msg
+> function harness_B(buf){ global[buf1][buf2][buf3](buf4); }// ...remove original line 6
+> function reconstruct_input_A(buf) {let [api, serv, method, args ] =buf; let url =new URL( `${PROT}://${api}.${serv}.${method}`); url.searchParams.set("args", JSON.stringify(args)); return url.toString(); }
+> function harness_C(buf){ const fn =utilityMethods[buf1]; fn(...buf2); }// ...remove original lines 2-4
+> function harness_D(buf){ rendererPort.postMessage({ content: buf }); }// ...remove original lines 7-8
+> function harness_E(buf){ slot1.push({ content: buf }); }// ...remove original line 2
+> hook(Element.prototype, 'innerHTML', {set: function (this, args, setter) {let html =args[0]; checkForCanary(html); }});
+
+Canary paperlib://PLAPI.commandServ ice.run?args=["import-from", "https://evil.com/poc.html"]  
+
+> <img src=1 onerror="require('child_pro cess').spawn('open',['-a',' Calculator'])">
+> main-entry.ts:6
+> main.ts:2
+> main.ts:7
+> paper…view.ts:2
+
+Unintended Function Invocation 
+
+DOM XSS Figure 2: Exploitable control-flow path in Paperlib [15] discovered by Proton: code snippets (left) from files running in the main, utility, and renderer processes; agentic analysis segments the control flow into five segments A–E (middle); LLM-synthesized artifacts on the right include an input reconstructor (A), fuzzing harnesses (B–E), and runtime canaries for final exploit validation (E). trary command execution. We assume the application need not be already running, as the protocol is pre-registered with the OS, and no further user interaction is required. 
+
+## 3 Overview 
+
+We start with a motivating example in Section §3.1, then describe the key detection challenges and present an overview of our segmented fuzzing solution in Section §3.2. 
+
+## 3.1 A Motivating Example 
+
+Figure 2 presents a real-world zero-day Message Progression Vulnerability (CVE-2025-XXXX) that leads to remote code execution, discovered by Proton in Paperlib [15], a popular open-source reference management system. The vulnerability lies in its core functionality that is designed to enable import of reference lists from external resources via paperlib:// 
+
+URI scheme. The exploit requires chaining several vulnerabil-ities. By crafting a malicious URI, an attacker first causes an unintended privileged function invocation, which then leads to a client-side request forgery (CSRF), triggering the appli-cation to fetch attacker-controlled content. Finally, when the content is processed, the payload exploits a DOM cross-site scripting to achieve arbitrary OS command execution. We have responsibly disclosed this vulnerability to the develop-ers, who have acknowledged and patched it. 
+
+Vulnerability Details. The application registers a custom URI handler for Electron’s open-url event in the main pro-cess ( main.ts , line 1). When a user clicks a malicious URI, the handler parses the URI into components (line 2) using 
+
+new URL , extracts the API path by splitting the hostname 
+
+(line 3), and retrieves arguments from the query parameters (lines 4-5). The handler then uses bracket notation to dynami-cally resolve and invoke the specified method on the global object (line 6), which is not expected to be accessible from custom URIs — constituting an unintended function invoca-tion . In this case, the attacker’s URI invokes global[api] [service][method](args) with malicious arguments. The resolved method commandService.run (line 8) forwards these attacker-controlled arguments to the utility process via 
+
+postMessage (line 9). Next, the utility process ( util.ts ) receives the message through its onmessage handler and destructures the method name and arguments (lines 1-2), resolves the corresponding function from the utilityMethods object, and invokes it (line 3-4). The import-from method (lines 5-9) receives the malicious URL as its argument, fetches content from the attacker-controlled server using fetch (line 7)— a client-side request forgery that introduces an additional remote server re-sponse payload (Source S). The utility process then forwards the fetched text to the renderer process via postMessage .Finally, the renderer process ( paper-detail-view.vue )receives the fetched content through onmessage (line 1) and pushes it into the slot1 array (line 2). The Vue template (lines 3-7) then iterates over slot1 and renders each item’s content using the v-html directive (line 7), interpreting the content as raw HTML and executes any embedded JavaScript, constituting a DOM-based XSS sink. 
+
+Exploitation. Since the renderer process is configured with node integration enabled and context isolation disabled, JavaScript executed in the renderer gains direct access to Node.js APIs. To host Source S, we publish a malicious PDF on a public file hosting service. In our proof-of-concept, the injected script achieves arbitrary command execu-tion via require(’child_process’).spawn() , launching 
+
+Calculator.app on the victim’s machine. 
+
+## 3.2 Challenges and Our Solutions 
+
+The key challenge in detecting MPV S lies in their chained nature: exploit chains span multiple processes and sources via message progression, where several vulnerabilities compose into a severe consequence. Using the Paperlib example in Figure 2, we describe three concrete detection challenges this poses, and present how Proton addresses them through segmented fuzzing. 
+
+Challenge I: Multiple payload sources. Detecting Message Progression Vulnerability requires generating inputs from multiple heterogeneous sources that are introduced at differ-ent points in the execution flow. In the motivating example, detecting the vulnerability in Paperlib requires generating two separate payloads introduced at different places: the custom URI (Source U) processed by the main process, and the re-mote server content (Source S) fetched by the utility process. Furthermore, S depends causally on U. The URI determines which utility method executes, which then fetches the mali-cious content from the attacker’s server. Traditional fuzzing cannot efficiently handle this because it operates with a sin-gle input source at program entry. It has no mechanism to discover S, which only appears after U reaches fetch() , nor to fuzz each source independently rather than exploring their cross-product. 
+
+Challenge II: Customized and complex parsing. Beyond multiple sources, each input must satisfy application-specific parsing constraints that vary across applications. In Paper-lib, the URI hostname is split into three components (main process, line 3) that resolve to a valid method path like 
+
+global["PLAPI"]["commandService"]["run"] (line 6). The args parameter must be valid JSON (line 5) with the correct method name as the first array element to trigger the fetch operation (utility process, line 7). The server response must be valid HTML text containing JavaScript that exploits the v-html sink (renderer process, line 7). Traditional fuzzing cannot efficiently generate such inputs due to the sparse valid input space, while symbolic execution struggles to model complex parsing operations like JSON and URL parsing. 
+
+Challenge III: Cross-process Execution Overhead. The multi-process architecture of Electron makes deep state explo-ration prohibitively expensive due to multiplicative cross-process execution overhead. In the Paperlib example, ex-ploring different states in the renderer process (lines 3-7 in 
+
+paper-detail-view.vue ) requires repeatedly executing the entire cross-process chain starting from the main process through the utility process. As chains grow longer across more processes, this multiplicative cost drastically reduces fuzzing throughput, limiting the ability to explore and gener-ate inputs for deep program states where vulnerabilities may reside. 
+
+Our Solutions. Proton addresses all three challenges through 
+
+segmented fuzzing , that is, decomposing the complete ex-ploitable control-flow path at Progression APIs and invertible parsing operations, then fuzzing each segment separately. As shown in Figure 2, Proton first performs agentic static anal-ysis to identify a candidate vulnerable path and its segment boundaries, then generates fuzzing harnesses (B–E) and an input reconstructor (A) for each segment. It then conducts segmented fuzzing to verify their reachability and generate end-to-end proof-of-concept inputs. We now explain how this addresses each challenge. First, Proton defines operations where attacker-controlled input crosses into a new execution surface as Progression APIs , and segments the exploit path at these boundaries. In the Paperlib example, fetch() is a Progression API, as it receives the attacker-controlled URL from Source U and forwards it to an external server whose response becomes Source S. By segmenting at fetch() , Proton fuzzes the upstream segment to discover whether the attacker can control the request URL, then focuses on fuzzing the downstream segment over the server response independently. Second, Proton handles complex parsing operations by leveraging their invertibility. Operations like JSON.parse() 
+
+and new URL() have the property that given any valid output, a corresponding input can be reconstructed. Proton exploits this through the input reconstructor (Segment A in Figure 2): instead of generating raw URI strings that mostly fail parsing, the reconstructor works backward from valid parsed outputs to produce well-formed inputs that satisfy parsing constraints directly. Third, Proton fuzzes each segment separately with per-segment harnesses, each of which initializes the segment’s execution state directly without replaying preceding segments. For instance, harness E fuzzes content directly, bypassing main process URI parsing, utility process fetch, and all IPC communication, allowing Proton to explore the renderer at native fuzzing speed rather than replaying the entire chain per iteration. Once a valid segment chain is found, Proton sythinsizes the complete payload and validates end-to-end exploitability against the whole application. 
+
+## 4 Methodology 
+
+Proton employs a two-phase methodology to efficiently un-cover MPV S in Electron applications. First, an agentic static analysis phase identifies source–sink paths and segmentation boundaries, and generates per-segment harnesses. Second, a segmented fuzzing phase exercises each segment indepen-dently using generated harnesses. Finally, Proton performs end-to-end validation to compose the segment-level inputs into a full exploit payload and validates the path. We begin with a complexity analysis (§4.1), then describe agentic static analysis (§4.2), segmented fuzzing (§4.3), and end-to-end validation (§4.4). 
+
+## 4.1 Segmentation Strategies 
+
+We first define Progression APIs, based on which Proton iden-tifies segment boundaries in the application code. We then discuss how segmenting at these boundaries reduces the com-plexity of fuzzing. 
+
+Progression APIs. We define a Progression API as an API call that, when reached with attacker-controlled input, forwards that input to a new execution surface, enabling a new independently-fuzzable segment to begin. Progres-sion APIs generalize the notion of message passing be-yond explicit IPC, as listed in Table 1 at lines 1-5, along with their availability across processes and execution con-texts. They include IPC mechanisms ( ipcRenderer.send ,
+
+port.postMessage ), external fetch operations ( fetch(T) )whose responses introduce new attacker-controlled content, and navigation and embedding APIs ( win.loadURL(T) ,
+
+iframe.src=T ) that load attacker-controlled content into a new execution context. Additionally, code execution APIs (eval(T) , executeJavaScript(T) ) act as Progression APIs when reached in a sandboxed renderer without Node.js access, where the gained execution enables IPC escalation toward a privileged process. Proton identifies Progression APIs as seg-ment boundaries, and equivalently, intermediate sinks from the fuzzing perspective. The goals of fuzzing each segment are either a Progression API, which seeds the next segment’s corpus with its output, or a sink that directly manifests the vulnerability. 
+
+Problem Definition. The goal of Proton is to identify concrete exploitable control-flow paths where attacker-controlled in-puts flow from one or multiple sources to a terminal sink, and decompose each path into independently-fuzzable segments at intermediate sinks, or Progression APIs. For any candi-date path π, Proton decomposes it into consecutive segments seg (π) = {S1, S2, . . . , Sk}, where each segment Si is a program fragment with: (i) an input from a new external source (cus-tom URI, server response, or file) or the output of segment 
+
+Si−1, and (ii) an output that either reaches a Progression API to forward to Si+1, or a terminal sink in Sk.
+
+Complexity of an End-to-End Fuzzing Campaign. We char-acterize the cost of a fuzzing campaign by the size of its 
+
+program state space , which we upper-bound by the product of: (i) the size of the input space |I| under exploration and (ii) the maximum number of executed instructions N along the path (assuming no infinite loops, since such paths are non-exploitable and cannot be fuzzed). In the worst case, a monolithic, or traditional end-to-end fuzzer must explore all |I| possible inputs and execute up to N instructions for each, yielding a complexity of O(|I| · N) for validating the exploitability of a candidate path π.
+
+Complexity of Segmented Fuzzing. If a path π is decom-posed into semantically-preserving segments {S1, . . . , Sk},then a segmented fuzzing campaign explores each segment in-dependently. Under this assumption, the total exploration cost becomes the sum of the state spaces of each of its segments 
+
+O(|Ii| · Ni).Electron’s multi-process architecture with Progression APIs at process boundaries creates natural opportunities for each of the three segmentation patterns below. To illustrate these benefits, and without loss of generality, we focus on the simplest case: decomposing a path π into two segments, Sa
+
+and Sb. In the remainder of this subsection, we identify the principles under which such segmentation yields substantial reductions in explorable state space enabling efficient exploit validation, also summarized in Table 2. 
+
+Dataflow-Independent Segments. The first pattern arises when two segments receive inputs from independent exter-nal sources. For example, in the Paperlib case, Source U (the custom URI) and Source S (the CSRF-fetched server response) are independent. The content of each is controlled separately by the attacker. A monolithic fuzzer must explore their full cross-product |Ia| × | Ib|; segmentation reduces this to O(|Ia| · Na) + O(|Ib| · Nb), collapsing the input space from multiplicative to additive size. 
+
+Partially Dependent Segments. The second pattern occurs when Sb receives a mixture of inputs: some derived from 
+
+Sa’s output, and some from an independent source. Electron’s Table 2: Instruction complexity and speedup comparison across segmentation strategies.                        
+
+> Strategy #Instructions Speedup ( ×)Example
+> Baseline O(( Na+Nb)|Ia|| Ib|)–End-to-end DF Indep. O(Na|Ia|+Nb|Ib|)|Ia|| Ib||Ia|+|Ib|Multi-source Partial Dep. O(Na|Ia|+Nb|I′
+> a|| Ib|)|Ib||I′
+> a|IPC Fully Dep. O(Nb|I′
+> a|)|Ia||I′
+> a|URL parsing
+
+IPC exemplifies this: the channel field is determined by Sa
+
+(fixing routing), while the content field can be an arbitrary attacker-controlled value. Once valid channel bindings are known, the content space Ib can be fuzzed independently. Let 
+
+I′ 
+
+> a
+
+⊆ Ia be the subset of Sa’s inputs that produce valid bindings. The computation of speedup can be found in Table 2. 
+
+Fully Dependent Segments. The final pattern arises when 
+
+Sb’s input is entirely determined by Sa’s output, and Sa per-forms an invertible transformation, which is common in Elec-tron apps where attacker-supplied data is first parsed via 
+
+new URL , JSON.parse , or decodeURIComponent . Invertibil-ity means that given any valid parsed output, a correspond-ing input can be reconstructed, enabling Proton to bypass 
+
+Sa entirely and fuzz directly over valid parsed values. In the Paperlib example, Segment A parses the custom URI via new URL and JSON.parse . Proton skips fuzzing Segment A and instead uses an input reconstructor to generate well-formed URIs backward from valid parsed outputs. 
+
+## 4.2 Static Progression Analysis 
+
+Proton’s static progression analysis takes the Electron appli-cation source code as input and produces, for each discovered exploitable path π: its segmentation seg (π) = {S1, . . . , Sk},per-segment fuzzing harnesses, and LLM-generated seeds. To achieve this, Proton employs an LLM agent that performs a comprehensive taint-style analysis over the target repository, guided by a system prompt (Appendix D) that provides three inputs: (1) a threat model and vulnerability description, (2) a catalog of Progression APIs and terminal sinks, and (3) struc-tured analysis tasks defining what the agent must discover and produce. 
+
+Threat Model and Vulnerability Description. The agent is given a precise definition of MPV as a source-to-sink exploit chain originating from external sources such as custom URI and propagating through multi-process data flows, IPC chan-nels, and transformation layers. The key is that MPV might chain multiple intermediate vulnerabilities, such as CSRF, JavaScript code execution, before it finally reaches an OS command injection. 
+
+Catalog of Progression APIs and Terminal Sinks. The agent is given the catalog shown in Table 1, which enumerates known Progression APIs, which include IPC mechanisms, ex-ternal fetch operations, navigation APIs, and conditional code execution APIs, along with terminal sinks, across Electron’s processes and execution contexts. On the source side, the cata-log includes the three payload source types (U, S, F) with their corresponding code patterns (e.g., app.on(’open-url’) ,
+
+fetch(T) , fs.readFile(T) ) that serve as taint entry points. This catalog determines which APIs the agent flags as bound-aries or exploitation targets during path analysis. 
+
+Structured Analysis Tasks. The agent is instructed to search the entire codebase, locate all potential sources and sinks, trace dataflows across process boundaries, and group them into segments along the segmentation boundaries. For each discovered path, the agent must produce: (1) an 
+
+analysis.md summarizing identified sources, sinks, and segment boundaries such as IPC communications; (2) a 
+
+dataflow-segments.json enumerating each segment, its code location, process type, and linkage to neighboring seg-ments; (3) per-segment fuzzing harnesses; and (4) LLM-generated seeds for each segment’s initial corpus. We will detail the harness and seed generation in §4.3. 
+
+## 4.3 Segmented Fuzzing 
+
+Given the segments, harnesses, and initial seeds produced by static progression analysis, segmented fuzzing takes each segment Si as input and produces a set of concrete inputs that either reach a terminal sink or an intermediate sink, that is, a Progression API, within that segment. Proton fuzzes segments sequentially using three components: a fuzzing loop that drives execution, harnesses that serve as segment entries, and oracles that define success conditions. 
+
+Fuzzing Loop. Algorithm 1 presents the segmented fuzzing workflow. For each segment Si, Proton first checks whether it contains only invertible operations (lines 5–7); if so, the segment is skipped during fuzzing and reconstructed later using the input reconstructor. For non-invertible segments, Proton instruments the program with the segment-specific harness and oracle, incorporating inputs from all previous segments (line 8), then executes fuzzing with the provided seeds (line 9). The fuzz function returns inputs i containing the inputs that successfully trigger the target segment oracle. If no valid inputs are found (lines 10–12), Proton terminates chain exploration, as subsequent segments cannot be reached. Otherwise, if the previous segment Si−1 was invertible (lines 13–16), Proton reconstructs its input by inverting from the current segment’s inputs and appends it to the chain. Proton then appends the current segment and its inputs to the chain (line 17). Finally, Proton returns the complete chain (line 19), which contains the inputs needed to trigger each segment in the detected exploit path. 
+
+Corpus. Each segment’s initial corpus comes from (a) the upstream segment’s Progression API outputs. Every observed output contributes its concrete argument and a taint anno-tation describing the attacker-controlled substring, and (b) LLM-generated seeds from static analysis, producing one rep-resentative input per parse branch. The first segment’s corpus is synthesized from the attacker model. 
+
+Halting. A segment’s fuzzing campaign halts when any of the following conditions are met: (i) a terminal sink is reached, triggering the oracle and saving a proof-of-concept; (ii) cov-erage of the segment’s recognized branches saturates and no new Progression API output is observed in k iterations; or (iii) a global time budget expires. A global halt condition addi-tionally fires when a terminal sink is reached in any segment reachable from S1 via a composable sequence of Progres-sion API outputs, which constitutes a complete end-to-end proof-of-concept. 
+
+Harness Synthesis. For each segment Si, Proton synthesizes a lightweight, in-place testing harness that directly triggers src (Si) with a fuzzer-supplied byte buffer. The harness is gen-erated automatically from the segment specification produced during static analysis. It reconstructs only the minimal pro-gram state needed for the segment, replaying the source (such as an event handler, IPC entry point, or function call) without executing prior segments. Each harness is materialized as a small source-code patch that registers a function under a global namespace, enabling the fuzzing engine to invoke it directly. The synthesized har-ness maps input bytes into the structured data expected by that segment (e.g., a URI string, a parsed object, an IPC mes-sage payload) while hard-coding irrelevant contextual values. For segments in renderer processes, Proton modifies the win-dow initialization so that Node.js APIs are available and the fuzzing runtime can be loaded. Applied patches leave the application’s normal behavior intact while providing precise, segment-level fuzzing entry points. 
+
+Oracle Design. Proton detects whether fuzz inputs success-fully reach segment sinks snk (Si) using two oracle strategies. 
+
+Syntax-based oracles monitor parse-time or evaluation-time syntax errors emitted by APIs that validate their inputs. Such errors are strong indications that the fuzzer-generated input reached the API, broke out of its original context, and was parsed as code, following prior works [13, 16]. Canary-based oracles embed a unique marker into fuzz inputs and check for its presence in API arguments or side effects, including network navigation targets, file paths, and IPC messages. De-tection of the canary confirms that input propagation reached the intended sink. An example of such a canary is depicted on the bottom-right corner of Figure 2. 
+
+Algorithm 1 Scaffold of segmented fuzzing workflow  
+
+> 1:
+
+Input: Program P, Segments Si, Harnesses harness 1: k,Oracles oracle 1: k, Seeds seeds 1: k, Input Reconstructors 
+
+invert 1: k 
+
+> 2:
+
+Output: Valid segment chains with inputs  
+
+> 3:
+
+chain ← []  
+
+> 4:
+
+for i = 1 to k do  
+
+> 5:
+
+if Si is invertible then  
+
+> 6:
+
+continue  
+
+> 7:
+
+end if  
+
+> 8:
+
+P(i) ← instrument (P, harness i, oracle i, inputs 1: i−1) 
+
+> 9:
+
+inputs i ← fuzz (P(i), seeds i) 
+
+> 10:
+
+if inputs i = /0 then  
+
+> 11:
+
+break  
+
+> 12:
+
+end if  
+
+> 13:
+
+if Si−1 is invertible then  
+
+> 14:
+
+inputs i−1 ← invert i−1(inputs i) 
+
+> 15:
+
+chain .append (( Si−1, inputs i−1))  
+
+> 16:
+
+end if  
+
+> 17:
+
+chain .append (( Si, inputs i))  
+
+> 18:
+
+end for  
+
+> 19:
+
+return chain 
+
+## 4.4 End-to-end Validation 
+
+Finally, given the validated segments and their respective inputs, Proton performs end-to-end validation through two steps: payload composition and end-to-end testing. 
+
+Payload Composition. Proton first composes the final ex-ploit payload through backward propagation from the last segment to the first. For each segment Si (traversing from k
+
+to 1 ), Proton maps the fuzzing harness inputs to the original program variables of Si, then embeds this reconstructed data into segment Si−1’s canary placeholders to propagate the pay-load backward. Note that all segments except the last contain canary values in their inputs, as only the final segment’s input can trigger the syntax-based oracles. For example, in Figure 2, 
+
+harness_C ’s inputs buf are mapped back to msg.data as the array ["import-from", "https://$canary"] based on line 2 of the utility process code. Then, for Segment B, Proton replaces the canary in its fuzzing input args with this reconstructed array value. This process continues backward: Segment B’s args value is embedded into Segment A’s URL parameter. 
+
+End-to-end Testing. Proton then executes the composed pay-load against the complete application to verify the exploit path works end-to-end. When the exploit chain involves mul-tiple sources, Proton instruments the application to intercept and supply secondary payloads directly. Specifically, Proton inserts condition blocks that check if a requested resource (domain or file path) is valid and matches the source specified in the primary payload. If so, it returns the secondary source’s payload instead of performing the actual fetch or file read. 
+
+## 5 Implementation 
+
+Proton implements specialized fuzzing workflows using seg-mented fuzzing, targeting multiple input sources, multiple processes, and diverse harnesses, and introduces engine-level canary detection to automatically identify when attacker-controlled inputs reach security-sensitive APIs. Building upon jazzer.js [14], a JavaScript fuzzing framework based on lib-fuzzer [17], the implementation consists of 1,130 lines of code changes modifying the Electron engine, 948 lines extending jazzer.js with additional instrumentation, and 1,012 lines of agentic workflows. To facilitate future research, we have open-sourced Proton at https://anonymous.4open.science/r/proton. 
+
+Static Analysis. Proton implements agentic static analysis using Claude Opus 4.7 as the underlying LLM, while Claude Code serves as the agentic framework. The agent operates with a standard toolchain including file reading, file writing, directory traversal, and code search functionalities. 
+
+Fuzzing. Proton instruments targets at two levels. At the framework level, it modifies Electron’s source and the Node.js standard library to hook APIs serving as segment oracles (sinks in Table 1) and external input APIs. At the application level, it injects harness code and JavaScript-specific cover-age feedback. For main and utility processes, Proton hooks Node.js module loading for runtime instrumentation; for ren-derer processes, it instruments code at compile time via build plugins (e.g., vite.config.ts ). 
+
+Validation. Proton uses an LLM agent with the standard toolchain extended with a tool to launch applications with custom URI payloads for end-to-end payload validation. 
+
+## 6 Evaluation 
+
+We systematically evaluate Proton through the following five research questions (RQs): 
+
+• RQ1 [Zero-days] : How many zero-day MPVs does Proton discover in real-world Electron applications, and what is the impact of these vulnerabilities? 
+
+• RQ2 [Accuracy] : What are the false positive and false negative rates of Proton? 
+
+• RQ3 [Performance] : How does Proton perform across its two phases? In Phase I, how many candidate paths and segments are produced per application, and how long and how many tokens does static analysis take? In Phase II, how long does fuzzing each segment take in terms of time-to-exposure (TTE)? 
+
+• RQ4 [LLM Ablation] : What is the contribution of LLM-generated harnesses and seeds to Proton’s detection capa-bility? Specifically, how does Proton perform when LLM-generated harnesses and seeds are replaced with templates or random ones? 
+
+• RQ5 [Segmentation Ablation] : How does Proton’s seg-mented fuzzing compare to monolithic end-to-end fuzzing? 
+
+## 6.1 Experimental Setup 
+
+Dataset. We collected open-source Electron applications from GitHub by identifying repositories with electron listed as a dependency in package.json and over 100 stars, span-ning projects from Jan. 2010 to April 2026. To focus on applications with external sources such as custom URI han-dling, we filtered for repositories containing "open-url" or 
+
+"second-instance" in their codebase. This yielded 589 Electron applications. We will release the dataset upon accep-tance. 
+
+Environment. All experiments were conducted on aMac workstation with an Apple M4 Pro processor and 24 GB of memory, running macOS 15.7.2. Proton uses 
+
+claude-opus-4-7 for agentic static analysis. 
+
+## 6.2 RQ1: Zero-day Vulnerabilities 
+
+In this subsection, we answer the research question regarding the zero-day vulnerabilities detected by Proton. We define a detected vulnerability as a zero-day Message Progression Vulnerability vulnerability if there is no prior public disclo-sure and it is confirmed by a human expert with a successful end-to-end exploit. In total, Proton discovered 23 zero-day vulnerabilities: 22 leading to remote code execution and one enabling arbitrary file write. Table 3 presents a selective list of those zero-day vulnera-bilities, including the affected applications’ details, payload sources, vulnerability consequences, and disclosure status. Many of the affected applications are highly popular, with up to 60k stars, demonstrating that MPV vulnerabilities affect widely-used software. The vulnerable applications span di-verse categories including note-taking software, AI desktop assistants, email clients, music players, browsers, and docu-ment readers. This diversity indicates that MPV vulnerabili-ties are not limited to specific application types but represent a systemic risk across the Electron ecosystem. We responsibly disclosed all vulnerabilities through GitHub Security Advi-sories or direct email to maintainers. Of the 23 vulnerabilities, 11 have been assigned CVEs, and 13 have been acknowledged by maintainers, with 11 already fixed to date. We were also rewarded a bug bounty by Vercel for the discovery of the MPV vulnerability in Hyper. The discovered vulnerabilities exhibit diverse vulnerabil-ity code patterns across payload sources and sink contexts. Among them, four vulnerabilities require Remote Server Response, where the URI triggers the application to fetch and process content from attacker-controlled servers, such as Table 3: [RQ1] A selective list of zero-day MPV S detected by Proton. The column “Payload Sources" indicates the attack vectors. The “Consequence" column shows exploitation impact. The “Status" column indicates disclosure status: Fixed (patch released), Acknowledged (maintainer confirmed but not yet fixed), or Reported (under review).                                                                                                                                                                                                       
+
+> Application Category Stars Version Payload (U/F/S) Safe Config. Exploit Chain Status CVE/Advisory
+> AFFiNE Note 59.7k v0.25.1 U✓LFI →RCE Fixed CVE-2026-XXXX Motrix Download Mgr. 49.8k v1.8.19 U✓AFW Reported –Hyper Terminal 44.5k v4.0.0-canary.5 U✓RCE Acknowledged –Cherry Studio AI Client 35.4k v1.4.11 U✓JSE →RCE Fixed CVE-2025-XXXX Mailspring Email Client 16.8k v1.16.0 U✓RCE Reported –DevHub Dev Tool 10.0k v4.0.3 U✓JSE →RCE Reported –MusicFreeDesktop Music Player 7.0k v0.0.8 U+S ✓RCE Acknowledged CVE-2025-XXXX Pinokio AI App Launcher 5.7k v3.9.0 U+F ✗CSRF →LFI →RCE Fixed CVE-2025-XXXX Deepchat AI Client 4.9k v0.3.0 U✓DOM XSS →RCE Fixed CVE-2025-XXXX LBRY Desktop Media Streaming 3.5k v0.53.9 U+F ✗LFI →RCE Reported CVE-2025-XXXX Eidos AI Data Mgr. 3.0k v0.21.0 U✓JSE →SBE →RCE Fixed CVE-2025-XXXX Thorium Reader E-book Reader 2.4k v3.2.2 U+S ✓CSRF →LFI →RCE Fixed GHSA-XXX-XXX Paperlib Reference Mgr. 2.0k v3.1.10 U+S ✗CSRF →LFI →DOM XSS →RCE Fixed CVE-2025-XXXX TidGi-Desktop Note 1.9k v0.12.4 U✓JSE →RCE Fixed GHSA-XXX-XXX Muffon Music Streaming 1.9k v2.2.0 U+S ✓CSRF →DOM XSS →RCE Fixed CVE-2025-XXXX Dive Docker Tool 1.6k v0.9.3 U✓JSE →RCE Fixed CVE-2025-XXXX Vieb Web Browser 1.5k v12.3.0 U✗LFI →RCE Fixed GHSA-XXX-XXX nanovault Crypto Wallet 186 v1.2.1 U✓JSE →RCE Reported CVE-2025-XXXX
+> Payload: U=(Custom) URI, F=File System, S=Remote Server; Safe Config. :✓: the exploitation works under the default safe configuration ( nodeIntegration=false ,
+> contextIsolation=true , and sandbox=true ); ✗: otherwise; Exploit Chain : CSRF: Client-side Request Forgery; DOM XSS: DOM Cross-site Scripting; SBE: Sandbox Escape; JSE: JavaScript Code Execution; LFI: Local File Inclusion; RCE: OS-level Remote Code Execution.
+
+downloading plugins (MusicFreeDesktop), retrieving meta-data (Muffon), downloading ebooks (Thorium Reader), or fetching references (Paperlib). Two vulnerabilities require local file access, where the URI triggers applications to load a local file via dangerous APIs, such as requiring JavaScript files via require (Pinokio) or loading local HTML via 
+
+window.loadURL (LBRY Desktop). Table 3 also indicates whether exploitation succeeds under the default safe config-uration ( nodeIntegration=false ) in the Safe Config. col-umn. Entries marked ✓exploit the application through mes-sage progression rather than relying on unsafe configurations, distinguishing our work from prior work focused on unsafe configuration-caused issues [7]. 
+
+## 6.3 RQ2: Accuracy 
+
+Proton’s detection pipeline operates in two phases. Phase I (agentic static analysis) flagged 116 out of 589 applications as containing potentially exploitable paths. Phase II (segmented fuzzing) then fuzzes the segments in each flagged applica-tion, producing 26 apps with proofs-of-concept that reach a terminal sink. Of the remaining flagged applications, fuzzing either timed out within the four-hour budget or failed to reach a terminal sink. Of the 26 confirmed cases, 23 lead to either OS-level Remote Code Execution (RCE) or Arbitrary File Write (AFW). We evaluate the accuracy of Phase II reports below. 
+
+False Positives. Proton considers a path exploitable when end-to-end validation succeeds with a working proof-of-concept that triggers the sink canary, indicating that the input achieves code execution in one of the main, utility, or renderer pro-cesses. Under Proton’s threat model, we only consider vul-nerabilities that lead to RCE or AFW as true positives. Since renderer process code execution may require additional ex-ploitation steps that cannot be easily validated through oracles, Proton conservatively reports all code execution instances for manual evaluation. Among the 26 apps that Proton fuzzes to reach a terminal sink, manual expert evaluation determined that three of them cannot be escalated to RCE or AFW, yielding a false posi-tive rate of 11.5% (3/26). The three cases reach the terminal sink but can not compose into valid end-to-end exploits. Two reach openExternal as the terminal sinks, while the code filters the argument with http or https protocols. The other one reaches new Function as the terminal sink in a runtime context where require is not available. As a result, reaching the function still prevents it from executing arbitrary code. 
+
+False Negatives. Evaluating false negatives requires a ground truth dataset of known MPV, but no such dataset exists, and no prior tools exist for MPV detection. To assess potential false negatives, we take three complementary approaches. First, we conducted an extensive search across the NVD database, GitHub security advisories, security disclosure platforms, and technical blogs, yielding only one publicly documented real-world MPV case [18] that is triggered by a fully external resource like a custom URI. The vulnerability exploits a redi-rection chain: the attacker causes the Electron application to load a website vulnerable to redirection, then the redirected attacker-controlled page calls require directly (because the renderer has nodeIntegration enabled). We ran Proton on this case and confirmed it successfully detects the vulnerabil-ity, by reporting the vulnerable path, and reaches loadURL as a terminal sink during fuzzing. Second, we randomly sampled 30 applications from the 90 flagged by Phase I that Proton did not confirm as exploitable during Phase II fuzzing, and had two experts manually inspect their code for RCE or AFW vulnerabilities. None of the 30 were confirmed exploitable. Third, we randomly sampled 30 applications from the 473 applications not flagged by Phase I and manually inspected them for exploitable MPV. Together, these three assessments suggest that Proton achieves low false negative rates across both phases of its pipeline. 
+
+## 6.4 RQ3: Performance 
+
+We evaluate Proton’s performance across its two phases: agen-tic static analysis (Phase I) and segmented fuzzing (Phase II). 
+
+Static Progression Analysis. Phase I flagged 116 out of 589 applications as potentially vulnerable, which produce 209 dataflows and 419 segments in total. Figure 3 shows the dis-tribution of reported dataflows and segments per application across the full dataset. Among the 116 flagged applications, the majority (80.2%) have one or two candidate dataflows. Each of the flagged applications has, on average, 1.80 candi-date dataflows and 3.61 segments. Table 4 presents detailed metrics for selected vulnerable applications with over 100k LoC, including the number of segments, analysis time, harness generation time, and token consumption. Note that harness generation applies only to Phase I flagged applications. Among the 116 flagged appli-cations, the median analysis time is around six minutes with a median token consumption of 141k tokens. Across all 589 applications, the median analysis time is 2.42 minutes (this is because many do not contain vulnerable paths and the anal-ysis stops early) with a median token consumption of 126k tokens. Even for the largest projects with over 100k LoC, the agentic static analysis is completed within sixteen minutes, showing its scalability.                   
+
+> 0123456
+> 1
+> 10
+> 100
+> 1,000 473
+> 61
+> 32
+> 15
+> 2
+> 5
+> 1
+> #Dataflows
+> #Apps (log)
+> (a) Dataflows per application.
+> 0246810 12
+> 1
+> 10
+> 100
+> 1,000 473
+> 11
+> 36 24 18
+> 4
+> 12
+> 1
+> 333
+> 1
+> #Segments
+> (b) Segments per application.
+
+Figure 3: [RQ3] Distribution of detected dataflows and seg-ments per application ( n = 589). Table 4: [RQ3] Average time and token cost for static analysis and harness generation for vulnerable projects with 100k+ Lines of Code (LoC). All times are in minutes.                                 
+
+> App LoC Taint Ana. Time Harness Gen. Time Tokens (k)
+> Hyper 162k 6.10 4.75 146 Cherry Studio 140k 5.55 3.77 150 Muffon 129k 5.90 5.05 133 Eidos 120k 6.90 4.30 156 Paperlib 119k 5.08 8.40 157 Median (I) 88k 6.03 8.07 141 Median (ALL) 65k 2.42 7.72 126
+> I: 116 Phase I report vulnerable apps; ALL: 589 total apps.
+
+Segmented Fuzzing. Table 5 shows the number of fuzzing segments, process types, their sources and sinks, and the time-to-exposure (TTE) for each segment across vulnerable ap-plications. TTE measures the elapsed time from the start of fuzzing until a generated input triggers an oracle, that is, ei-ther reaching an intermediate sink or a terminal sink. The median TTE across all vulnerabilities is 28 minutes, with 82% of vulnerabilities discovered within the 30 minutes of fuzzing. Single-segment vulnerabilities are resolved quickly. The shortest TTE of 13 seconds for Cherry Studio indicates cases where the vulnerability is directly reachable with mini-mal seed mutation. Multi-segment vulnerabilities take longer. Paperlib’s four-segment chain requires 2h38m total, with one segment (M2: rpc.postMessage ) accounting for 2h20m due to complex parsing constraints. We will discuss comparing the TTE to baseline fuzzing later. 
+
+Scalability Analysis. Phase I and Phase II together take around 30 minutes on average, with a maximum of three hours for applications with large codebases and complex at-tack chains. This time cost, combined with full parallelizabil-ity across applications, makes Proton practical for large-scale MPV detection in Electron applications. 
+
+## 6.5 RQ4: Contribution of LLM Components 
+
+Proton uses LLMs for taint analysis and harness/seed genera-tion. Since the static taint analysis is central to Proton’s de-sign, we ablate only the latter two against non-LLM baselines (template harnesses, random seeds), with results in Table 6. 
+
+Harnesses. LLM-generated harnesses are critical for renderer process fuzzing, where applications implement heterogeneous IPC handlers that template-based harnesses cannot generalize across. Replacing them with templates reduces detection from 23/23 to 6/23 (random seeds) and 11/23 (LLM seeds), drop-ping 17 and 12 vulnerabilities, respectively, as many segments fail to initialize correctly and never reach their target sinks. 
+
+Seeds. Beyond harnesses, good seeds are essential for branch exploration. LLM-generated seeds leverage semantic under-standing of the application’s input format to produce struc-Table 5: [RQ3] Per-segment and cumulative Time-to-Exposure (TTE) for multi-segment vulnerable paths under segmented fuzzing.                                                        
+
+> Application Seg Inter./Terminal Sink Proton Seg TTE Total TTE
+> Deepchat M1 sendToRenderer 8s 1h12min17s R1 v-html 1h12min9s Dive M1 webContents.send 23s 9m55s R1 spawn 9m32s Motrix M1 sendCommandToAll 21s 14m10s R1 aria2.addUri 13m49s muffon M1 webContents.send() 37s 3m59s R1 openNewTab 2m27s M2 v-html 55s paperlib M1 postMessage 33s 2h38m9s R2 get 17m20s U1 rpc.postMessage 2h20m11s R2 innerHTML 5s pinokio M1 loadNewWindow 14s 13m40s R1 res.redirect(w) 43s M2 require 12m43s TidGi Desktop M1 executeJavaScript 1m17s 41m19s R1 wikiOperationInServer 27m1s M2 new Function() 13m1s Thorium Reader M1 httpGet 32s 3h25m16s M2 writeStream.pipe 2h49m15s M3 webContents.send 35m8s R1 webview.setAttribute 21s
+
+turally valid initial inputs. With LLM harnesses fixed, replac-ing LLM seeds with random seeds reduces detection to 18/23; the five missed cases all involve complex parsing where ran-dom seeds fail to reach the first segment’s oracle. LLM seeds also accelerate discovery, reducing average TTE from 30m22s to 17m9s. Table 6: [RQ6] Contribution of LLM components in Proton. 
+
+Harness Seeds Detected Avg. TTE Avg. Tokens 
+
+Template Random 6/23 40m12s —Template LLM 11/23 28m04s 47k LLM Random 18/23 30m22s 109k 
+
+LLM LLM 23/23 17m9s 156k 
+
+## 6.6 RQ5: Segmented vs. End-to-End Fuzzing 
+
+Since no prior work exists for MPV detection, we implement an end-to-end fuzzing baseline based on jazzer.js, to serve as a baseline. To ensure fair comparison, we instrument the baseline with identical oracles and initial seeds as Proton. Both approaches have a four-hour time limit for fuzzing per application. 
+
+Zero-day Detection. Among the 23 zero-day MPV S detected by Proton, the baseline only succeeded in 6, with the remain-ing 17 timing out. All baseline successes are single-segment vulnerabilities where the terminal sink is directly reachable from the first input boundary. For other multi-segment vul-nerabilities, the baseline fails to propagate inputs across pro-cess boundaries within the time budget. For example, it fails to reach the first postMessage sink in Paperlib within four hours, while Proton reaches the terminal sink in 2h38m via segmented fuzzing with an input reconstructor handling the invertible URI parsing. 
+
+Edge Coverage. Table 7 compares edge coverage achieved by Proton and the baseline after four hours across 53 sampled applications. Proton achieves substantially higher coverage on vulnerable multi-segment applications. For example, 98.2% more edges on eidos. Specifically, the coverage improvement appears in multi-segment vulnerabilities, consistent with the complexity analysis in §4.1: segmentation allows Proton to explore deeper program states across processes, within the same time budget. Table 7: [RQ5] Edge coverage comparison of Proton against baseline, over a selective list of apps reported with candidate paths with multiple segments.                                     
+
+> Application Baseline EdgeCov@4h Proton EdgeCov@4h ∆
+> Deepchat 1,646 1,750 +6.3% eidos 685 1,358 +98.2% Mailspring 345 772 +123.8% muffon 389 433 +11.3% MusicFreeDesktop 299 555 +85.6% Motrix 327 672 +105.5% paperlib 525 1,150 +119.0% pinokio 633 799 +26.2% Thorium Reader 1,148 1,576 +37.3%. TidGi-Desktop 594 1,128 +89.9% median(S) 477 892 +87.0%
+
+S: 53 sampled apps, including 23 vulnerable ones and an additional 30 from phase I reports. 
+
+## 7 Discussion 
+
+Mitigation. Secure Electron configuration and other mitiga-tions have been extensively studied [7,9 –11]. On the handling side, defenses include: prompting users before handling ex-ternal URIs, sanitizing inputs before dangerous APIs, vali-dating domains via allowlists, isolating untrusted content in webviews, and configuring renderers with safe configurations enabled. On the triggering side, browsers and other applica-tions that can invoke custom URIs should display the full URI string in confirmation dialogs, to enable users to identify malicious URIs. 
+
+Generalizability of Segmented Fuzzing. Segmented fuzzing generalizes beyond Electron to any multi-process target. The segmentation opportunities, including IPC boundaries, ex-ternal input entry points, and invertible transformations, are broadly applicable. Porting requires adapting the agentic anal-ysis to identify target-specific boundary APIs and implement-ing framework-specific instrumentation for harnesses, oracles, and reconstructors. 
+
+Limitations. Proton’s agentic static analysis may miss com-plex dataflows when they span non-standard libraries, tem-plate engines, or LLM SDKs that require modeling beyond core Node.js and Electron APIs. LLM reasoning over such code may be incorrect due to limited training on recent li-braries, inaccessible native addon source, and context window constraints. These inherent limitations we leave to future work. 
+
+## 8 Related Work 
+
+Security of Electron Applications. Prior work on Electron security has focused on two main attack vectors. First, several studies [6, 7] examined vulnerabilities arising from unsafe configurations. Second, other works [9 –11] investigated ma-licious in-app user inputs and studied the defense of such vulnerabilities. In contrast, the exploitation of Message Pro-gression Vulnerability, which needs to chain multiple vulner-abilities through cross-process messaging, has largely been ignored with no academic investigations. 
+
+Web Application Fuzzing. Traditional web fuzzers employ grey-box coverage feedback [12, 19, 20], data flow track-ing [21 –23], predicate synthesis [24 –26], and LLM-generated grammars [27–29] to explore deep program states. However, these fuzzers assume a single-process model [30 –32] and can-not be easily adapted to Electron’s multi-process architecture. Segmented fuzzing via program slicing [33], function-level harnesses [34], or protocol modeling [35 – 37] shares our isola-tion goal, but cannot trace IPC flows across Electron processes or synthesize harnesses. 
+
+Agentic Program Analysis. LLM-assisted static analysis systems such as IRIS [38], LLMDFA [39], MoCQ [40], and QLCoder [41] augment dataflow reasoning or synthesize vul-nerability queries, but operate on single-process programs and static code graphs. Agentic frameworks, including GPT-4 Analyst [42, 43], LLM4Fuzz [44], FuzzGPT [45], and Lo-cus [46], iteratively refine inputs or fuzzing predicates but assume monolithic execution contexts. 
+
+## 9 Conclusion 
+
+In this paper, we present Proton, the segmented fuzzing frame-work for detecting Message Progression Vulnerability in Elec-tron applications. Proton decomposes complex cross-process exploit paths into independently fuzzable segments, enabling efficient fuzzing. We evaluated Proton against 589 real-world Electron applications, discovering 23 zero-day vulnerabilities, including 22 exploitable that enable remote code execution, with 11 CVEs to date. Our findings demonstrate that the Mes-sage Progression Vulnerability is critical yet overlooked in Electron applications, and our open-source release of Proton helps developers identify these vulnerabilities. References 
+
+[1] A. Fass, D. F. Somé, M. Backes, and B. Stock, “DoubleX: Statically detecting vulnerable data flows in browser extensions at scale,” in Proceedings of the 2021 ACM SIGSAC Conference on Computer and Communications Security (CCS), 2021. [2] J. Yu, S. Li, J. Zhu, and Y. Cao, “Coco: Efficient browser extension vulnerability detection via coverage-guided, concurrent abstract interpretation,” in Proceedings of the 2023 ACM SIGSAC Conference on Computer and Communications Security , ser. CCS ’23. New York, NY, USA: Association for Computing Machinery, 2023, p. 2441–2455. [Online]. Available: https://doi.org/10.1145/3576915.3616584 [3] S. Son and V. Shmatikov, “The postman always rings twice: Attacking and defending postMessage in HTML5 websites,” in Proceedings of the 20th Annual Network and Distributed System Security Symposium (NDSS), 2013. [4] A. Barth, C. Jackson, and J. C. Mitchell, “Securing frame communication in browsers,” in 17th USENIX Security Symposium (USENIX Security 08) . San Jose, CA: USENIX Association, Jul. 2008. [Online]. Available: https://www.usenix.org/conference/17th-u senix-security-symposium/securing-frame-communication-browsers [5] M. Steffens and B. Stock, “PMForce: Systematically analyzing postMessage handlers at scale,” in Proceedings of the 2020 ACM SIGSAC Conference on Computer and Communications Security (CCS), 2020. [6] D. LLC, “Electronegativity: A static analysis tool for electron applications,” 2022, accessed: 2026-07-22. [Online]. Available: https://github.com/doyensec/electronegativity [7] M. M. Ali, M. Ghasemisharif, C. Kanich, and J. Polakis, “Rise of inspectron: Automated black-box auditing of cross-platform electron apps,” in 33rd USENIX Security Symposium (USENIX Security 24), 2024, pp. 775–792. [8] B. Altpeter, “An analysis of the state of electron security in the wild,” Bachelor’s Thesis, Technische Universität Braunschweig, Braunschweig, Germany, 2020. [Online]. Available: https://benjamin-a ltpeter.de/doc/thesis-electron.pdf [9] Z. Yang, S. P. Chung, J. Chen, R. Zhang, B. Saltaformaggio, and W. Lee, “Coindef: A comprehensive code injection defense for the electron framework,” in 2025 IEEE Symposium on Security and Privacy (SP). IEEE, 2025, pp. 3127–3144. [10] Z. Jin, S. Chen, Y. Chen, H. Duan, J. Chen, and J. Wu, “A security study about electron applications and a programming methodology to tame dom functionalities.” in NDSS, 2023. [11] F. Xiao, Z. Yang, J. Allen, G. Yang, G. Williams, and W. Lee, “Un-derstanding and mitigating remote code execution vulnerabilities in cross-platform ecosystem,” in Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communications Security , 2022, pp. 2975–2988. [12] E. Trickel, F. Pagani, C. Zhu, L. Dresel, G. Vigna, C. Kruegel, R. Wang, T. Bao, Y. Shoshitaishvili, and A. Doupé, “Toss a fault to your witcher: Applying grey-box coverage-guided mutational fuzzing to detect sql and command injection vulnerabilities,” in 2023 IEEE Symposium on Security and Privacy (SP), 2023, pp. 2658–2675. [13] E. Güler, S. Schumilo, M. Schloegel, N. Bars, P. Görz, X. Xu, C. Kay-gusuz, and T. Holz, “Atropos: Effective fuzzing of web applications for 
+
+{Server-Side } vulnerabilities,” in 33rd USENIX Security Symposium (USENIX Security 24), 2024, pp. 4765–4782. [14] C. I. Testing, “Jazzer.js: Coverage-guided, in-process fuzzing for node.js,” 2023, accessed: 2026-07-22. [Online]. Available: https://github.com/CodeIntelligenceTesting/jazzer.js [15] Future-Scholars, “Paperlib: An open-source academic paper manage-ment tool,” 2025, gitHub repository, accessed 22 Jul 2026. [Online]. Available: https://github.com/Future-Scholars/paperlib [16] E. Trickel, F. Pagani, C. Zhu, L. Dresel, G. Vigna, C. Kruegel, R. Wang, T. Bao, Y. Shoshitaishvili, and A. Doupé, “Toss a fault to your witcher: Applying grey-box coverage-guided mutational fuzzing to detect sql and command injection vulnerabilities,” in 2023 IEEE symposium on security and privacy (SP). IEEE, 2023, pp. 2658–2675. [17] LLVM Project, “libfuzzer: a library for coverage-guided fuzz testing,” https://llvm.org/docs/LibFuzzer.html, 2025, accessed: 2026-07-22. [18] Spaceraccoon, “Open sesame: Escalating open redirect to rce with electron code review,” https://spaceraccoon.dev/open-sesame-escal ating-open-redirect-to-rce-with-electron-code-review/, Aug. 2020, accessed: 2026-07-22. [19] S. Luo, A. Herrera, P. Quirk, M. Chase, D. C. Ranasinghe, and S. S. Kanhere, “Make out like a (multi-armed) bandit: Improving the odds of fuzzer seed scheduling with t-scheduler,” in Proceedings of the 19th ACM Asia Conference on Computer and Communications Security ,ser. ASIA CCS ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 1463–1479. [20] T. Kim, S. Hong, and Y. Cho, “Aimfuzz: Automated function-level in-memory fuzzing on binaries,” in Proceedings of the 19th ACM Asia Conference on Computer and Communications Security , ser. ASIA CCS ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 1510–1522. [21] M. Wang, J. Liang, C. Zhou, Z. Wu, J. Fu, Z. Su, Q. Liao, B. Gu, B. Wu, and Y. Jiang, “Data coverage for guided fuzzing,” in 33rd USENIX Security Symposium (USENIX Security 24) . Philadelphia, PA: USENIX Association, Aug. 2024, pp. 2511–2526. [22] J. Park, Y. Kim, and I. Yun, “ RGFuzz: Rule-Guided Fuzzer for We-bAssembly Runtimes ,” in 2025 IEEE Symposium on Security and Privacy (SP) . Los Alamitos, CA, USA: IEEE Computer Society, May 2025, pp. 920–938. [23] J. Kim, D. J. Tian, and B. E. Ujcich, “ Chimera: Fuzzing P4 Network Infrastructure for Multi-Plane Bug Detection and Vulnerability Discov-ery ,” in 2025 IEEE Symposium on Security and Privacy (SP). Los Alamitos, CA, USA: IEEE Computer Society, May 2025, pp. 3088– 3106. [24] J. Zhu, C. Shen, Z. Li, J. Yu, Y. Chen, and K. Pei, “Locus: Agentic predicate synthesis for directed fuzzing,” 2025. [25] C. Wang, W. Meng, C. Luo, and P. Li, “ Predator: Directed Web Appli-cation Fuzzing for Efficient Vulnerability Validation ,” in 2025 IEEE Symposium on Security and Privacy (SP) . Los Alamitos, CA, USA: IEEE Computer Society, May 2025, pp. 886–902. [26] G. Lee, D. Xu, S. Salimi, B. Lee, and M. Payer, “Syzrisk: A change-pattern-based continuous kernel regression fuzzer,” in Proceedings of the 19th ACM Asia Conference on Computer and Communications Security , ser. ASIA CCS ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 1480–1494. [27] R. Meng, M. Mirchev, M. Böhme, and A. Roychoudhury, “Large language model guided protocol fuzzing,” in Proceedings of the 31st Annual Network and Distributed System Security Symposium (NDSS), vol. 2024, 2024. [28] Y. Dong, X. Meng, N. Yu, Z. Li, and S. Guo, “ Fuzz-Testing Meets LLM-Based Agents: An Automated and Efficient Framework for Jailbreaking Text-to-Image Generation Models ,” in 2025 IEEE Symposium on Security and Privacy (SP) . Los Alamitos, CA, USA: IEEE Computer Society, May 2025, pp. 373–391. [29] Y. Zhou, F. Yang, Z. Song, K. Zhang, J. Chen, and K. Zhang, “Liftfuzz: Validating binary lifters through context-aware fuzzing with gpt,” in Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security , ser. CCS ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 3778–3792. [30] J. Liu, Y. Shen, Y. Xu, and Y. Jiang, “Leveraging binary coverage for effective generation guidance in kernel fuzzing,” in Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security , ser. CCS ’24. New York, NY, USA: As-sociation for Computing Machinery, 2024, p. 3763–3777. [31] J. Eom, S. Jeong, and T. Kwon, “Fuzzing javascript interpreters with coverage-guided reinforcement learning for llm-based mutation,” in Proceedings of the 33rd ACM SIGSOFT International Symposium on Software Testing and Analysis , ser. ISSTA 2024. New York, NY, USA: Association for Computing Machinery, 2024, p. 1656–1668. [32] J. Zhu, M. Lin, T. Yin, Z. Cai, Y. Wang, R. Chang, and W. Shen, “Crossfire: Fuzzing macos cross-xpu memory on apple silicon,” in Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security , ser. CCS ’24. New York, NY, USA: Association for Computing Machinery, 2024, p. 3749–3762. [33] L. Chen, Q. Cai, Z. Ma, Y. Wang, H. Hu, M. Shen, Y. Liu, S. Guo, H. Duan, K. Jiang, and Z. Xue, “Sfuzz: Slice-based fuzzing for real-time operating systems,” ser. CCS ’22. New York, NY, USA: Association for Computing Machinery, 2022, p. 485–498. [34] A. Murali, N. Mathews, M. Alfadel, M. Nagappan, and M. Xu, “Fuzzs-lice: Pruning false positives in static analysis warnings through function-level fuzzing,” in Proceedings of the IEEE/ACM 46th International Conference on Software Engineering , ser. ICSE ’24. ACM, Feb. 2024, p. 1–13. [35] X. Feng, R. Sun, X. Zhu, M. Xue, S. Wen, D. Liu, S. Nepal, and Y. Xi-ang, “Snipuzz: Black-box fuzzing of iot firmware via message snippet inference,” 2021. [36] J. Ba, M. Böhme, Z. Mirzamomen, and A. Roychoudhury, “Stateful greybox fuzzing,” in 31st USENIX Security Symposium (USENIX Security 22) . Boston, MA: USENIX Association, Aug. 2022, pp. 3255–3272. [37] J. Li, S. Li, G. Sun, T. Chen, and H. Yu, “Snpsfuzzer: A fast grey-box fuzzer for stateful network protocols using snapshots,” IEEE Transactions on Information Forensics and Security , vol. 17, pp. 2673– 2687, 2022. [38] Z. Li, S. Dutta, and M. Naik, “Iris: Llm-assisted static analysis for detecting security vulnerabilities,” 2025. [39] C. Wang, W. Zhang, Z. Su, X. Xu, X. Xie, and X. Zhang, “Llmdfa: Analyzing dataflow in code with large language models,” 2024. [40] P. Li, S. Yao, J. S. Korich, C. Luo, J. Yu, Y. Cao, and J. Yang, “Au-tomated static vulnerability detection via a holistic neuro-symbolic approach,” 2025. [41] C. Wang, Z. Li, S. Dutta, and M. Naik, “Qlcoder: A query synthesizer for static analysis of security vulnerabilities,” 2025. [42] L. Cheng, X. Li, and L. Bing, “Is gpt-4 a good data analyst?” 2023. [43] D. Noever, “Can large language models find and fix vulnerable soft-ware?” 2023. [44] C. Shou, J. Liu, D. Lu, and K. Sen, “Llm4fuzz: Guided fuzzing of smart contracts with large language models,” 2024. [45] Y. Deng, C. S. Xia, C. Yang, S. D. Zhang, S. Yang, and L. Zhang, “Large language models are edge-case fuzzers: Testing deep learning libraries via fuzzgpt,” 2023. [46] J. Zhu, C. Shen, Z. Li, J. Yu, Y. Chen, and K. Pei, “Locus: Agentic predicate synthesis for directed fuzzing,” 2025. Appendix A Open Science 
+
+We provide the following artifacts to support reproducibility and future research. All artifacts are available at https:// anonymous.4open.science/r/proton and will remain accessible after the submission deadline. 
+
+Proton Engine. We release the full Proton implementa-tion, including: (1) the patch for Electron framework mod-ifications with engine-level instrumentation for canary de-tection, Progression API hooks, and IPC interception; (2) the extended jazzer.js fuzzing runtime with additional JavaScript-specific coverage feedback, segment harness regis-tration, and oracle integration; and (3) the scripts that coordi-nate Phase I and Phase II across applications. 
+
+LLM-based Agentic Workflow. We release the complete agentic static analysis and harness synthesis workflow, in-cluding: (1) the system prompts for the taint analysis and segmentation agent and the harness synthesis agent (Appendix D); (2) the LLM-generated analysis.md and 
+
+dataflow-segments.json outputs for all vulnerable ap-plications; (3) the synthesized harness patch files ( <id>. harness.patch ) for each segment; and (4) the LLM-generated seeds for each segment’s initial corpus. 
+
+Dataset. We release two datasets: (1) the complete list of all 589 Electron applications collected from GitHub, includ-ing their repository URLs, versions, and star counts at the time of collection; and (2) the curated list of 23 vulnerable applications, including their confirmed exploit chains, proof-of-concept payloads, and CVE identifiers. For applications with pending disclosure, exploit details will be released fol-lowing the 45-day remediation period. 
+
+Vulnerability Disclosures. All 23 zero-day vulnerabilities have been responsibly disclosed to the respective maintain-ers. Proof-of-concept exploits for patched vulnerabilities are included in the artifact. For vulnerabilities still under reme-diation, proof-of-concept details will be added to the artifact repository upon public disclosure. 
+
+## Appendix B Ethical Considerations 
+
+We ensure that our study adheres to standard ethical guide-lines for security research. All analyzed code was collected from publicly available open-source GitHub repositories in compliance with the platforms’ terms of service. No private or user-sensitive data was accessed. All application testing was conducted offline on local machines, with no impact on online servers or production systems. Regarding vulnerability dis-closure, we responsibly reported all identified vulnerabilities to affected vendors and allowed a 45-day remediation period before public disclosure. As of this writing, we have received 13 acknowledgments and 11 fixes, and 11 CVE identifiers have been assigned. Electron Framework 
+
+> Main Process
+> App lifecycle, Native APIs
+> Native Modules
+> Node native addons, OS integrations, Electron APIs
+> Bundled: Chromium + Node.js + libuv
+> Renderer
+> Chromium pages, DOM
+
+…
+
+> Renderer
+> Chromium pages, DOM
+> Renderer Processes
+> Chromium pages, DOM
+> Delegates
+> Node Integration
+> Enabled
+> Preload
+> Exposed APIs
+> Utility Process
+> Utility Process
+> Utility Processes
+> Configures Spawns
+
+Figure 4: Electron architecture. 
+
+## Appendix C Exploitation Techniques 
+
+In this section, we explain the exploitation techniques used to escalate code execution in renderer processes to arbitrary command execution. 
+
+Unsafe Window Configuration. Electron provides se-curity configurations for renderer processes, including 
+
+contextIsolation and nodeIntegration . Misconfigura-tions can enable code execution to escalate to command exe-cution: 
+
+• Direct Access via nodeIntegration. When node integra-tion is enabled and context isolation is disabled, renderer processes have direct access to Node.js APIs. This is com-monly seen in applications whose renderers need to use Node.js APIs. 
+
+• Prototype Pollution. When context isolation is dis-abled but node integration remains disabled, the ren-derer and preload contexts share the same JavaScript en-vironment, separated only by closure scope. Attackers can exploit this by overwriting built-in prototypes (e.g., 
+
+Function.prototype.apply ) to intercept function calls in the preload context and leak privileged objects. For example, in the Thorium Reader vulnerability, overwrit-ing Function.prototype.apply allowed capturing the 
+
+ipcRenderer object when preload scripts invoked apply .Once ipcRenderer is obtained, attackers can further hook 
+
+EventEmitter.prototype.emit to leak the process ob-ject by triggering Node.js event system gadgets (e.g., by exceeding the max listener count to trigger warnings). With the leaked process object, attackers gain arbitrary com-mand execution via process.binding("spawn_sync") .
+
+Preload Script APIs. Applications often expose custom APIs Table 8: Categorization of IPC communication mechanisms across Electron’s multi-process architecture. For each IPC type, we show: the communicating parties with directionality, and code patterns for both sender and receiver.                                                   
+
+> IPC Channels Parties Sender Code Patterns Receiver Code Patterns
+> Pre-defined IPCs Renderer →Main ipcRenderer.send(C, Msg) ipcMain.on(C, F);ipcMain.addListener(C, F)
+> Renderer ↔Main R = ipcRenderer.invoke(C, Msg) ipcMain.handle(C, F)
+> Main →Renderer webContents.send(C, Msg) ipcRenderer.on(C, F);ipcRenderer.addListener(C, F)
+> Event Handlers Renderer →Main window.open(URL) webContents.setWindowOpenHandler(F)
+> Renderer →Main location.assign(URL) webContents.on("will-navigate", F)
+> Internal Protocols Renderer ↔Main window.location.href = P protocol.handle(P, F)
+> Pre-defined Message Ports Main →Utility child.postMessage(Msg) process.parentPort.on(’message’, F)
+> Utility →Main proc.parentPort.postMessage(Msg) child.on(’message’, F)
+> Custom Message Ports Any ↔Any ∗port.postMessage(Msg) port.on(F); port.onmessage(F) C=Channel name, Msg =Message data, F=Handler function, P=Protocol scheme, R=Return value. →: One-way communication; ↔: Bidirectional communication. ∗: Includes Main-Utility (M-U), Main-Renderer (M-R), Utility-Renderer (U-R), Renderer-Renderer (R-R), and Utility-Utility (U-U) communications.
+
+from preload scripts through contextBridge . If preload scripts expose the ipcRenderer object or wrappers, attackers can invoke arbitrary IPC handlers in the main process. Vul-nerable handlers that execute commands without validation can lead to direct command execution. Similarly, exposed APIs using Node.js functionality (e.g., file operations, shell execution) without sanitization can be abused for privilege escalation. 
+
+Main Process Event Handlers. Besides IPC handlers, Main processes can also register event handlers for renderer actions such as navigation and window creation. Navigation handlers like setWindowOpenHandler may call dangerous APIs such as shell.openExternal without validating destinations, en-abling command execution through specially crafted URLs. 
+
+V8 Vulnerability. When sandbox is disabled and the applica-tion uses an outdated Electron version, attackers can exploit known V8 vulnerabilities to achieve arbitrary code execution, bypassing Electron security configurations. 
+
+Script Pivot. Finally, when direct escalation is not possible due to isolated contexts, attackers can pivot to more privileged renderer contexts. From a compromised iframe, attackers can use postMessage to achieve XSS in the parent context or force top-level navigation to load attacker-controlled content. 
+
+## Appendix D Agent Design 
+
+In this section, we detail the design of our static analysis agent as well as the harness synthesis agent. 
+
+## D.1 Taint Analysis and Segmentation Agent 
+
+The taint analysis and segmentation agent performs two things simultaneously: one is to start from the open-url handler source to trace to an actual RCE sink, and the other is to produce dataflow segments. The high-level prompt (with de-tails removed to save space) is shown in Listing 1. Note that the categorization of IPC communication machanisms across Electron’s multi-process architecture (taxonomized in Table 8) is included in the prompt for the LLM agent to find precise segmentation boundaries. One sample output pair of segment source and sink is depicted in Listing 3. Empiri-cally, typical agent trajectory starts from grepping the pattern of open-url to find the sources, and then iteratively trace through the dataflow to read more and more files. At some point, we observe agent using grepping tool to find sink pat-terns by writing regexes that generalize our specified taxon-omy, which further leads the agent to find effective exploitable paths. 
+
+## D.2 Harness Synthesis Agent 
+
+Given the segmented dataflow produced in §4.2, the next challenge is to instantiate each segment as a fuzzable entry point. For a given segment, fuzzing should begin directly at its sub-source so that fuzzing can focus on the semantics of the segment while avoiding redundant work and long execution chains. To achieve this, Proton uses an LLM-driven agent to synthesize in-place fuzzing harnesses, each packaged as a patch file automatically inserted into the Electron application source code. The process is guided by a second structured prompt that provides the agent with: 
+
+• Segmentation result : analysis.md and 
+
+dataflow-segments.json from the taint analysis, including all discovered sources, their process locations, and the sinks and subsequent sources they connect to. 
+
+• Detailed task specification : defining what a harness must do: take a Uint8Array from the fuzzer, convert it into the structured input expected at that segment’s source, replay the segment’s entry point (e.g., invoking 
+
+app.emit("open-url", ...) , calling an IPC handler, or directly invoking a function), and expose the harness to the fuzzing engine via global.__proton__.harness .
+
+• Constraints and requirements : including where har-1 You are a security analyst auditing Electron  
+
+> 2
+
+applications for unsafe open-url handling  
+
+> 3
+
+vulnerabilities. We have identified a class of  
+
+> 4
+
+vulnerability which we named Message Progression Vulnerability ( 
+
+,→ MPV).  
+
+> 5
+
+Assuming the Electron application is installed inside  
+
+> 6
+
+of a user’s system, when the user click on a...  
+
+> 78
+
+Due to the complex nature of Electron applications, the  
+
+> 9
+
+dataflow may not be linear--that is, it could be  
+
+> 10
+
+considered as a multi-staged dataflow with multiple  
+
+> 11
+
+segments. For instance, there could be a dataflow that  
+
+> 12
+
+starts within Main process, and through an IPC call, go  
+
+> 13
+
+into the renderer process...  
+
+> 14 15
+
+Your job is to systematically analyze the repository to  
+
+> 16
+
+find potential source and sink, and finding whether  
+
+> 17
+
+they could be connected via multiple segments in  
+
+> 18
+
+different processes...  
+
+> 19 20
+
+At the end, please come up with two artifacts:  
+
+> 21
+
+1. an ‘analysis.md‘ which contains the summary of your  
+
+> 22
+
+analysis of the code base. List out the discovered  
+
+> 23
+
+potential sources and sinks. Note that the goal is  
+
+> 24
+
+not to find just a single dataflow; but multiple  
+
+> 25
+
+dataflows with multiple potential sub-dataflow  
+
+> 26
+
+segments.  
+
+> 27
+
+2. an ‘dataflow-segments.json‘ which is a json list  
+
+> 28
+
+that looks like the following  
+
+> 29
+
+‘‘‘ json  
+
+> 30
+
+[ {  
+
+> 31
+
+"id": <a unique identifier>,  
+
+> 32
+
+"type": "source | sink",  
+
+> 33
+
+"process": "main | renderer | utility",  
+
+> 34
+
+"file_name": <the relative file name>,  
+
+> 35
+
+"line_num": <the line number>,  
+
+> 36
+
+"comment": <some comment about the node>,  
+
+> 37 38
+
+// if we have a source  
+
+> 39
+
+"source_type": "open-url-handler | uncontrolled- 
+
+> 40
+
+file-read | response-received | ...",  
+
+> 41
+
+"source": <exact code pattern of the source>,  
+
+> 42
+
+"connected_sink": <the id of the connected sink>,  
+
+> 43
+
+"introducing_new_taint": true | false,  
+
+> 44 45
+
+// if we have a sink  
+
+> 46
+
+"sink_type": "require | html-inject | js-inject |  
+
+> 47
+
+ipc-call | xss | navigation | rce",  
+
+> 48
+
+"sink": <exact code pattern of the sink>,  
+
+> 49
+
+"connected_source": <the id of the source>  
+
+> 50
+
+}, ...]  
+
+> 51
+
+‘‘‘  
+
+> 52 53
+
+# Additional Information  
+
+> 54
+
+**1. Code Execution (XSS/RCE)**  
+
+> 55
+
+- ‘executeJavaScript()‘, ‘eval()‘, ‘new Function()‘  
+
+> 56
+
+- ‘innerHTML‘, ‘outerHTML‘, ‘document.write()‘,  
+
+> 57
+
+‘v-html‘. Example payload:  
+
+> 58
+
+‘myapp://xss?code=<script>alert(1)</script>‘  
+
+> 59
+
+...  
+
+> 60
+
+# Notes  
+
+> 61
+
+- Please be comprehensive and search all javascript  
+
+> 62
+
+related files including .js, .ts (javascript or  
+
+> 63
+
+typescript) as well as the hybrid files related to  
+
+> 64
+
+front-end frameworks such as .vue or .jsx or  
+
+> 65
+
+.tsx for Vue and React applications...  
+
+> 66
+
+- External taint sources could come from remote  
+
+> 67
+
+requests (fetch(...)) or local file read (read(...))  
+
+> 68
+
+especially if it happens to be that the arguments or  
+
+> 69
+
+urls to these functions are not fully controlled...  
+
+> 70
+
+- When you see that there is a window.loadURL or  
+
+> 71
+
+redirection with tainted URL or payload, you should  
+
+> 72
+
+find all the potentially connected process handlers  
+
+> 73
+
+to start subsequent segments.  
+
+> 74 75
+
+# Analysis Task  
+
+> 76
+
+Your are now working on the ‘{app}‘ repository.  
+
+> 77
+
+- source code directory: ‘./repos/{app}/‘  
+
+> 78
+
+- output directory: ‘./analysis-outputs/{app}/‘  
+
+> 79
+
+As instructed, please perform thorough security  
+
+> 80
+
+analysis on the ‘{app}‘ repository. 
+
+Listing 1: LLM prompt for static analysis and segmentation.  
+
+> 1
+
+# Harness Generation  
+
+> 2
+
+You are a security analyst auditing Electron  
+
+> 3
+
+applications for unsafe open-url handling vulns.  
+
+> 4
+
+We have identified a class of vulnerability or attack  
+
+> 5
+
+which we named Message Progression Vulnerability (MPV). Assuming 
+
+,→ the Electron  
+
+> 6
+
+application is installed inside of a user’s system,  
+
+> 7
+
+when the user click on a potentially compromised link  
+
+> 8
+
+in a browser, that URI may have a prefix of ‘my-app://‘  
+
+> 9
+
+which is handled by the Electron app...  
+
+> 10 11
+
+Due to the complex nature of Electron applications, the  
+
+> 12
+
+dataflow may not be linear--that is, it could be  
+
+> 13
+
+considered as a multi-staged dataflow with multiple  
+
+> 14
+
+segments. For instance, there could be a dataflow that  
+
+> 15
+
+starts within Main process, and through an IPC call, go  
+
+> 16
+
+into the renderer process...  
+
+> 17 18
+
+## Task Description  
+
+> 19
+
+Your task would be that for each detected source come  
+
+> 20
+
+up with a testing harness. A testing harness at its  
+
+> 21
+
+core, would be a function that takes in a buffer or an  
+
+> 22
+
+uint8array. It should contain the code necessary to  
+
+> 23
+
+convert the buffer into structured input to continue  
+
+> 24
+
+the execution of the current segment, ignoring all the  
+
+> 25
+
+prior segments...  
+
+> 26 27
+
+However, to make the testing harness actually runnable,  
+
+> 28
+
+we need to properly expose the testing harness. The  
+
+> 29
+
+actual synthesized harness should have the  
+
+> 30
+
+form of a diff patch, which specifies in which file and  
+
+> 31
+
+in which line we would like to remove lines or add new  
+
+> 32
+
+lines. Please name the file ‘<source_id>.harness.patch‘  
+
+> 33
+
+for each source stated in the dataflow-segments.json.  
+
+> 34 35
+
+## Harness Example  
+
+> 36
+
+Here we give a concrete example of a harness that can  
+
+> 37
+
+be synthesized for our purpose:  
+
+> 38
+
+‘‘‘ts  
+
+> 39
+
+export function urlFuzzInitialize() {  
+
+> 40
+
+(global as any).__proton__.harness =  
+
+> 41
+
+function (buf: Buffer | Uint8Array): void {  
+
+> 42
+
+const constructedUrl = harness(buf);  
+
+> 43
+
+try {  
+
+> 44
+
+app.emit(’open-url’, makeOpenUrlEvent(),  
+
+> 45
+
+constructedUrl);  
+
+> 46
+
+} catch (e) {  
+
+> 47
+
+// ...  
+
+> 48
+
+} } }  
+
+> 49
+
+‘‘‘  
+
+> 50
+
+...  
+
+> 51
+
+## Harness as Patches  
+
+> 52
+
+Generate patches that look like the following:  
+
+> 53
+
+‘‘‘  
+
+> 54
+
+--- a/main.ts  
+
+> 55
+
++++ b/main.ts  
+
+> 56
+
+@@ -1,5 +1,6 @@  
+
+> 57
+
+function initialize() {  
+
+> 58
+
+- printf("Hello, world!\n");  
+
+> 59
+
++ urlFuzzInitialize();  
+
+> 60
+
+} 
+
+> 61
+
+‘‘‘  
+
+> 62 63
+
+This file should be directly applicable by running git  
+
+> 64
+
+patch. It is okay to have multiple files being  
+
+> 65
+
+modified. The criteria should be that, once the  
+
+> 66
+
+application is loaded (all the modules being ready),  
+
+> 67
+
+there should be our fuzzing harness registered in  
+
+> 68
+
+‘global.__proton__‘.  
+
+> 69 70
+
+# Harness Generation Task  
+
+> 71
+
+Your are now working on the ‘{app}‘ repository.  
+
+> 72
+
+- source code directory: ‘./repos/{app}/‘  
+
+> 73
+
+- analysis directory: ‘./analysis-outputs/{app}/‘  
+
+> 74
+
+- output directory ‘./harness-outputs/{app}/‘  
+
+> 75
+
+Everytime you encounter a new source you should create  
+
+> 76
+
+‘<source-id>.harness.patch‘. The patch should be  
+
+> 77
+
+comprehensive such that an automated script can launch  
+
+> 78
+
+the app and start a fuzzing campaign using ‘jazzer.js‘.  
+
+> 79
+
+As instructed, please perform thorough security  
+
+> 80
+
+analysis on the ‘{app}‘ repository. 
+
+Listing 2: LLM prompt for synthesizing fuzzing harness. nesses may be inserted, how to preserve functional behav-ior, how to handle renderer-process sources (by enabling 
+
+nodeIntegration ), and how to structure each harness patch so that it is directly applicable via git apply. The full prompt is shown in Listing 2. 
+
+Harness Generation Workflow. For every source node in the segmentation output, Proton instructs the agent to generate a dedicated patch file named <source-id>.harness.patch .The patch contains all code edits needed to: 
+
+• inject a new initializer (e.g., urlFuzzInitialize() or a source-specific variant) early in the application startup path; 
+
+• define the harness function that maps bytes to the source’s expected input shape. The agent reuses surrounding pro-gram logic whenever possible, and may hard-code unrelated values to preserve determinism; 
+
+• bind the harness into the global namespace un-der global.__proton__.harness , allowing an external driver ( Jazzer.js ) to locate and execute it; 
+
+• ensure the correct runtime environment , which may in-clude editing BrowserWindow creation to enable Node.js APIs or injecting Jazzer.js bootstrap code into renderer entry files. 
+
+Example Output. Harness patches generated by Pro-ton resemble conventional source patches (Listing 4). These patches are self-contained: applying them to the repository yields an instrumented application that, when launched, automatically registers all synthesized harnesses. The fuzzing engine can then start a campaign by call-ing global.__proton__.harness(buf) , which replays the sub-source with a fuzzed payload.                        
+
+> 1[{
+> 2"id": "src-1-main-openurl-handler-150",
+> 3"type": "source",
+> 4"process": "main",
+> 5"file_name": "app/main/main-entry.ts",
+> 6"line_num": 150,
+> 7"comment": "Primary open-url event handler that...",
+> 8"source_type": "open-url-handler",
+> 9"source": "app.on(\"open-url\", (event, urlStr) ...",
+> 10 "connected_sink": "sink-1-window-mgmt-loadurl-106",
+> 11 "introducing_new_taint": true
+> 12 }, {
+> 13 "id": "sink-1-window-mgmt-loadurl-106",
+> 14 "type": "sink",
+> 15 "process": "main",
+> 16 "file_name": ".../window-proc-mgnt-service.ts",
+> 17 "line_num": 106,
+> 18 "comment": "BrowserWindow.loadURL() called with...",
+> 19 "sink_type": "navigation",
+> 20 "sink": "windows.get(id).loadURL(entryURL)",
+> 21 "connected_source": "src-1-main-openurl-handler-150",
+> 22 "subsequent_source": []
+> 23 }, ...]
+
+Listing 3: Sample JSON output from agentic static analysis.                
+
+> 1---a/ main . ts
+> 2+++ b/ main . ts
+> 3@@ -42 ,6 +42 ,7 @@ function bootstrap () {
+> 4initializeWindow () ;
+> 5+urlFuzzInitialize () ;
+> 6}
+
+Listing 4: An example harness patch that injects the fuzzer initialization function in the bootstrap method of the application.

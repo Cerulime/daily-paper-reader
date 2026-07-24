@@ -6,37 +6,31 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-23
-- 运行时间：2026-07-23 21:46:29 UTC
+- 最新运行日期：2026-07-24
+- 运行时间：2026-07-24 21:40:53 UTC
 - 运行状态：成功
-- 本次总论文数：5
+- 本次总论文数：3
 - 精读区：1
-- 速读区：4
+- 速读区：2
 
 ### 今日简报（AI）
-今天扫描了 5 篇安全论文，核心发现来自共享存储页缓存的跨容器与虚拟机隔离失效攻击。  
-最值得关注：共享存储泄露可绕过沙箱窃取敏感数据，以及模型扫描器被隐蔽的 Pickle 反序列化攻击绕过。  
-建议普通读者优先理解第一类风险：即使容器/虚拟化隔离，共享文件缓存也可能暴露密码、密钥等内存残留。
-- 详情：[/202607/23/README](/202607/23/README)
+今日聚焦应用安全，精读 Electron 消息进度漏洞的挖掘方法，并速览 API 权限漏洞与攻击链自动提取。  
+最值得关注的是分段定向模糊测试在 Electron 中捕捉消息进度缺陷，以及通过多身份规范驱动检测 API 对象级授权破裂。  
+建议排查自身应用中跨进程消息传递的异步逻辑，并对对外开放 API 强制验证对象级权限。
+- 详情：[/202607/24/README](/202607/24/README)
 
 ### 精读区论文标签
-1. [Isolation Failure From Shared Storage: Characterizing and Exploiting Page-Cache SCA Leakage Across Containers and VMs](/202607/23/2607.17518v2-isolation-failure-from-shared-storage-characterizing-and-exploiting-page-cache-sca-leakage-across-containers-and-vms)  
+1. [Buzz to Boom: Detecting Message Progression Vulnerabilities in Electron Applications via Segmented Directed Fuzzing](/202607/24/2607.20698v1-buzz-to-boom-detecting-message-progression-vulnerabilities-in-electron-applications-via-segmented-directed-fuzzing)  
    标签：评分：9.0/10、query:sys-security
-   evidence：特征化并利用跨容器/虚拟机的页缓存侧信道，揭示共享存储中的隔离失效
+   evidence：通过分段定向模糊测试检测Electron应用中的多步消息传递漏洞，实现利用防范
 
 ### 速读区论文标签
-1. [From Neural Intent to Cryptographic Authorization: Governing Agentic Workflows](/202607/23/2607.15596v1-from-neural-intent-to-cryptographic-authorization-governing-agentic-workflows)  
+1. [AuthProbe: Specification-Driven, Multi-Identity Detection of Broken Object-Level Authorization in Recruitment API](/202607/24/2607.20574v1-authprobe-specification-driven-multi-identity-detection-of-broken-object-level-authorization-in-recruitment-api)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：利用OpenAPI规范和多身份测试进行黑盒动态扫描，检测失效对象级授权漏洞
+2. [An Automated Framework for Extracting Reachable Attack Chains from Cyber Threat Intelligence Reports](/202607/24/2607.19742v1-an-automated-framework-for-extracting-reachable-attack-chains-from-cyber-threat-intelligence-reports)  
    标签：评分：6.0/10、query:sys-security
-   evidence：神经符号密码授权防止LLM代理遭受提示注入劫持
-2. [ShadowPickle: Evading Machine Learning Model Scanners via Stealthy Pickle Deserialization Attacks](/202607/23/2607.17503v1-shadowpickle-evading-machine-learning-model-scanners-via-stealthy-pickle-deserialization-attacks)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：隐蔽的pickle反序列化攻击规避机器学习模型扫描器
-3. [Trusted Credentials, Untrusted Behavior: Benchmarking LLM-Agent Security in High-Performance Computing](/202607/23/2607.18485v1-trusted-credentials-untrusted-behavior-benchmarking-llm-agent-security-in-high-performance-computing)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：在高性能计算环境中，LLM代理被劫持的安全威胁
-4. [Integrity of peer-to-peer distributed LLM inference under malicious nodes](/202607/23/2607.19490v1-integrity-of-peer-to-peer-distributed-llm-inference-under-malicious-nodes)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：利用可信硬件在分布式LLM推理中检测恶意节点的完整性校验
+   evidence：从威胁情报报告中提取多阶段攻击链
 
 
 <div class="dpr-home-promo-card">
