@@ -6,31 +6,34 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-24
-- 运行时间：2026-07-24 21:40:53 UTC
+- 最新运行日期：2026-07-25
+- 运行时间：2026-07-25 21:20:36 UTC
 - 运行状态：成功
-- 本次总论文数：3
-- 精读区：1
+- 本次总论文数：4
+- 精读区：2
 - 速读区：2
 
 ### 今日简报（AI）
-今日聚焦应用安全，精读 Electron 消息进度漏洞的挖掘方法，并速览 API 权限漏洞与攻击链自动提取。  
-最值得关注的是分段定向模糊测试在 Electron 中捕捉消息进度缺陷，以及通过多身份规范驱动检测 API 对象级授权破裂。  
-建议排查自身应用中跨进程消息传递的异步逻辑，并对对外开放 API 强制验证对象级权限。
-- 详情：[/202607/24/README](/202607/24/README)
+今天精读两篇安全顶会论文，速读两篇，聚焦于嵌入式固件模糊测试与 zkEVM 自动形式化验证。  
+最值得关注：利用电磁侧信道泄露引导黑盒嵌入式固件模糊测试，以及用大型语言模型合成约束实现 zkEVM 的形式化验证。  
+建议读者跟进固件安全与 LLM 辅助形式化验证的交汇点，这两个方向有望大幅降低测试成本。
+- 详情：[/202607/25/README](/202607/25/README)
 
 ### 精读区论文标签
-1. [Buzz to Boom: Detecting Message Progression Vulnerabilities in Electron Applications via Segmented Directed Fuzzing](/202607/24/2607.20698v1-buzz-to-boom-detecting-message-progression-vulnerabilities-in-electron-applications-via-segmented-directed-fuzzing)  
+1. [Fuzz'EMup: Leveraging EM Side-Channel Emanation to Guide Black-Box Embedded Firmware Fuzzing](/202607/25/2607.16487v1-fuzzemup-leveraging-em-side-channel-emanation-to-guide-black-box-embedded-firmware-fuzzing)  
    标签：评分：9.0/10、query:sys-security
-   evidence：通过分段定向模糊测试检测Electron应用中的多步消息传递漏洞，实现利用防范
+   evidence：电磁侧信道泄漏引导黑盒固件模糊测试，用于动态漏洞发现。
+2. [Towards Automated Formal Verification of zkEVMs Using LLM-Guided Constraint Synthesis](/202607/25/2607.19795v1-towards-automated-formal-verification-of-zkevms-using-llm-guided-constraint-synthesis)  
+   标签：评分：8.0/10、query:sys-security
+   evidence：LLM引导的约束合成用于zkEVM形式化验证，防止安全漏洞。
 
 ### 速读区论文标签
-1. [AuthProbe: Specification-Driven, Multi-Identity Detection of Broken Object-Level Authorization in Recruitment API](/202607/24/2607.20574v1-authprobe-specification-driven-multi-identity-detection-of-broken-object-level-authorization-in-recruitment-api)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：利用OpenAPI规范和多身份测试进行黑盒动态扫描，检测失效对象级授权漏洞
-2. [An Automated Framework for Extracting Reachable Attack Chains from Cyber Threat Intelligence Reports](/202607/24/2607.19742v1-an-automated-framework-for-extracting-reachable-attack-chains-from-cyber-threat-intelligence-reports)  
+1. [LLM-Based Invariant Testing for Software Functional Bugs](/202607/25/2607.18711v1-llm-based-invariant-testing-for-software-functional-bugs)  
    标签：评分：6.0/10、query:sys-security
-   evidence：从威胁情报报告中提取多阶段攻击链
+   evidence：基于LLM的动态测试框架检测软件错误
+2. [Build-Authorized Evidence for Opaque Calls: A Fail-Closed Rewrite-Authority Boundary](/202607/25/2607.18949v1-build-authorized-evidence-for-opaque-calls-a-fail-closed-rewrite-authority-boundary)  
+   标签：评分：6.0/10、query:sys-security
+   evidence：强制执行失败关闭的编译器重写授权，防止引入安全漏洞的不健全优化
 
 
 <div class="dpr-home-promo-card">
