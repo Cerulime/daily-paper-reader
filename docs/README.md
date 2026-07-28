@@ -6,40 +6,43 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-07-27
-- 运行时间：2026-07-27 21:41:50 UTC
+- 最新运行日期：2026-07-28
+- 运行时间：2026-07-28 21:35:17 UTC
 - 运行状态：成功
-- 本次总论文数：6
+- 本次总论文数：7
 - 精读区：5
-- 速读区：1
+- 速读区：2
 
 ### 今日简报（AI）
-今日精读两篇满分顶会论文，聚焦 LLM 驱动的自动化安全分析。  
-两大突破方向：用大模型引导符号执行挖漏洞，以及从补丁自动生成概念验证利用代码，智能体安全防护也有涉及。  
-建议开发者关注 LLM 赋能的漏洞发现与利用生成工具，提前思考智能体交互安全边界。
-- 详情：[/202607/27/README](/202607/27/README)
+今日精读两篇顶会论文，聚焦硬件安全与可编程内核，其中《ADVERSARIAL》以满分推荐。  
+最硬核发现：基于与逆变器图的硬件木马检测能处理十亿门级芯片，而 KernelScript 用类型化 DSL 大幅降低了 eBPF 内核编程风险。  
+想跟进的话，优先读《ADVERSARIAL》的图匹配方法，再结合速读中功耗侧信道分析了解芯片漏洞的完整拼图。
+- 详情：[/202607/28/README](/202607/28/README)
 
 ### 精读区论文标签
-1. [Directed Symbolic Execution for Vulnerability Discovery: An LLM-Guided Approach in KLEE](/202607/27/2607.21676v1-directed-symbolic-execution-for-vulnerability-discovery-an-llm-guided-approach-in-klee)  
+1. [ADVERSARIAL: And-Inverter Graph-Assisted Hardware Trojan Detection At Scale](/202607/28/2607.23882v1-adversarial-and-inverter-graph-assisted-hardware-trojan-detection-at-scale)  
    标签：评分：10.0/10、query:sys-security
-   evidence：LLM引导的符号执行漏洞发现，直接辅助漏洞利用防御
-2. [PoCEvolve: Generating Proof-of-Concept Exploits from Security Patches with Vulnerability-Aware Prompt Evolution](/202607/27/2607.22076v1-pocevolve-generating-proof-of-concept-exploits-from-security-patches-with-vulnerability-aware-prompt-evolution)  
-   标签：评分：10.0/10、query:sys-security
-   evidence：从补丁自动生成PoC利用代码，辅助漏洞评估与防御
-3. [Decentralized Compute on Untrusted Hardware Using Intel TDX and Encrypted CVMs](/202607/27/2607.21865v1-decentralized-compute-on-untrusted-hardware-using-intel-tdx-and-encrypted-cvms)  
+   evidence：使用基于AIG的图学习进行大规模SoC硬件木马检测
+2. [KernelScript: Cross-Boundary Typed DSL for eBPF Applications](/202607/28/2607.23900v1-kernelscript-cross-boundary-typed-dsl-for-ebpf-applications)  
    标签：评分：9.0/10、query:sys-security
-   evidence：提出使用Intel TDX在不可信硬件上进行安全去中心化计算，保护使用中的数据
-4. [Ethereum NFT Smart Contracts: Knowledge-Guided Vulnerability Detection with LLM and Code Slicing](/202607/27/2607.21983v1-ethereum-nft-smart-contracts-knowledge-guided-vulnerability-detection-with-llm-and-code-slicing)  
+   evidence：类型化DSL统一跨边界类型以防止eBPF程序中的内核状态损坏
+3. [EXE-Bench: Ranking the Tradeoffs of AI-based Windows Malware Detectors for Real-World Usability](/202607/28/2607.24177v1-exe-bench-ranking-the-tradeoffs-of-ai-based-windows-malware-detectors-for-real-world-usability)  
    标签：评分：9.0/10、query:sys-security
-   evidence：结合代码切片、知识库和LLM检测以太坊NFT智能合约漏洞
-5. [Tool-Guided Retrieval-Augmented Repair for Securing LLM-Generated C Code](/202607/27/2607.21641v1-tool-guided-retrieval-augmented-repair-for-securing-llm-generated-c-code)  
+   evidence：针对 Windows 恶意软件检测器的基准测试，基于 PE 文件静态分析用于实际部署
+4. [VulnGym: Evaluating Vulnerability Management Strategies against Advanced Persistent Threats](/202607/28/2607.24552v1-vulngym-evaluating-vulnerability-management-strategies-against-advanced-persistent-threats)  
+   标签：评分：9.0/10、query:sys-security
+   evidence：基于强化学习的漏洞管理策略对抗APT评估
+5. [SMARM+: Analyzing and Enhancing Shuffled Measurements for Remote Attestation in Real-Time IoT Settings](/202607/28/2607.23698v1-smarm-analyzing-and-enhancing-shuffled-measurements-for-remote-attestation-in-real-time-iot-settings)  
    标签：评分：8.0/10、query:sys-security
-   evidence：结合静态分析（CodeQL）和符号执行（KLEE）及检索增强修复来保障C代码安全
+   evidence：在ARM TrustZone-M上增强混洗内存测量用于远程证明
 
 ### 速读区论文标签
-1. [ToolGuardian: Declarative Security for AI Agent-Tool Interactions](/202607/27/2607.21835v1-toolguardian-declarative-security-for-ai-agent-tool-interactions)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：利用系统调用追踪对工具行为进行运行时特征分析和授权
+1. [SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow](/202607/28/2607.23218v1-sparc-automated-root-cause-analysis-of-pre-silicon-power-side-channel-leakage-in-the-processor-design-flow)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：硅前功耗侧信道泄漏自动化根因分析
+2. [Early Detection of Hardware Trojans Using Neural Controlled Differential Equations and Analysis of Power Traces](/202607/28/2607.23417v1-early-detection-of-hardware-trojans-using-neural-controlled-differential-equations-and-analysis-of-power-traces)  
+   标签：评分：7.0/10、query:sys-security
+   evidence：通过功耗轨迹分析检测硬件木马，与硬件安全测试相关
 
 
 <div class="dpr-home-promo-card">

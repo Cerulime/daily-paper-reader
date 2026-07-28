@@ -1,0 +1,228 @@
+Title: KernelScript: Cross-Boundary Typed DSL for eBPF Applications
+
+URL Source: https://arxiv.org/pdf/2607.23900v1
+
+Published Time: Tue, 28 Jul 2026 01:23:43 GMT
+
+Number of Pages: 6
+
+Markdown Content:
+# KernelScript: Cross-Boundary Typed DSL for eBPF Applications 
+
+## Cong Wang 1, Siyuan Sun 2, Yusheng Zheng 3
+
+> 1
+
+Multikernel Technologies 2Xi’an University of Posts and Telecommunications 3UC Santa Cruz & Eunomia Labs cwang@multikernel.io, a879650736@gmail.com, yzhen165@ucsc.edu 
+
+## Abstract 
+
+eBPF lets developers extend Linux with custom packet pro-cessing, tracing, and scheduling logic, and a verifier proves before execution that the code will not crash the kernel. The programming model, however, is fragmented: a sin-gle application spans kernel code, a userspace loader, and shared maps, yet the relationships among these pieces go unchecked. E.g. A map or event type defined differently on each side silently corrupts shared state. We observe that these cross-boundary relationships duplicate information that a type system can unify. We present KernelScript, a DSL that types maps, program handles, and execution domains in one source, then compiles to standard C through the orig-inal toolchain. We evaluate KernelScript on 43 eBPF work-loads covering XDP, TC, kprobe, tracepoint, and struct_ops. KernelScript rejects cross-boundary bugs at compile time that standard C/libbpf still builds and loads, a unified source shrinks the diffs for cross-boundary changes by 5 ×, and gen-erated code remains compatible with the existing toolchain. 
+
+CCS Concepts: • Software and its engineering → Do-main specific languages ; Static analysis ; • Computer sys-tems organization → Reliability .
+
+Keywords: eBPF, domain-specific language, static typing, systems 
+
+## 1 Introduction 
+
+eBPF lets developers run application-specific logic inside the Linux kernel under a verifier that proves memory safety and bounded execution [ 21 ]. It now underpins packet processing in major cloud providers, powers observability platforms, and enables scheduler experimentation, all within a large and growing ecosystem [22]. Yet the programming model is fragmented. A single eBPF application spans kernel code constrained by the verifier, a userspace loader that opens objects and manages lifecycle, shared maps and ring buffers, and generated headers that must match the running kernel. The relationships among these pieces, such as a map’s key and value types or the order of load, attach, and detach, are checked only at load time if at all. Errors may go entirely undetected because they do not break the kernel. When a map’s value struct is redefined in kernel C but not in the userspace loader, data is silently mis-interpreted at runtime. When a generated header becomes stale after a struct change, userspace compiles against the old layout and reads corrupt fields. Existing tools reduce boilerplate yet leave cross-boundary relationships implicit. The standard eBPF development work-flow requires hand-written kernel C, userspace C, and a Makefile [ 15 ]. Aya compiles both sides from Rust and shares typed maps [ 1 ], and cilium/ebpf provides the same in Go [ 3 ]. In both, map types are shared but other cross-boundary invariants remain implicit: code that attaches before popu-lating a map compiles without error. No existing tool types the full cross-boundary structure at compile time. The key observation is that these relationships are single concepts duplicated across components. A map declaration is simultaneously a kernel data structure, a userspace lookup target, and a type contract. A program handle is simultane-ously a function name, a BPF section, and a file descriptor. In C/libbpf, naming conventions connect these copies, so mismatches go undetected until load time or runtime. In a unified typed language, the compiler can see and check these relationships directly. KernelScript implements this idea as a compiled DSL that spans kernel and userspace. A developer writes eBPF entry points, userspace control flow, maps, and ring buffers in one source file. The compiler types maps, program handles, and execution domains, then emits eBPF C, userspace C, and a Makefile. The standard libbpf and bpftool path then produces the final binaries, preserving the existing toolchain. This paper contributes: 
+
+• A typed model of cross-boundary eBPF structure: exe-cution domains, typed maps, and program handles with lifecycle rules, each with a typing rule and matching com-piler diagnostic (Section 3). 
+
+• A compiler that implements this model while preserving the existing kernel toolchain (Section 4). 
+
+• Evaluation showing that KernelScript rejects bugs at com-pile time that C/libbpf still builds and loads, produces smaller diffs for cross-boundary changes, and remains compatible with clang, bpftool, and libbpf (Section 5). 
+
+## 2 Background and Motivation 
+
+eBPF allows user-supplied bytecode to run inside the Linux kernel after a verifier proves memory safety and bounded ex-ecution [ 21 , 22 ]. The mechanism now underpins a wide range of applications, including tracing and profiling [ 2 , 12 ], high-performance networking [9], LSM policy enforcement [14], 
+
+> 1arXiv:2607.23900v1 [cs.PL] 27 Jul 2026
+
+CPU scheduling [ 11 ], page-cache customization [ 29 ], GPU resource control [ 27 ], and userspace extension runtimes [ 26 ]. Every eBPF application has a kernel program and a userspace loader that communicate through maps or ring buffers. The standard eBPF workflow requires maintaining separate ker-nel C, userspace C, and a Makefile [15]. The kernel/userspace split introduces problems that cur-rent tools do not fully address. Lifecycle ordering : operations such as load, attach, and detach must occur in a valid order, but the raw libbpf API checks this only at runtime. Shared types : a map’s key and value types must agree across ker-nel code, generated headers, and userspace lookups, yet a mismatch is silent until something fails. Version mismatches 
+
+arise because generated bindings depend on the exact kernel and libbpf versions. The verifier guarantees memory safety but not application correctness across the boundary. Calling 
+
+attach before populating maps lets the kernel program run against empty state. Redefining a ring-buffer event struct on one side without updating the other silently corrupts every record. A stale generated header after a kernel struct change compiles without warning but misaligns every shared field. A DSL can check load/attach order and shared map types at compile time. 
+
+## 3 A Typed Model of Cross-Boundary Structure 
+
+The type system draws on established ideas. Typestate tracks object state in types [ 20 ], and linear types enforce single-use resource protocols [ 5 , 10 , 23 ]. KernelScript applies a light-weight form of these ideas, separating unloaded function references from loaded program handles and annotating ex-ecution domains without full linear or session types. A KernelScript program is a sequence of declarations. List-ing 1 shows a minimal application. The rest of this section describes domains, maps, and handles. 
+
+Listing 1. A unified-source eBPF application.   
+
+> include "xdp.kh" @xdp fn pass_all(ctx: *xdp_md) -> xdp_action {
+> return XDP_PASS }fn main() -> i32 { var prog = load(pass_all) attach(prog, "lo", 0) detach(prog)
+> return 0}
+
+To check execution domains, each function carries an attribute that assigns it to an execution domain 𝑑 ∈{user , ebpf , helper , kfunc }. The attributes @xdp , @tc , @probe ,
+
+@tracepoint , and @perf_event mark eBPF entry points, while @helper marks kernel-shared eBPF code and @kfunc 
+
+marks kernel-module code. An unattributed fn is userspace. The checker tags each function with its domain and rejects illegal crossings, such as a userspace function calling an 
+
+@helper . Each eBPF attribute also fixes a context and return type. For example, @xdp requires ctx:*xdp_md returning 
+
+xdp_action , and @tc requires *__sk_buff returning i32 .The compiler rejects any signature that violates its attribute before code generation. Userspace can allocate and print freely, while eBPF code must obey stack and helper restric-tions. struct_ops callbacks fit the same scheme, with context and return types determined by the registered slot. To keep map types consistent on both sides, a map is de-clared as a typed global ( var m : hash<K,V>(N) ) rather than a C section plus separate userspace lookup code. The compiler checks element types at every access site on both sides of the kernel boundary. An index m[k] requires k:K 
+
+and yields V, in eBPF and userspace alike. A wrong key type, wrong value type, or access to an undeclared map is a compile-time error. One declaration thus replaces the kernel definition, generated fields, and userspace lookups that would otherwise require manual synchronization. To enforce load before attach, the type system distin-guishes a FunctionRef (a reference to an @-attributed function) from a ProgramHandle (a loaded program). Only 
+
+load produces a ProgramHandle . The FunctionRef type connects lifecycle to domains. Only an eBPF entry-point function has type FunctionRef , so an @helper , @kfunc , or userspace function is rejected as an argument to load .
+
+𝑓 has an eBPF entry attribute 
+
+Γ ⊢ 𝑓 : FunctionRef 
+
+Γ ⊢ 𝑓 : FunctionRef 
+
+Γ ⊢ load (𝑓 ) : ProgramHandle 
+
+Γ ⊢ ℎ : ProgramHandle 
+
+Γ ⊢ detach (ℎ) : unit 
+
+Γ ⊢ ℎ : ProgramHandle 
+
+Γ ⊢ attach (ℎ, 𝑡, fl ) : u32 
+
+Because attach and detach require a ProgramHandle and only load produces one, “attach before load” is a type error, not a runtime failure. Passing a bare FunctionRef , an integer, or a string to load , attach , or detach is a type error. Because only load produces a ProgramHandle , the system enforces the single ordering constraint load ≺ { attach , detach } rather than the full load, attach, then detach sequence. Full path-sensitive properties such as use-after-detach, double-attach, or leaked handles remain outside the type system’s scope. 
+
+## 4 Design and Implementation 
+
+The compiler has three design goals. First, it must detect cross-boundary errors at compile time, before the verifier or runtime sees them. Second, it must preserve the existing Linux BPF toolchain. Third, it must generate idiomatic C that developers can inspect and debug.      
+
+> 2foo.ks
+> KernelScript Compiler
+> domains typed maps lifecycle safety
+> foo.ebpf.c foo.c Makefile
+> existing toolchain
+> clang
+> foo.bpf.o
+> bpftool
+> userspace header
+> gcc + libbpf
+> foo
+
+Figure 1. Compilation pipeline. The compiler checks cross-boundary relationships and emits C, and the existing clang/bpftool/libbpf toolchain produces the final binary. To meet these goals, the compiler parses KernelScript source, resolves imports and includes, builds symbol tables, type-checks across programs, checks safety constraints, builds an IR, and emits C (Figure 1). The compiler is written in OCaml with dune. The compiler comprises nine modules covering maps, codegen, safety, and struct_ops. For an input 
+
+foo.ks , the generated project contains foo.ebpf.c , foo.c ,a Makefile , and, when kfuncs are present, foo.mod.c . The Makefile invokes bpftool to dump vmlinux.h , clang to produce a BPF object, bpftool to generate a userspace header, and gcc to link the userspace loader against libbpf. Each typing rule of Section 3 maps to a compiler pass. The IR records each function’s execution domain so that code generation can dispatch the same source function to the eBPF or userspace backend. Typed maps compile to a single descriptor that both backends read to emit the eBPF 
+
+SEC(".maps") definition and the userspace accessor (List-ing 2). Program handles become file descriptors via libbpf APIs at runtime. 
+
+Listing 2. One typed map declaration emits both a kernel 
+
+SEC(".maps") definition and a userspace accessor from a single descriptor.  
+
+> // unified source var counts : hash<u32, u64>(1024) // generated eBPF C
+> struct {__uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 1024); __type(key, __u32); __type(value, __u64); } counts SEC(".maps"); // generated userspace C: same key/value types __u32 key = ...; __u64 val; bpf_map_lookup_elem(counts_fd, &key, &val);
+
+Table 1. Compile-time rejection versus continued load for the three cases above. KernelScript rejects all three at compile time; C/libbpf builds and loads them, and only a runtime check observes the bug. 
+
+Case KernelScript C/libbpf XDP program typed with 
+
+*__sk_buff 
+
+compile reject: wrong context signature loads; misnamed fields read XDP layout on veth 16-byte update into 8-byte map value compile reject: map value type mismatch loads; value truncated under 
+
+BPF_PROG_TEST_RUN 
+
+Map lookup read as unrelated u64 
+
+compile reject: declaration type mismatch loads; native-endian reinter-pretation under 
+
+BPF_PROG_TEST_RUN 
+
+The compiler does not replace the verifier, clang, bpftool, or libbpf, so their diagnostics remain available. For fast-moving interfaces, include and extern declarations provide a fallback to raw headers. 
+
+## 5 Evaluation 
+
+All experiments run on Linux 6.15 with clang 18, bpftool 7.7, and libbpf 1.3.0. 
+
+5.1 Q1: Does KernelScript Reject Bugs at Compile Time that C/libbpf Still Loads? 
+
+A rejection suite of 31 buggy programs (28 constructed, 3 from prior work [ 4]) covers the typing rules of Section 3. The 31 rejections break down as: 7 lifecycle/handle misuses (e.g., attach on FunctionRef , load("string") ), 6 wrong context or return types (e.g., @xdp with *__sk_buff ), 6 map type errors (e.g., string key, value size mismatch), 3 illegal domain crossings (e.g., userspace calling @helper ), 4 general type errors (e.g., 42+true ), 3 safety violations (e.g., 600-byte stack), and 2 perf-event constraints. All fail before code gen-eration with a diagnostic message matching the expected error. For the three prior-work cases, we also verify that C/libbpf still builds and loads the buggy code. These cases are an XDP program typed with __sk_buff , a 16-byte update into an 8-byte map value, and a map lookup reinterpreted as an unrelated u64 . C buggy objects build with clang, pass verifier load, and reproduce the bug under runtime checks: map cases use BPF_PROG_TEST_RUN to observe truncation or reinterpretation, and the context case attaches on a veth to observe field misalignment under traffic. Table 1 shows the same pattern on all three cases. Ker-nelScript rejects at compile time, while C/libbpf loads and requires a runtime check to observe the bug. On 
+
+> 3
+
+the context case, C/libbpf accepts the wrong-typed ob-ject. Under veth traffic, the misnamed fields return XDP 
+
+ingress_ifindex /rx_queue_index values rather than TC protocol/queue values. Map cases reproduce truncation and native-endian reinterpretation under BPF_PROG_TEST_RUN .
+
+5.2 Q2: How Much Smaller Is KernelScript Code than C/libbpf? 
+
+Across 11 workloads with hand-written C/libbpf baselines, KernelScript sources total 203 lines versus 1105 for C/libbpf (5.4 × smaller). 1 Cross-boundary changes are also smaller: we construct five changes (map array →percpu\_array , pro-gram @xdp →@tc , perf_event standalone →grouped, shared ring-buffer event struct, adding ring-buffer reporting) and compare diffs. Figure 2 plots changed LOC per change. We also record files touched, distinct edit sites, and which sides need manual updates, whether kernel, userspace, or gener-ated headers and BPF section names. None of the KernelScript changes require manual cross-boundary synchronization, whereas hand-written C/libbpf requires userspace synchronization in 5/5 cases, kernel-side synchronization in 4/5, and generated-header or BPF section-name updates in 3/5. KernelScript touches 1 file, 2 edit sites, and 6 lines (median), versus 2, 7, and 30 for C/libbpf. As cross-boundary structure accumulates (XDP that only for-wards packets → counter map → ring-buffer reporting), KernelScript grows more slowly: +2 lines for the counter map versus +11 in C/libbpf, and +12 for ring-buffer report-ing versus +202. By the reporting stage, C/libbpf reaches 9 ×
+
+the KernelScript source size. 
+
+5.3 Q3: Is KernelScript Compatible with clang, bpftool, and libbpf? 
+
+Of 43 repository examples spanning XDP, TC, kprobe, tra-cepoint, perf_event, maps, ring buffers, tail calls, kfuncs, and struct_ops, 41 build unmodified through the generated Makefile and the remaining two struct_ops examples after a one-line fix for a libbpf version skew: bpftool 7.7’s gen-erated userspace header assigns a map link field that the installed libbpf 1.3.0 does not define (libbpf 1.6 does), so the incompatibility lies in bpftool’s output rather than in code KernelScript emits. Both then load, attach, and detach cor-rectly on a real kernel. On a real kernel, 27 single-program XDP objects attach and detach in isolated netns/veth pairs. The same workloads for XDP/TC traffic, ring-buffer events, perf_event counters, and selected struct_ops paths pass the same behavioral checks. Under BPF_PROG_TEST_RUN , a min-imal generated XDP pass runs at 5 ns per invocation against 6 ns for its hand-written baseline. Across ten veth/iperf3 tri-als, generated objects sustain 17.25 Gbps against 17.34 hand-written on a counter workload and 17.35 against 17.81 on pass, within run-to-run variance. 
+
+> 1SLOC counts exclude blank lines, comments, and generated headers. map type
+> xdp→tc
+> perf group
+> event schema
+> ringbuf
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Changed LOC
+> KernelScript
+> C/libbpf
+
+Figure 2. Changed LOC for the same five changes. Ker-nelScript stays in a single typed source, while C/libbpf re-quires multi-file coordination (median 6 vs. 30 LOC, and KernelScript needs no manual kernel/userspace/header sync on any change). 
+
+## 6 Related Work 
+
+Existing work on eBPF development falls into three cate-gories. Specialized DSLs target particular use cases, includ-ing bpftrace for tracing [ 2 ], BPFBox and ActPlane for pol-icy enforcement [ 7 , 25 ], BMC for caching [ 8 ], P4c-eBPF for networking [ 17 ], and Yaksha-Prashna for bytecode analy-sis [ 19 ]. These DSLs primarily target kernel-side code and do not type the full cross-boundary structure that KernelScript addresses. General eBPF development tools include the stan-dard eBPF development workflow [ 15 ], Aya for Rust [ 1 ], Rex for safe Rust kernel extensions without a verifier [ 13 ], Wasm-bpf for WebAssembly deployment [ 28 ], and eunomia-bpf for dynamic loading [ 6 ]. These reduce boilerplate but do not type execution domains or enforce context/return-type constraints at compile time. Verified approaches take a different direction: BeePL provides correct-by-compilation kernel extensions [ 18 ], and Jitk and Serval verify JIT cor-rectness [ 16 , 24 ]. KernelScript differs by generating both kernel and userspace code from one source and typing cross-boundary relationships. It aims for practical integration with the existing toolchain rather than formal verification. 
+
+## 7 Conclusion 
+
+KernelScript types the cross-boundary structure of an eBPF application, covering program lifecycle, shared maps, and execution domains. This replaces conventions and late veri-fier or attach-time failures with compile-time checks. Typed checks reject wrong context types and map type bugs before code generation. C/libbpf still builds and loads these bugs, ex-hibiting the corresponding runtime misinterpretation. A uni-fied source keeps the same cross-boundary changes smaller, 
+
+> 4
+
+and generated objects build and run through clang, bpftool, and libbpf on a real kernel. 
+
+## References 
+
+[1] Aya contributors. 2026. Aya: Rust eBPF library. https://github.com/ aya-rs/aya .[2] bpftrace developers. 2026. bpftrace: High-level tracing language for Linux eBPF. https://github.com/bpftrace/bpftrace .[3] Cilium contributors. 2026. cilium/ebpf: eBPF library for Go. https: //github.com/cilium/ebpf .[4] Vishnu Asutosh Dasu, Monika Santra, Md Rafi Ur Rashid, Ashish Kumar, Saeid Tizpaz-Niari, and Gang Tan. 2026. Heimdall: Formally Verified Automated Migration of Legacy eBPF Programs to Rust. arXiv preprint arXiv:2605.25411. [5] Robert DeLine and Manuel Fähndrich. 2001. Enforcing High-Level Protocols in Low-Level Software. In Proceedings of the ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI) . 59–69. doi: 10.1145/378795.378811 
+
+[6] eunomia-bpf developers. 2024. eunomia-bpf: A Dynamic Loading Framework for eBPF. https://github.com/eunomia-bpf/eunomia-bpf .[7] William Findlay, Anil Somayaji, and David Barrera. 2020. BPFBox: Simple Precise Process Confinement with eBPF. In Proceedings of the 2020 ACM SIGSAC Conference on Cloud Computing Security Workshop (CCSW) . 91–103. doi: 10.1145/3411495.3421358 
+
+[8] Yoann Ghigoff, Julien Sopena, Kahina Lazri, Antoine Blin, and Gilles Muller. 2021. BMC: Accelerating Memcached using Safe In-kernel Caching and Pre-stack Processing. In Proceedings of the 18th USENIX Symposium on Networked Systems Design and Implementation (NSDI) .487–501. https://www.usenix.org/conference/nsdi21/presentation/ ghigoff 
+
+[9] Toke Høiland-Jørgensen, Jesper Dangaard Brouer, Daniel Borkmann, John Fastabend, Tom Herbert, David Ahern, and David Miller. 2018. The eXpress Data Path: Fast Programmable Packet Processing in the Operating System Kernel. In Proceedings of the 14th International Conference on Emerging Networking Experiments and Technologies (CoNEXT) . 54–66. [10] Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured Communication-Based Programming. In Programming Languages and Systems (ESOP) . 122– 138. doi: 10.1007/BFb0053567 
+
+[11] Jack Tigar Humphries, Neel Natu, Ashwin Chaugule, Ofir Weisse, Barret Rhoden, Josh Don, Luigi Rizzo, Oleg Noskov, Paul Turner, and Christos Kozyrakis. 2021. ghOSt: Fast & Flexible User-Space Delega-tion of Linux Scheduling. In Proceedings of the 28th ACM Symposium on Operating Systems Principles (SOSP) . 588–604. doi: 10.1145/3477132. 3483542 
+
+[12] iovisor/bcc developers. 2026. BCC: Tools for BPF-based Linux IO anal-ysis, networking, monitoring, and more. https://github.com/iovisor/ bcc .[13] Jinghao Jia, Ruowen Qin, Milo Craun, Egor Lukiyanov, Ayush Bansal, Minh Phan, Michael V. Le, Hubertus Franke, Hani Jamjoom, Tianyin Xu, and Dan Williams. 2025. Rex: Closing the Language-Verifier Gap with Safe and Usable Kernel Extensions. In 2025 USENIX Annual Techni-cal Conference (USENIX ATC 25) . https://www.usenix.org/conference/ atc25/presentation/jia 
+
+[14] KP Singh. 2020. LSM BPF: Kernel Runtime Security Instrumentation. 
+
+https://docs.kernel.org/bpf/prog_lsm.html . Linux kernel 5.7+. [15] libbpf developers. 2026. libbpf: a BPF CO-RE userspace library. https: //github.com/libbpf/libbpf .[16] Luke Nelson, James Bornholt, Ronghui Gu, Andrew Baumann, Emina Torlak, and Xi Wang. 2019. Scaling Symbolic Evaluation for Automated Verification of Systems Code with Serval. In Proceedings of the 27th ACM Symposium on Operating Systems Principles (SOSP) . 225–242. doi: 10.1145/3341301.3359641 
+
+[17] P4 Language Consortium. 2024. P4c-eBPF: P4 Compiler Backend for eBPF. https://github.com/p4lang/p4c/tree/main/backends/ebpf .
+
+> 5
+
+[18] Swarn Priya, Frédéric Besson, Connor Sughrue, Tim Steen-voorden, Jamie Fulford, Freek Verbeek, and Binoy Ravin-dran. 2025. BeePL: Correct-by-Compilation Kernel Exten-sions. In Principles of Secure Compilation (PriSC @ POPL) .
+
+https://popl25.sigplan.org/details/prisc-2025-PriSC-2024-1/3/BeePL-Correct-by-compilation-kernel-extensions 
+
+[19] Animesh Singh, K. Shiv Kumar, S. VenkataKeerthy, Pragna Mamidi-paka, R. V. B. R. N. Aaseesh, Sayandeep Sen, Palanivel A. Kodeswaran, Theophilus A. Benson, Ramakrishna Upadrasta, and Praveen Tam-mana. 2026. Yaksha-Prashna: Understanding eBPF Bytecode Network Function Behavior. arXiv preprint arXiv:2602.11232. [20] Robert E. Strom and Shaula Yemini. 1986. Typestate: A Programming Language Concept for Enhancing Software Reliability. IEEE Transac-tions on Software Engineering SE-12, 1 (1986), 157–171. doi: 10.1109/ TSE.1986.6312929 
+
+[21] The Linux Kernel Documentation Project. 2026. eBPF Documentation. 
+
+https://docs.kernel.org/bpf/ .[22] Marcos A. M. Vieira, Matheus S. Castanho, Racyus D. G. Pacífico, Elerson R. S. Santos, Eduardo P. M. Câmara Juńior, and Luiz F. M. Vieira. 2021. Fast Packet Processing with eBPF and XDP: Concepts, Code, Challenges, and Applications. Comput. Surveys 53, 1 (2021), 1–36. doi: 10.1145/3371038 
+
+[23] Philip Wadler. 1990. Linear Types Can Change the World! In Pro-gramming Concepts and Methods , M. Broy and C. Jones (Eds.). North-Holland. https://oa.mg/work/2912106379 
+
+[24] Xi Wang, David Lazar, Nickolai Zeldovich, Adam Chlipala, and Zachary Tatlock. 2014. Jitk: A Trustworthy In-Kernel Inter-preter Infrastructure. In Proceedings of the 11th USENIX Sympo-sium on Operating Systems Design and Implementation (OSDI) . 33– 47. https://www.usenix.org/conference/osdi14/technical-sessions/ presentation/wang_xi 
+
+[25] Yusheng Zheng, Tianyuan Wu, Quanzhi Fu, Tong Yu, Wenan Mao, Tao Ma, Dan Williams, Wei Wang, and Andi Quinn. 2026. ActPlane: Programmable OS-Level Policy Enforcement for Agent Harnesses. arXiv preprint arXiv:2606.25189. [26] Yusheng Zheng, Tong Yu, Yiwei Yang, Yanpeng Hu, Xiaozheng Lai, Dan Williams, and Andi Quinn. 2025. Extending Applications Safely and Efficiently. In 19th USENIX Symposium on Operating Systems Design and Implementation (OSDI 25) . https://www.usenix.org/ conference/osdi25/presentation/zheng-yusheng 
+
+[27] Yusheng Zheng, Tong Yu, Yiwei Yang, Minghui Jiang, Xiangyu Gao, Jianchang Su, Yanpeng Hu, Wenan Mao, Wei Zhang, Dan Williams, and Andi Quinn. 2025. gpu_ext: Extensible OS Policies for GPUs via eBPF. arXiv preprint arXiv:2512.12615. [28] Yusheng Zheng, Tong Yu, Yiwei Yang, and Andrew Quinn. 2024. Wasm-bpf: Streamlining eBPF Deployment in Cloud Environments with WebAssembly. arXiv preprint arXiv:2408.04856. [29] Tal Zussman, Ioannis Zarkadas, Jeremy Carin, Andrew Cheng, Hu-bertus Franke, Jonas Pfefferle, and Asaf Cidon. 2025. cache_ext: Customizing the Page Cache with eBPF. In Proceedings of the 30th ACM Symposium on Operating Systems Principles (SOSP) . 462–478. doi: 10.1145/3731569.3764820
