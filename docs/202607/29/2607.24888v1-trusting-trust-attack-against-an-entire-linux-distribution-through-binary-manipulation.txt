@@ -1,0 +1,464 @@
+Title: Trusting-Trust Attack against an Entire Linux Distribution through Binary Manipulation
+
+URL Source: https://arxiv.org/pdf/2607.24888v1
+
+Published Time: Wed, 29 Jul 2026 00:05:30 GMT
+
+Number of Pages: 10
+
+Markdown Content:
+# Trusting-Trust Attack against an Entire Linux Distribution through Binary Manipulation 
+
+# Julien Malka 
+
+julien.malka@telecom-paris.fr LTCI, Télécom Paris, Institut Polytechnique de Paris Palaiseau, France 
+
+# Aman Sharma 
+
+amansha@kth.se KTH Royal Institute of Technology Stockholm, Sweden 
+
+# Martin Monperrus 
+
+monperrus@kth.se KTH Royal Institute of Technology Stockholm, Sweden 
+
+# Stefano Zacchiroli 
+
+stefano.zacchiroli@telecom-paris.fr LTCI, Télécom Paris, Institut Polytechnique de Paris Palaiseau, France 
+
+# Théo Zimmermann 
+
+theo.zimmermann@telecom-paris.fr LTCI, Télécom Paris, Institut Polytechnique de Paris Palaiseau, France 
+
+## Abstract 
+
+Ken Thompson’s trusting-trust attack, in which a compromised compiler backdoors the programs it builds and reproduces the back-door in subsequent rebuilds of itself, is widely regarded as a threat specific to compilers. We show that it is not. We construct a com-plete trusting-trust attack around GNU strip , an ordinary build utility that neither inspects nor generates source code, using only manipulations of finished ELF files. In the bootstrap of the NixOS Linux distribution, a single tampered strip in the binary seed im-plants a payload that propagates from one generation of strip to the next and survives into the final standard environment after the seed leaves the dependency closure. On a real nixpkgs revision, the attack builds a complete graphical installer without failures and backdoors almost every one of its binaries, enabling arbitrary malicious behavior of the subverted packages. 
+
+## CCS Concepts 
+
+• Security and privacy → Software security engineering ; •
+
+Software and its engineering → Software creation and manage-ment .
+
+## Keywords 
+
+trusting trust, software supply chain, bootstrapping, Linux distri-butions, binary rewriting 
+
+## 1 Introduction 
+
+“Given enough eyeballs, all bugs are shallow.” Here goes the famous Linus’s law, promoted by Eric S. Raymond [ 20 ] in his essay on open source software development. What it means is that public availability of source code that can be reviewed by anyone, includ-ing many security experts, makes free and open source software comparatively much less likely to have bugs, security vulnerabil-ities, or backdoors. Yet, to run, software must be first compiled, and because of this, the extent to which such software should be trusted is, in fact, more limited. As Ken Thompson showed in his Turing Award lecture [ 23 ], there exists a class of compromises that source code review cannot expose. In Thompson’s construction, a malicious compiler recognizes both a security-sensitive program and the source of the compiler itself. It inserts a backdoor into the former and reproduces this logic in the latter. The malicious source can then be removed: recompiling a clean compiler source with the compromised binary propagates the compromise. While Thompson’s conceptual attack, dubbed “trusting trust”, was more than a thought experiment, as he actually implemented a prototype, there is a lack of documented or studied implementations, and it is generally not known how realistic it would be for such a backdoor to perpetuate in real life. One difficulty in particular is that the malicious compiler needs to detect its own source code to be able to produce an altered compiled version, which means that significant evolution of the source could, in practice, stop the backdoor from propagating, even without having been detected. Although the trusting-trust attack was introduced and is gen-erally viewed as an attack targeting compilers, we show that its underlying mechanism extends to other build utilities. We instanti-ate the attack in GNU strip , a post-build utility from GNU binu-tils that removes information from object files and executables, in the context of the NixOS Linux distribution. Because strip pro-cesses a large fraction of the executables produced by a distribution, compromising it provides an opportunity both to propagate the compromise and to affect downstream software. We demonstrate an end-to-end attack in which a malicious strip 
+
+binary placed in the initial NixOS bootstrap seed reproduces the compromise when strip is rebuilt from clean source and subse-quently modifies other executables processed during the build. Un-like Thompson’s original construction, our attack operates entirely through ELF-level transformations and neither inspects nor modi-fies source code. It is therefore insensitive to source-level changes that would prevent a malicious compiler from recognizing its own source. To our knowledge, this is the first documented end-to-end implementation of a self-propagating trusting-trust attack carried by a non-compiling post-build utility through the bootstrap of a production Linux distribution. This paper makes the following contributions: 
+
+• We show that the trusting-trust attack extends beyond com-pilers by designing a self-propagating compromise of GNU 
+
+strip based entirely on ELF-level transformations that nei-ther inspect nor modify source code (Section 4). 
+
+> 1arXiv:2607.24888v1 [cs.CR] 27 Jul 2026 Julien Malka, Aman Sharma, Martin Monperrus, Stefano Zacchiroli, and Théo Zimmermann
+
+• We demonstrate that the attack propagates end to end through the NixOS bootstrap and persists in the final stan-dard environment after the malicious seed has left the de-pendency closure (Sections 3 and 4). 
+
+• We evaluate the attack by rebuilding a large and represen-tative package set from nixpkgs, measuring its effect on buildability, its reach across downstream executables, and its impact on their runtime behavior (Section 5). We release the complete implementation and experimental arti-facts in our replication package [1]. 
+
+## 2 Background 2.1 Bootstrapping Linux Distributions 
+
+A Linux distribution is a curated collection of software (the kernel, a compiler toolchain and C library, system services, and end-user applications) assembled and shipped together as a complete operat-ing system, with a package manager that installs and updates the individual packages . Debian, Fedora, Arch Linux, and the Nix-based NixOS are such examples. A distribution contains recipes to build packages: the recipe states the upstream source and the exact steps that turn that source into an installable package. A Linux distribution needs to be bootstrapped: producing pack-ages requires a compiler, a linker, a C library. Construction of the entire distribution must therefore begin from a small set of pre-existing binaries called the bootstrap seed . Bootstrapping is the process that starts from this seed and builds a build toolchain. A distribution is self-hosted when it depends only on binary artifacts it has built itself. 
+
+## 2.2 The Nixpkgs Bootstrap 
+
+Nix is a functional package manager, a model in which packages are built from recipes (also called derivations ) written in a functional programming language. Derivations contain a precise definition of the build environment needed to build the packages and un-declared dependencies are excluded from builds by a sandboxing mechanism [8]. The package collection nixpkgs gathers the package recipes from which the Linux distribution NixOS is built. Nixpkgs packages are built from a standard environment (or stdenv ), containing a C toolchain and associated build helpers such as binutils, a shell, and basic Unix tools [ 18 ]. The standard environment also provides a 
+
+generic builder that runs each package through a fixed sequence of standard phases [ 18 ]. These phases unpack, configure, build, and install the sources, and a final fixup phase then post-processes the installed outputs, for example by stripping their binaries and ad-justing their runtime paths. Constructing stdenv poses the familiar chicken-and-egg bootstrap problem described in Section 2.1: those tools are needed to build themselves. To solve it, Nixpkgs relies on a small set of pre-built binaries called the bootstrap seed in order to build the standard environment from source. The seed bundles roughly twenty prebuilt programs, including a C compiler, binutils, the C library, and core utilities such as bash ,
+
+coreutils , tar , gzip , patch , etc [ 25 ]. The bootstrap rebuilds the toolchain and basic utilities from source in several stages, each stage using artifacts produced by earlier ones, until the final stdenv no longer refers to the seed at run time.        
+
+> stage 0: accepted bootstrap tools seed strip
+> stage 1: first binutils built from source seed strip performs fixup
+> intermediate stages: rebuild GCC and libc reuse, copy, or rewrap binutils
+> stage 4: fresh binutils built from source preceding strip performs fixup
+> final stdenv and packages no requisite on bootstrap tools
+
+Figure 1: Relevant portion of the evaluated nixpkgs bootstrap. Heavy-bordered boxes build a fresh strip from source, and dashed boxes reuse or rewrap an existing generation. Binutils, and therefore strip , is built afresh twice, in stage 1 and again in stage 4. 
+
+The bootstrap process happens in several stages, gradually re-building tools that are included in the seed in order to cut run-time dependencies on the tool. Each stage builds fresh parts of the toolchain, which lets the following stage depend a little less on the seed. Binutils, and with it strip , is built more than once for the same reason. The first strip produced during the bootstrap is still made with the seed’s compiler, so a later stage builds strip 
+
+again with the rebuilt toolchain, leaving the final strip built by Nixpkgs’s own tools rather than the seed’s. Figure 1 shows the relevant portion of this sequence. 
+
+## 2.3 Trusting Trust Attack 
+
+The original trusting-trust attack has been described by Thomp-son [ 23 ]. In this attack, a compromised compiler binary compiles the source code of its own successor. That source code is clean: it contains no malicious logic. During compilation, however, the compromised binary injects malicious logic into the new binary. Because the injection happens during compilation rather than in the source, inspecting the source code cannot detect it. The injected logic includes a copy of itself. When the new binary later compiles another generation of compiler source, it performs the same injec-tion. The attack propagates this way indefinitely, regardless of how many times the source is audited. 
+
+## 2.4 Linux Internals 
+
+2.4.1 The strip utility. GNU strip , part of binutils, removes sym-bols and other information from object files. strip is the tool the generic builder runs in the fixup phase [ 18 ]. Thus strip is routinely granted write access to executable package outputs. 
+
+2.4.2 ELF Format. The Executable and Linkable Format (ELF) is the standard binary format for Linux executables, shared libraries, and object files. It is consumed both by the operating system to load and execute a program and by build tools to transform programs. 
+
+> 2
+
+Figure 2 presents a running example of a simplified ELF file and how it is mapped in memory by the operating system loader. An ELF file begins with a header that identifies the target architecture and file type and locates two different tables: the program header table (located by the e_phoff entry) and the section header table 
+
+(located by the e_shoff entry). The header also contains e_entry ,the virtual address at which execution begins [22]. Program headers describe the file as the operating-system loader sees it. Each entry describes a segment : a range of file bytes and the memory range, alignment, and permissions associated with it. A 
+
+PT_LOAD entry instructs the loader to map bytes into the process image. Other entries carry auxiliary information. In particular, PT_-INTERP names the dynamic loader and PT_NOTE carries notes such as ABI or build metadata. Once the loadable segments are mapped, the kernel transfers control to the e_entry address. It does not need the section table to start the program. Section headers provide a complementary, tool-oriented view of many of the same bytes. Named sections such as .text , .data ,symbol tables, and note sections describe logical units used by linkers, debuggers, and binary utilities. A segment may contain several sections, and some sections need not be mapped at runtime. GNU strip reasons about this representation when deciding which information to retain or discard. Programs headers and sections headers are not consumed by the same programs, however they must stay coherent with one another. 
+
+2.4.3 ELF transformations. The attack described in this paper does not act on the source code of the packages it targets. It manipu-lates the binary files directly. We call these binary-level edits ELF transformations [4]. We use three transformations defined below that add regions and adjust metadata. They never rewrite existing program code or data. 
+
+• Append adds new bytes at the end of the file; 
+
+• Repurpose hijacks one spare metadata slot, a PT_NOTE pro-gram header the loader does not need for execution, to use as an executable segment instead; 
+
+• Redirect changes a few ELF-header fields so that the loader and the binary tools notice what was appended. Because every transformation is additive, the original program bytes are preserved. Figure 3 shows each transformation as a con-crete before/after edit to the file. 
+
+## 3 Threat Model 
+
+We assume the attacker wants to attack a Linux distribution by targeting its binary bootstrap seed. The attacker capabilities are as follows. The attacker can replace one executable in the bootstrap seed of the distribution. The attacker cannot modify any distribution recipe or package sources. This capability models compromise before the seed is included in the distribution: for example, by compromising the system that produces or publishes bootstrap archives, or by making an autho-rized update to the pinned seed, or with social engineering of the process by which maintainers decide and merge a new seed. 
+
+## 4 The Bootstrapping Attack 4.1 Attack Objective 
+
+The objective of the attack is to compromise every downstream user of the distribution, and to keep doing so indefinitely. We design and implement the attack through the strip binary, because it touches all binaries in a distribution. Unlike a compiler such as 
+
+gcc , which affects only the programs written in the languages it compiles, strip operates on finished ELF binaries directly and therefore reaches the outputs of every language and toolchain. So, per the trusting trust attack model, a single tampered seed 
+
+strip can both (1) infect any application target and (2) reproduce the compromise in the next built strip . The attack is invisible to an auditor who reads the sources or the recipe. 
+
+## 4.2 Attack Overview 
+
+Figure 4 summarizes the attack in three stages. Seed tampering 
+
+builds a trojaned seed containing a compromised strip . Propaga-tion carries that malicious behavior across the NixOS bootstrap to every later strip . Compromise is when a subverted application executable runs on the victim’s machine. Seed tampering (Section 4.3) constructs the trojaned seed. Prop-agation (Section 4.4) spreads it through the bootstrap. Compromise (Section 4.5) describes the observable effect on the victim. 
+
+## 4.3 Seed Tampering 
+
+Our attack instantiates strip as a self-propagating build utility . One generation of such a utility processes a newly built successor, so that behavior copies across the generation boundary. Three conditions make the pattern possible, and strip satisfies all three. First (C1), the bootstrap must trust the utility before it builds the utility from source, and strip ships in the bootstrap seed. Second (C2), an older generation must write into the representation of a newer one, and 
+
+strip rewrites a binary during the fixup phase. Third (C3), the modified successor must later take over the same role, and every later stage runs strip again for fixup. We call this third relation the 
+
+successor edge , and it is what carries the payload across generations. We build the trojaned strip by injecting the payload into the ELF file of the genuine strip with the ELF transformations of Section 2.4.3. For the malicious strip to be self-replicating, the injector must write the payload into an executable, because strip 
+
+only sees such executables. The injector appends the payload at the end of the ELF file. This has no effect on execution at that point, because the region is not mapped in memory, as it is not referenced by the program headers. The injector then repurposes a non-functional PT_NOTE program header and turns it into a PT_LOAD entry that points at the newly added payload, so that the operating system loads it as an executable memory segment. This step assumes the target carries at least one spare PT_NOTE header, which holds for the toolchain binaries we target because the linker emits a build-id note ( .note.gnu.build-id ) by default. Finally, the injector redirects normal execution by modifying the e_entry ELF header, so that the kernel jumps directly to the payload when it executes the program. The first stage of Figure 4 shows this redirection, where the entry point that normally reaches the .text section is made to point at the injected code 
+
+> 3
+
+Julien Malka, Aman Sharma, Martin Monperrus, Stefano Zacchiroli, and Théo Zimmermann                   
+
+> ELF header
+> e_entry=0x401050 e_phoff=0x0040 •e_shoff=0x3400
+> PT_LOAD R E file 0x1050 •vaddr 0x401050
+> PT_LOAD R W file 0x1200 •vaddr 0x402200
+> PT_INTERP names ld-linux, not mapped
+> PT_NOTE build-id note, not mapped
+> .note.gnu.build-id
+> .text
+> .data
+> section headers
+> program headers
+> 0x0000
+> 0x0040
+> 0x02c4
+> 0x1050
+> 0x1200
+> 0x3400
+> ELF file
+> RW PT_LOAD
+> vaddr 0x402200
+> .data •R W
+> unmapped gap
+> RX PT_LOAD
+> vaddr 0x401050
+> .text •R E
+> virtual memory
+> maps
+> maps
+> e_entry
+
+Figure 2: Simplified example of an ELF file and associated memory layout when running it. The program header table has four entries. The two PT_LOAD entries create mapped regions. Each PT_LOAD identifies its bytes by a file offset and declare the virtual address to map them at. PT_INTERP and PT_NOTE are metadata and map no new memory. Execution starts at e_entry inside the executable segment.     
+
+> ELF header
+> program headers
+> .text (RX)
+> .data (RW)
+> section table
+> ELF header
+> program headers
+> .text (RX)
+> .data (RW)
+> section table
+> added bytes
+
+⇒
+
+(a) Append adds new bytes at the end of the file.      
+
+> program headers
+> PT_LOAD R+X
+> PT_LOAD R+W
+> PT_NOTE
+> PT_INTERP
+> program headers
+> PT_LOAD R+X
+> PT_LOAD R+W
+> PT_LOAD R+X
+> (was NOTE)
+> PT_INTERP
+
+⇒
+
+(b) Repurpose retypes a spare PT_NOTE header as an executable PT_-LOAD segment.  
+
+> ELF header
+> e_entry e_shoff
+> original entry in .text
+> original section table
+> appended payload
+> new section table
+> e_entry
+> e_shoff
+> dashed before, solid after
+
+(c) Redirect repoints e_entry and e_shoff at the appended regions. 
+
+Figure 3: The three ELF transformations we define, each shown as a before/after edit to the file in the style of Figure 2. 
+
+instead. The payload also embeds the original e_entry so that it can return to normal execution after performing its actions. The produced ELF file must also stay coherent from the section-table view, otherwise the nixpkgs post-processing step would dis-card the appended code. The injector therefore describes the pay-load as a new .payload section. It cannot enlarge the original section table in place, because the memory layout leaves no room for a larger table. It instead builds a new section table at the end of the file. This new table extends the original one with the .payload 
+
+entry. The injector then redirects e_shoff to the new table, so the new table overrides the original. The old section table stays in the file but is now unreachable. Figure 5 applies all three transforma-tions to the running example of Figure 2, showing the file before and after injection and the resulting memory layout. 
+
+## 4.4 Propagation 
+
+The second stage of Figure 4 shows how the payload spreads through the bootstrap along the successor edge. Each generation of strip implants the payload into the next while the source stays clean, which realizes the second and third conditions of subsec-tion 4.3, where the older generation writes into the newer one and the successor takes over the same role. 
+
+4Figure 4: Overview of the attack design and implementation. 
+
+Every package build runs a build phase that compiles it from clean source, followed by a fixup phase that runs strip over the installed binaries. Write strip 𝑖 for the strip on the build path at generation 𝑖 , starting from the seed’s trojaned strip 0. When 
+
+strip is rebuilt, the build phase compiles a fresh strip 1 from clean source, and the fixup phase runs strip 0 over the newly built binaries, including strip 1 itself. Because strip 0 already carries the payload, it runs before strip ’s own code, detects that it executes as 
+
+strip , and uses the injector of Section 4.3 to implant the payload into strip 1 before stripping it. So strip 1 is backdoored despite being built from clean source, and it implants strip 2 in turn. The chain carries the payload from strip 0 to the strip of the final standard environment. The compromised strip can also implant the payload into any eligible binary it fixes up. Because each package runs a fixup phase by default, and that phase invokes the compromised strip , every binary the distribution produces carries the payload. 
+
+## 4.5 Compromise 
+
+The third stage of Figure 4 shows the effect on the end user. The payload runs whenever a backdoored binary starts, and on every host it runs its malicious behavior. The payload must attach to something every executable has, so that it infects as many executables as possible, and it must run without any help from the host. It therefore lives at the program’s entry point, which the kernel reaches before any language runtime starts. This constraint forces the payload to be self-contained, so we write it as a freestanding program [ 6 ]. Such a program links against no libraries, avoids libc and the host’s dynamic symbols, and calls the kernel directly. We need this because we implant the identical bytes into executables with unrelated dependencies, so the payload can rely on nothing they provide. Because it runs even before the ordinary _start routine, the pay-load is a careful guest. It saves the registers the kernel handed to the process, aligns the stack as the x86-64 calling convention requires, and later restores the registers that _start expects untouched. It 
+
+> 5
+
+Julien Malka, Aman Sharma, Martin Monperrus, Stefano Zacchiroli, and Théo Zimmermann        
+
+> ELF header
+> e_entry=0x401050 •e_shoff=0x3400
+> program headers
+> PT_LOAD ×2, PT_INTERP ,PT_NOTE
+> .text R E
+> .data R W
+> section headers off 0x3400
+
+(a) The finished file, before injection.               
+
+> ELF header redirect
+> e_entry=0x403000 •e_shoff=0x4160
+> program headers repurpose
+> PT_NOTE →PT_LOAD 0x403000 R E
+> .text unchanged
+> .data unchanged
+> old section headers bypassed
+> payload •.payload append
+> off 0x4000 •vaddr 0x403000
+> new section headers append
+> off 0x4160
+
+(b) After injection two header fields change and two regions are appended; every other byte is identical.          
+
+> RX PT_LOAD
+> 0x403000 •payload
+> unmapped gap
+> RW PT_LOAD
+> 0x402200 •.data
+> RX PT_LOAD
+> 0x401050 .text
+> orig entry 0x401050
+> higher addresses ↑
+> e_entry
+> 0x403000
+> jumps to 0x401050
+
+(c) At run time the payload maps as a new executable segment, runs first, and jumps to the original entry. 
+
+Figure 5: How the injector rewrites the running example of Figure 2. It redirects e_entry and e_shoff , repurposes the spare 
+
+PT_NOTE header into an executable PT_LOAD , and appends the payload (named by a .payload section) together with a new section-header table. Every original byte is preserved, so execution begins in the appended segment and then returns to the host’s original entry point. 
+
+jumps to the host’s original entry point rather than forking or re-placing the process, so the host keeps its PID, file descriptors, signal context, initial stack, and startup sequence. Figure 6 traces the runtime path. 1○ The kernel enters the process at the implanted entry point, not the host’s own. 2○ The payload saves the kernel’s registers and aligns the stack. 3○ It checks for a Nix build, emitting the infection marker outside the sandbox and staying silent inside. 4○ It reads its own basename and implants the eligible file arguments only when the host is genuinely strip .
+
+> 5
+
+○ It restores the saved state and jumps to the host’s original entry point. The payload detects a Nix build by reading the NIX_BUILD_TOP 
+
+environment variable, and it stays silent inside the sandbox so that its behavior never fails a functional test during a build. Outside the sandbox it runs its malicious behavior with the same permissions as the caller of the subverted executable. In our prototype that behavior is a single fixed infection marker, the string “You’ve been pwned!\n” , written to standard output before the host runs. It stands in for any action the payload could take instead, such as stealing the user’s credentials or tokens in the background. 
+
+## 5 Experimental Evaluation 
+
+We evaluate the attack along three axes. First, does the compro-mised utility prevent any package from building? Second, which downstream outputs does it reach? Finally, does the payload injec-tion impede the normal run-time behavior of subverted packages? 
+
+## 5.1 Protocol 
+
+We use nixpkgs at revision fef9403a3e4d , whose bootstrap uses GNU binutils 2.44, and evaluate on x86_64-linux .We construct a compromised strip starting from the original one provided by nixpkgs. We then build the graphical ISO installer, which is a package set both representative of the wider distribution 
+
+> 1
+
+○ kernel enters implanted e_entry 
+
+> 2
+
+○ save registers, align stack 
+
+> 3
+
+○ inside Nix build? 
+
+> 4
+
+○ basename is strip ?
+
+> 5
+
+○ restore state, jump to original e_entry 
+
+emit marker 
+
+implant eligible arguments 
+
+> yes
+> no
+> no
+> yes
+
+Figure 6: Runtime control flow of an implanted executable. Every host runs the prologue, but only a host named strip 
+
+mutates arguments. The circled numbers match the walk-through in the text. 
+
+and large (about 2000 packages). We count the number of packages from that package set that build correctly under our compromised seed. We detect infected packages by running them and checking 
+
+6Table 1: Selection of executables in the trojaned graphical installer closure, by source-language ecosystem. Every listed binary carries the infection marker. 
+
+Ecosystem Example binary Size Infected? C / C++ bash 1,327 KB !
+
+C / C++ git 56,313 KB !
+
+C / C++ sudo 248 KB !
+
+C / C++ curl 222 KB !
+
+C / C++ python3.13 10,928 KB !
+
+Python pydoc3.13 110 KB !
+
+Python idle3.13 61 KB !
+
+Rust rsvg-convert 8,065 KB !
+
+Go captree 1,964 KB !
+
+Lua lua 328 KB !
+
+for console output containing the infection marker “You’ve been pwned!\n” . Finally, we run the functional test suite of NixOS for the graphical image, to detect any behavioral degradation of the built packages. 
+
+## 5.2 Results 
+
+Buildability. The trojanned seed has no consequence on the build-ability of the package set, and we obtain the whole graphical ISO im-age successfully. The resulting closure, the set of all packages built after bootstrapping and building the target package set, contains 1,199 package outputs and 3,799 user-invokable ELF executables. Its total on-disk size is 6.16 GB and the median package is 0.39 MB. 
+
+Reach. Out of 3,799 user-invokable binaries, 3,791 are CLI invok-able. Of these, 3,790 print the infection marker when invoked nor-mally. The single binary that does not print the marker is firefox 147.0.3 . This is fully explained by the fact that the recipe passes 
+
+–disable-strip –disable-install-strip to its build configura-tion, opting out of the strip phase entirely. The graphical ISO image covers packages from multiple pro-gramming languages, confirming the language independence noted in Section 4.1, since the attack acts on binaries directly. The ten rows in Table 1 present a non-exhaustive view of the diversity of software present in the graphical ISO package set. 
+
+Runtime behavior. We run the functional tests of the NixOS dis-tributions associated with the graphical installer. The tests exert several end-to-end user workflows by running a full NixOS virtual machine in a graphical environment and emulating real workloads like interacting with graphical applications, or installing a NixOS machine from scratch. Again, every binary in the session VM, in-cluding gnome-shell , mutter , nautilus , and the GNOME control center, is built by the trojaned strip . No test fails, our infection payload did not break any program covered by the test suite. 
+
+## 6 Discussion 6.1 Limitations 
+
+The current injector makes a few assumption about the shape of the ELF file it works with: it assumes a little-endian ELF file with a spare PT_NOTE header and either an ET_EXEC binary or an in-terpreted ET_DYN one. Shared libraries, other architectures, static 
+
+PIE executables without an interpreter, and binaries with no suit-able note segment fall outside its current scope. This is not to say there would be any technical impossibility to generalize beyond this scope, but we kept the level of complexity at this level for this research demonstration. The implementation presented in this article may not generalize directly to other Linux distributions than NixOS, depending on the exact process they use to bootstrap their standard build en-vironment, and on strip being used in the default build process. However the self-propagating pattern itself is more general than this implementation, and it carries over to any distribution whose build graph contains the successor edge of Section 4.3. Our prototype is also deliberately easy to detect, because of the visible marker, the .payload section name, and the basename check are experimental instrumentation rather than conditions the propagation pattern requires. We are also deliberately making the attack propagate to every package of the distribution to test the extend to which it can propagate. In practice, nothing prevent an attacker to make the attack mostly dormant and only propagate to future builds of strip , until it reaches its ultimate target, maybe years after the initial propagation, making it extremely hard to detect. 
+
+## 6.2 Other Candidate Carriers 
+
+We now ask whether any build tool other than strip could carry the payload, and we answer by examining how the bootstrap invokes its utilities. A sandboxed build starts with an empty PATH , so every command a builder invokes by bare name comes either from the bootstrap seed or from an earlier seed-derived stage. The seed is small, essentially coreutils, bash , the GCC and binutils toolchain, the common build and text utilities, and patchelf .1 Across the nine default build phases and their fixup hooks, a builder invokes close to forty of these utilities by bare name. We first consider the binary each phase names directly, and set aside the tools it reaches transitively, so a compiler or linker called through a Makefile falls outside this pass. We then weigh each utility against the three conditions a self-propagating carrier must meet (Section 4.3). It must ship in the seed, so it is trusted before its own source is built (C1). It must rewrite a finished binary (C2). And that binary must be a later copy of the utility itself, otherwise the payload vanishes once the seed is gone (C3). Table 2 reports the outcome, and strip 
+
+and patchelf satisfy all three. Both run in the generic builders’s fixup phase, so they run for every package, including for their own rebuilds. An older patchelf 
+
+therefore shrinks the RPATH of the freshly built patchelf during that build’s own fixup, before the new binary reaches the store, which gives it the same successor edge as strip .
+
+> 1https://github.com/NixOS/nixpkgs/blob/fef9403a3e4d31b0a23f0bacebbec52c248fbb51/ pkgs/stdenv/linux/bootstrap-files/x86_64-unknown-linux-gnu.nix 7Julien Malka, Aman Sharma, Martin Monperrus, Stefano Zacchiroli, and Théo Zimmermann
+
+Table 2: Utilities the default phases invoke, tested against the three conditions of Section 4.3. C1 is seed membership, C2 is writing a program binary, and C3 is that binary being the utility’s own successor. strip and patchelf satisfy all three through the builder’s fixup phase. install and cp plausibly self-propagate through make install .                                       
+
+> Utility Phase C1 C2 C3
+> strip fixup !!!
+> patchelf fixup !!!
+> install ,cp install !!(!)
+> make build, install !——
+> sed ,grep ,patch patch, configure !——
+> tar ,gzip ,xz unpack, patch !——
+> ln ,rm ,mkdir all !——
+
+Most of the remaining utilities cannot carry the payload at all. Archivers such as tar and gzip transform archives, make orches-trates builds, sed and patch edit source text, and coreutils tools such as ln , rm , and mkdir move and manage files, so none of them ever writes a program binary, let alone its own successor. install 
+
+and cp are a strong exception: a package’s Makefile reaches them through the near-universal make install , yet they write a fresh binary’s bytes as they place it in the output, so a compromised copy could implant the payload into almost every package it in-stalls. The same path also closes the successor edge, since coreutils is itself installed with make install , so an older install places the freshly built install and cp and can implant the payload as it copies them. This propagation edge is not universal as it depends on the Makefile of the package, so we consider those package as plausible targets. 
+
+## 6.3 Alternative Architecture 
+
+We built the attack as an entry-point parasite , a small payload injected into the genuine strip , but the same propagation also works with a wrapper architecture. In this version, the seed strip is replaced by a program that carries the genuine strip as embedded bytes, runs that copy at invocation time, and applies the payload to the files on its command line, rewriting each source-built successor into a fresh wrapper. Because the wrapper runs as an ordinary program rather than a constrained pre-main hook, it gives the attacker more control. It can act before, during, and after strip runs, rewrite the environment, carry any seed utility regardless of its ELF layout, and even replace strip with an unrelated program. The parasite cannot do any of this, since it runs from a half-initialized runtime and performs a single synchronous action before returning control. We nonetheless use the parasite, because it is stealthier and less likely to break a build. First, the parasite leaves the genuine strip 
+
+untouched, so an infected binary still looks like strip to anyone who inspects it, whereas the wrapper replaces strip with a differ-ent program that embeds a whole copy of it and no longer resembles the tool it stands in for (Figure 7). Second, the parasite hands control to the genuine strip and inherits its behavior exactly, whereas the   
+
+> genuine strip
+> unchanged
+> payload
+> Parasite
+> wrapper logic
+> embedded strip
+> full copy
+> Wrapper
+
+Figure 7: Comparison of the two possible attack architectures. The parasite leaves the genuine strip in place and appends a tiny entry-point payload. The wrapper instead replaces strip 
+
+with a program that carries a full embedded copy of it. Gray marks genuine strip code and red marks the attacker’s own additions. Table 3: How Thompson’s compiler and our build utility fill the same four roles.            
+
+> Role Thompson’s compiler [23] This work Transformation compiles source strips ELF Recognition source pattern host basename Implantation code generation binary rewriting Successor edge compiles compiler strips strip
+
+wrapper must faithfully reproduce how strip is invoked, and any discrepancy risks corrupting an output or failing a package build. 
+
+## 7 Related Work 7.1 The Trusting-Trust Attack and its Generalizations 
+
+Ken Thompson [ 23 ] gives the trusting-trust attack its enduring for-mulation in his Turing Award lecture, and he reports implementing it against a C compiler. A single self-hosting compiler combines four roles. It performs an ordinary transformation. It recognizes when to add behavior. It implants that behavior into its target. Its target later performs the same transformation. This last role, the succes-sor edge, perpetuates the compromise after the malicious source is removed. Table 3 contrasts how Thompson’s compiler and our work using strip fill each role. Both realizations obtain persistence from the successor edge. The major difference is reach. Thompson’s compiler compromises only programs written in the language it compiles, and it propagates along its own self-hosting edge. Our 
+
+strip rewrites ELF binaries, so a single carrier reaches the output of every language and toolchain in the distribution (Section 5). Other work extends Thompson’s idea beyond the original com-piler. Karger and Schell [ 10 ] describe compiler-mediated code inser-tion in their Multics vulnerability analysis. Spinellis [ 21 ] shows that a platform’s security policy is untrustworthy once an untrusted agent runs on it, analogous to how an untrusted compiler implies that its source is also untrusted. Bratus et al. [ 3 ] argue that the essential ingredient is not a planted compiler bug but the way pro-grams handle input, since any program that reads untrusted input can carry the same attack. Maynor [ 14 ] names the idea but does 
+
+> 8
+
+not instantiate the attack, and observes only that the weak link generalizes beyond the compiler to other trusted build tools. Our work supplies the missing instantiation. We show that a post-build utility, rather than a compiler, sustains a complete trusting-trust chain through a real distribution bootstrap. We also give a concrete end-to-end implementation of such an attack. 
+
+## 7.2 Verifying the Source-to-Binary Correspondence 
+
+A parallel line of work tries to establish trust in a binary by ty-ing it back to its source. It targets the gap that our attack exploits, the divergence between the trusted source and the shipped binary. Wheeler [ 26 , 27 ] introduces diverse double-compiling and supplies executable demonstrations, including a deliberately corrupted com-piler and experiments with GCC. Diverse double-compiling rebuilds a compiler with an independent second compiler. It then checks that the two results agree. A disagreement exposes a Thompson-style implant that only one of the two toolchains carries. Reproducible builds pursue the same correspondence at distribution scale [ 11 , 13 ]. They make every build produce bit-for-bit identical output. An in-dependent rebuilder then confirms that a binary matches its source. Both techniques secure the path from source to binary, but nei-ther inspects the utilities that run after the compiler finishes. Our attack lives in exactly that gap. It hides inside strip , which the orig-inal build and every rebuild trust alike. Diverse double-compiling diversifies the compiler and not a build utility like strip , so the tampered utility sits on both sides of the comparison and cancels out. Reproducible builds confirm that a binary is deterministic and not that its build environment is honest, so a rebuild that reuses the same seed reproduces the same implant bit-for-bit. The recipe, the dependency records, and the source all stay intact, so neither check fires. 
+
+## 7.3 Bootstrappable Builds 
+
+Bootstrappable builds [ 2] addresses the same problem at its root by shrinking the set of opaque binaries a distribution must trust. The full-source bootstrap in GNU Guix [ 17 ] reduces the binary seed to a few hundred bytes and rebuilds the whole toolchain from auditable source above it [ 16 ]. Camlboot [ 5] performs an analogous full-source bootstrap for the OCaml toolchain by stacking simple implementations and checking the result with diverse compilation. This effort targets the compiler and the language runtime. Our result shows that the trusting-trust carrier is not the compiler alone. A utility such as strip sustains the attack whenever a tampered instance participates in the rebuild, even after the compiler seed shrinks to a few hundred bytes. A full-source bootstrap therefore removes the carrier only when it rebuilds the post-build utilities from source as well, and not the compiler alone. 
+
+## 7.4 Build-Time and Distribution Supply-Chain Attacks 
+
+Real incidents show that attackers increasingly target the build and distribution pipeline rather than source repositories alone. The SolarWinds compromise inserts its backdoor with SUNSPOT, an im-plant that watches for the compiler and rewrites a source file during the build, so the shipped binary diverges from the repository [ 7 ]. The xz and liblzma backdoor hides its payload in build fixtures and activates it through the release build machinery, again placing malicious logic in the build rather than in reviewable source [ 9, 12 ]. Ohm and colleagues catalogue hundreds of malicious open-source packages and organize their injection and trigger techniques into attack trees [ 19 ]. Defensive frameworks such as in-toto attest that each build step ran as intended and that artifacts pass unmodified between steps [ 24 ]. The Shai-Hulud worm [ 15 ] shows that attackers now pursue propagation directly. It steals a maintainer’s creden-tials and republishes trojanized versions of the other npm packages that the victim controls, so one compromise spreads across the registry. This propagation is horizontal and source-level. Each in-fected package still ships malicious, reviewable source, still sits inside the dependency closure, and is removed once that pack-age is rebuilt from clean source. Most other incidents concern a single compromised build or package, and even Shai-Hulud prop-agates only across reviewable source that a clean rebuild repairs. Our attack is instead self-propagating through the build itself. One tampered seed reproduces the implant into every later generation, carries no malicious source, and persists after the seed leaves the dependency closure, which neither source review nor a per-artifact attestation of an honestly executed build step detects. 
+
+## 8 Conclusion 
+
+We have shown that the trusting-trust attack is not limited to com-pilers. GNU strip , an ordinary build utility that never inspects or generates source, sustains the whole attack using only manipu-lations of finished ELF files. The implant propagates through the NixOS bootstrap and persists in the final standard environment after the malicious seed leaves the dependency closure. On a real nixpkgs revision it reaches almost every binary of a complete graph-ical installer across a diversity of language ecosystems, and breaks no build or functional test. 
+
+## References                                
+
+> [1] 2026. Trusting-Trust Attack against an Entire Linux Distribution through Binary Manipulation - Replication Package. https://figshare.com/s/ 6a4e5b24127c5fd687e0. [2] Bootstrappable Builds. [n. d.]. Bootstrappable Builds. https://www. bootstrappable.org/. Accessed July 18, 2026. [3] Sergey Bratus, Trey Darley, Michael Locasto, Meredith L. Patterson, Rebecca Bx Shapiro, and Anna Shubina. 2014. Beyond Planted Bugs in “Trusting Trust”: The Input-Processing Frontier. IEEE Security & Privacy 12, 1 (Jan. 2014), 83–87. https://doi.org/10.1109/MSP.2014.1 [4] Silvio Cesare. 1998. Unix Viruses. Unpublished manuscript. [5] Nathanaëlle Courant, Julien Lepiller, and Gabriel Scherer. 2022. Debootstrapping without Archeology: Stacked Implementations in Camlboot. The Art, Science, and Engineering of Programming 6, 3 (2022), 13:1–13:26. https://doi.org/10.22152/ programming-journal.org/2022/6/13 [6] cppreference.com. [n. d.]. Freestanding and hosted implementations. https: //en.cppreference.com/w/cpp/freestanding. [7] CrowdStrike Intelligence Team. 2021. SUNSPOT: An Implant in the Build Pro-cess. https://www.crowdstrike.com/blog/sunspot-malware-technical-analysis/. Accessed July 18, 2026. [8] Eelco Dolstra, Merijn de Jonge, and Eelco Visser. 2004. Nix: A Safe and Policy-Free System for Software Deployment. In 18th Large Installation System Administration Conference (LISA ’04) . USENIX Association. https://www.usenix.org/conference/ lisa-04/nix-safe-and-policy-free-system-software-deployment [9] Andres Freund. 2024. backdoor in upstream xz/liblzma leading to ssh server compromise. https://www.openwall.com/lists/oss-security/2024/03/29/4. oss-security mailing list; CVE-2024-3094. [10] Paul A. Karger and Roger R. Schell. 1974. Multics Security Evaluation: Vulnerability Analysis . Technical Report ESD-TR-74-193, Volume II. Electronic Systems Divi-sion, United States Air Force. https://csrc.nist.gov/files/pubs/conference/1998/10/ 9
+
+Julien Malka, Aman Sharma, Martin Monperrus, Stefano Zacchiroli, and Théo Zimmermann 
+
+08/proceedings-of-the-21st-nissc-1998/final/docs/early-cs-papers/karg74.pdf [11] Chris Lamb and Stefano Zacchiroli. 2022. Reproducible Builds: Increasing the Integrity of Software Supply Chains. IEEE Software 39, 2 (2022), 62–70. https: //doi.org/10.1109/MS.2021.3073045 [12] Julien Malka. 2025. How Reproducible Builds Could Have Detected the XZ Supply-Chain Attack for the Benefit of All. (Oct. 2025). https://hal.science/hal-05326226 [13] Julien Malka, Stefano Zacchiroli, and Théo Zimmermann. 2025. Does Func-tional Package Management Enable Reproducible Builds at Scale? Yes.. In 2025 IEEE/ACM 22nd International Conference on Mining Software Repositories (MSR) .775–787. https://doi.org/10.1109/MSR66628.2025.00115 [14] David Maynor. 2004. Trust No-one, Not Even Yourself OR The Weak Link Might Be Your Build Tools. Presentation, Black Hat USA 2004. https://blackhat.com/ presentations/bh-usa-04/bh-us-04-maynor.pdf [15] Mike McGuire. 2025. The Shai-Hulud npm Malware Attack. https://www. blackduck.com/blog/npm-malware-attack-shai-hulud-threat.html. Black Duck Blog. Accessed July 20, 2026. [16] Janneke Nieuwenhuizen. [n. d.]. GNU Mes. https://www.gnu.org/software/mes/. Accessed July 18, 2026. [17] Janneke Nieuwenhuizen and Ludovic Courtès. 2023. The Full-Source Bootstrap: Building from Source All the Way Down. https://guix.gnu.org/en/blog/2023/the-full-source-bootstrap-building-from-source-all-the-way-down/. GNU Guix project blog. Accessed July 18, 2026. [18] Nixpkgs contributors. 2026. Nixpkgs Reference Manual. https://nixos.org/ manual/nixpkgs/stable/. Accessed July 13, 2026. [19] Marc Ohm, Henrik Plate, Arnold Sykosch, and Michael Meier. 2020. Backstabber’s Knife Collection: A Review of Open Source Software Supply Chain Attacks. In Detection of Intrusions and Malware, and Vulnerability Assessment (DIMVA) (Lecture Notes in Computer Science, Vol. 12223) . Springer, 23–43. https://doi.org/ 10.1007/978-3-030-52683-2_2 [20] Eric S Raymond. 2001. The Cathedral and the Bazaar. Readings in cyberethics 
+
+(2001), 309–338. [21] Diomidis Spinellis. 2003. Reflections on trusting trust revisited. Commun. ACM 
+
+46, 6 (June 2003), 112. https://doi.org/10.1145/777313.777347 [22] System V ABI maintainers. [n. d.]. System V Application Binary Interface: Executable and Linking Format . The Linux Foundation. https://refspecs. linuxfoundation.org/elf/gabi4+/contents.html Accessed July 13, 2026. [23] Ken Thompson. 1984. Reflections on Trusting Trust. Commun. ACM 27, 8 (1984), 761–763. https://doi.org/10.1145/358198.358210 [24] Santiago Torres-Arias, Hammad Afzali, Trishank Karthik Kuppusamy, Reza Curtmola, and Justin Cappos. 2019. in-toto: Providing Farm-to-Table Guar-antees for Bytes and Bytes in Software Supply Chains. In 28th USENIX Secu-rity Symposium (USENIX Security ’19) . USENIX Association, 1393–1410. https: //www.usenix.org/conference/usenixsecurity19/presentation/torres-arias [25] Sergei Trofimovich. 2022. Nixpkgs Bootstrap Intro. https://trofi.github.io/posts/ 240-nixpkgs-bootstrap-intro.html. Accessed July 19, 2026. [26] David A. Wheeler. 2005. Countering Trusting Trust through Diverse Double-Compiling. In Proceedings of the 21st Annual Computer Security Applications Conference . IEEE Computer Society, 28–40. https://doi.org/10.1109/CSAC.2005.17 [27] David A. Wheeler. 2009. Fully Countering Trusting Trust through Diverse Double-Compiling . Ph. D. Dissertation. George Mason University. https://dwheeler.com/ trusting-trust/dissertation/html/wheeler-trusting-trust-ddc.html 10

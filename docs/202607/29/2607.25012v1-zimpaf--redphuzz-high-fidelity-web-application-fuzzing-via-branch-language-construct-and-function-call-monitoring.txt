@@ -1,0 +1,1145 @@
+Title: ZIMPAF     RedPhuzz: High-fidelity Web Application Fuzzing via Branch, Language Construct, and Function Call Monitoring
+
+URL Source: https://arxiv.org/pdf/2607.25012v1
+
+Published Time: Wed, 29 Jul 2026 00:17:21 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing via Branch, Language Construct, and Function Call Monitoring 
+
+# Tennov Simanjuntak 
+
+University of Texas at Arlington USA tennov.simanjuntak@uta.edu 
+
+# Christoph Csallner 
+
+University of Texas at Arlington USA csallner@uta.edu 
+
+## Abstract 
+
+We present ZIMPAF, runtime interpreter instrumentation, and Red-Phuzz, a fuzzer, to address key limitations of state-of-the-art fuzzers: inefficient instrumentation, the lack of knowledge of the execution environment, and limited web domain knowledge. ZIMPAF imple-ments a novel multi-granular runtime interpreter instrumentation that provides branch coverage, robust error and exception logging, function and language construct monitoring, and identification of user-supplied inputs used in branch instructions. The instru-mentation is capable of identifying potentially vulnerable functions whose parameters are tainted, marking them as high-valued fuzzing targets, without performing taint analysis. It also employs a novel backward constant probe to infer potentially vulnerable functions whose parameters originate from constants, indicating their in-vulnerability and allowing them to be skipped. This information is utilized by RedPhuzz to perform highly-targeted function-and input-level fuzzing that goes beyond simple error-based fuzzing, but also detects silent vulnerabilities via multi-stage vulnerability detection. We also introduce three novel mutation strategies to achieve highly targeted and effective fuzzing: sanitization-aware, input-in-branch-aware, and data type-aware mutation. We evaluate RedPhuzz’s performance with its predecessor (Phuzz) with 86 test cases across six benchmark web applications. RedPhuzz detects all vulnerabilities, while Phuzz fails to detect 16. RedPhuzz is 73% faster than Phuzz despite performing more tasks. ZIMPAF is faster than Phuzz’s instrumentation (PCOV and UOPZ), while writing significantly more data. ZIMPAF achieves 2.1 to 41.22 times higher throughput than PCOV and UOPZ across five sampled benchmarks, and 0.87 × for one. 
+
+## Keywords 
+
+web application security, grey-box fuzzing, interpreter instrumen-tation, vulnerability and bug detection 
+
+## 1 Introduction 
+
+About two decades ago, the security community suggested the idea of collecting code coverage as a feedback mechanism to track the fuzzing process and how instrumentation supports it [ 18 , 21 ]. How-ever, it was only after the release of American Fuzzy Lop (AFL) that this idea was fully realized and marked an important milestone in fuzzing research [ 28 ]. By introducing coverage feedback–a pre-viously overlooked aspect–the AFL transformed a “dumb” fuzzer into a smart, grey-box fuzzer for native application. The fuzzer is coupled with instrumentation to log program coverage and utilizes it to guide input mutation. Mutations producing inputs that execute new paths are added to the corpus and ranked, enabling AFL to prioritize impactful inputs and explore diverse paths for potential bugs or vulnerabilities. The AFL approach has also been adopted to improve fuzzing in the web domain. Although much progress has been realized (e.g. endpoint identification, path discovery, input generation, and mutation), nonetheless, state-of-the-art fuzzers continue to exhibit several weaknesses. The root cause is that the fuzzers fail to reflect the key difference between native and web application, and insuffi-cient modeling of the web domain’s knowledge. Native application is executed directly by a CPU, which is an indivisible hardware unit, equipped with memory and register to store program states. Conversely, web application, such as PHP runs on an interpreter, a modular software unit with complex data structures built accord-ing to the precept of separation of concerns [ 2]. The interpreter is eventually executed by the CPU, which leads to longer execution time compared to native application. The first weakness is inefficient instrumentation. To collect code coverage, state-of-the-art fuzzers employ either web application code instrumentation, such as webFuzz and CeFuzz [ 23 , 29 ], or in-terpreter instrumentation, such as Witcher, Atropos, and Phuzz [ 8,13 , 22 ]. webFuzz and Cefuzz require control flow analysis to identify basic blocks and insert instrumentation code, which is heavyweight, unscalable, increases code base size, and error prone. Moreover, the instrumentation code itself is interpreted, which incurs additional overhead. Witcher addresses this limitation by patching the inter-preter’s source code (a form of compile-time instrumentation). In contrast, Atropos and Phuzz instrument code at runtime via an extension, PCOV or Xdebug [ 17 , 26 ]. Both Xdebug and PCOV provide userland line coverage as a primary metric, which eases measurement of total coverage; Xdebug is also the de facto stan-dard for PHP debugging. Line coverage approach incurs substantial overhead because the interception code is installed globally in the interpreter’s main execution loop, resulting in the instrumenta-tion of every userland opcode. Predator, a fuzzer built on top of Witcher, claims to use selective instrumentation to achieve both effectiveness and efficiency [ 25 ]. Nonetheless, our analysis reveals that instrumentation hooking remains global; the selectivity is ap-plied only in the trace handler. More importantly, patching the interpreter limits scalability across versions and environments. A more efficient method is needed to provide accurate code coverage for fuzzing. The second weakness of the existing state-of-the-art fuzzers is their lack of knowledge of the execution environment, even though the reasons differ. They collect coverage feedback to mea-sure progress and inspect HTTP response or error message to unveil vulnerabilities, nonetheless, they overlook other important infor-mation that can be obtained during execution. As a consequence, arXiv:2607.25012v1 [cs.CR] 27 Jul 2026 they rely only on incomplete or indirect execution signals, which limits their fuzzing capability and penalizes their performance. For instance, some rely solely on runtime error [ 8, 13 , 22 , 25 ], which can fail when vulnerable functions accept only well-formed in-puts, resulting in no errors even though the vulnerabilities remain. The interpreter may also suppress errors and omit it from the re-sponse when userland code does not catch it as an exception. As a consequence, the fuzzer simulates function calls outside normal execution of the web application, which may disrupt the execu-tion. Witcher, for example, patches dash (a Debian shell) and runs commands inside it to detect code injection vulnerabilities [ 22 ]. Conversely, Cefuzz [29] ignores errors, which are inexpensive yet effective signals for code execution vulnerabilities. Instead, it relies on file creation checks, hash inspections, and full page matching of  
+
+> phpinfo()
+
+outputs, which are inefficient. Likewise, webFuzz [ 23 ], during XSS injection fuzzing, is unaware whether the executed path invokes a vulnerable SQL function, a key signal for stored XSS injection. Witcher identifies SQL injection by hooking recv() 
+
+function of libc [22 ], which is an indirect signal, noisy, and prone to false positive. Phuzz and Atropos mitigate the lack of knowledge by monitor-ing calls to PHP userland functions that may trigger vulnerabili-ties [ 8, 13 ]. This instrumentation-based technique is widely used in binary analysis, including malware analysis [ 5 , 15 ]. Phuzz employs the UOPZ extension [ 27 ] to hook function calls from userland mod-ules and to log errors or exceptions for vulnerability identification. UOPZ simplifies instrumentation by allowing developers to easily add functions to be intercepted. However, under fuzzing workloads with massive requests, this approach incurs significant overhead, as hooks are installed per request and the interpreter must create and execute closures each time. Additionally, UOPZ intercepts func-tion dispatch process via opcode handler overloading, causing all userland functions get hooked, which incurs a performance penalty. Atropos avoids the problem by patching the interpreter inter-nal function that is responsible for executing the corresponding userland function, and PHP error functions. Furthermore, it records function parameters to infer whether user input reaches potentially vulnerable function, thereby avoiding heavyweight static taint anal-ysis, such as that required by Cefuzz [ 29 ]. It also patches the global string comparison function and access to superglobal array to re-trieve request parameters to guide input mutation. Nonetheless, this hooking techniques is noisy and comparisons may involve not only strings but also numeric operands. More importantly, patching is unscalable and lacks maintainability and portability. Despite their progress, Phuzz [ 13 ] and Atropos [ 8] cannot dis-cern functions that only appear vulnerable (while not actually being vulnerable), rendering their fuzzing meaningless and wasting com-putational resources. This capability is crucial for function call monitoring as it allows the fuzzer to skip invulnerable functions and focus only on potentially vulnerable functions. Likewise, as highlighted by Phuzz, the support for language constructs moni-toring that might trigger vulnerabilities, such as include , require ,and their variants, and eval is essential. Both lack this capability because language constructs are compiled into their respective opcodes instead of function calls. The third weakness of state-of-the-art fuzzers [ 8 , 13 , 22 , 23 , 25 ,29 ] is their omission of important aspects of web application domain knowledge [ 20 ]. They do not incorporate sanitization and encoding functions for input mutation, which is crucial to reach vulnerable code. They also overlook database metadata, which is essential for data-intensive applications such as web applications. Knowledge of data types, for instance, makes input mutation more robust and enables the detection of bugs caused by database constraint violations. Additionally, the amount of sanitization can be utilized to prioritize inputs, thereby speeding up its overall progress. To solve the problem, we propose a novel, efficient, and effective grey-box web application fuzzing framework, consisting of two components: back-end runtime instrumentation and a redesigned front-end fuzzer that integrates essential web domain knowledge. Firstly, we eliminate interpreter patching and userland instrumen-tation by utilizing multi-granular interception handlers, semantic data structures, and runtime data structures provided by PHP in-terpreter [ 1 ], among which are those from database drivers. The instrumentation intercepts branch-opcode handlers to log cover-age. It also intercepts language-constructs-opcode handlers and internal function handlers associated with userland functions to log execution trace: important parameters and return value. This strategy is highly efficient because the instrumentation is applied at a fine-grained level to avoid global interception, installed only once, and executed within the interpreter on the CPU. The branch opcodes interceptor is further leveraged to simultaneously identify branch instructions whose operands are from input param-eters and store the instruction details into a branch parameter log. The function interceptor uses a backward constant prober to identify parameters derived from constant values, ensuring no user input reaches them. We also robustly intercept the interpreter’s error and exception reporting using three techniques: error and exception handler, error handler registration, and exception opcode handler. Secondly, we redesign Phuzz [ 13 ] to serve as the front-end fuzzer guided by coverage, error and exception logs, branch parameter log, and function and language construct log provided by the in-strumentation. At the earlier stage, fuzzer analyzes this informa-tion and identifies: vulnerable functions and their tainted sinks, invulnerable functions, sanitization functions, and user-supplied parameters used in branch instructions. Next, it calculates the input score based on the number of vulnerable and sanitization functions and retrieves the relevant metadata for inputs that access database. This knowledge enables a high-fidelity fuzzer that understands the internals of web application. At the latter stage, the fuzzer performs multi-granular fuzzing at the input and function level. At function-level fuzzing, the fuzzer performs multi-stage vulnerability detection: error-based check, function-trace-based check, and safe-sequence check, supported by intelligent mutation that enables the fuzzer to distinguish vulnera-bilities from bugs. The function-trace-based check detects vulner-abilities even when only well-formed input reaches a vulnerable function, producing no errors, which signals exploitability. The safe-sequence check is a check whether a potentially vulnerable functions is actually not vulnerable because sanitization has been applied before executing the function. The fuzzer also inspect the HTTP response to uncover vulnerability that depend on it for de-tection. We summarize our contribution as follows. ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing 
+
+• We propose a novel, efficient, and effective framework that consists of a back-end runtime instrumentation and a re-designed front-end fuzzer that models essential web domain knowledge to enable high-fidelity web application fuzzing. 
+
+• We introduce and implement a novel multi-granular, effi-cient, portable, and extendable instrumentation to record branch coverage, to log errors and exceptions robustly, to collect branch instructions whose operands are input pa-rameters, and to provide traces of potentially vulnerable functions/ language constructs, and sanitization functions. The instrumentation is capable of informing the fuzzer that a potentially vulnerable functions are in fact invulnerable using backward constant probe at early stage. The instru-mentation is deployed as a PHP extension to facilitate its use in production and post-production environments. 
+
+• We introduce and implement a front-end fuzzer that per-forms input- and function-level fuzzing and supports multi-stage vulnerability detection, including error-based, function-based, and safe-sequence checks to distinguish vulnerabili-ties from benign bugs and assess exploitability. 
+
+• We introduce and implement three novel mutation tech-niques based on: the input parameters used in branch in-structions, the sanitization function, and the database meta-data. 
+
+• We empirically compare our work against the state-of-the-art fuzzer Phuzz on six benchmark web applications with 86 test cases. Phuzz is chosen for its usability, scalability, and extendability by avoiding code patching-a weakness in other state-of-the-art fuzzers [ 8 , 22 , 25 ], which limits their adoption in production environments. It also supports more vulnerability classes than them, hooks significantly more functions than Atropos [ 8 ], and is evaluated against the de facto standard blackbox fuzzers, Burp Suite [ 16 ]and ZAP [ 3 ]. Our fuzzer detects all vulnerabilities, while Phuzz misses 16. Our framework is faster (73%) despite performing more tasks and producing significantly more instrumentation output. To foster further research in this field, we open-source the frame-work implementation at this link: https://github.com/tennovs/zimpaf_ redphuzz. 
+
+## 2 Motivating Examples 
+
+To highlight the importance of the execution awareness and web domain knowledge, we present two motivating examples given in Listings 1 and 2. In Listing 1, the calls at 1 and 10 are not vul-nerable because their parameters originate from constant values, which means that no user input can reach them. The parameter of include construct at 1 is a concatenation of a constant defined in the previous define statement and another constant within it-self. At 10 , mysqli_query receives a query parameter from a string literal in the preceding statement. A Fuzzer that monitors function call, but cannot identify parameter sources may mistakenly treat inputs with these construct and function as interesting, leading to unnecessary fuzzing and wasted computation. Therefore, it should be able to identify invulnerable constructs and functions to remove them from the fuzzing list. In contrast, functions at 7 and 9 are reachable from user requests, tainted at 6 and 8 , and vulnerable, since no proper sanitization is performed for their parameters. However, the fuzzer needs to provide correct inputs to pass three blockages for the execution to reach them. Each input parameter needs to be base64-encoded so that the statement at 2 and 3 can decode them correctly. Both parameters must be be non-numeric ( 4 ), and finally, the file pa-rameter must begin with schedule ( 5 ).                                                                                                              
+
+> 1<?php
+> 2define("DB_ROOT", "mysql_db/");
+> 3include (DB_ROOT .'db.php'); //not vuln 1
+> 4$name =base64_decode($_GET['name']); 2
+> 5$file =base64_decode($_GET['file']); 3
+> 6if(!is_numeric($name) && !is_numeric($file)){ 4
+> 7if(fnmatch("schedule*", $file)){ 5
+> 8$query ="SELECT role from users where username ='$name'"; // tainted 6
+> 9$result =mysqli_query($conn, $query); //vuln 7
+> 10 $row =mysqli_fetch_assoc($result);
+> 11 $role =$row['role'];
+> 12 $path =$role ."/" .$file; //tainted 8
+> 13 include("$path"); //vuln 9
+> 14 }else{
+> 15 echo "ERROR: No file name started with $file";
+> 16 exit;
+> 17 }
+> 18 $query ="SELECT username FROM users WHERE role ='branch_manager '";
+> 19 $result =mysqli_query($conn, $query); //not vuln 10
+> 20 $row =mysqli_fetch_assoc($result);
+> 21 $manager =$row['username'];
+> 22 echo $manager ."<br>";
+> 23 echo "Schedule of $role is verified by $manager.";
+> 24 }
+> 25 ?>
+
+Listing 1: Invulnerable and vulnerable functions with decoding and sanitization functions 
+
+The state-of-the-art-fuzzers [ 8, 13 , 22 , 23 , 25 , 29 ] miss all or part of this knowledge making them ineffective when mutating the inputs. Atropos [ 8 ], despite being able to identify string comparison to solve the conditional statement such as that with fnmatch , it cannot effectively generates input to satisfy a series of sanitization given in Listing 1. A smarter fuzzer must be able to leverage this information. It can also utilize query parameter to perform more effective mutation and determine the exploitabilty of mysqli_query 
+
+at 7 . By parsing the query, the fuzzer knows the parameter is quoted allowing it to submit only quoted parameter, skipping numeric parameter to trigger a vulnerability. Moreover, it can signal whether the vulnerability is actually ex-ploitable by checking if the malicious input parameter eventually turns into logic and the function’s return value is a success. Like-wise, it can gather database metadata to identify data types and to probe bugs caused by data - type or domain -constraint violations. While Atropos and Phuzz can verify whether parameters reach vulnerable functions when errors or exceptions occur, they lack these capabilities. Equally important, a fuzzer which monitors function calls must be capable of recognizing that potentially vulnerable functions or methods are indeed safe because they are executed in a sequence that prohibits maliciously-crafted inputs to trigger vulnerabilities. Listing 2 gives two motivating examples to explain this. The prepare 
+
+method at 1 is executed in a safe sequence: the query parameter originates from a literal string-query with a placeholder ?-in the previous statement; bind_param binds the $odate variable to the pre-pared statement; and finally, execute executes the prepared state-ment. This sequence ensures that user inputs never turns into logic that might trigger an SQL injection vulnerability. Nevertheless, it may have bugs, for instance a domain violation if there is no filter to block inputs with a long string from reaching the query.                                                                                                            
+
+> 1if(isset($_GET['odate'])){
+> 2$odate =$_GET['odate'];
+> 3$query ="SELECT o.order_id, o.product_name, o.order_date, u. username FROM orders oJOIN users uON o.user_id =u. user_id WHERE DATE(o.order_date) =?";
+> 4$stmt =$conn->prepare($query); //safe, but has bug 1
+> 5$stmt->bind_param("s", $odate);
+> 6$stmt->execute();
+> 7$result =$stmt->get_result();
+> 8/* ... */
+> 9}
+> 10 if(isset($_GET['prodname'])){
+> 11 $prodname =mysqli_real_escape_string($conn,$_GET['prodname']);
+> 12 $query ="SELECT *FROM orders WHERE product_name ='$prodname'";
+> 13 $result =mysqli_query($conn, $query); //safe 2
+> 14 /* ... */
+> 15 }
+> 16 if(isset($_POST['add_user'])){
+> 17 $username =$_POST['add_user'];
+> 18 $income =$_POST['income'];
+> 19 $age =$_POST['age'];
+> 20 if ($_POST['age'] >17){ 3
+> 21 $username =htmlspecialchars($username, ENT_QUOTES, 'UTF-8');
+> 22 $query ="INSERT INTO users (username, age, income) VALUES (' $username', $age, $income)";
+> 23 $result =mysqli_query($conn, $query); //vulnerable 4
+> 24 }
+> 25 }
+
+Listing 2: Safely executed and vulnerable userland functions (code excerpt). 
+
+The mysqli_query function at 2 is also secure because the user in-put $_GET[’prodname’] is sanitized using mysqli_real_escape_string 
+
+and inserted into $query as a quoted string, preventing it from being intepreted as SQL logic. These are the examples of web domain knowledge that enables a fuzzer to skip safe functions which ren-ders their fuzzing meaningless and to focus the fuzzing into high-valued functions that are highly likely to trigger vulnerabilities or bugs. In contrast, while mysqli_query at 4 is free from XSS injec-tion, it is vulnerable to SQL injection. The htmlspecialchars with  
+
+> ENT_QUOTES
+
+and UTF-8 parameter guards the function from an XSS injection by transforming a user input into characters that are not executable as a script by user’s browser. Conversely, there is no sanitization for SQL query. Nonetheless, to trigger the SQL vulner-ability, the execution must satisfy the conditional statement with greater than (>) operator at 3 . It is highly likely for fuzzers that are not aware of this branch to fail because their mutation cannot effectively generate correct input. 
+
+## 3 Design 
+
+Figure 1 shows a high-level overview of the system architecture, which consists of a front-end fuzzer and back-end instrumenta-tion, connected by a web server. We also integrate the database to provide the fuzzer with contextual information, particularly for web application code that interacts with it. We target PHP web applications because the transparency, modularity, and flexibility of its interpreter (the Zend Engine [ 1]) and as PHP remains the by-far most-widely used server-side technology for web applications [ 24 ]. 
+
+## 3.1 Back-end Instrumentation: ZIMPAF 
+
+To achieve efficient and effective instrumentation, we leverage the Zend Interpreter’s multi-granular interception modules to perform interpreter instrumentation. The instrumentation consists of three interceptors: a coverage collector, an error and exception logger, and a function and language construct tracer. The first and the third employ a branch parameter identifier and a backward constant prober, respectively. These interceptors are supported by utility functions, which are omitted from the architecture diagram for brevity. 
+
+3.1.1 Coverage Collector and Branch Parameter Identifier. We avoid the inefficiency of the global interception by applying opcode-level hooking to collect code coverage. This design eliminates the unnecessary overhead incurred by the existing state of the art fuzzers [ 8, 13 , 22 , 25 ], which intercept all opcodes in the inter-preter’s main execution loop. Instead, the instrumentation inter-cepts execution at opcode handlers and the handlers are installed once for all requests. Our focus is on conditional opcodes, where execution may diverge to multiple paths. We thus exclude opcodes that do not create distinct execution paths, such as function or method call opcodes. This design also removes code patching to log coverage as required by [8, 22, 25]. To distinguish execution paths, we record their userland code’s (boolean) branch-opcode-outcomes. So an execution path is a se-quence of (file path, branch opcode’s userland line number, branch-opcode-outcome) triples. As a userland branch condition may trans-late to several branch opcodes, we may log a single userland branch outcome as a sequence of branch opcode outcome triples (where some triples may use the same userland line number). Furthermore, a conditional statement in userland code can contain multiple con-ditions and span multiple lines, thus translated into multiple branch opcodes. As a consequence, the conditional statement can be rep-resented by a line number that appears multiple times in the code coverage log, and across multiple line numbers too. We opt for this design over fully evaluating branches to avoid computational overhead, as execution paths provide inexpensive yet robust signals to distinguish new inputs from the previously explored ones. We leverage the coverage collector to identify branch instruc-tions whose operands are input parameters, which is crucial for ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing Function & Input-level Fuzzer (the orchestrator of fuzzing)  
+
+> branch parameters metadata RedPhuzz
+> Metadata Fetcher
+> Trace Analyzer
+> Error-based Checker
+> Function-based Checker
+> Safe Sequence Checker
+> Param Mutator (dictionary, sanitation, branch parameter, type, domain, random, etc)
+> Response-based Checker
+> Server
+> Web Server
+> coverage recorder
+> PHP interpreter
+> ZIMPAF Instrumentation
+> Function & Language Construct Tracer
+> Backward Constant Prober
+> Web Application Code (userland code)
+> Requester request response function traces, params, types, quoted mutated input errors and exceptions log
+> Coverage Analyzer
+> coverage log
+> function traces log
+> logs
+> function traces MySQL Database
+> coverage
+> errors & exceptions
+> function traces
+> Branch Parameter Identifier
+> Branch Parameter Analyzer
+> branch parameter log
+> metadata branch parameter
+> Input Generator Input
+> Error & Exception Logger
+> Error & Exception Handler
+> Coverage Collector
+> Error Observer
+> Zend Throw Handler
+
+Figure 1: System architecture: Front-end fuzzer (left) with Phuzz [ 13 ] components shaded and back-end instrumentation (right). 
+
+satisfying conditionals to reach vulnerable functions (e.g., to sat-isfy branch at 3 to reach 4 in Listing 2). The branch parameter identifier extracts these operands and matches them with the PHP superglobal array that holds user inputs. The identification is per-formed by matching the pointer of the operands with the pointer of input parameters in the superglobal array, which is a robust tech-nique. When matching the pointers may fail, for example, when  
+
+> ZEND_JMP*
+
+assigns an input parameter to a temporary variable for optimization to avoid updating the reference count, we can match the operands’ value with the superglobal array’s values. 
+
+3.1.2 Error and Exception Logger. The Zend interpreter behavior in propagating errors and exceptions to userland code varies. It depends on the existence of userland error function or whether the Zend interpreter performs a bailout–bypassing the normal ex-ecution flow–to return to a safe state immediately during errors or exceptions [ 1]. Similarly, the interpreter may either write errors and exceptions to response or suppress them entirely. A robust errors and exceptions logger must account for this behavior. For this purpose, we opt for decomposing the logger into three com-ponents and avoid inferring errors and exceptions from responses as it is inefficient and can fail too. The first component is the er-ror and exception handler, two separate handlers that intercept the Zend’s main mechanism for propagating errors ( zend_error_cb 
+
+and zend_throw_exception ). The second is an error observer func-tion, registered to the error observer chain, which is useful when  
+
+> zend_error_cb
+
+is not called, such as during non-fatal like warning and notice. The third component intercepts ZEND_THROW opcode han-dler, which is always called to initiate the creation of throwable object, the last resort if the interpreter decides to bailout. Our strategy is more robust than patching the error dispatcher,  
+
+> php_error_cb
+
+or its companion, php_verror as required by Atro-pos [ 8]), which fails to capture exceptions. Similarly, Phuzz [ 13 ], which relies on UOPZ extension [ 27 ] also misses compilation er-rors, suppressed warnings, and exceptions caught by application  
+
+> try-catch
+
+blocks. 
+
+3.1.3 Function and Language Construct Tracer and Backward Con-stant Prober. The function and language construct tracer monitor userland functions and language constructs, respectively. The func-tion tracer hooks the handlers of internal functions that execute userland functions inside the Zend interpreter, while language con-struct tracer hooks the construct opcodes. This fine-grained design avoids the overhead associated with Phuzz’s global hooking, elimi-nates the code patching required by Atropos [ 8 ], and overcomes both inability to instrument language constructs. The monitored userland functions include potentially vulnerable functions and sanitization functions, the latter performing filter-ing, matching, and transformation (such as replacement, insertion, and decoding). The essential parameters and return value of each function are logged, as they are crucial for the fuzzer to identify how user inputs are sanitized and whether they trigger bugs or vulnerabilities. One or more function or language construct param-eters may act as sinks, which are the function parameters that may receive user inputs. When a sink receive user inputs, it is tainted, otherwise it is untainted. It is critical for the tracer to be capable of identifying whether a sink in potentially vulnerable functions or language constructs originates from constant values, signifying an untainted sink. As all sinks are strings, we say that a sink originates from constant values when it is either a single hard-coded string literal or a string literal constructed from string operations that may involve non-string values . With this knowledge, the fuzzer can easily filter out the invulnerable functions such as include at 1 and mysqli_query at  
+
+> 10
+
+in Listing 1. The knowledge is also useful to determine that a potentially vulnerable function is executed in a safe sequence such as prepare method at 1 in Listing 2. Therefore, the function and language construct tracer is equipped with a backward constant prober .Dynamic backward constant probe inside the interpreter is highly efficient because most of the heavy work has already been done by the Zend interpreter, including parsing and compiling userland code and constructing both semantic and runtime data structures. Moreover, the sink identification can be skipped by initiating the probe while the hook is still active, implying the sink is known in advance. To make it even more efficient, the probe is accomplished by tracking the origin of opcode operands, since the Zend inter-preter has relatively few opcodes that operate on string operands. Our work is the first to perform backward constant probe in web ap-plication fuzzing, and possibly in vulnerability discovery research more broadly, including malicious binary analysis which rely on function call monitoring. While primarily tasked for collecting function traces, we also require the tracer for userland functions vulnerable to SQL injection and code execution to perform error logging for two reasons. First, the error information generated by the error and exception logger is insufficient to distinguish an SQL injection vulnerability from a bug, a distinction that can be easily made by inspecting the SQL error number whether it represents a parsing error. The tracer thus retrieves the error number and related information directly from the database driver after the original handler for the function is executed. Fuzzers lacking this capability will produce more false positives for SQL injection. Second, the Zend interpreter suppresses errors generated by code execution functions from its main error handler and propagates errors to userland via an alternate execution path that depends on functions that cannot be intercepted without patching, which compromises scalability and portability. Thus, we rely on the return of the corresponding internal function whose value can be used to determine the error. However, for the functions whose return value cannot be used to determine error, we efficiently and safely simulate the interpreter function that is subsequently called by the corresponding internal functions. This eliminates the need for external execution as required by Witcher [ 22 ], which is part of the second weakness of state-of-the-art instrumentation discussed in Section 1. The coverage information, branch parameter, error and exception log, and function and language construct traces are written to shared files accessible for the fuzzer. 
+
+## 3.2 Front-end Fuzzer: RedPhuzz 
+
+To discover bugs and vulnerabilities, the fuzzer mutates inputs, sends them via requests to the web server, and analyzes the back-end’s instrumentation logs. To implement this we re-use Phuzz’s input generator, requester, and response-based checker. The input generator prepares from a configuration file a valid HTTP request. The requester submits the request to the webserver and receives the response. The response-based vulnerability checker inspects the response, such as XSS injection. The fuzzer extends Phuzz by adding the following 9 components (shown non-shaded in Figure 1). 
+
+3.2.1 Coverage Analyzer. The coverage analyzer loads and hashes the current input’s path coverage log (the sequence of triples). The fuzzer first uses this path hash to identify a new path by check-ing against the set of previous path hashes–a constant time set membership check. If the path hash is not unique–indicating a previously explored path–the analyzer returns immediately. Sec-ondly, if the hash is unique, signaling a new execution path, the analyzer computes the path’s unique triples, which are the differ-ence between the current path’s triples and aggregated triples from previous mutations. Third, it concatenates the unique triples with the aggregated triples to reflect the existing total coverage. Lastly, it creates a new input for the new path. This design is efficient be-cause it leverages execution paths as cheap signals to identify new inputs. The design also avoids the full processing of path coverage required by Phuzz’s–due to the absence of path hash check–only to find that it is from an old path. The hash check is highly effective because the large majority of mutated inputs result in identical execution paths during fuzzing. 
+
+3.2.2 Trace Analyzer and Metadata Fetcher. The trace analyzer loads the current path’s function and language construct logs (we refer to both as function traces, as in PHP language, constructs behave like function calls). The analyzer collects potentially vul-nerable functions and sanitization functions. It also checks for die 
+
+and exit functions, which both indicate early script termination. The analyzer classifies potentially vulnerable functions accord-ing to the vulnerability type they may trigger, i.e., code execution, path traversal, SQL injection, unserialize, and XML external en-tity functions. To avoid wasted computation, it further excludes potentially vulnerable functions whose parameters originate from constants. The analyzer identifies this by checking for a constant value in an attribute of the trace log called sink opline type –set by the instrumentation’s backward constant prober–signifying their invulnerability. To further guide fuzzing, we identify which input parameters reach or taint the sink by matching each input parameter to sink substrings. Listing 1, at 7 and 9 , illustrates this where strings in the parameter of vulnerable functions contain sub-strings supplied by the user via HTTP GET. This approach is similar to Atropos [ 8]; both aim to avoid the high cost of taint analysis. Equally important, the analyzer also reports sanitization applied to input parameters and to each sink in a vulnerable function, which is then used by param mutator (see Section 3.2.5). To guide mutation for functions vulnerable to SQL injection, the analyzer identifies the data type of each SQL query parameter that is tainted by user inputs and whether it is quoted. The fuzzer first parses the SQL query to identify table names, column names, query parameters, and quoted flag, an indicator whether a query parameter is inside quotes (string) or not (numeric). The fuzzer then retrieves the database tables’ metadata by calling the metadata fetcher. Lastly, the fuzzer matches parse and metadata information to determine each query parameter’s data type and the value of the quoted flag. The results of the trace analyzer are added to the input object. 
+
+3.2.3 Branch Parameter Analyzer. The branch parameter analyzer collects distinct branches whose operands are user-supplied input. Listing 2 at 3 illustrates an instance of these branches, where the first operand of the branch is a user-supplied parameter passed to the script via HTTP POST. The analyzer extracts this branch’s operands, values, and the operator to help guide mutation to satisfy condition for reaching vulnerable functions, or to unsatisfy it for path exploration (see Section 3.2.5). 
+
+3.2.4 Function and Input-level Fuzzer. This is the orchestrator that coordinates the actual fuzzing workflow which is responsible for invoking the parameter mutator, requester, coverage analyzer, trace analyzer, branch parameter analyzer, and vulnerability checkers: ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing 
+
+error-based, function-based, and safe sequence checker. The num-ber of fuzzing iterations is determined by the length of the payload dictionary and several constants that define maximum fuzzing it-erations for each mutation type, for instance, sanitization- and data type-aware mutation. We propose the function and input-level fuzzer. Input-level fuzzing is performed when the fuzzer identifies no vulnerable functions in the current execution path, thus mu-tating the input to explore new paths that are expected to reach vulnerable functions. Input-level fuzzing is also called to uncover vulnerabilities that do not emerge from function calls, such as re-flected XSS injection. There are three input-level fuzz functions, a fuzzing function for input with sanitization to satisfy sanitization applied to input parameter, a fuzzing function for input with pa-rameter in branch statement to discover new path, and a fuzzing function for input without sanitization and parameter in branch statement, also to discover new path. Function-level fuzzing is a highly targeted approach that tailors mutations specifically to a vulnerable function. Before it is called, the potentially vulnerable functions in the input’s list are sorted by the number the function’s sinks tainted by user-supplied pa-rameters to prioritize functions tainted by user input. It aims to trigger a vulnerability by either submitting malformed input to break the function’s logic and raise errors or exceptions, or by sub-mitting malicious well-formed inputs compliant with the function logic to determine exploitability. We provide a function-level fuzzer for functions vulnerable to SQL injection and a generic fuzzer to fuzz functions for other vulnerability classes. Since an SQL func-tion with an insert or update query is vulnerable to stored XSS injection, we also define a function to fuzz it and additionally to fuzz reflected XSS injection. It is possible that the fuzzer does not find any sinks in a potentially vulnerable function. Therefore, we provide function-level fuzzing to uncover its sinks. Similarly, we provide a sanitization-aware fuzzing fuzzing capability that uses sanitization-aware mutation to satisfy the sanitization sequence and eventually reach vulnerable function. 
+
+3.2.5 Param Mutator. If the fuzzer identifies which parameters taint the sink, it mutates only those inputs. The first mutation strat-egy is dictionary-based. For each vulnerability class, we define a dictionary of malicious malformed and well-formed inputs. Par-ticular to SQL injection, both malformed and well-formed inputs are categorized into quoted (string) and unquoted (numeric) inputs. The malformed inputs aim to trigger errors or exceptions, which are the signal for bugs or vulnerabilities. In contrast, malicious well-formed inputs aim to exploit a potentially vulnerable function, e.g., when an error-based checker fails. When the function executes the inputs successfully, the fuzzer identifies its exploitability, thus the function vulnerability. It is also used when sanitizations enforces well-formed input to reach the vulnerable function making detec-tion possible only through the function’s exploitability (instance of this can be seen in Test Case 46 in Section 5. The second strategy is parameters-in-branch mutation, which is divided into parameter preserving mutation to preserve the path condition that allows the execution of a vulnerable function and parameter flipping mutation that flips the branch (to explore new paths). The third strategy leverages the knowledge of data type and quoted flag to perform domain and type violation to uncover bugs, and type conformance mutation for randomly generating input to explore new paths. The fourth strategy utilizes the sanitization report to selectively satisfy a sequence of sanitizations to reach vulnerable functions. This strategy generates inputs by applying sanitization in reverse, from the last to the first sanitization. Besides these strategies, we also define other mutation techniques, such as zero or empty to generate numeric zero or empty strings, numeric only, string only, and random. 
+
+3.2.6 Bug and Vulnerability Checker. For detecting bugs and vul-nerabilities the fuzzer employs a multi-stage checker, via informa-tion collected by our instrumentation and the web server’s response. The checker actions depend on vulnerability type and input param-eter mutation type. 
+
+Error-based Checker: The error-based checker detects bugs by analyzing the error and exception log and lives in the entire fuzzing iteration. The entries in error and exception log share common attributes: function name, message, and location; the latter is rep-resented by a file path and line number. The identity of errors are represented as error number in error log and by code in exception log. Every error or exception which is referenced to a location in the userland code is considered as a bug. The fuzzer treats an SQL error or exception as a bug, unless it is categorized as a parsing or syntax error (e.g., SQL error no. 1064 in MySQL), which we treat as a vulnerability. Phuzz overlooks this, making it prone to many SQL injection false positives. For other vulnerability classes, if the syntax error occurs and originates from a vulnerable function, we treat it as a vulnerability. 
+
+Function-based Checker: The function-based checker runs after the error-based checker and lives when the malicious well-formed inputs are submitted during dictionary-based mutation. This strat-egy lets the fuzzer uncover vulnerabilities when only well-formed input is allowed to reach the potentially vulnerable function, re-sulting in no errors being generated. In this case, vulnerability can only be inferred by the function’s exploitability. The function-based checker is written for each vulnerability class and it uncovers a vulnerability by inspecting whether the return value represent a success and the presence of well-formed input in sink indicating a vulnerability. Detecting SQL injection vulnerabilities is more dif-ficult as sanitization can tame the malicious well-formed input causing the return value holds a success, which leads the fuzzer to decide vulnerability, while in fact, it is not. To avoid this false positive, the fuzzer employs a heuristic to determine whether the malicious well-formed input eventually turns to SQL logics. If yes, the fuzzer flags the function as vulnerable. 
+
+Safe-sequence Checker: The safe-sequence checker verifies the safety of potentially vulnerable function executions, such as the ones annotated 1 and 2 in Listing 2. It is also used to verify vulner-abilities detected by function-based checker to avoid false positive. Once a potentially vulnerable function is determined to be safe, the fuzzer ceases all further fuzzing of the function to avoid meaning-less computation. To realize this, the checker is equipped with the safe-sequences of potentially vulnerable functions executions for each vulnerability class. A safe-sequence is defined as a sequence of functions, ending with a potentially vulnerable function, when executed according to the sequence and with certain properties associated to the corresponding functions, guarantees the invulnerability of the potentially vulnerable function . As an example, the sequence of [prepare, bind_param, execute] and the property of prepare whose query originates from constant, indicating all query parameters are replaced by place-holders, guarantees the invulnerability of prepare function at 1 in Listing 2. 
+
+## 3.3 Algorithms 
+
+To provide clearer understanding of our design, we provides three core algorithms, two for instrumentation and the third for the front-end fuzzer. 
+
+3.3.1 Instrumentation Core Pipepline. The instrumentation (sum-marized in Algorithm 1) respects both the Zend engine lifecycle and its stack frame. The global module variable coverage_id provided by the fuzzer (via an HTTP request’s extension header), identifies an input mutation’s represented by an HTTP request, and serves as log filename. When coverage_id is not set, it indicates non-fuzzing request and all handlers simply return to avoid the instrumenta-tion’s overhead. This enables deployment on production servers where both developers (submit non-fuzzing requests) and secu-rity testers (submit fuzzing requests) work together. The de facto standard instrumentation, PCOV [ 26 ] and UOPZ [ 27 ], lacks this capability. The dynamically allocated path_table array stores a path recorded by the coverage collector, the f_call_sequence array holds the sequence of traces collected by the function and language construct tracer, and the branch_parameters_log array stores the details of branches whose operands are input parameters. All of them are written to the filesystem efficiently in batches.  
+
+> MODULEINIT
+
+installs all the interceptors during module startup to make them alive throughout the Zend lifecycle, ensuring they are installed once for all requests. Each interceptor redirects execution to its respective handler at 2 , 3 , 4 , 6 , and 7 . The hooking at 1 is in-stalled for each monitored function. GLOBALSINIT allocates memory for the path_table , which is eventually freed by GLOBALSHUTDOWN 
+
+(not shown). These global functions are called once.  
+
+> REQUESTINIT
+
+and REQUESTSHUTDOWN are called every time the inter-preter receives a request and finishes processing it, respectively. The first retrieves a request ID assigned by the fuzzer, from the custom header of the HTTP request. It also clears path_table and initializes 
+
+> f_call_sequence
+
+, and branch_param_log . The latter writes the logs to the file system and frees them.  
+
+> Error&ExceptionLogger
+
+has two separate handlers for error and exception, respectively, despite being combined at 6 for illustra-tion. The handler for ErrorObserver is not shown for brevity. The  
+
+> FunctionCallHandler
+
+monitors all functions in certain vulnerability class (except functions vulnerable to SLQ injection, which have two handlers) and to monitor all sanitization functions. This strategy simplifies the architecture by providing a uniform monitoring tech-nique to intercept all potentially vulnerable function calls within a vulnerability class, without sacrificing the modularity and extend-ability. The backward constant prober are invoked at 5 and 8 with  
+
+> sink
+
+(the parameters of function that may be tainted) and the Frame 
+
+as parameters. All variables in the procedures are some of attributes of the respective log (coverage, error and exception, function trace, and branch parameter log) whose logging function is not included for brevity. 
+
+Algorithm 1 Instrumentation core pipeline.  
+
+> 1:
+
+Module Global Variables:  
+
+> 2:
+
+𝑐𝑜𝑣𝑒𝑟𝑎𝑔𝑒 _𝑖𝑑  
+
+> 3:
+
+𝑝𝑎𝑡ℎ _𝑡𝑎𝑏𝑙𝑒, 𝑓 _𝑐𝑎𝑙𝑙 _𝑠𝑒𝑞𝑢𝑒𝑛𝑐𝑒, 𝑏𝑟𝑎𝑛𝑐ℎ _𝑝𝑎𝑟𝑎𝑚 _𝑙𝑜𝑔  
+
+> 4:
+
+procedure MODULEINIT (𝑀𝑜𝑑𝑢𝑙𝑒𝑁 𝑎𝑚𝑒 ) 
+
+> 5:
+
+Install BranchOpcodesHooking ⊲ Coverage collector  
+
+> 6:
+
+Install ZendThrowHooking ⊲ Exception logger  
+
+> 7:
+
+Install LangConstructHooking ⊲ Include or eval  
+
+> 8:
+
+Install Error&ExceptionHooking ⊲ Error&Exception logger  
+
+> 9:
+
+Register ErrorObserver ⊲ Error logger  
+
+> 10:
+
+Install FunctionCallHooking ⊲ Function tracer 1 
+
+> 11:
+
+procedure GLOBALSINIT (𝑀𝑜𝑑𝑢𝑙𝑒𝑁 𝑎𝑚𝑒 ) 
+
+> 12:
+
+Initialize path table memory  
+
+> 13:
+
+procedure REQUESTINIT (𝑀𝑜𝑑𝑢𝑙𝑒𝑁 𝑎𝑚𝑒 ) 
+
+> 14:
+
+𝑐𝑜𝑣𝑒𝑟𝑎𝑔𝑒 _𝑖𝑑 ← coverage id held in x-header  
+
+> 15:
+
+Clear 𝑝𝑎𝑡ℎ _𝑡𝑎𝑏𝑙𝑒  
+
+> 16:
+
+Initialize 𝑓 _𝑐𝑎𝑙𝑙 _𝑠𝑒𝑞𝑢𝑒𝑛𝑐𝑒, 𝑏𝑟𝑎𝑛𝑐ℎ _𝑝𝑎𝑟𝑎𝑚 _𝑙𝑜𝑔  
+
+> 17:
+
+procedure REQUESTSHUTDOWN (𝑀𝑜𝑑𝑢𝑙𝑒𝑁 𝑎𝑚𝑒 ) 
+
+> 18:
+
+Write coverage log to filesystem  
+
+> 19:
+
+Write function call traces log to file system  
+
+> 20:
+
+Free 𝑓 _𝑐𝑎𝑙𝑙 _𝑠𝑒𝑞𝑢𝑒𝑛𝑐𝑒, 𝑏𝑟𝑎𝑛𝑐ℎ _𝑝𝑎𝑟𝑎𝑚 _𝑙𝑜𝑔  
+
+> 21:
+
+procedure BranchOpcodesHandler (𝐹𝑟𝑎𝑚𝑒 ) 2 
+
+> 22:
+
+𝑙𝑜𝑐𝑎𝑡𝑖𝑜𝑛 ← 𝐹𝑖𝑙𝑒𝑃𝑎𝑡ℎ (𝐹𝑟𝑎𝑚𝑒 ) + 𝐿𝑖𝑛𝑒𝑁 𝑜 (𝐹𝑟𝑎𝑚𝑒 ) 
+
+> 23:
+
+Select case matching 𝐶𝑢𝑟𝑟𝑒𝑛𝑡𝐼𝑛𝑠𝑡𝑟 (𝐹𝑟𝑎𝑚𝑒 ).𝑂𝑝𝑐𝑜𝑑𝑒  
+
+> 24:
+
+𝑝𝑎𝑡ℎ _𝑐𝑜𝑛𝑑𝑖𝑡𝑖𝑜𝑛 ← Truth value of CurrentInstr  
+
+> 25:
+
+Append 𝑙𝑜𝑐𝑎𝑡𝑖𝑜𝑛 and 𝑝𝑎𝑡ℎ _𝑐𝑜𝑛𝑑𝑖𝑡𝑖𝑜𝑛 to 𝑝𝑎𝑡ℎ _𝑡𝑎𝑏𝑙𝑒  
+
+> 26:
+
+Identify 𝑝𝑎𝑟𝑎𝑚𝑒𝑡𝑒𝑟𝑠 in branch instruction  
+
+> 27:
+
+procedure ZendThrowHandler (𝐹𝑟𝑎𝑚𝑒 ) 3 
+
+> 28:
+
+𝑙𝑜𝑐𝑎𝑡𝑖𝑜𝑛 ← 𝐹𝑖𝑙𝑒𝑃𝑎𝑡ℎ (𝐹𝑟𝑎𝑚𝑒 ) + 𝐿𝑖𝑛𝑒𝑁 𝑜 (𝐹𝑟𝑎𝑚𝑒 ) 
+
+> 29:
+
+𝑜𝑝𝑙𝑖𝑛𝑒 ← CurrentInstr(Frame)  
+
+> 30:
+
+Extract exception object from 𝑜𝑝𝑙𝑖𝑛𝑒  
+
+> 31:
+
+Log exception  
+
+> 32:
+
+procedure LangConstructHandler (𝐹𝑟𝑎𝑚𝑒 ) 4 
+
+> 33:
+
+𝑙𝑜𝑐𝑎𝑡𝑖𝑜𝑛 ← 𝐹𝑖𝑙𝑒𝑃𝑎𝑡ℎ (𝐹𝑟𝑎𝑚𝑒 ) + 𝐿𝑖𝑛𝑒𝑁 𝑜 (𝐹𝑟𝑎𝑚𝑒 ) 
+
+> 34:
+
+𝑜𝑝𝑐𝑜𝑑𝑒 ← 𝐶𝑢𝑟𝑟𝑒𝑛𝑡𝐼𝑛𝑠𝑡𝑟 (𝐹𝑟𝑎𝑚𝑒 ).𝑂𝑝𝑐𝑜𝑑𝑒  
+
+> 35:
+
+Select case matching 𝑜𝑝𝑐𝑜𝑑𝑒  
+
+> 36:
+
+𝑒𝑥𝑡 _𝑜𝑝𝑐𝑜𝑑𝑒 ← Extended opcode from CurrentInstr  
+
+> 37:
+
+𝑝𝑎𝑟𝑎𝑚𝑠 ← Parameters, can be a sink  
+
+> 38:
+
+𝑖𝑠 _𝑐𝑜𝑛𝑠𝑡 ← IsStringLiteral( 𝑠𝑖𝑛𝑘, 𝐹𝑟𝑎𝑚𝑒 ) 5 
+
+> 39:
+
+Call original handler  
+
+> 40:
+
+Check success or error  
+
+> 41:
+
+Append the trace to 𝑓 _𝑐𝑎𝑙𝑙 _𝑠𝑒𝑞𝑢𝑒𝑛𝑐𝑒  
+
+> 42:
+
+procedure Error&ExceptionLogger (𝐼𝑛𝑓 𝑜 ) 6 
+
+> 43:
+
+𝑙𝑜𝑐𝑎𝑡𝑖𝑜𝑛 ← FilePath and Lineno from the Frame  
+
+> 44:
+
+𝑓 _𝑛𝑎𝑚𝑒 ← FunctionName from the Frame  
+
+> 45:
+
+𝑚𝑒𝑠𝑠𝑎𝑔𝑒 ← 𝐼𝑛𝑓 𝑜  
+
+> 46:
+
+Write error & exception log to filesystem  
+
+> 47:
+
+procedure FunctionCallHandler (𝐹𝑟𝑎𝑚𝑒 ) 7 
+
+> 48:
+
+𝑙𝑜𝑐𝑎𝑡𝑖𝑜𝑛 ← 𝐹𝑖𝑙𝑒𝑃𝑎𝑡ℎ (𝐹𝑟𝑎𝑚𝑒 ) + 𝐿𝑖𝑛𝑒𝑁 𝑜 (𝐹𝑟𝑎𝑚𝑒 ) 
+
+> 49:
+
+𝑓 _𝑛𝑎𝑚𝑒 ← 𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑁 𝑎𝑚𝑒 (𝐹𝑟𝑎𝑚𝑒 ) 
+
+> 50:
+
+𝑝𝑎𝑟𝑎𝑚𝑠 ← Parameters, some of which are sinks  
+
+> 51:
+
+𝑖𝑠 _𝑐𝑜𝑛𝑠𝑡 ← 𝐼𝑠𝑆𝑡𝑟𝑖𝑛𝑔𝐿𝑖𝑡𝑒𝑟𝑎𝑙 (𝑠𝑖𝑛𝑘, 𝐹𝑟𝑎𝑚𝑒 ) 8 
+
+> 52:
+
+𝑟𝑒𝑡𝑢𝑟𝑛 _𝑣𝑎𝑙 ← Call original handler  
+
+> 53:
+
+Append the trace to 𝑓 _𝑐𝑎𝑙𝑙 _𝑠𝑒𝑞𝑢𝑒𝑛𝑐𝑒 ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing 
+
+3.3.2 Backward Constant Prober. The backward constant probe begins by retrieving the previous stack frame of the caller function along with its opcode array–that is, the sequence of opcodes gener-ated from a userland module–as shown in lines 2–3 of Algorithm 2. Following the definition of constant origination in Section 3.1.3, it first iterates over the literals array to find a literal that matches the parameter param at 1 , and returns 1 if found. If not found, the probe continues with traversing down the opcode array to find an in-struction whose opcode pushes param to the stack: SendVar opcode at 2 . This instruction immediately precedes the instruction being hooked–an instruction that executes the internal function, making its identification very efficient. If the first operand of SendVar is a constant, the function returns 1. If not, FromConst function is called. The statement at 3 serves as a fallback mechanism, anticipating that different opcodes may be used to push parameters onto the stack in the future. The FromConst function probes if an operand originates from a constant, by recursively walking down the opcode array. For effi-ciency, the statement at 4 limits the walk to the caller frame only (and ignores local control-flow). However, by making a few adjust-ments, which include the statements at lines 2–3, the walk can extend to deeper frames. We leverage a few string-manipulating op-codes, categorized as ConstantOpcode (fetch or declare), Assignment ,and Concatenation , annotated as 5 , 6 , and 7 , respectively. 
+
+3.3.3 Trace Analyzer. The fuzzer calls the trace analyzer (Algo-rithm 3’s SetCallTrace function) lazily, as it may filter many func-tion traces. The trace analyzer only runs when a new path is found (indicating a new input), during sanitization-aware mutation (to check if potentially vulnerable functions are reached), and when function traces update is required (e.g., during the function-based check to verify if a well-formed and malicious input is executed successfully, revealing the exploitability of the fuzzed function, and thus its vulnerability). The SetCallTrace function receives a fuzzing input ( in dictio-nary) and a list of hashes of potentially vulnerable function traces (VulnFuncHashes ). We extend Phuzz to allow input stores the traces status, function traces, a list of sanitization function traces, a list of potentially vulnerable function traces that serve as fuzzing targets, the path hash, and a list of completed fuzzing targets; the first four are used by Algorithm 3 Lines 2, 3, 11, 25. The core logic of SetCallTrace is to identify die or exit functions– indicating premature script termination–and collect the traces of sanitization and potentially vulnerable functions by iterating over the function traces, at 1 , 2 , 3 . It also filters out potentially vulnera-ble functions traces whose sink originates from constants, denoted by 4 . It then checks if a trace of potentially vulnerable function is new 5 . If so, the trace is added the list, making it a fuzzing target (which includes calling ParamsInSink 6 ). To guide the fuzzer’s mutation, the ParamsInSink function identi-fies input parameters that taint the sink. This function loops in the parameters and matches each parameter’s value to a sink via the  
+
+> PayloadInSink
+
+string match heuristic 7 . If matched, the parameter key is added to pInSink and its data type and quoted flag are set to 
+
+> None
+
+. Further, when the trace belongs to a function vulnerable to SQLI, the data type and quoted flag are determined by parsing the query at 8 and retrieving the database metadata 9 . Finally, if the result of parsing matches the metadata annotated by 10 , the data type and quoted flag are assigned. 
+
+Algorithm 2 Backward constant prober  
+
+> 1:
+
+function IsStringLiteral (𝑃𝑎𝑟𝑎𝑚 , 𝐹𝑟𝑎𝑚𝑒 ) 
+
+> 2:
+
+𝑖𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 ← 𝑂𝑝𝑐𝑜𝑑𝑒𝐴𝑟𝑟𝑎𝑦 (𝐹𝑟𝑎𝑚𝑒.𝑃𝑟𝑒𝑣𝐹𝑟𝑎𝑚𝑒.𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛 ) 
+
+> 3:
+
+for each 𝑙𝑖𝑡𝑒𝑟𝑎𝑙 in 𝑖𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦.𝐿𝑖𝑡𝑒𝑟𝑎𝑙𝑠 do 1 
+
+> 4:
+
+if 𝑃𝑎𝑟𝑎𝑚 = 𝑙𝑖𝑡𝑒𝑟𝑎𝑙 then  
+
+> 5:
+
+return 1 ⊲ Param ≈ caller’s compile-time literal  
+
+> 6:
+
+𝑖 ← 𝐶𝑢𝑟𝑟𝑒𝑛𝑡𝐼𝑛𝑠𝑡𝑟 (𝐹𝑟𝑎𝑚𝑒.𝑃𝑟𝑒𝑣𝐹𝑟𝑎𝑚𝑒 ) ⊲ Call instruction  
+
+> 7:
+
+for 𝑖 downto 𝑓 𝑖𝑟𝑠𝑡𝐼𝑛𝑠𝑡𝑟𝑢𝑐𝑡𝑖𝑜𝑛 in 𝑖𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 do  
+
+> 8:
+
+if (𝑖.𝑂𝑝𝑐𝑜𝑑𝑒 is 𝑆𝑒𝑛𝑑𝑉 𝑎𝑟 ) ∧ ( 𝑖.𝑂𝑝 1 is 𝑃𝑎𝑟𝑎𝑚 ) then 2 
+
+> 9:
+
+if 𝑖.𝑂𝑝 1 is 𝐶𝑜𝑛𝑠𝑡 then ⊲ Op1 is the 1st operand  
+
+> 10:
+
+return 1 
+
+> 11:
+
+return FromConst( 𝑖.𝑂𝑝 1,𝑖 ,𝑖𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 ) 
+
+> 12:
+
+return 0 3 ⊲ fallback, if 𝑆𝑒𝑛𝑑𝑉 𝑎𝑟 changes  
+
+> 13:
+
+function FromConst (𝑂𝑝𝑒𝑟𝑎𝑛𝑑 , 𝐼 , 𝐼𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 ) 
+
+> 14:
+
+if 𝐼 ≤ 𝐼𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦.𝐹𝑖𝑟𝑠𝑡𝐼𝑛𝑠𝑡𝑟𝑢𝑐𝑡𝑖𝑜𝑛 then  
+
+> 15:
+
+return 0 4 
+
+> 16:
+
+𝐼 ← 𝐼 − 1 
+
+> 17:
+
+if 𝐼 .𝑅𝑒𝑠𝑢𝑙𝑡 = 𝑂𝑝𝑒𝑟𝑎𝑛𝑑 then  
+
+> 18:
+
+if 𝐼 .𝑂𝑝𝑐𝑜𝑑𝑒 is 𝐶𝑜𝑛𝑠𝑡𝑎𝑛𝑡𝑂𝑝𝑐𝑜𝑑𝑒 then 5 
+
+> 19:
+
+return 1 
+
+> 20:
+
+else if 𝐼 .𝑂𝑝𝑐𝑜𝑑𝑒 is 𝐴𝑠𝑠𝑖𝑔𝑛𝑚𝑒𝑛𝑡 then 6 ⊲ // Op1 = Op2  
+
+> 21:
+
+if 𝐼 .𝑂𝑝 2.𝑇 𝑦𝑝𝑒 is 𝐶𝑜𝑛𝑠𝑡 then  
+
+> 22:
+
+return 1 
+
+> 23:
+
+return FromConst( 𝐼 .𝑂𝑝 2,𝐼 ,𝐼𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 ) 
+
+> 24:
+
+else if 𝐼 .𝑂𝑝𝑐𝑜𝑑𝑒 is 𝐶𝑜𝑛𝑐𝑎𝑡𝑒𝑛𝑎𝑡𝑖𝑜𝑛 then 7 ⊲ // Op1 . Op2  
+
+> 25:
+
+𝑜𝑝 1𝐶𝑜𝑛𝑠𝑡 ← 𝐼 .𝑂𝑝 1.𝑇 𝑦𝑝𝑒 is 𝐶𝑜𝑛𝑠𝑡  
+
+> 26:
+
+𝑜𝑝 2𝐶𝑜𝑛𝑠𝑡 ← 𝐼 .𝑂𝑝 2.𝑇 𝑦𝑝𝑒 is 𝐶𝑜𝑛𝑠𝑡  
+
+> 27:
+
+if 𝑜𝑝 1𝐶𝑜𝑛𝑠𝑡 ∧ 𝑜𝑝 2𝐶𝑜𝑛𝑠𝑡 then  
+
+> 28:
+
+return 1 
+
+> 29:
+
+if !𝑜𝑝 1𝐶𝑜𝑛𝑠𝑡 ∧ ( 𝐼 .𝑂𝑝 1.𝑇 𝑦𝑝𝑒 ≠ 𝑈 𝑛𝑢𝑠𝑒𝑑 ) ∧ 𝑜𝑝 2𝐶𝑜𝑛𝑠𝑡 then  
+
+> 30:
+
+return FromConst( 𝐼 .𝑂𝑝 1,𝐼 ,𝐼𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 ) 
+
+> 31:
+
+if 𝑜𝑝 1𝐶𝑜𝑛𝑠𝑡 ∧!𝑜𝑝 2𝐶𝑜𝑛𝑠𝑡 ∧ ( 𝐼 .𝑂𝑝 2.𝑇 𝑦𝑝𝑒 ≠ 𝑈 𝑛𝑢𝑠𝑒𝑑 ) then  
+
+> 32:
+
+return FromConst( 𝐼 .𝑂𝑝 2,𝐼 ,𝐼𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 ) 
+
+> 33:
+
+return 0 
+
+> 34:
+
+else if !𝐼 .𝑅𝑒𝑠𝑢𝑙𝑡 ∧ ( 𝐼 .𝑂𝑝 1.𝑇 𝑦𝑝𝑒 is 𝑂𝑝𝑒𝑟𝑎𝑛𝑑 ) then  
+
+> 35:
+
+if 𝐼 .𝑂𝑝 2.𝑇 𝑦𝑝𝑒 is 𝐶𝑜𝑛𝑠𝑡 then  
+
+> 36:
+
+return 1 
+
+> 37:
+
+else if 𝐼 .𝑂𝑝 2.𝑇 𝑦𝑝𝑒 ≠ 𝑈 𝑛𝑢𝑠𝑒𝑑 then  
+
+> 38:
+
+return FromConst( 𝐼 .𝑂𝑝 2,𝐼 ,𝐼𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 ) 
+
+> 39:
+
+return 0 
+
+> 40:
+
+return FromConst( 𝑂𝑝𝑒𝑟𝑎𝑛𝑑, 𝐼, 𝐼𝑛𝑠𝑡𝑟𝐴𝑟𝑟𝑎𝑦 )
+
+## 4 Implementation 
+
+We implement the back-end instrumentation in C, comprising ap-proximately 5.4k LOC, and deploy it as PHP extension called ZIM-PAF. RedPhuzz, our redesign version of Phuzz [ 13 ] fuzzer, requires about 4.9k LOC of Python. The Algorithm 1 initialization and shut-down functions is directly implemented in Zend’s lifecycle func-tions: MINIT , GINIT , and RINIT for the initialization and MSHUTDOWN , 
+
+> GSHUTDOWN
+
+and RSHUTDOWN for shutdown. To represent the program’s branch coverage we provide hooks for 16 branch opcodes given in Appendix C Table 3. Initially, we only considered ZEND_JMP* instruc-tions, but PHP optimization may bypass these instruction, resulting in some conditional statements in userland code being missed. Algorithm 3 Trace analyzer                                                                                                                                                                                        
+
+> 1: procedure SetCallTrace (𝑖𝑛 ,𝑉 𝑢𝑙𝑛𝐹𝑢𝑛𝑐𝐻𝑎𝑠ℎ𝑒𝑠 )
+> 2: 𝑠𝑡𝑎𝑡𝑢𝑠 ←0
+> 3: 𝑡𝑟𝑎𝑐𝑒𝑠 ←𝑖𝑛.𝐹𝑢𝑛𝑐𝑇 𝑟𝑎𝑐𝑒𝑠 ⊲traces is a list of dictionaries
+> 4: for 𝑓 in 𝑡𝑟𝑎𝑐𝑒𝑠 do ⊲f is a dictionary
+> 5: 𝑖𝑠𝑉 𝑢𝑙𝑛 ←𝐹𝑎𝑙𝑠𝑒
+> 6: 𝑛𝑎𝑚𝑒 ←𝑓 [𝑛𝑎𝑚𝑒 ]
+> 7: if 𝑛𝑎𝑚𝑒 ∈𝐷𝑖𝑒𝐸𝑥𝑖𝑡𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑠 then 1
+> 8: 𝑠𝑡𝑎𝑡𝑢𝑠 |=𝐸𝑥𝑖𝑠𝑡𝐷𝑖𝑒𝐸𝑥𝑖𝑡
+> 9: else if 𝑛𝑎𝑚𝑒 ∈𝑆𝑎𝑛𝑖𝑡𝑖𝑧𝑒𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑠 then 2
+> 10: 𝑠𝑡𝑎𝑡𝑢𝑠 |=𝐸𝑥𝑖𝑠𝑡𝑆𝑎𝑛𝑖𝑡𝑎𝑡𝑖𝑜𝑛
+> 11: 𝑖𝑛.𝑠𝑎𝑛𝑖𝑡𝑎𝑡𝑖𝑜𝑛𝑠.𝑎𝑝𝑝𝑒𝑛𝑑 (𝑓 )
+> 12: else if 𝑛𝑎𝑚𝑒 ∈𝑉 𝑢𝑙𝑛𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑠 then 3
+> 13: 𝑠𝑡𝑎𝑡𝑢𝑠 |=𝐸𝑥𝑖𝑠𝑡𝑉 𝑢𝑙𝑛𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛
+> 14: if 𝑓 [𝑠𝑖𝑛𝑘 ]≠𝐶𝑜𝑛𝑠𝑡𝑎𝑛𝑡 then 4
+> 15: 𝑖𝑠𝑉 𝑢𝑙𝑛 ←𝑇 𝑟𝑢𝑒
+> 16: if 𝑖𝑠𝑉 𝑢𝑙𝑛 then
+> 17: ℎ𝑎𝑠ℎ ←GetHash( 𝑓 )
+> 18: if ℎ𝑎𝑠ℎ ∉𝑉 𝑢𝑙𝑛𝐹𝑢𝑛𝑐𝐻𝑎𝑠ℎ𝑒𝑠 then 5
+> 19: if 𝑓 ∉𝑖𝑛.𝑉 𝑢𝑙𝑛𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑠 then
+> 20: 𝑉 𝑢𝑙𝑛𝐹𝑢𝑛𝑐𝐻𝑎𝑠ℎ𝑒𝑠.𝑎𝑑𝑑 (ℎ𝑎𝑠ℎ )
+> 21: 𝑓 [𝑆𝑡𝑎𝑡𝑢𝑠 ] ← 𝐹𝑈 𝑍𝑍 𝐸𝐷
+> 22: 𝑓 [𝑓 𝑢𝑛𝑐𝐼𝑡𝑒𝑟𝑎𝑡𝑖𝑜𝑛 ] ← 0
+> 23: 𝑓 [𝑝𝑎𝑟𝑎𝑚𝐼𝑡𝑒𝑟𝑎𝑡𝑖𝑜𝑛 ] ← 0
+> 24: 𝑓 [𝑝𝐼𝑛𝑆𝑖𝑛𝑘 ] ← ParamsInSink( 𝑖𝑛.𝑝 ,𝑠𝑖𝑛𝑘 ,𝑓 )6
+> 25: 𝑖𝑛.𝑉 𝑢𝑙𝑛𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑠.𝑎𝑝𝑝𝑒𝑛𝑑 (𝑓 )
+> 26: 𝑖𝑛 [𝑆𝑡𝑎𝑡𝑢𝑠 ] ← 𝑠𝑡𝑎𝑡𝑢𝑠
+> 27: function ParamsInSink (𝑝𝑎𝑟𝑎𝑚𝑠 ,𝑠𝑖𝑛𝑘 ,𝑓 𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑇 𝑟𝑎𝑐𝑒 )
+> 28: 𝑓 ←𝑓 𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑇 𝑟𝑎𝑐𝑒
+> 29: 𝑝𝐼𝑛𝑆𝑖𝑛𝑘 ← { } ⊲a dictionary
+> 30: for 𝑘𝑒𝑦, 𝑣𝑎𝑙𝑢𝑒 in 𝑝𝑎𝑟𝑎𝑚𝑠 do ⊲params is a dictionary
+> 31: if 𝑃𝑎𝑦𝑙𝑜𝑎𝑑𝐼𝑛𝑆𝑖𝑛𝑘 (𝑣𝑎𝑙𝑢𝑒, 𝑠𝑖𝑛𝑘 )then 7
+> 32: 𝑝𝐼𝑛𝑆𝑖𝑛𝑘 [𝑘𝑒𝑦 ] ← { 𝑡 𝑦𝑝𝑒 :𝑁 𝑜𝑛𝑒, 𝑞𝑢𝑜𝑡𝑒𝑑 :𝑁 𝑜𝑛𝑒 }
+> 33: if 𝑓 ∈𝑆𝑄𝐿𝐼𝑉 𝑢𝑙𝑛𝐹𝑢𝑛𝑐𝑡𝑖𝑜𝑛𝑠 then
+> 34: 𝑡𝑎𝑏𝑙𝑒𝑆𝑒𝑡 ←parse( 𝑓 [𝑞𝑢𝑒𝑟 𝑦 ])8
+> 35: 𝑑𝑒𝑠𝑐 ←Metadata( 𝑡𝑎𝑏𝑙𝑒𝑆𝑒𝑡 ,𝐷𝐵𝑐𝑜𝑛𝑛 )9
+> 36: if 𝑡𝑎𝑏𝑙𝑒𝑆𝑒𝑡 matches 𝑑𝑒𝑠𝑐 then 10
+> 37: 𝑝𝐼𝑛𝑆𝑖𝑛𝑘 [𝑘𝑒𝑦 ] [ 𝑡 𝑦𝑝𝑒 ] ← 𝑑𝑒𝑠𝑐 [𝑡 𝑦𝑝𝑒 ]
+> 38: 𝑝𝐼𝑛𝑆𝑖𝑛𝑘 [𝑘𝑒𝑦 ] [ 𝑞𝑢𝑜𝑡𝑒𝑑 ] ← 𝑑𝑒𝑠𝑐 [𝑞𝑢𝑜𝑡𝑒𝑑 ]
+> return 𝑝𝐼𝑛𝑆𝑖𝑛𝑘
+
+We also hook ZEND_THROW for reporting exceptions and three opcodes for language constructs as listed in Appendix C Tables 4 and 5. We implement 117 hooks for userland functions consisting of 74 potentially vulnerable functions and 36 sanitization functions as listed in Appendix C Table 6. The remaining 7 functions are MySQL bind and execute functions. The function tracer, language constructs handler, and error and exception logger employs the cJSON library [ 6] to store logs in JSON format. For efficiency we buffer the coverage log, trace log, and parameter in branch log for each HTTP request and write it in batch during RSHUTDOWN .But for errors and exceptions, we log them immediately during interception to prevent losing their traces, for instance when the Zend interpreter may terminate the request immediately due to fatal error without calling RSHUTDOWN . This incurs a low overhead since their size is small. To store the results of trace analyzer and branch parameter ana-lyzer we add several attributes to Phuzz’s Candidate class. While Phuzz writes every input mutation to disk, RedPhuzz only writes the mutations that find new paths which signal new candidates creation. To distinguish mutations, we append iteration counts to the coverage id. This strategy yields a unique filename for each mutation, which saves significant disk space. When fuzzing is ter-minated without completion, our fuzzer can efficiently restore the fuzzing process. The trace analyzer utilizes SQLGlot library [ 12 ] to parse SQL query in an abstract syntax tree (AST). 
+
+## 5 Evaluation 
+
+We evaluate the performance of our fuzzing framework (ZIM-PAF and RedPhuzz), by comparing it to the state-of-the-art fuzzer Phuzz [ 13 ]. Phuzz is selected because it applies runtime function call monitoring (from userland) and monitors significantly more functions than Atropos [ 8]. Phuzz also provides usability, scalabil-ity, and extendability by avoiding interpreter patching, a limitation of earlier work [ 8, 22 , 25 ], and supports more vulnerability classes than them. Prior work has empirically compared Phuzz with the de facto standard blackbox fuzzers Burp Suite [16] and ZAP [3]. We create a proof of concept (PoC) web application containing code for Listings 1 and 2 in Section 2. Together with web applica-tions used to evaluate Phuzz, these form our benchmark suite. We also create inputs to fuzz the PoC web application, while the other benchmarks are fuzzed using Phuzz-provided inputs. Both web server and the fuzzer run on a computer equipped with an 4 core 1.8 GHz Intel Core i7-8550U CPU, 16 GB of RAM, and NVMe SSD 2 TB. The benchmarks are hosted on Ubuntu with Apache 2.4.58  
+
+> mod_php
+
+and PHP 8.3.19 with OPcache extension [ 7] enabled for high speed request processing by avoiding script recompilation. Table 7, 9, 10, and 12 of Appendix C summarize the experiment result. The leftmost column of the tables contain the benchmark name and parts of JSON filenames representing their fuzzing inputs. Although RedPhuzz classifies vulnerabilities and bugs during the experiment, only bugs used to compare performance are in-cluded for brevity. Conversely, Phuzz only classifies vulnerabilities and uses error and exception reports as indicators for bugs. The experiment shows that Phuzz cannot detect 16/86 vulnerability test cases (highlighted in bold) whereas RedPhuzz detects all of them (86/86). The 16 undetected vulnerabilities also include 8 vul-nerabilities reported in the Phuzz paper [ 13 ] which are indicated by errors (requiring a manual inspection), but are not classified as vulnerability by Phuzz during fuzzing. Seven of the 16 unde-tected vulnerabilities come from language constructs that Phuzz’ instrumentation ( UOPZ [27] ) cannot intercept. As shown by Test No. 1–4 of Table 7, Phuzz cannot identify any of the vulnerabilities and bug in the PoC web application con-taining Listings 1 and 2 code. This is due to a lack of knowledge about the web application’s internals: the sink, the applied sanitiza-tion, and the parameters used in branch statements, which renders its mutation strategy ineffective to satisfy the branch conditions guarding the vulnerable functions. Conversely, equipped with this knowledge, RedPhuzz effectively mutates the parameters to satisfy branch conditions to reach the vulnerable functions and trigger vulnerabilities or bugs. Test No. 1 result indicates that RedPhuzz classifies the vulnerable function at 9 in Listing 1 as buggy. ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing 
+
+Other benchmarks further confirm Phuzz’s limitations. For in-stance, Phuzz fails Test 10 and 18 to uncover unserialize vulner-abilities in Wordpress plugins, as base64_decode is called before  
+
+> unserialize
+
+to decode the input, requiring the fuzzed parameters to be base64 encoded (see code snippet in Table 8). RedPhuzz suc-ceeds these tests, however, it reports an additional path traversal vulnerability for Test 10, which is a false positive due to a file per-mission error. Similarly, Phuzz cannot uncover vulnerability in Test No. 16 as the input parameters must be an alphabetical string that starts with "/scripts" (code snippet in Table 8). RedPhuzz succeeds Test 10 by applying a sanitization-aware mutation. Subsequently, Phuzz incorrectly classifies Test No. 46 as vulner-able (false positive), as reported in Table 10. The cause can be seen in the code snippet in Table 11, where Phuzz logs an error raised by is_file when an invalid path is submitted. This function is not vulnerable and serves as a guard to ensure only input with a valid path reaches fopen , which is the vulnerable function. Notably, al-though Phuzz mutation can generate a valid path to reach fopen ,it is still unable to uncover the vulnerability because no error or exception is produced, the only signals that Phuzz relies on to iden-tify vulnerable functions. Conversely, with the sanitization aware mutation, RedPhuzz can generate a valid and malicious well-formed path to reach fopen . Then, by performing the function-based check, it uncovers the vulnerability, knowing the path in fopen ’s sink is malicious and the return value is a success. This case demonstrates the capability of RedPhuzz to identify a vulnerable function based on its exploitability. 
+
+Table 1: Instrumentation performance of ZIMPAF and PCOV+UOPZ for the first request across inputs; cee = cov-erage, error, exception volume; n-cee = function/language construct trace, user parameters in branch; arprice = Arprice-responsive-pricing-table 3.6.                                     
+
+> Benchmark PCOV + UOPZ ZIMPAF cee (kB) t (ms) cee (kB) n-cee (kB) t (ms)
+> arprice 5,802.9 6,554 6,669.7 22,806.6 4,167
+> bwapp_sqli_ajax 2.9 12.9 0.3 1.9 11.0
+> dvwa_sqli_low 17.9 679 1.1 3.5 4.2
+> poc_seq_sanit 0.4 6.0 0.1 1.3 6.2
+> wacko_register_1 2.3 10.7 0.4 3.8 8.4
+> xvwa_sqli_search 1.3 15 0.2 2.2 12.1
+
+Phuzz also fails test 74 (Table 12) as it cannot mutate input pa-rameters to skip the if statement in the code snippet shown in Table 13 and takes the else branch to reach the vulnerable function: 
+
+> mysqli_query
+
+. In contrast, RedPhuzz with the awareness of input parameters used in branch statement can mutate the input to reach  
+
+> mysqli_query
+
+and detect the vulnerability. Lastly, Phuzz misses test 77 with input name upload_1 as it is incapable of generating input with a content type: multipart/form-data . We create a new input for this test and add a file parameter because Phuzz’s original input, upload , lacks it. RedPhuzz succeeds the test as we added func-tionality to generate an HTTP request with multipart/form-data .Alongside its capability, our framework also demonstrates high efficiency, as indicated by the time to detect vulnerabilities given in Tables 7, 9, 10, and 12 of Appendix C. RedPhuzz achieves 73% faster detection than Phuzz on commonly detected vulnerabilities and bugs, despite performing substantially more tasks and processing more data than Phuzz. This performance stems from the highly efficient and fine-grained interpreter instrumentation in ZIMPAF to produce high-fidelity data than PCOV and UOPZ which only log coverage, error, and exception, as summarized in Table 1. This table (a condensed version of Table 14 of Appendix C) reports both tools’ execution time and data volume, for the first request for sampled benchmarks. We report only the first request to ensure comparability, as the execution paths are identical for the tools. Table 15 of Appendix C shows that ZIMPAF delivers 2.1 to 41.22 times higher throughput than PCOV and UOPZ across five sampled benchmarks, and 0.87 × for one. To better understand the ZIMPAF workload, Table 2 details the function trace and branch parameter log (two of which are missing in PCOV and UOPZ) for the first entry (arprice) in Table 1. For this entry, ZIMPAF generates a total of 22,806.6 KB of function trace and branch parameters log in combine. These logs are the result of monitoring 35.6k function calls and 7 branch instructions whose operands originate from input parameters. RedPhuzz further processes these logs to produce 9 potentially vulnerable functions as the target for function-level fuzzing, 15 sanitization reports, and 4 distinct input-dependent branches. The ZIMPAF’s backward constant prober enables RedPhuzz to skip about 41% of vulnerable functions whose sinks are untainted as shown by 1 which indicates their invulnerability. RedPhuzz then removes traversal constructs ( 2 ) whose paths point to files in the code base, e.g include . This demonstrates RedPhuzz’s strong capability to perform semantic filtering and achieve a highly-targeted fuzzing. 
+
+## 6 Related Work 
+
+The most related state-of-the-art grey-box fuzzers are discussed in Section 1, forming the basis of our arguments for proposing ZIMPAF and RedPhuzz to explain their weaknesses, and in Sec-tion 3 to explain how our design addresses them. Here, we position our research in the broader grey-box fuzzing landscape. Grey-box fuzzing resolves the lack of feedback and limited mutation capabil-ity of black-box fuzzers which impair their effectiveness, such as Burp Suite and ZAP [ 3 , 16 ]. Similarly, it mitigates the typically high computational overhead of static analysis [ 4, 11 ] and white-box fuzzing [9], which often produces many false positives. WDFUZZ employs static analysis to provide fuzzing inputs, which are then fuzzed to uncover vulnerability and explore new path [ 10 ]. RedPhuzz differs in that inputs are known in advance, provided as JSON files, most of which inherited from Phuzz, indi-cating that the entire fuzzing workflow is not fully seamless. This is an opportunity to extend RedPhuzz by integrating automatic input submission to RedPhuzz by only giving it an endpoint to fuzz. While WDFUZZ identifies sources and sinks statically and applied taint analysis to track tainted sinks, ZIMPAF is aware of the sink when initiating backward constant probe (see Algorithm 2 at 8 ), and RedPhuzz directly identifies tainted sink using trace information (see Algorithm 3 at 6 ). CorbFuzz, a browser fuzzer, also employs branch interception to provide coverage bitmap [ 19 ]. However, it misses ZEND_JMP* opcode Table 2: Arprice-responsive-pricing-table-3.6 trace and branch parameters log details for the first request of the original (unmutated) input 
+
+Metric Value size of function call traces log 22,804.5 KB function calls 35,623 vulnerable functions 2,339 untainted vulnerable functions 1 914 traversal constructs in code base 2 996 duplicate vulnerable functions removed 420 input’s vulnerable functions 9sanitization functions (duplicate removed) 27,251 sanitization applied to input parameters 15 size of branch parameters log 2.1 KB entries in branch parameters log 7distinct branches w/ operands from input parameters 4
+
+that may cause incomplete coverage. Additionally, it installs the hooks in RINIT , resulting in per-request installation, which is inef-ficient. ZIMPAF hooks the opcode and installs hooks once for all requests in MINIT . CorbFuzz also assumes that manually setting up a database is impractical, so it synthesizes a database and performs type inference automatically. Conversely, RedPhuzz leverages an existing database to retrieve metadata for identifying data types for mutation. Spider-Scents detects XSS by injecting payloads directly into the database, bypassing the web application, and then crawling the webpage for XSS reflections [ 14 ]. Then, the human tester manually analyses the crawler output to determine whether the payloads can be injected via web application. This approach is inefficient. In contrast, RedPhuzz injects payloads upon encountering INSERT or  
+
+> UPDATE
+
+queries, enabling in - situ fuzzing of stored XSS, and auto-mated detection via the webFuzz [ 23 ] detector, which is a highly targeted and efficient strategy. 
+
+## 7 Future Work 
+
+We are currently optimizing ZIMPAF in several aspects, for in-stance, to manage moderate input growth, such as that in Test No. 5 Table 7. As discussed in the first paragraph of Section 6, we also plan to build automatic input generator for our framework. Future work could extend support for more sanitization-aware mutation as it is tailored to particular sanitization functions. Test No. 5 in Table 7 takes longer to detect because the input is sanitized using  
+
+> preg_replace
+
+which is absent in the existing mutation strategy. It can also include building an SQL query parser and inverse regex generator, specifically designed for fuzzing. We observe that SQL-Glot [ 12 ] fails to parse a queries containing complex malformed parameters, causing RedPhuzz to proceed without knowledge of the data type of query parameters and their quoted flag. Likewise, Python’s xeger may not work when the regex pattern is complex, potentially leading to deep or infinite recursion that causes Python to terminate, even though the call is enclosed in try –except block (see Figure 2). Finally, future work could target the detection of more vulnerability classes. 
+
+## 8 Conclusion 
+
+In this paper, we discuss several weaknesses in the state of the art fuzzers [ 8, 13 , 22 , 23 , 25 , 29 ] and how they limit their performance. We addresses the weaknesses by introducing a novel fuzzing frame-work consisting of ZIMPAF, a runtime interpreter instrumentation and RedPhuzz, the front-end fuzzer. ZIMPAF utilizes several novel techniques to achieve an efficient and effective instrumentation ca-pable of producing information that is used by RedPhuzz to achieve multi-level and highly targeted fuzzing. The evaluation shows that our framework outperforms Phuzz. 
+
+## 9 Acknowledgments 
+
+This paper was grammar-checked and lightly polished using Chat-GPT and Gemini. 
+
+## References 
+
+[1] Anonymous. n.d.. PHP Internals Book . Retrieved March 12, 2026 from https: //www.phpinternalsbook.com/ [2] Andrew W. Appel. 1998. Modern Compiler Implementation in C . Cambridge University Press, Cambridge, UK. [3] Checkmarx. 2026. Zed Attack Proxy (ZAP) . Retrieved February 5, 2026 from https://www.zaproxy.org/ [4] Johannes Dahse and Thorsten Holz. 2014. Simulation of Built-in PHP Features for Precise Static Code Analysis. In Proc. 21st Annual Network and Distributed System Security Symposium (NDSS) (San Diego, CA, USA). The Internet Society, 23–26. doi:10.14722/ndss.2014.23262 [5] Manuel Egele, Theodoor Scholte, Engin Kirda, and Christopher Kruegel. 2012. A Survey on Automated Dynamic Malware-Analysis Techniques and Tools. ACM Computing Surveys (CSUR) 44, 2, Article 6 (2012). doi:10.1145/2089125.2089126 [6] Dave Gamble and cJSON Contributors. 2025. cJSON: Ultralightweight JSON parser in ANSI C . Retrieved January 21, 2026 from https://github.com/DaveGamble/ cJSON [7] PHP Group. [n. d.]. php . Retrieved November 05, 2025 from https://www.php.net/ [8] Emre Guler, Sergej Schumilo, Moritz Schloegel, Nils Bars, Philipp Görz, Xinyi Xu, Cemal Kaygusuz, and Thorsten Holz. 2024. Atropos: Effective Fuzzing of Web Applications for Server-Side Vulnerabilities. In Proc. 33 rd USENIX Security Symposium (USENIX Security 24) (San Fransisco, California). Usenix. [9] Jin Huang, Yu Li, Junjie Zhang, and Rui Dai. 2019. UChecker: Automatically Detecting PHP-Based Unrestricted File Upload Vulnerabilities. In Proc. 49th Annual IEEE/IFIP International Conference on Dependable Systems and Networks (DSN) . IEEE, 581–592. doi:10.1109/DSN.2019.00063 [10] Zihan Lin, Yuan Zhang, Jiarun Dai, Xinyou Huang, Bocheng Xiang, Guangliang Yang, Letian Yuan, Lei Zhang, Tian Chen, and Min Yang. 2025. Effective Directed Fuzzing with Hierarchical Scheduling for Web Vulnerability Detection. In 34th USENIX Security Symposium (USENIX Security 25) . 8349–8366. [11] Changhua Luo, Penghui Li, and Wei Meng. 2022. TChecker: Precise Static Inter-Procedural Analysis for Detecting Taint-Style Vulnerabilities in PHP Appli-cations. In Proc. 2022 ACM SIGSAC Conference on Computer and Communications Security (CCS ’22) . ACM, Los Angeles, CA, USA, 2175–2188. doi:10.1145/3548606. 3559391 [12] Toby Mao. 2023. SQLGlot . Retrieved December 16, 2025 from https://sqlglot. com/sqlglot.html [13] Sebastian Neef, Lorenz Kleissner, and Jean-Pierre Seifert. 2024. What All the Phuzz Is About: A Coverage-guided Fuzzer for Finding Vulnerabilities in PHP Web Applications. In Proc. 19 th ACM Asia Conference on Computer and Commu-nication Security (Singapore). ACM. [14] Eric Olsson, Benjamin Eriksson, Adam Doupé, and Andrei Sabelfeld. 2024. Spider-Scents: Grey-box database-aware web scanning for stored XSS. In 33rd USENIX Security Symposium (USENIX Security 24) . 6741–6758. [15] Ori Or-Meir, Nir Nissim, Yuval Elovici, and Lior Rokach. 2019. Dynamic Malware Analysis in the Modern Era—A State of the Art Survey. ACM Computing Surveys (CSUR) 52, 5, Article 88 (2019). doi:10.1145/3329786 [16] PortSwigger. 2026. Burp Suite Community Edition . Retrieved February 5, 2026 from https://portswigger.net/burp/communitydownload [17] Derick Rethans. [n. d.]. Xdebug . Retrieved November 06, 2025 from https: //xdebug.org/ [18] Justin Seitz. 2009. Gray Hat Python: Python Programming for Hackers and Reverse Engineers . no startch press, San Fransisco. [19] Chaofan Shou, İsmet Burak Kadron, Qi Su, and Tevfik Bultan. 2021. CorbFuzz: Checking Browser Security Policies with Fuzzing. In 2021 36th IEEE/ACM In-ternational Conference on Automated Software Engineering (ASE) (Melbourne, ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing                                
+
+> Australia). IEEE. [20] Dafydd Stuttard and Marcus Pinto. 2011. The Web Application Hacker’s Handbook: Finding and Exploiting Security Flaws . John Wiley & Sons, Inc., Indianapolis, IN. [21] Michael Sutton, Adam Greene, and Pedram Amini. 2007. Fuzzing: Brute Force Vulnerability Discovery . Pearson Education, Upper Saddle River, NJ. [22] Erik Trickel, Fabio Pagani, Chang Zhu, Lukas Dresel, Giovanni Vigna, Christo-pher Kruegel, Ruoyu Wang, Tiffani Bao, Yan Shoshitaishvili, and Adam Doupé. 2023. Toss a Fault to Your Witcher: Applying Grey-box Coverage-Guided Muta-tional Fuzzing to Detect SQL and Command Injection Vulnerabilities. In Proc. 44 th IEEE Symposium on Security and Privacy (S&P) (San Fransisco, CA). IEEE. [23] Orpheas van Rooij, Marcos A. Charalambous, Demetris Kaizer, Michalis Pa-paevripides, and Elias Athanasopoulos. 2021. webFuzz: Grey-box fuzzing for web applications. In Proc. 26 th European Symposium on Research in Computer Security (ESORICS) . Springer-Verlag, Berlin, Heidelberg, 152–172. [24] W3Techs: Web Technology Surveys. 2026. Usage statistics of server-side program-ming languages for website .Retrieved March 9, 2026 from https://w3techs.com/ technologies/overview/programming_language [25] Chenlin Wang, Wei Meng, Changhua Luo, and Penghui Li. 2025. Predator: Directed Web Application Fuzzing for Efficient Vulnerability Validation. In Proc. 46 th IEEE Symposium on Security and Privacy (S&P) (San Fransisco, California). IEEE. [26] Joe Watkins. 2025. PCOV: A self contained CodeCoverage compatible driver for PHP .Retrieved November 06, 2025 from https://github.com/krakjoe/pcov [27] Joe Watkins. 2025. UOPZ: User Operations for Zend .Retrieved November 12, 2025 from https://github.com/krakjoe/uopz [28] Michal Zalewski. [n. d.]. american fuzzy lop (2.52b) .Retrieved October 30, 2025 from https://lcamtuf.coredump.cx/afl/ [29] Jiazhen Zhao, Yuliang Lu, Kailong Zhu, Zehan Chen, and Hui Huang. 2022. Cefuzz: An Directed Fuzzing Framework for PHP RCE Vulnerability. Electronics
+> 11, 5 (2022). https://doi.org/10.3390/electronics11050758
+
+## A Open Science 
+
+To support open science, we publish all framework artifacts com-prising the source code for the instrumentation, the front-end fuzzer, and the benchmark web applications used for the evaluation, in-cluding our own proof of concept. The framework is downloadable at this link: https://github.com/tennovs/zimpaf_redphuzz. The GitHub site also explains how to build and execute the evaluation environment via Docker, which resembles the one on our host machine for easy reproducibility. For efficient execution we suggest setting up the environment directly on host due to Docker’s limitation. In this way, we expect to foster further research aiming to extend or improve our framework and to promote its wide adoption. 
+
+## B Ethical Considerations 
+
+The sole motivation of this research is to advance grey-box web application fuzzing, which has lagged behind similar research for native application, and to offer more tools for stakeholders to de-velop more secure web applications. The development of framework posed no risks since it was performed on local machine without any interactions with external systems. The benchmark consists of a proof-of-concept web application and several web applications with known or published vulnerabilities, the latter of which use inputs provided in the previous research. Our framework is released under Apache 2.0 license, enabling the stakeholders to benefit according to their purposes. The security community benefits from our research through the invention of novel techniques that can be further extended or improved by the community. Practitioners can use or integrate our framework into their workflows to find vulnerabilities and bugs, which results in more secure web applications. However, malicious users can also misuse our framework to uncover vulnerabilities and exploit them for harmful intents. We mitigate this risk by deciding to publish at this stage of our research, before full automation of input generation and endpoint identification is included in the framework. While vulnerabilities are discovered, neither we discuss nor give any hints on how to further escalate the detection into system compromised. 
+
+## C Appendix 
+
+Table 3: Branch opcodes (each following a ZEND_ prefix) for execution paths 
+
+JMP, JMPZ, JMPNZ, JMPZ_EX, JMPNZ_EX, JMP_NULL, JMP_SET, COALESCE, IS_EQUAL, IS_NOT_EQUAL, IS_IDENTICAL, IS_NOT_IDENTICAL, IS_SMALLER, IS_SMALLER_OR_EQUAL, CASE, CASE_STRICT 
+
+Table 4: Exception Opcode 
+
+Opcode Purpose  
+
+> ZEND_THROW
+
+The last resort for catching an exception when the Zend interpreter bails out, bypassing normal execu-tion flow, including zend_throw_exception .
+
+Table 5: Opcodes (each following a ZEND_ prefix) for lan-guage construct traces. 
+
+Vuln. Construct Opcode [, Extended Value] Path Tra-versal include INCLUDE_OR_EVAL, INCLUDE include_once INCLUDE_OR_EVAL, INCLUDE_ONCE require INCLUDE_OR_EVAL, REQUIRE require_once INCLUDE_OR_EVAL, REQUIRE_ONCE Code Exec eval INCLUDE_OR_EVAL, EVAL - exit, die EXIT Extended value is a member of data structure ( _zend_op struct) of a poly-morphic language construct opcode. It serves as an integer flag to identify the sub-type of the opcode being executed and to select the corresponding sub-operation (backpatching). Table 6: Functions being Monitored 
+
+Code Exe-cution assert, system, exec, passthru, shell_exec, popen, proc_open Path Tra-versal chgrp, chown, chmod, copy, delete, file, file_get_contents, fopen, glob, lchgrp, lchown, link, mkdir, move_uploaded_file, parse_ini_file, parse_ini_string, readfile, rename, rmdir, stat, symlink, tempnam, touch, unlink, scandir, header, clearstatcache, disk_free_space, disk_total_space, file_get_contents, fileatime, filectime, filegroup, fileinode, filemtime, fileowner, filesize, fileperms, filetype, linkinfo, lstat, readlink MySQL Injection mysqli::query, mysqli::execute_query, mysqli::real_query, mysqli::multi_query, mysqli::prepare, PDO::query, PDO::prepare, PDO::exec, mysqli_query, mysqli_execute_query, mysqli_real_query, mysqli_multi_query, mysqli_prepare (De|Un) serialize unserialize, yaml_parse, yaml_parse_file, igbi-nary_unserialize XXE DOMDocument::load, DOMDocument::loadXML, XMLReader::XML, XMLReader::open, XML-Reader::read, simplexml_load_string, sim-plexml_load_file, xml_parse Sanitize mysqli_real_escape_string, mysqli::real_escape_string, PDO::quote, html-specialchars, htmlentities, addslashes, strip-slashes, strip_tags, preg_replace, preg_match, realpath, basename, escapeshellarg, escapeshell-cmd, str_replace, strpos, stripos, filter_var, filter_input, filter_var_array, filter_input_array, libxml_disable_entity_loader, is_numeric, base64_decode, json_decode, fnmatch, is_file, file_exists, is_dir, is_excutable, is_link, is_readable, is_writable, is_uploaded_file, dirname, pathinfo MySQL (bind|exec) mysqli_stmt_bind_param, mysqli_stmt_execute, mysqli_stmt::bind_param, mysqli_stmt::execute, PDOStatement::bindParam, PDOState-ment::bindValue, PDOStatement::execute ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing 
+
+Table 7: Evaluation of RedPhuzz and Phuzz on PoC Web App (top) and Wordpress Plugins (bottom); p = new paths, t(s)= detection time. 
+
+Benchmark Test Bug / RedPhuzz Phuzz Info No. Vulnerability t (s) p t (s) p
+
+Sequence of sanitization (Listing 1 at 7 , 9 )1 SQLi & PathTr. 1.02 & 1.01 1 - 0 RedPhuzz detects SQLi as vulnerability and PathTr. as bug. Phuzz runs for 13 minutes Safe Sequence (Listing 2 at 1 )2 Domain violation bug 0.99 0 - 0 Phuzz runs for 5 minutes 
+
+Safe Sequence –mysqli_real_escape_string (Listing 2 at 2 )3 – - 0 - 0 RedPhuzz safe-sequence check cancels function-based detection. Phuzz runs for 12 minutes 
+
+Parameter in branch (List-ing 2 at 4 )4 SQLi 0.42 2 - 0 Phuzz runs for 13 minutes 
+
+Arprice-responsive-pricing-table 3.6 5 SQLi 282.42 20 176.98 1Crm-perks-forms 1.0.7 6 XSS 1.36 0 0.56 0Essential-real-estate 3.9.5 7 XSS 206.16 6 279.84 8Gallery-album 1.9.9 8 XSS 195.33 3 156.00 2hypercomments 1.2.1 9 XSS 15.02 2 21.71 2
+
+Joomsport-sports-league-results-management 5.1.7 10 UnserializeVuln 176.05 3 - 3 Phuzz cannot detect because input is base64-encoded. Phuzz runs for 11 minutes. RedPhuzz reports one False Positive for PathTr. due to file permission error. 
+
+Kivicare-clinic-management-system 2.3.8 11 SQLi 117.42 5 362.86 3Nirweb-support 2.7.6 12 SQLi 58.54 3 48.43 2 Phuzz time is spent on syntax error (1064) Nmedia-user-file-uploader 21.2 13 PathTr. 88.50 0 16.97 1Photo-gallery 1.6.2 14 SQLi 120.50 5 303.10 7Rezgo 4.1.6 15 XSS 1.45 1 12.61 0
+
+Seo-local-rank 2.2.2 16 PathTr. 0.21 1 - 0 Phuzz cannot detect due to preg_match filtering. Phuzz runs for 14 minutes 
+
+Show-all-comments-in-one-page 7.0.0 17 XSS 209.09 7 171.52 3
+
+Totop-link 1.7 18 UnserializeVuln 0.59 0 - 0 Phuzz cannot detect due to base64-encoded in-put, runs for 12 minutes 
+
+Ubigeo-peru 3.6.3 19 SQLi 25.36 2 78.81 5 Phuzz time is spent on syntax error (1064) Udraw 3.3.2 20 SQLi 5.28 2 12.36 2Usc-e-shop 2.8.4 21 SQLi 2.17 1 0.49 0Total 1,270.06 64 1,642.24 39 
+
+Note: 
+
+• Total times are only for vulnerabilities or bugs detected by both RedPhuzz and Phuzz. 
+
+• A new path is counted when a vulnerability or bug is discovered, or, if none is found, when the fuzzer is stopped manually. 
+
+• For SQLi, Phuzz’s detection time is recorded at the first syntax error, not at preceding errors that already indicate the presence of a bug. Table 8: Wordpress Plugins Vulnerable Function Undetected by Phuzz 
+
+Test Location Vulnerable code 10 joomsport-sports-league-results-management/includes/ posts/joomsport-post-season.php:867 public static function joomsport_md_load() {$mdId = intval($_POST[’mdId’]); 
+
+$args = unserialize(base64_decode($_POST[’shattr’])); //vuln function with encoded input $args = array_map(’sanitize_text_field’, $args); }
+
+16 seo-local-rank/admin/ vendor/datatables/ examples/resources/ examples.php:3 <?php 
+
+if ( isset($_POST[’src’]) && preg_match(’/scripts[a-zA-Z_]+˙ php/’, $_POST[’src’]) !== 0 ) { //guards vulnerability //vuln function: file_get_contents 
+
+echo htmlspecialchars(file_get_contents(’../server_side/’.$_POST[’src’])); 
+
+} else {echo ”; }
+
+18 totop-link/totop-link.css.php:2 <?php header(’Content-type: text/css’); 
+
+$vars = unserialize(base64_decode($_GET[’vars’])); //vuln function with encoded input $width = (!empty($vars[’width’])) ?’width:’.$vars[’width’].’px;’ : ”; 
+
+Table 8 shows three example Wordpress plugin vulnerabilities (each from /var/www/html/wordpress/wp-content/plugins/ ) that Phuzz did not find but RedPhuzz found.  
+
+> 1
+
+<?php  
+
+> 2
+
+/*To show the overhead of PCOV performing global hooking of opcode despite only one path executed and UOPZ performing global hooking of call dispatchers despite add, an invulnerable function, is never hooked. \toolInstr{} hooks are never invoked since there is no branches and no vulnerable/sanitization functions.  
+
+> 3
+
+*/  
+
+> 4
+
+$total = 0;  
+
+> 5
+
+$i = 1;  
+
+> 67
+
+//add is called 100 times  
+
+> 8
+
+add($i);  
+
+> 9
+
+add($i);  
+
+> 10
+
+add($i);  
+
+> 11
+
+/*  
+
+> 12
+
+* 
+
+> 13
+
+*other calls  
+
+> 14
+
+* 
+
+> 15
+
+* 
+
+> 16
+
+*/  
+
+> 17
+
+add($i);  
+
+> 18 19
+
+function add($number) { 
+
+> 20
+
+global $total;  
+
+> 21
+
+$total += $number;  
+
+> 22
+
+} 
+
+> 23
+
+?> 
+
+Listing 3: Instrumentation test-1  
+
+> 1
+
+<?php  
+
+> 2
+
+/*To illustrate the time spent by \toolInstr{} for logging the branch statement in loop header, and PCOV time for logging every executed instruction.  
+
+> 3
+
+*/  
+
+> 4
+
+//maxcounter input is set to 100 to match Listing 3}  
+
+> 5
+
+$maxcounter = isset($_GET['maxcounter']) ? (int)$_GET[' maxcounter'] : 0;  
+
+> 6
+
+$total = 0;  
+
+> 78
+
+for ($i = 0; $i < 3; $i++) { 
+
+> 9
+
+add(1);  
+
+> 10
+
+} 
+
+> 11 12
+
+function add($number) { 
+
+> 13
+
+global $total;  
+
+> 14
+
+$total += $number;  
+
+> 15
+
+} 
+
+> 16
+
+?> 
+
+Listing 4: Instrumentation test-2 ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing 
+
+Table 9: Evaluation of RedPhuzz and Phuzz on DVWA; rce_imposs is a non-vulnerability bug; p = new paths, t(s)= detection time 
+
+Benchmark Test Bug / RedPhuzz Phuzz Info No. Vuln. t (s) p t (s) psqli_low 22 SQLi 0.90 0 1.57 2sqli_med 23 SQLi 0.91 0 1.44 2sqli_imposs 24 SQLi - 2 - 2sqli_blind_low 25 SQLi 1.50 0 1.50 2sqli_blind_med 26 SQLi 1.09 2 2.44 1sqli_blind_high 27 SQLi 1.80 4 31.17 5rce_low 28 RCE 7.34 0 8.26 0rce_med 29 RCE 1.68 0 1.75 0rce_high 30 RCE 1.14 0 3.51 0rce_imposs 31 RCE (bug) 7.68 1 - 1 RedPhuzz uncovers bug 
+
+fi_low 32 PathTr. 0.81 0 - 0 Phuzz cannot detect as its instrumentation cannot hook language con-struct such as include. fi_med 33 PathTr. 0.80 0 - 0 Phuzz cannot detect as its instrumentation cannot hook language con-struct such as include. fi_high 34 PathTr. 1.48 2 - 1 Phuzz cannot detect as its instrumentation cannot hook language con-struct such as include. 
+
+fi_imposs 35 PathTr. - - - 0xss_s_low 36 XSS Stored 1.54 0 6.87 0xss_s_med 37 XSS Stored 3.50 0 46.03 0xss_s_high 38 XSS Stored 11.00 0 9.70 -xss_s_imposs 39 XSS Stored - - - 0xss_r_low 40 XSS Reflected 1.87 1 2.81 0xss_r_med 41 XSS Reflected 2.04 1 2.92 0xss_r_high 42 XSS Reflected 1.35 2 1.00 0xss_r_imposs 43 XSS Reflected - 2 - 0Total 53.32 37 269.65 25 
+
+Note: 
+
+• Total times are only for vulnerabilities or bugs detected by both RedPhuzz and Phuzz. 
+
+• A new path is counted when a vulnerability or bug is discovered, or, if none is found, when the fuzzer is stopped manually. 
+
+• For SQLi, Phuzz’s detection time is recorded at the first syntax error, not at preceding errors that already indicate the presence of a bug. 
+
+• DVWA sqli_high is not included because Phuzz and RedPhuzz do not support second order vulnerability detection currently. Table 10: Evaluation of RedPhuzz and Phuzz on bWAPP; p = new paths. 
+
+Benchmark Test Bug / RedPhuzz Phuzz Info Vuln. t (s) p t (s) pcommandi 44 RCE 2.00 1 2.61 0commandi_blind 45 RCE 0.90 1 4.17 0
+
+pathtraversal 46 PathTr. 0.96 1 - 0 Phuzz has an FP as it triggers error at is_file , which is a filtering function, not a vulnerable one to allow only valid file path; RedPhuzz detects via function-based check because no error produced. phpi 47 RCE 0.64 1 - 1 Phuzz cannot detect as its instrumentation cannot hook language con-struct such as eval. rlfi 48 PathTr. 0.63 0 - 0 Phuzz cannot detect as its instrumentation cannot hook language con-struct such as include. 
+
+sqli_ajax 49 SQLi 0.52 0 5.49 1sqli_blind_boolean 50 SQLi 0.18 0 16.97 1sqli_blind_time 51 SQLi 0.74 1 5.35 1sqli_get_search 52 SQLi 0.56 1 6.91 1sqli_get_select 53 SQLi 1.36 2 0.83 0sqli_login_hero 54 SQLi 0.53 0 6.07 2sqli_post_search 55 SQLi 0.36 1 19.43 1sqli_post_select 56 SQLi 0.89 2 0.71 1sqli_stored_blog 57 SQLi 0.11 3 1.06 0xss_ajax 58 XSS 0.56 1 0.92 0xss_back_button 59 XSS 0.23 0 12.51 0xss_custom_header 60 XSS 1.02 0 5.80 0xss_eval 61 XSS 0.74 0 8.81 0xss_get 62 XSS 0.22 1 4.24 0xss_href 63 XSS 1.42 1 4.19 0xss_json 64 XSS 0.72 1 0.38 0xss_post 65 XSS 0.50 1 21.53 0xss_referer 66 XSS 0.18 0 7.57 0xss_stored 67 XSS 1.32 1 0.65 0xss_useragent 68 XSS 0.60 0 12.48 0Total 53.32 37 269.65 25 
+
+Note: 
+
+• Total times are only for vulnerabilities or bugs detected by both RedPhuzz and Phuzz. 
+
+• A new path is counted when a vulnerability or bug is discovered, or, if none is found, when the fuzzer is stopped manually. 
+
+• For SQLi, Phuzz’s detection time is recorded at the first syntax error, not at preceding errors that already indicate the presence of a bug. 
+
+Table 11: bWAPP Vulnerable Function Undetected by Phuzz 
+
+Test Location Vulnerable code 46 /var/www/html/ bwapp/ directory_ traversal_1.php: 141 function show_file($file) {// Checks whether a file or directory exists                         
+
+> if(is_file($file)) //blockage, only allows valid path, leading to no error {//fopen is vuln, detectable only function-based check
+> $fp =fopen($file, "r") or die("Couldn’t open $file.");
+> while(!feof($fp)) {
+
+ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing 
+
+Table 12: Evaluation of RedPhuzz and Phuzz on wackopicko (top) and XVWA (bottom); p = new paths, t(s)= detection time. 
+
+Benchmark Test Bug/ RedPhuzz Phuzz Info Vulnerability t (s) p t (s) p
+
+admin 69 PathTr. 0.27 0 – 0 Phuzz cannot detect as its instrumentation cannot hook language construct such as require_once. 
+
+guestbook 70 XSS 14.52 1 1.27 0login 71 SQLi 0.15 1 24.22 2passcheck 72 RCE 0.09 1 14.22 1piccheck 73 XSS 0.93 0 11.96 0
+
+register_1 ($vuln set to True in codebase) 74 SQLi 1.48 3 – 0 Phuzz cannot detect due to inability to satisfy branch condition containing input parameter. 
+
+search 75 XSS 3.49 2 28.16 2submitname 76 XSS 0.40 0 13.61 0
+
+upload_1 (added, not in Phuzz existing input) 77 PathTr. 16.98 8 – 0 Phuzz cannot detect due to inability to generate file/multi-form-data content fi 78 PathTr. 0.26 0 – 0 Phuzz cannot detect as its instrumentation cannot hook language construct such as include. 
+
+phpobject 79 UnserializeVuln 0.63 0 0.78 0rce 80 RCE 0.70 1 2.68 0sqli_blind_item 81 SQLi 0.67 2 0.53 0sqli_blind_search 82 SQLi 0.23 2 4.21 0sqli_item 83 SQLi 0.72 3 0.12 0sqli_search 84 SQLi 0.44 2 1.50 1xss_stored 85 XSS Stored 1.20 3 0.69 0xss_reflected 86 XSS Reflected 0.67 0 7.51 0Total 25.11 29 111.46 6
+
+Note: 
+
+• Total times are only for vulnerabilities or bugs detected by both RedPhuzz and Phuzz. 
+
+• A new path is counted when a vulnerability or bug is discovered, or, if none is found, when the fuzzer is stopped manually. 
+
+• For SQLi, Phuzz’s detection time is recorded at the first syntax error, not at preceding errors that already indicate the presence of a bug. 
+
+Table 13: wackopicko Vulnerable Function Undetected by Phuzz 
+
+Test Location Vulnerable code 
+
+74 Entry point:                                             
+
+> /var/www/ html/ wackopicko/ website/ users/ register. php:19 //input parameters: password and againpass are in branch if ($_POST[’password’] != $_POST[’againpass’]) {// vulnerability triggered if password == againpass $flash[’error’] ="The passwords do not match. Try again"; $error =True; }// vulnerable call is triggered when flag is True else if ($new_id =Users::create_user($_POST[’username’], $_POST[’password’], $_POST[’firstname’], $_POST[’lastname’], True)) {Users::login_user($new_id); http_redirect(Users::$HOME_URL); }
+
+74 Vulnerable function:                                                
+
+> /var/www/ html/ wackopicko/ website/ include/ users.php: 53 static function create_user($username, $pass, $firstname, $lastname, $vuln =False) {$salt =mt_rand(0, 900); $salt =base64_encode($salt); if ($vuln) {$pass =mysqli_real_escape_string(OURDB->conn, $pass); $firstname =mysqli_real_escape_string(OURDB->conn, $firstname); $pass =$pass .$salt; $query ="INSERT INTO users ... VALUES (..., ’{$username}’, SHA1(’{$pass}’), ’{$firstname}’, ... );" }}// other codes ($res =mysqli_query(OURDB->conn, $query)) // vulnerable function
+
+Table 14: Write Volume Details, Time, and Write Time of ZIMPAF and PCOV + UOPZ for the first HTTP request of the original (unmutated) input averaged over 10 samples; E+E = Errors & exceptions; Aprice = Arprice-responsive-pricing-table 3.6 WordPress plugin. 
+
+Benchmark ZIMPAF PCOV + UOPZ Coverage E+E Trace Params Total Time Write Coverage E+E Total Time (kB) (kB) (kB) (kB) (kB) (ms) (ms) (kB) (kB) (kB) (ms)  
+
+> poc_seq_sanit
+
+0.10 – 1.30 – 1.401 6.2 1.8 0.35 0.06 0.407 6.0  
+
+> Arprice
+
+6,656.00 13.70 22,804.8 2.10 29,476.280 4,166.9 657.4 5,427.20 375.73 5,802.928 6,553,5  
+
+> dvwa_sqli_low
+
+1.10 – 3.50 – 4.600 4.2 0.3 16.30 1.61 17.913 678.5  
+
+> bwapp_sqli_ajax
+
+0.25 – 1.90 – 2.153 11.0 0.4 2.50 0.39 2.888 12.9  
+
+> wacko_register_1
+
+0.44 – 2.40 1.40 4.242 8.4 0.6 1.80 0.50 2.302 10.7  
+
+> xvwa_sqli_search
+
+0.16 – 1.90 0.25 2.309 12.1 0.5 0.93 0.40 1.335 14.7    
+
+> instrumentation test-1-a 1
+
+0.05 – – – 0.055 0.3 0.1 0.84 – 0.844 1.1    
+
+> instrumentation test-1-b 2
+
+0.05 – – – 0.055 0.3 0.1 0.03 – 0.033 0.8    
+
+> instrumentation test-2 3
+
+0.15 – – – 0.146 0.5 0.1 0.15 – 0.152 1.4 
+
+Note: : The last three inputs aim to illustrate the efficiency of ZIMPAF over PCOV plus UOPZ using inputs with single execution path without any branch instructions and userlands functions to be monitored, where ZIMPAF performs much faster than them. 
+
+• 1 Target program is given by Listing 3 below. For this test, PCOV and UOPZ are activated. PCOV and UOPZ global hooks are invoked. On the other hand, ZIMPAF hooks are never invoked; the coverage data is only for the file path of the triples; see Section 3.1.1 for the definition of execution path as (file path, branch opcode’s userland line number, branch-opcode-outcome) triples. 
+
+• 2 Target program is given by Listing 3 below. For this test, PCOV is not activated and UOPZ is activated. This measures the overhead caused by UOPZ globally intercepting Zend’s call dispatchers that takes effect even when only invulnerable function exits in web application, such as add 
+
+function that is never hooked. ZIMPAF hooks are never invoked because no branch instructions in the code and ZIMPAF does not hook Zend’s call dispatcher to monitor function, but directly hooks the handler of vulnerable and sanitization functions. 
+
+• 3 Target program is given by Listing 4 below. This measures the impact of looping for ZIMPAF that hooks the conditional statement in the loop header only, while PCOV global hook is called for every instruction and UOPZ hook is invoked for Zend’s call dispatcher. 
+
+Table 15: Throughput Comparison between ZIMPAF and PCOV+UOPZ based on Table 14 data; w = write volume; x = throughput; arprice = Arprice-responsive-pricing-table 3.6 WordPress plugin. 
+
+ZIMPAF PCOV + UOPZ Benchmark w (kB) t (ms) x (B/ms) scale w (kB) t (ms) x (B/ms)  
+
+> arprice
+
+29,476.3 4,166.9 7,073 7.99 5,802.9 6,554 885  
+
+> bwapp_sqli_ajax
+
+2.2 11.0 195 0.87 2.9 12.9 224  
+
+> dvwa_sqli_low
+
+4.6 4.2 1088 41.22 17.9 678.5 26  
+
+> poc_seq_sanit
+
+1.4 6.2 225 3.33 0.4 6.0 68  
+
+> wacko_register_1
+
+4.2 8.4 506 2.36 2.3 10.7 214  
+
+> xvwa_sqli_search
+
+2.3 12.1 191 2.10 1.3 14.7 91 ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing 
+
+Figure 2: Failure of xeger on complex regex patterns leading to Python termination. 
+
+Note: pattern used in experiment:
