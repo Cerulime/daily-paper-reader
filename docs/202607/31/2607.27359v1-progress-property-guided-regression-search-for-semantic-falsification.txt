@@ -1,0 +1,561 @@
+Title: PROGRESS: Property-Guided Regression Search for Semantic Falsification
+
+URL Source: https://arxiv.org/pdf/2607.27359v1
+
+Published Time: Fri, 31 Jul 2026 00:06:37 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# PROGRESS: Property-Guided Regression Search for Semantic Falsification 
+
+Davis Tocheuk Mo 1, Noshin Ulfat 1, Matthew B. Dwyer 2, Soneya Binta Hossain 1
+
+> 1
+
+University of Texas at Dallas, Texas, USA 
+
+> 2
+
+University of Virginia, Virginia, USA 
+
+{Davis.Mo, noshin.ulfat, sbhossain }@utdallas.edu, matthewbdwyer@virginia.edu 
+
+Abstract —Search-based regression-test generation is highly effective at exploring complex program structures and producing test suites with high structural coverage. Its test oracles , however, are derived from executions of the system under test. As a result, 
+
+faults already present in the current version are recorded as 
+
+expected behavior rather than exposed. Property-based testing offers independent semantic oracles over input domains, but in practice it depends on high-quality properties and provides little guidance for reaching deep program states or satisfying selective preconditions. We present P ROGRESS ( PRO perty-G uided RE gression Search for Semantic Falsification), a testing framework that integrates intent-driven properties directly into coverage-guided, search-based evolutionary test generation, enabling tests to reach 
+
+deep program states and detect violations of intended behavior .Concretely, P ROGRESS proceeds in three steps: (1) it extracts intent-bearing code context and uses a language-model pipeline to generate executable JQWIK properties while limiting implementa-tion leakage; (2) it extends EvoSuite’s DynaMOSA with one search objective per property and a property-aware fitness function that rewards progress through preconditions and prioritizes falsifying executions; and (3) it binds property parameters, materializes inputs, and uses JQWIK -provided generators to connect quantified inputs to evolving test sequences, allowing properties to steer generation toward both coverage and bug-detection goals. We evaluate P ROGRESS on 25 large-scale Java systems against regression-test generation, standalone property-based testing, and context ablations. P ROGRESS detects 328/562 current system version bugs (58%) while regression-test generation detects none, and satisfies all preconditions for 70/150 hard-to-reach properties versus 18 for standalone JQWIK . Ablations show that documentation and caller/callee context are key to generating valid executable properties. Overall, P ROGRESS preserves structural exploration while exposing current system version faults missed by regression-derived assertions; we release a comprehensive artifact package. 
+
+Index Terms —property-based testing, coverage-guided testing, EvoSuite, jqwik, large language models 
+
+I. I NTRODUCTION 
+
+Automated test generation must answer two coupled ques-tions: where should testing explore? and what behavior should hold for those executions? The first question spans both the input space and the program-structure space: generated inputs and call sequences must drive execution into relevant code regions and program states. Code coverage provides one way to guide this exploration; test oracles address the second question. Search-based regression testing is highly effective at exploring program structure and producing high-coverage test suites [1]. Its test oracles , however, are derived from executions of the current program. Consequently, buggy behavior present in the code is encoded as expected behavior . This weakness is especially dangerous in AI-assisted software development, where testing the implementation against its own behavior creates a circular process that preserves defects instead of uncovering them. Property-based testing (PBT) checks general behavioral properties over automatically generated inputs rather than relying on a fixed set of examples [2], [3]. Because these properties can specify expected behavior independently of the current implementation, PBT has the potential to address the oracle limitation of regression testing. Its effectiveness, however, depends critically on input generation. A major challenge is designing generators that efficiently produce valid, diverse, and fault-revealing inputs [3], [4]. If the generated inputs fail to reach relevant program states, even a strong property provides little benefit because it is never evaluated where the implementation violates it. 
+
+@Test 
+
+void generatedRegressionTest() {Frame f = Parser.parse("@03:abc#7A"); assertEquals("acb", f.payload()); // observed bug 
+
+}@Property 
+
+void validFramesRoundTrip(@ForAll String s) {Assume.that(s.startsWith("@")); Assume.that(hasValidLength(s)); Assume.that(hasValidChecksum(s)); assertThat(encode(Parser.parse(s))).isEqualTo(s) ;}
+
+Listing 1. Regression testing executes the fault but fail to detect it, while standalone PBT struggles to reach the valid input region. 
+
+Consider the parser in Listing 1, whose faulty implementation swaps two payload characters. Regression-test generation reaches the fault but records the observed payload "acb" as the expected result, causing the test to pass. An intent-derived round-trip property instead exposes the fault without relying on the parser’s observed output as the oracle. However, when standalone property-based testing generates arbitrary strings, most inputs fail the format assumptions before reaching the assertion, with no guidance toward valid frames. A custom generator could solve this problem, but would require manually encoding the input format and setup logic [2], [5]. The example reveals complementary limitations : regression-arXiv:2607.27359v1 [cs.SE] 29 Jul 2026 Property Generation  Search-based Test Generator          
+
+> Property
+> generation
+> prompt
+> Doc-Derived Specifications
+> PBT
+> generation
+> prompt
+> Jqwik PBTs
+> Generate
+> Initial
+> Population
+> Random
+> Mutation
+> Fitness
+> Score
+> Evaluation
+> Property Fitness Function
+> Materialize type
+> @Test {
+> ...
+> NeededType =new
+> Type("foo", 42);
+> ...
+> }
+> Detect MUT
+> call
+> Run
+> @Property
+> Capture Inputs
+> for property
+> 0
+> Count
+> Asserts
+> violation
+> no violation
+> Is input
+> needed?
+> Task - 2
+> Task - 1
+> Generator Integration
+> Random
+> (p =0.5)
+> From MUT
+> (p = 0.4)
+> Is statement
+> a call to
+> MUT?
+> Type
+> matches the
+> property?
+> LLM-written generator
+> (p =0.1)
+> @Test {... }
+> @Provide Arbitrary<Type>
+> {}
+> Choose Parameters for the statement
+> Test Statement
+> until budget done
+> Combination of input
+> artifacts
+> MUT/ method
+> signature
+> System
+> Under Test
+> MUT + Javadoc + Context
+> Minimization
+> + Assertion
+> Generation
+> Generated Tests
+> +
+> Violation report
+
+Fig. 1. An overview of our P ROGRESS pipeline. 
+
+test generation reaches the faulty behavior but lacks an independent oracle, whereas property-based testing supplies the oracle but lacks guidance toward inputs that satisfy its preconditions. Running them independently preserves both limitations. Prior work, such as targeted PBT and JQF, guides input generation using heuristic search or coverage feedback [4], [6]. However, these approaches do not fully exploit modern search-based techniques such as EvoSuite’s DynaMOSA, which evolves complete tests, constructs complex call sequences, and dynamically prioritizes uncovered targets [1], [7]. To address these limitations, we present PROGRESS 
+
+( Pro perty-G uided Re gre ss ion Testing), a novel framework that integrates intent-driven properties directly into coverage-guided, search-based test generation. Figure 1 shows our pipeline: PROGRESS first extracts method documentation and code context to generate executable JQWIK [5] properties, then injects these properties into EvoSuite through property objectives ,
+
+parameter binding , generator integration , and property-aware fitness . P ROGRESS retains DynaMOSA’s [7] structural objec-tives and adds search objectives for each executable JQWIK 
+
+property. When an evolving test invokes the target method, a property checker captures the relevant values, binds them to the property’s quantified parameters, and evaluates the property. The property-aware fitness prioritizes property violations and otherwise rewards candidates for satisfying progressively more preconditions. In Listing 1, candidates satisfying the prefix condition outrank arbitrary strings, candidates that also satisfy the length condition receive higher fitness, and a valid frame that violates the round-trip property exposes the fault. To supply these properties, P ROGRESS mines intent-driven 
+
+specifications from documentation, program context, and related methods identified through the call graph. A two-stage language-model pipeline first generates evidence-grounded natural-language properties and then translates the verified properties into executable JQWIK tests. The language model provides semantic objectives, while P ROGRESS makes them actionable within coverage-guided search. Section III describes our context extraction, property generation and EvoSuite extension in detail. We evaluate P ROGRESS on 25 large-scale Java systems through three research questions. First, P ROGRESS detects 328/562 injected bugs (58%) missed by regression-derived assertions, while regression-test generation detects none. Sec-ond, on 150 hard-to-reach properties, P ROGRESS satisfies all preconditions for 70 properties, compared with 18 for standalone JQWIK . Third, our context ablation shows that documentation and caller/callee context are key to producing valid executable properties. Overall, P ROGRESS preserves the reachability strengths of search-based testing while adding independent semantic oracles that expose current system version faults. In summary, this paper makes the following contributions:  
+
+> •
+
+We introduce a property-aware extension of DynaMOSA that treats executable properties as first-class search objectives and rewards progress toward falsification.  
+
+> •
+
+We develop mechanisms for quantified-parameter binding, input materialization, and JQWIK -guided value generation.  
+
+> •
+
+We develop an intent-driven, two-stage pipeline for deriv-ing grounded natural-language and executable properties from method code, documentation, and caller/callee con-text.  
+
+> •
+
+We evaluate P ROGRESS on 25 large-scale Java systems through mutation analysis, comparison with standalone PBT, and context ablations, and release a replication pack-age containing the implementation, prompts, properties, tests, and experimental artifacts. II. B ACKGROUND 
+
+This section provides background on property-based testing and search-based test generation, the two testing paradigms that P ROGRESS brings together. 
+
+A. Property-Based Testing and JQWIK 
+
+Property-based testing checks general behavioral properties over automatically generated inputs rather than relying on a fixed set of examples [2], [3]. A property can be viewed as a falsifiable statement of the form:              
+
+> ∀x1∈D1, . . . , x k∈Dk.P(x)
+> | {z }
+> precondition
+> =⇒Q x,Exec( T(x)) |{z }
+> postcondition
+> ,(1)
+
+where x = ( x1, . . . , x k) contains values drawn from domains 
+
+D1, . . . , D k. The precondition P identifies admissible inputs, 
+
+T (x) denotes the test constructed from them, and Exec( T (x)) 
+
+captures its observable execution. The postcondition Q specifies the behavior that must hold. Quantified values need not be direct arguments of the method under test; they can also construct object state or determine earlier calls in the test. In this work, we use JQWIK , a Java PBT engine built on the JUnit Platform [5]. A method annotated with @Property 
+
+defines a property, its parameters, annotated with @ForAll ,define its domain. Each parameter receives values from an Arbitrary<T> . JQWIK provides default arbitraries for common Java types and supports domain-specific ar-bitraries through @Provide methods. Within a property, 
+
+Assume.that(...) expresses the precondition P , while assertions express the postcondition Q. Inputs violating an assumption are discarded; when an assertion fails, JQWIK 
+
+attempts to shrink the input into a simpler counterexample. PBT therefore depends critically on its generators. In Listing 1, arbitrary strings rarely satisfy the prefix, length, and checksum assumptions, so most executions are discarded before reaching the round-trip assertion. A custom arbitrary could encode valid frames, but constructing valid, diverse, and fault-revealing generators requires manual effort and domain knowledge [3]. Consequently, even a strong property provides little benefit when generation does not reach the program states in which it can be falsified. We selected JQWIK because its API exposes the components required by our integration: quantified parameters identify values to bind, arbitraries provide generation knowledge, assumptions expose preconditions, and assertions define behav-ioral objectives. Also, to evaluate our technique, we need tools that support the Java language and the JUnit testing framework, both of which are supported by JQWIK . This allows P ROGRESS 
+
+to reuse values constructed by evolving EvoSuite tests, invoke  
+
+> JQWIK
+
+generators if domain-specific knowledge is needed, and use preconditions and property violations to guide the search. 
+
+B. EvoSuite’s DynaMOSA Search  
+
+> Generate initial population
+> Execute tests, score active fitness functions
+> DynaMOSA ranking and selection)
+> Crossover and mutation
+> Minimize tests and generate assertions
+> JUnit suite
+> next generation
+> budget exhausted
+> Fig. 2. Overview of DynaMOSA search and post-processing.
+
+EvoSuite [1] is a search-based unit-test generator for Java. Given a class under test, EvoSuite evolves coverage-optimized test cases and produces a minimized JUnit suite with regression assertions. Under DynaMOSA, each candidate test is repre-sented internally as a variable-length chromosome containing primitive assignments, constructors, field accesses, and method calls. Figure 2 summarizes the corresponding evolutionary loop. As an example, Listing 2 shows a test EvoSuite evolved for the IntStack class. The comments (added for illustrative purposes) indicate which phase introduces each part of the test.                                
+
+> @Test(timeout =4000)
+> public void test4() throws Throwable {IntStack iStk0 =new IntStack(); // generation
+> iStk0.pushTwo(0, 0); // generation
+> int int0 =iStk0.pop(); // mutation
+> assertEquals (1, iStk0.size()); // observed state
+> assertEquals (0, int0); // observed output
+> }
+> Listing 2. One possible evolution of test4 .
+
+The loop proceeds as follows. 1) Generation. EvoSuite begins with a population of random tests, consisting of a sequence of random method or constructor calls. When a selected constructor or method requires an argument of type T , EvoSuite reuses a compati-ble value already in the test or recursively creates one from the test cluster. Thus, a single method call can introduce several supporting statements. In Listing 2, the pushTwo 
+
+call recursively introduces the IntStack constructor. 2) Fitness evaluation. Each candidate test is executed, and runtime observation is used to evaluate coverage (fitness) along multiple dimensions, such as branch, exception, and line. DynaMOSA [7] dynamically activates branch-related fitness functions only when their parent in the control-flow graph is covered. 3) DynaMOSA ranking. DynaMOSA [7] ranks individual tests via a preference criterion which ensures each active fitness function is optimized simultaneously, and difficult-to-reach fitness functions are prioritized first. Pareto fronts are constructed by successively selecting all non-dominated tests (i.e. there is not another test with strictly greater fitness in every function), and crowding distance is used as a tie-breaker in the final front. These tests are passed to the next step. 4) Crossover and mutation. Selected parent tests produce new candidates through crossover and mutation. Crossover combines portions of two tests, while mutation inserts, deletes, or changes statements and primitive values. In Listing 2, an insertion or crossover can add the call to 
+
+pop , which will be preferred during the next selection step due to exercising more behavior than before. The resulting offspring form the next generation and are evaluated again. 5) Post-processing. When the search budget is exhausted, EvoSuite removes tests and statements that do not contribute coverage. It then adds assertions over observed return values and object states, producing the final regression suite. In Listing 2, the two assertions are generated here. Importantly, these final assertions record behavior observed from the current implementation, which could include unin-tended behavior. This motivates P ROGRESS ’s extension: Dy-naMOSA provides strong structural reachability, but regression assertions alone do not provide independent semantic oracles. III. I MPLEMENTATION 
+
+A. EvoSuite Extension 
+
+PROGRESS extends EvoSuite in three ways: (1) a property fitness function; (2) materialization of property inputs so they can be evolved; and (3) a hook to use @Provide generators. Below, we discuss each step. We use the following JQWIK 
+
+property as our running example throughout this section:                    
+
+> @net.jqwik.api. Property
+> @TargetMethod("com.evopbt.demo.IntStack#pop#()I")
+> void popAfterPushTwo(@ForAll int first, @ForAll int
+> second) {
+> Assume .that(second != Integer.MIN_VALUE);
+> // precondition P
+> IntStack stack =new IntStack(); stack.pushTwo(first, second); assertThat(stack.pop()).isEqualTo(second);
+> // postcondition Q
+> }
+> Listing 3. Running property for IntStack#pop .
+
+1) Property fitness: Each @Property is linked to the MUT it checks via a @TargetMethod annotation. Whenever a generated test calls that MUT, the property is checked, resulting in a fitness score s given to DynaMOSA (lower is better):                
+
+> s=
+> 
+> 0assertion failed (violation detected)
+> T−p+ 1 no assertion failed, and pof the T
+> preconditions ( Assume.that() ) passed; if
+> p̸=T, the (p+1) -th precondition failed.
+> T+ 2 unexpected assumption threw (buggy property) (2)
+
+where T is the number of Assume.that calls in the body. 
+
+Example: The property has T = 1 . If the only precondition fails, s = 2 . If it passes, s = 1 . If the search finds an input that makes the assertion fail, s = 0 . This score gives a helpful slope when each precondition can be reached, but the combination of preconditions is hard to reach. 
+
+2) Input materialization: Listing 3 quantifies over two int s. During mutation, these parameters are created (if they don’t already exist) before the call to the MUT. During test replay, these additional parameters are captured and fed into the property. 
+
+Example: Two int statements are needed to check 
+
+popAfterPushTwo , and will be inserted into test4 before the pop() call. When pop() runs, PropertyChecker 
+
+uses these int values, passing them as to first and second 
+
+to the property body:                     
+
+> int int1 =0;
+> int int2 =0; IntStack intStack0 =new IntStack(); intStack0.pushTwo(int1, int2);
+> int int0 =intStack0.pop();
+> Listing 4. test4 : needed int s materialized; pushTwo args harvested as
+> first /second at pop() .
+
+3) Generator hook: Sometimes, a constructor or method needs specific input to trigger behavior that EvoSuite’s search-based machinery is not able to find. For any method with an associated property and generator, EvoSuite use the JQWIK 
+
+@Provide with a configurable probability to create input values. 
+
+Example: for pushTwo(int, int) , the smallInts 
+
+arbitrary can be used:                    
+
+> @Provide Arbitrary<Integer> smallInts() {
+> return Arbitraries.integers().between(0, 10); }@Property @TargetMethod("com.evopbt.demo.IntStack#pushTwo#(II) V")
+> void pushTwoPreservesTop(@ForAll("smallInts") int a, @ForAll("smallInts") int b) {IntStack stack =new IntStack(); stack.pushTwo(a, b); assertThat(stack.pop()).isEqualTo(b); }
+> Listing 5. Property with @Provide generators for pushTwo .
+
+This biases EvoSuite towards values from the generator such as pushTwo(3, 7) .
+
+B. Context construction. 
+
+As part of P ROGRESS ’s property-generation implementation, we construct a context bundle for each method under test. The bundle contains the focal method code or signature, method documentation, enclosing-class documentation, and call-graph context: the fully qualified method signature, code and documentation of resolved callers and callees. We implement this with a Java extractor that parses source code and structured Javadocs with S POON [8], constructs a static call graph with S OOT UP [9], and reconciles call-graph edges with source-level method identities when possible. Each artifact is emitted with an origin label, such as method_code ,
+
+method_doc , class_doc (cd) , caller_code (cac) , caller_doc (cad) , callee_code (cec) ,and callee_doc (ced) . These labels allow P ROGRESS to assemble different prompt configurations for context ablations and to keep documentation-derived evidence separate from implementation-derived evidence. The selected context bundle is then passed to the language-model pipeline: the first stage derives natural-language behav-ioral properties grounded in the supplied artifacts, and the second translates accepted properties into executable JQWIK 
+
+properties as shown in Figure 1. 
+
+C. Property Generation 
+
+PROGRESS uses a language-model pipeline to turn program intent into executable JQWIK properties. For each MUT, the pipeline receives a context bundle constructed from some combination of the method body or signature, the method Javadoc, enclosing-class documentation, and the code and documentation of resolved callers and callees. Each artifact is tagged with its origin, enabling context ablations and allowing generated properties to be traced back to the evidence that supported them. We use Opus 4.8 within Claude Code as the LLM interface for property generation. We keep the LLM backend fixed across all experiments because our objective is to evaluate the value of property-guided search, not to rank models for property-based test synthesis. Holding the model fixed makes the main experimental variables those central to P ROGRESS : context selection, prompt structure, and the integration of generated properties into EvoSuite’s search. 
+
+a) Two-stage prompting: Our pipeline separates specifica-tion mining from code synthesis . In Stage 1, the LLM receives the selected context bundle and produces a numbered list of natural-language behavioral claims grounded strictly in the supplied artifacts. Compound claims are split into individual properties, and each claim carries a source label indicating which artifacts support it: the method body alone, the body together with its docstring, or the full surrounding context. Stage 2 receives the accepted Stage 1 claims, together with inputs depending on the input configuration, and translates each claim into one or more executable JQWIK @Property 
+
+methods. We vary the artifact subset to measure which forms of context help produce useful property objectives, discussed in Section IV-D. 
+
+b) Prompt constraints: The pipeline enforces constraints needed by P ROGRESS ’s search-based execution model. First, every generated @Property must contain at least one 
+
+Assume.that(...) precondition before assertions, so the property-aware fitness function can reward partial progress through preconditions instead of treating unsatisfied assump-tions as uninformative failures. Second, each @Property 
+
+must encode exactly one behavioral claim, allowing each property to correspond to a distinct DynaMOSA search objective. Third, custom @Provide generators are preferred over unconstrained @ForAll inputs when domain constraints, valid ranges, or structural invariants can reduce discarded inputs. IV. E VALUATION 
+
+We evaluate P ROGRESS along three dimensions: whether intent-driven properties effectively detect current system version faults, whether integration with search-based test generation provides an advantage over standalone property-based testing, and how context selection affects the usefulness of generated properties. In this section, we answer the following research questions: 
+
+RQ1. Can intent-driven properties generated by PROGRESS 
+
+detect faults in the current program version that regression-test generation misses? 
+
+RQ2. Does property-guided search exercise and falsify generated properties more effectively than standalone property-based testing? 
+
+RQ3. How does the choice of property-generation context affect property validity and fault-detection effectiveness? A. RQ1: Detecting Bugs in the Current Version 
+
+RQ1 evaluates the central oracle claim of PROGRESS :regression-test generation can execute faulty behavior but encode it as expected behavior, while P ROGRESS can use intent-derived properties as test oracles independent of the current implementation. We therefore ask how effectively generated properties can detect current system version faults that regression-derived assertions miss. 
+
+a) Systems Under Test.: To evaluate P ROGRESS on large-scale real-world systems, we use the OE25 systems [10]– [13], a corpus widely used in testing research, consisting of 25 Java systems: 8 from the EvoSuite benchmark and 17 Apache Commons packages. We select MUT–Javadoc pairs through a three-stage filtering pipeline. Deterministic filters retain methods and Javadocs with sufficient length, control-flow complexity, and documentation quality, yielding 538 candidates. The same fixed backend (Opus 4.8, § III-C ) then scores candidates for documentation alignment (R1), input–output clarity (R2), and PBT property derivability (R3), weighted 0.30, 0.30, and 0.40, respectively, while excluding methods with external I/O, reflection or dynamic class loading, no observable test oracle, or nondeterminism. Candidates with score ≥ 0.60 and no exclusion flags yield 279 samples. Since the scorer shares the generation backend, the filter may favor the generator’s own conventions; the executable-validation step and the two-author manual review bound this risk. Weights and threshold were fixed a priori and not adjusted after observing evaluation outcomes. Finally, two authors manually review the remaining candi-dates to remove trivial, vague, network-dependent, or implicitly nondeterministic cases, producing 240 high-quality, PBT-suitable Java method–Javadoc pairs.                            
+
+> TABLE I MUT-LEVEL EXECUTION OUTCOMES
+> MUT-level outcome Count %
+> Failed runs 50 21 Compilation failure 15 6EvoSuite crash 10No valid properties generated 34 14 MUTs with no property violation 147 61 MUTs with ≥1property violation 43 18
+> Total 240 100
+> TABLE II PROPERTY -LEVEL VALIDATION ON THE UNMUTATED BASELINE .
+> Property-level outcome Count %
+> Baseline-valid properties 816 93 Baseline-violating properties 64 7
+> Total 880 100
+
+b) Experimental Setup.: We follow a three-step pipeline. First, we inject source-level mutants using PITMuS and PIT mutation testing [14], [15]. For each mutant, PITMuS produces a mutated Java source file that we compile and treat as the current system version. We record the injected bug type, mutant counts, and system metadata. Second, we generate executable  
+
+> JQWIK
+
+properties using the pipeline in Section III-C , with a fixed Claude Code/Opus 4.8 backend: Stage 1 derives evidence-grounded natural-language properties, and Stage 2 translates those properties into executable JQWIK properties. We also record the metadata needed to integrate each property with the SUT. Third, P ROGRESS runs these properties on the mutated code to detect property violations. Before mutation evaluation, we run each property on the unmutated baseline and discard any property that already fails there: such a property cannot distinguish a fault introduced by the mutant from an invalid oracle. We call the remaining properties baseline-valid . A mutant is killed when at least one baseline-valid property passes on the original version but fails on the mutant. Table I and II report execution statistics, and Table III reports property violations for the injected bugs.                                           
+
+> TABLE III MUTATION -LEVEL DETECTION RESULTS . R OWS BY MUTATION OPERATOR REPORT PROGRESS RESULTS ;THE FINAL ROWS COMPARE PROGRESS WITH
+> EVO SUITE OVERALL .
+> Mutation Mutants Killed Kill (%)
+> Negated cond. 236 168 71 Conditional bound. 80 16 20 Math 66 20 30 Null return 60 29 48 Other return value 55 47 85 Void method call 36 23 64 Boolean true ret. 13 12 92 Boolean false ret. 7571 Other 55100 Increment/decre. 4375
+> PROGRESS 562 328 58
+> Regression Test 562 00
+
+B. Results 
+
+Table I reports MUT-level baseline validation before mutation evaluation. Of the 240 MUTs, 50 are non-evaluable because no valid properties are generated, a javac compilation error occurs, or EvoSuite throws an error. Among the remaining 190 evaluable MUTs, 147 (77%) have no property violation on the unmutated baseline, while 43 (23%) have at least one violation-triggering property that was discarded. Table II shows the properties that are generated for the 147 MUTs. A single MUT can have multiple properties. Of 880 generated properties, 816 pass on the unmutated baseline and are retained for mutation evaluation, while 64 fail on the baseline and are treated as false positives. This 93% baseline-valid rate indicates that the property-generation pipeline usually produces executable oracles that do not reject the original version. Table III reports bug-detection results for the injected source-level faults, grouped by mutation operator. For each retained MUT, PITMuS/PIT can generate multiple mutants by applying different mutation operators at different mutation sites in the source code. For example, a single statement such as if (x >= 0) return x + y; can yield separate mutants: 
+
+if (x < 0) return x + y; for a negated conditional, 
+
+if (x > 0) return x + y; for a conditional-boundary change, and if (x >= 0) return x - y; for a math-operator change. Across the 147 retained MUTs, this process produces 562 evaluated source-level mutants, about 3.8 mutants per MUT on average. P ROGRESS detects 328 of 562 injected bugs, for an overall detection rate of 58%. These results show that intent-derived properties can serve as independent oracles: when the mutated program violates the intended behavior expressed by a property, P ROGRESS can expose the bug. Detection is strongest for bugs that directly affect observable behavior. For example, P ROGRESS detects 47 of 55 other return value bugs and 12 of 13 boolean true return bugs. It also detects 168 of 236 negated conditional bugs, the largest absolute number of detections. Detection is lower for conditional boundary and math bugs, with rates of 20% and 30%, respectively, since these often require properties that capture narrow boundary conditions or precise numerical relationships. In contrast, regression-test generated by EvoSuite detects 0 of 562 injected bugs. This does not mean the generated regression tests cannot execute the faulty code; rather, their assertions are derived from the mutated version itself. As a result, the bug is recorded as expected behavior instead of being exposed. The comparison therefore highlights the key value of P ROGRESS : generated properties give search-based testing an independent semantic oracle that can reveal current system version bugs missed by regression-derived assertions. 
+
+Answer to RQ1 
+
+PROGRESS detects current system version bugs that regression-test generation misses. P ROGRESS detects 328 of 562 source-level injected bugs (58%), while EvoSuite detects none in this setting. These results show that intent-derived properties provide independent semantic oracles for bugs that regression assertions can preserve. 
+
+C. RQ2: Reaching Hard Property Preconditions 
+
+RQ2 evaluates the reachability claim of P ROGRESS . Regular property-based testing can provide semantic oracles, but those oracles are useful only when generated inputs satisfy the properties’ preconditions. P ROGRESS extends EvoSuite’s DynaMOSA search and integrates properties into the search process, allowing object construction, call sequences, and generated values to evolve toward precondition satisfaction. We therefore ask whether P ROGRESS reaches hard-to-reach property preconditions more effectively than standalone JQWIK .
+
+a) Experimental Setup.: RQ2 uses OE25 systems [10]– [13], but filters for properties whose preconditions are hard to satisfy. We retain non-primitive types with a public constructor or factory method (518 candidate types, with 5232 possible methods) and randomly select 500 methods that take such a type as a parameter. We generate properties for them with 381 methods yielding properties, and keep samples where JQWIK 
+
+needs more than 10 attempts to satisfy the first precondition. This yields exactly 150 samples with hard-to-reach precon-ditions (Each sample is a property-MUT pair). We compare standalone JQWIK with P ROGRESS under equivalent budgets (3 minute wall clock time on the same properties: JQWIK uses default or generated arbitraries, while P ROGRESS integrates the properties into its property-guided DynaMOSA search. We instrument preconditions and assertions to measure first-precondition satisfaction, all-precondition satisfaction, assertion reachability, and time; Tables IV, V, and VI report these results.     
+
+> TABLE IV PRECONDITION REACHABILITY OVER 150 HARD -PROPERTY MUT SAMPLES .
+
+Metric JQWIK PROGRESS 
+
+Rows with first precondition satisfied 19 70 Rows with all preconditions satisfied 18 70        
+
+> TABLE V PRECONDITION PASS RATES WHEN AN AS S U M E .T H A T LINE IS REACHED ,
+> COMPUTED AS P A S S _C O U N T /R E A C H _C O U N T AND AGGREGATED OVER ALL MUT S.
+
+Metric JQWIK PROGRESS 
+
+First precondition pass rate (%) 3.7 33.5 All preconditions pass rate (%) 3.6 34.0 
+
+> TABLE VI MEDIAN TIME TO ASSERTION PASSES . P ROGRESS TIMING IS MEASURED FROM THE START OF INITIAL POPULATION GENERATION .
+
+Metric JQWIK PROGRESS 
+
+Median time to first assertion pass (s) 0.014 1.541 Median time to all assertions pass (s) 0.105 1.615 
+
+b) Results.: Table IV shows that P ROGRESS reaches hard property preconditions substantially more often than standalone 
+
+> JQWIK
+
+. Out of 150 hard-property MUTs, P ROGRESS satisfies the first precondition for 70 MUTs, compared with 19 for 
+
+> JQWIK
+
+. P ROGRESS also satisfies all preconditions for 70 MUTs, compared with 18 for JQWIK . Thus, the EvoSuite-based search in P ROGRESS makes many properties applicable that standalone random generation rarely reaches. Table V shows the same trend at the invocation level. When an assumption is reached, P ROGRESS satisfies the first precon-dition in 33.5% of cases and all preconditions in 34% of cases, compared with 3.7% and 3.6% for JQWIK . This highlights the key contribution of P ROGRESS : search-based testing can use preconditions as signals to explore more meaningful program states, and mutate on tests that already trigger meaningful behavior. The set difference JQWIK reached \ PROGRESS reached 
+
+contains only five non-comparable P ROGRESS executions: four underlying EvoSuite crashes and one run that did not complete input generation. After excluding these failures, every property reached by standalone JQWIK is also reached by P ROGRESS .Table VI shows the expected trade-off. Standalone JQWIK is faster when its generators already produce admissible inputs, but P ROGRESS reaches substantially more hard preconditions. Thus, P ROGRESS trades additional search time for reachability: it spends more effort on instrumentation and constructing call sequences but that effort allows exploration of states that regular PBT often fails to generate. 
+
+c) Qualitative Examples.: The following examples illus-trate when P ROGRESS ’s reachability advantage appears, when both approaches succeed, and when both still fail. 
+
+Example 1: Both pass. Property index 30 tests 
+
+ExecutionVisitor.visitASTORE . The method pops a reference from the operand stack and stores it in a local variable slot. The generated property builds a Frame ,pushes Type.STRING , calls visitASTORE , and checks that the stack shrinks by one and the local slot holds the pushed type. The property uses an Assume.that gate to restrict the index to the valid range [0 , 16) . The MUT and generated property are shown in Listings 6 and 7. Both engines succeed for this property because the input constraint is relatively simple. Standalone JQWIK passes after its generator draws a valid ASTORE index. P ROGRESS also finds valid indices at scale, producing 74,828 assumption passes and 74,828 assertion passes out of 95,603 property invocations that reach the assumption.                                                
+
+> public void visitASTORE( final ASTORE o) {locals().set(o.getIndex(), stack().pop()); }
+> Listing 6. MUT (property index 30):
+> ExecutionVisitor.visitASTORE .
+> @Property
+> void visitASTORE_popsStackValueIntoLocalSlot( @ForAll("naiveAstore") ASTORE astore) {
+> int idx =astore.getIndex(); Assume.that(idx >= 0&& idx <MAX_LOCALS); Frame frame =new Frame(MAX_LOCALS, MAX_STACK); frame.getStack().push(Type.STRING); ExecutionVisitor ev =new ExecutionVisitor(); ev.setFrame(frame);
+> int stackSizeBefore =frame.getStack().size(); ev.visitASTORE(astore); assertThat(frame.getStack().size()) .isEqualTo(stackSizeBefore -1); assertThat(frame.getLocals().get(idx)) .isEqualTo(Type.STRING); }@Provide Arbitrary<ASTORE> naiveAstore() {
+> return Arbitraries.integers().map(ASTORE:: new ); }
+> Listing 7. Generated property (property index 30):
+> visitASTORE_popsStackValueIntoLocalSlot .
+
+Example 2: PROGRESS outperforms JQWIK . Property index 4 tests Cookie.toString(JSONObject) , which serializes a cookie JSON object to a name=value string and parses it back. The property requires the input JSONObject 
+
+to contain a non-blank "name" key before checking that 
+
+Cookie.toJSONObject(Cookie.toString(jo)) 
+
+preserves the trimmed name. The MUT and generated property are shown in Listings 8 and 9. Standalone JQWIK reaches the assumption on every attempt but never passes it: its generator inserts a random alphabetic key–value pair, so jo.has("name") is almost never true. As a result, JQWIK records 1,000 assumption reaches, 0 passes, and 1,000 skips. A hand-written generator that always sets 
+
+jo.put("name", ...) would satisfy the gate immedi-ately, but this requires domain knowledge in the general case. In contrast, P ROGRESS synthesizes JSON objects with a "name" 
+
+field and satisfies the round-trip property, producing 5,100 assumption passes and 5,084 assertion passes.                                                                    
+
+> public static String toString(JSONObject jo) throws
+> JSONException {
+> // ... extract trimmed "name" and "value" keys ...
+> if (name == null || "".equals(name.trim())) {
+> throw new JSONException("Cookie does not have aname"); }sb.append(escape(name)); sb.append("="); sb.append(escape((String) value));
+> // ... append remaining cookie attributes ...
+> return sb.toString(); }
+> Listing 8. MUT (property index 4): Cookie.toString (excerpt).
+> @Property
+> void roundTripPreservesName( @ForAll("naiveJSONObject") JSONObject jo) {Assume.that(jo.has("name")); Assume.that(jo.opt("name") instanceof String); Assume.that(!((String) jo.opt("name")).trim(). isEmpty()); String cookieStr =Cookie.toString(jo); JSONObject parsed =Cookie.toJSONObject( cookieStr); assertThat(parsed.getString("name")) .isEqualTo(jo.getString("name").trim()); }@Provide Arbitrary<JSONObject> naiveJSONObject() {
+> return Combinators.combine( Arbitraries.strings().alpha().ofMaxLength(8) ,Arbitraries.strings().alpha().ofMaxLength (20) ).as((k, v) -> {JSONObject jo =new JSONObject(); jo.put(k, v);
+> return jo; }); }
+> Listing 9. Generated property (property index 4):
+> roundTripPreservesName .
+
+Example 3: Both fail. Property index 0 tests 
+
+CDL.toJSONArray(names, csvString) : parse aCSV string into a JSONArray of JSONObject s using 
+
+names as column headers. The property gates on a non-empty 
+
+names array and a csvString for which the method returns a non-null result (at least one valid data row); it then checks that every key in every output row appears in names .The MUT and generated property are shown in Listings 10 and 11. Neither engine passes all preconditions. Standalone JQWIK ’s blind @Provide parses random strings into JSONArray sand often yields empty arrays, so the first gate rarely holds; random String inputs almost never form valid CSV with a matching row. P ROGRESS tries more inputs but still never satisfies both gates together—the precondition encodes a brittle format constraint with no constructive API to build admissible 
+
+(names, csvString) pairs. This case illustrates a remain-ing limitation: when a generated precondition is too sharp or depends on a precise input format, additional generator knowledge may still be needed.                                                                                   
+
+> public static JSONArray toJSONArray(JSONArray names, JSONTokener x)
+> throws JSONException {
+> if (names == null || names.length() == 0) {
+> return null ;}JSONArray ja =new JSONArray();
+> // ... parse rows until rowToJSONObject returns null ...
+> if (ja.length() == 0) {
+> return null ;}
+> return ja; }
+> Listing 10. MUT (property index 0): CDL.toJSONArray (excerpt).
+> @Property
+> void toJSONArrayKeysAreSubsetOfNames( @ForAll("naiveJSONArray") JSONArray names, @ForAll String csvString) {Assume.that(names.length() >0); JSONArray result =CDL.toJSONArray(names, csvString); Assume.that(result != null );
+> // every key in every result row must appear in names // ...
+> }@Provide Arbitrary<JSONArray> naiveJSONArray() {
+> return Arbitraries.strings().map(s -> {
+> try {return new JSONArray(s); }
+> catch (Exception e) {return new JSONArray() ;}}); }
+> Listing 11. Generated property (property index 0):
+> toJSONArrayKeysAreSubsetOfNames .
+
+Answer to RQ2 
+
+PROGRESS reaches hard property preconditions much more effectively than standalone JQWIK . Across 150 hard-property rows, P ROGRESS satisfies all preconditions for 70 MUTs, compared with 18 for JQWIK ; at the invocation level, P ROGRESS satisfies all preconditions in 34% of reached cases, compared with 3.6% for JQWIK .These results show that P ROGRESS ’s property-guided DynaMOSA extension turns preconditions into search guidance, enabling generated semantic oracles to execute in states that standalone PBT often fails to generate. 
+
+D. RQ3: Context Ablation for Property Generation 
+
+RQ3 asks which artifacts in the context bundle help PROGRESS generate error-free, intent-driven properties. In order for the property to be error-free, artifacts must include information regarding interfaces available for the property to check. In order for the property to be intent-driven, artifacts must clearly state or imply intended behavior. These qualities matter only if the resulting properties actually expose faults, so for each configuration we also measure how many injected mutants its properties kill. RQ3 therefore investigates how property-generation quality varies across input configurations and how each artifact contributes to property volume, validity, and fault-detection effectiveness. 
+
+a) Experimental Setup.: We keep the LLM backend, prompts, property-generation pipeline, and P ROGRESS inte-gration fixed, and vary the context bundle to investigate individual contributions of each artifact. We reuse the 240 MUT–Javadoc pairs from RQ1. Table VII summarizes the eight configurations (P1 to P8) where each row varies the Input bundle, namely the focal method as full body or signature (MUT ) and whether documentation ( Doc ) and context ( Ctx )are supplied. For each prompt configuration, we regenerate  
+
+> JQWIK
+
+properties using the same two-stage pipeline. Table VII reports how many properties are generated, how many are valid after synthesis, and how many valid properties pass or fail on the unmutated baseline. It also reports fault detection: following the RQ1 protocol, we run each baseline-valid property against the injected mutants and count how many mutants each configuration kills. Because every configuration draws from the same injected-mutant set, these kill counts are directly comparable across rows. Thus, the ablation measures which artifacts help the LLM produce properties that are grounded, compilable, usable by P ROGRESS , and fault-revealing. Figure 3 shows each property’s evidence source across the three pipeline stages (natural-language property, jqwik @Property , and mutant detection). These sources are self-reported by the language model at generation and carried through each stage. The causal role of each artifact is established by the ablation itself, which withholds artifacts and measures the effect on validity and kills; Figure 3 complements this with the model’s self-reported provenance, showing that the artifacts the ablation identifies as necessary are also the ones the model reports drawing on. 
+
+b) Results.: Table VII shows that the best configuration includes both code and intent. P1 combines the focal method body, its Javadoc, and all surrounding context, producing 935 properties with the lowest invalid rate (6%), the highest error-free rate (94%), the highest soundness (93%), and the most mutants killed (328). This supports the design of P ROGRESS :executable properties benefit from both semantic intent and concrete program context. Each source is also necessary for the full performance: losing context (P2) increases the error rate from 6% to 13%, and losing method under test code (P3) increases the error rate to 32% — though, as we show below, the body’s effect on validity depends on the accompanying context. The two body configurations with full or no context, P1 and P2, dominate detection (328 and 325 kills), well ahead of every signature-only configuration. Documentation contributes most to generated properties and makes them intent-driven. Figure 3 shows that documentation contributes towards 73.4% of generated properties (Doc, Doc + MUT, Doc + Ctx, and Doc + MUT + Ctx), with 40.9% entirely attributed to documentation. Additionally, the mutant detection results are consistent with these attributions. Documentation contributes towards 75.7% of mutant detections, with 31.5% entirely attributed to documentation. This shows that most properties extracted from the documentation can capture intent and act as an independent oracle. Detection, however, is bounded by validity. A property that fails to compile can kill no mutant, so a high invalid rate caps how many faults a configuration can find, regardless of how many properties it generates. This resolves why the method body helps in some configurations but hurts in others. The cleanest comparison is P4 and P7, which share documentation-only context and differ only in the focal method. With the signature alone (P4), the model writes conservative properties: 11% are invalid and 224 mutants are killed. Adding the full body (P7) leads it to write richer properties that call collaborating methods, but documentation-only context does not expose those methods’ code, so the calls fail to compile—the invalid rate jumps to 39% and detection falls to 152, even though P7 generates the most properties (992). The body therefore pays off only when the context can support it: with full context (P1) the collaborator code is present, and with no context (P2) the properties stay focused on the focal method itself, so both reach the highest detection (328 and 325 kills). The type of context matters more than whether context is present. Holding the signature and Javadoc fixed and varying only the context type, documentation-only context (P4) keeps the invalid rate low (11%), whereas code-only context (P5) drives it to 42%. Raw caller/callee code thus adds noise on its own; it becomes useful only alongside documentation, as in the full-context configuration that performs best overall (P1: 6% invalid, 328 kills). We attribute this to the level at which each source operates: documentation conveys the collaborators’ intended behavior and keeps properties at the behavioral level, while code alone supplies low-level detail the model cannot reliably turn into correct properties without that intent. Documentation and the concrete artifacts play comple-mentary roles. Figure 3 attributes most behavioral intent to documentation, while the ablation shows that the method body and code context are what make properties compile: removing the body (P3) or supplying it without matching code context (P7) drives the invalid rate up. Documentation states what a property should check, and the body and code context provide 0 10 20 30 40   
+
+> Share within each dataset (%)
+> Doc
+> Doc + MUT
+> MUT
+> MUT + Ctx
+> Ctx
+> Doc + Ctx
+> Doc + MUT + Ctx
+> Unattributed
+> Natural-language properties: 6,155 jqwik PBTs: 5,361 Detected mutants: 1,509
+> 40.9%
+> 30.5%
+> 16.3%
+> 8.1%
+> 2.3%
+> 1.6%
+> 0.4%
+> 34.1%
+> 32.8%
+> 17.6%
+> 9.3%
+> 2.6%
+> 1.8%
+> 0.4%
+> 1.5%
+> 31.5%
+> 41.4%
+> 12.7%
+> 10.5%
+> 1.2%
+> 0.9%
+> 1.9%
+> Dataset
+> Natural-language properties
+> jqwik PBTs
+> Detected mutants
+
+Fig. 3. Aggregate distribution of the 6,155 properties by evidence label, pooled across all configurations (P1–P8). MUT-body = focal-method body supplied (P1, P2, P7); MUT-sig = signature only (P3–P6, P8); Doc /Context as in Table VII. Documentation-derived oracles dominate overall (Doc 40.9%, MUT +Doc 30.5% of natural-language properties), while combined-evidence labels concentrate in detection (Doc+MUT rises to 41.4% of detected mutants). TABLE VII CONTEXT ABLATION FOR PROPERTY GENERATION .
+
+Input Generated PBT validity Baseline Mutant detected Prompt MUT Doc Ctx #PBT Invalid (%) Valid (%) Pass (%) Fail (%) Killed Kill (%) 
+
+P1 full ✓ all 935 6 94 93 7 328 58 
+
+P2 full ✓ – 779 13 87 92 8 325 57 P3 sig ✓ all 586 32 68 87 13 103 18 P4 sig ✓ doc 500 11 89 88 12 224 40 P5 sig ✓ code 857 42 58 87 13 120 21 P6 sig ✓ – 173 10 90 89 11 101 18 P7 full ✓ doc 992 39 61 87 13 152 27 P8 sig – all 539 10 90 82 18 152 27 
+
+Ctx : all = class documentation plus caller/callee code and documentation; doc = class documentation plus caller/callee documentation; code = class documentation plus caller/callee code; – = not supplied. Kill = mutants killed rate. 
+
+the concrete API needed to express it correctly. 
+
+Answer to RQ3 
+
+Documentation, method under test, and context combine complementary evidence to generate error-free and intent-driven properties, with P1 producing properties with the lowest error rate, and highest soundness. Javadoc supplies intent, playing the biggest role in mutation detection (75.7%), while method under test and class context supply usage and syntax knowledge improving property error rates. 
+
+E. Threats to Validity a) Construct validity.: We use source-level injected bugs as controlled current system version faults. This setup directly exercises the oracle problem targeted by P ROGRESS : regression assertions are derived from the version under test, while intent-derived properties can act as independent semantic oracles. We validate each property on the unmutated baseline before mutation evaluation and discard baseline-violating properties. 
+
+b) Internal validity.: PROGRESS combines LLM-based property generation, context extraction, instrumentation, and evolutionary search. To keep comparisons controlled, we fix the LLM backend, prompt structure, search budgets, and property-generation pipeline across experiments. We also report compilation, integration, and baseline-validation outcomes separately so non-evaluable cases are not counted as bug-detection results. 
+
+c) External validity.: We evaluate P ROGRESS on 25 Java systems from the OE25 corpus, including EvoSuite benchmark systems and Apache Commons packages. The current implementation targets Java, JUnit, EvoSuite, and 
+
+> JQWIK
+
+; however, the core idea—turning executable properties into search objectives—can apply to other testing frameworks that expose property checks and search-guided generation. V. R ELATED WORK 
+
+a) Search-based and property-based testing.: Search-based test generators such as EvoSuite produce high-coverage JUnit suites by evolving object states, primitive values, and method-call sequences, and then adding regression assertions over observed behavior [1], [7]. This provides strong structural reachability , but the resulting oracles preserve behavior from the current implementation. Property-based testing offers the complementary strength: properties can express semantic expectations independently of a single execution [2], [3]. However, PBT depends on generators that satisfy selective preconditions; otherwise, inputs are discarded before assertions are reached. Targeted PBT and JQF improve input generation with search or coverage feedback [4], [6], but they do not embed executable properties into a DynaMOSA-style generator that constructs complete Java test sequences. P ROGRESS combines these strengths by turning property assumptions and violations into fitness signals inside search. 
+
+b) LLM-based test and oracle generation.: Recent LLM-based testing systems improve test generation, assertion genera-tion, and oracle construction, but many remain tied to observed implementation behavior. Execution-driven approaches such as TestChain [16] capture outputs and treat them as expected results, while coverage- and feedback-driven systems such as CoverUp, TestWeaver, and Cleverest primarily optimize coverage, feedback efficiency, or regression sensitivity [17]– [19]. Oracle-generation systems such as TOGA, TOGLL, and Doc2OracLL move closer to semantic correctness by generating assertions or oracles for tests [10], [11], [20]. However, these systems typically operate on a regression-test prefix: the test sequence is generated first, and the LLM then predicts what should be asserted for that fixed execution. If the prefix reaches buggy current system version behavior, and the oracle is inferred from code-heavy evidence or observed behavior, the generated assertion can still reproduce the implementation rather than challenge it. The oracle remains post hoc ; it checks a completed test instead of guiding search toward semantically meaningful states. 
+
+c) Positioning.: PROGRESS differs in both timing and mechanism. It generates intent-derived executable JQWIK 
+
+properties from documentation, method code, and caller/callee context, then embeds them directly into DynaMOSA search. Preconditions become progress objectives, property violations become falsification targets, and quantified parameters are bound to values constructed by evolving tests. To the best of our knowledge, PROGRESS is the first framework to combine LLM-derived executable properties, property-aware DynaMOSA objectives, precondition-guided fitness, and input materialization in one automated testing loop. This lets testing reason about both where behavior is reachable and whether that behavior violates intended semantics .VI. F UTURE WORK 
+
+PROGRESS establishes executable properties as first-class search objectives, and this foundation opens several extensions. 
+
+Precondition-aware generator synthesis would let the search ex-ploit the structure of Assume.that gates when constructing inputs, reaching properties whose admissible inputs follow strict formats. Richer property forms , including relational, metamorphic, and stateful call-sequence would broaden the intent expressible as a search objective beyond single-invocation claims. Finally, the core idea is not Java-specific: evaluation on developer-reported faults and ports to other property engines and languages would test how broadly property-guided search applies. VII. C ONCLUSION 
+
+This paper presents P ROGRESS , a property-guided regression-testing framework that unifies structural reachability and 
+
+semantic falsification . P ROGRESS derives intent-driven ex-ecutable properties from code context, integrates them as first-class objectives in DynaMOSA, and uses property-aware fitness, parameter binding, input materialization, and generator integration to steer search toward both deep states and fault-revealing executions. Our evaluation on 25 Java systems shows that P ROGRESS 
+
+detects current system version bugs missed by regression-derived assertions and reaches hard property preconditions more effectively than standalone property-based testing. These results demonstrate that semantic oracles are most powerful when they guide test generation, rather than merely check completed tests. PROGRESS provides a foundation for future testing systems that ask not only whether software still does what it did before ,but whether it does what it should do .REFERENCES [1] G. Fraser and A. Arcuri, “Evosuite: automatic test suite generation for object-oriented software,” in Proceedings of the 19th ACM SIGSOFT Symposium and the 13th European Conference on Foundations of Software Engineering , ser. ESEC/FSE ’11. New York, NY, USA: Association for Computing Machinery, 2011, p. 416–419. [Online]. Available: https://doi.org/10.1145/2025113.2025179 [2] K. Claessen and J. Hughes, “QuickCheck: A lightweight tool for random testing of haskell programs,” in Proceedings of the Fifth ACM SIGPLAN International Conference on Functional Programming , ser. ICFP ’00. New York, NY, USA: Association for Computing Machinery, 2000, pp. 268–279. [Online]. Available: https://doi.org/10.1145/351240.351266 [3] H. Goldstein, J. W. Cutler, D. Dickstein, B. C. Pierce, and A. Head, “Property-based testing in practice,” in Proceedings of the 46th IEEE/ACM International Conference on Software Engineering , ser. ICSE ’24. Association for Computing Machinery, 2024, pp. 187:1–187:13. [4] A. L ¨oscher and K. Sagonas, “Targeted property-based testing,” in  
+
+> Proceedings of the 26th ACM SIGSOFT International Symposium on Software Testing and Analysis , ser. ISSTA 2017. Association for Computing Machinery, 2017, pp. 46–56.
+
+[5] J. Link, “jqwik: Property-based testing on the jvm,” https://jqwik.net/, accessed: 2026-06-21. [6] R. Padhye, C. Lemieux, and K. Sen, “JQF: Coverage-guided property-based testing in java,” in Proceedings of the 28th ACM SIGSOFT International Symposium on Software Testing and Analysis , ser. ISSTA 2019. Association for Computing Machinery, 2019, pp. 398–401. [7] A. Panichella, F. M. Kifetew, and P. Tonella, “Automated test case generation as a many-objective optimisation problem with dynamic selection of the targets,” IEEE Transactions on Software Engineering ,vol. 44, no. 2, pp. 122–158, 2018. [8] R. Pawlak, M. Monperrus, N. Petitprez, C. Noguera, and L. Seinturier, “Spoon: A library for implementing analyses and transformations of java source code,” Softw. Pract. Exper. , vol. 46, no. 9, p. 1155–1179, Sep. 2016. [Online]. Available: https://doi.org/10.1002/spe.2346 [9] K. Karakaya, S. Schott, J. Klauke, E. Bodden, M. Schmidt, L. Luo, and D. He, “Sootup: A redesign of the soot static analysis framework,” in 
+
+Tools and Algorithms for the Construction and Analysis of Systems: 30th International Conference, TACAS 2024, Held as Part of the European Joint Conferences on Theory and Practice of Software, ETAPS 2024, Luxembourg City, Luxembourg, April 6–11, 2024, Proceedings, Part I. Berlin, Heidelberg: Springer-Verlag, 2024, p. 229–247. [Online]. Available: https://doi.org/10.1007/978-3-031-57246-3 13 [10] S. B. Hossain, A. Filieri, M. B. Dwyer, S. Elbaum, and W. Visser, “Neural-based test oracle generation: A large-scale evaluation and lessons learned,” in Proceedings of the 31st ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering , ser. ESEC/FSE 2023. New York, NY, USA: Association for Computing Machinery, 2023, p. 120–132. [Online]. Available: https://doi.org/10.1145/3611643.3616265 [11] S. B. Hossain and M. B. Dwyer, “Togll: Correct and strong test oracle generation with llms,” in 2025 IEEE/ACM 47th International Conference on Software Engineering (ICSE) , 2025, pp. 1475–1487. [12] M. Konstantinou, R. Degiovanni, and M. Papadakis, “Do llms generate test oracles that capture the actual or the expected program behaviour?” 
+
+arXiv preprint arXiv:2410.21136 , 2024. [13] T. Tasnim, M. B. Dwyer, and S. B. Hossain, “TOGBench: A developer-written multi-variant dataset and benchmark suite for test oracle gen-eration,” in Proceedings of the 3rd ACM International Conference on AI-Powered Software (AIware 2026), Benchmark and Dataset Track ,ser. AIware ’26. New York, NY, USA: Association for Computing Machinery, 2026, to appear. [14] T. Tasnim and S. B. Hossain, “PITMuS: A tool for automated bug dataset generation via source-level mutant reconstruction,” in Proceedings of the 41st IEEE/ACM International Conference on Automated Software Engineering (ASE 2026), Tools and Datasets Track , ser. ASE ’26. New York, NY, USA: Association for Computing Machinery, 2026, to appear. [Online]. Available: https://github.com/assert-lab/PITMuS [15] H. Coles, T. Laurent, C. Henard, M. Papadakis, and A. Ventresque, “Pit: a practical mutation testing tool for java,” in Proceedings of the 25th international symposium on software testing and analysis , 2016, pp. 449–452. [Online]. Available: https://doi.org/10.1145/2931037.2948707 [16] K. Li and Y. Yuan, “Large language models as test case generators: Per-formance evaluation and enhancement,” arXiv preprint arXiv:2404.13340 ,2024. [17] J. A. Pizzorno and E. D. Berger, “Coverup: Effective high coverage test generation for python,” arXiv preprint arXiv:2403.16218 , 2024. [18] C. C. Le, C. D. Van, T. D. Vu, T. M. P. Vu, H. N. Phan, H. N. Phan, and T. N. Nguyen, “Testweaver: Execution-aware, feedback-driven regression testing generation with large language models,” arXiv preprint arXiv:2508.01255 , 2025. [19] J. Liu, S. Lee, E. Losiouk, and M. B ¨ohme, “Can llm generate regression tests for software commits?” arXiv preprint arXiv:2501.11086 , 2025. [20] S. B. Hossain, R. Taylor, and M. Dwyer, “Doc2oracll: Investigating the impact of documentation on llm-based test oracle generation,” 
+
+Proceedings of the ACM on Software Engineering , vol. 2, no. FSE, pp. 1870–1891, 2025.

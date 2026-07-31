@@ -1,66 +1,106 @@
-<div class="dpr-home-notice-card">
-  <h3 class="dpr-home-notice-title">🚀 Start Here</h3>
-  <ul class="dpr-home-notice-list">
-    <li><a href="#/tutorial/README">使用教程</a></li>
-  </ul>
+<div class="dpr-home-notice-card dpr-home-panel">
+  <div class="dpr-home-notice-header dpr-home-panel-header">
+    <h3 class="dpr-home-notice-title">公告与更新</h3>
+    <a class="dpr-home-notice-tutorial" href="#/tutorial/README">使用教程 <span aria-hidden="true">›</span></a>
+  </div>
+  <div class="dpr-home-notice-entry">
+    <time class="dpr-home-notice-date" datetime="2026-07-20">07.20</time>
+    <div>
+      <strong class="dpr-home-notice-entry-title">反馈功能上线</strong>
+      <span class="dpr-home-notice-entry-summary">新增反馈功能，欢迎大家踊跃反馈各种建议，我们会第一时间查看并协调处理。</span>
+    </div>
+  </div>
+  <div class="dpr-home-notice-entry">
+    <time class="dpr-home-notice-date" datetime="2026-07-19">07.19</time>
+    <div>
+      <strong class="dpr-home-notice-entry-title">首页新增社区统计</strong>
+      <span class="dpr-home-notice-entry-summary">现在可以看到今天看论文的人数和项目加入人数。</span>
+    </div>
+  </div>
+  <div class="dpr-home-site-stats" data-dpr-site-stats hidden aria-live="polite">
+    <span>今天有 <strong class="dpr-home-site-stat-value" data-dpr-daily-readers>--</strong> 人在看论文</span>
+    <span class="dpr-home-site-stat-separator" aria-hidden="true">·</span>
+    <span>昨天有 <strong class="dpr-home-site-stat-value" data-dpr-yesterday-readers>--</strong> 人在看论文</span>
+    <span class="dpr-home-site-stat-separator" aria-hidden="true">·</span>
+    <span>已有 <strong class="dpr-home-site-stat-value" data-dpr-fork-count>--</strong> 人加入 Daily Paper Reader</span>
+    <span class="dpr-home-history">
+      <button type="button" class="dpr-home-history-trigger" data-dpr-history-trigger aria-label="查看最近 14 天阅读趋势"><span aria-hidden="true">🔍</span></button>
+      <span class="dpr-home-history-popover" data-dpr-history-popover role="tooltip">
+        <span class="dpr-home-history-header">近 14 天阅读趋势</span>
+        <span class="dpr-home-history-meta">
+          <span data-dpr-history-range>--</span>
+          <span>峰值 <strong data-dpr-history-peak>--</strong></span>
+        </span>
+        <span class="dpr-home-history-chart" data-dpr-history-chart></span>
+      </span>
+    </span>
+  </div>
 </div>
 
-## 每次日报
-- 最新运行日期：2026-07-29
-- 运行时间：2026-07-29 21:50:57 UTC
-- 运行状态：成功
-- 本次总论文数：11
-- 精读区：3
-- 速读区：8
+<div class="dpr-home-dashboard-grid">
+<section class="dpr-home-dashboard-card dpr-home-report-card">
+  <div class="dpr-home-dashboard-header">
+    <div>
+      <span class="dpr-home-dashboard-kicker">2026-07-31</span>
+      <h3 class="dpr-home-dashboard-title">今日汇总</h3>
+    </div>
+    <strong class="dpr-home-dashboard-count">共 12 篇</strong>
+  </div>
+  <dl class="dpr-home-dashboard-stats">
+    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>9</dd></div>
+  </dl>
+  <p class="dpr-home-dashboard-body">最近更新：2026-07-31 21:48:31 UTC<br>状态：成功</p>
+</section>
+<section class="dpr-home-dashboard-card dpr-home-brief-card">
+  <div class="dpr-home-dashboard-header">
+    <div>
+      <span class="dpr-home-dashboard-kicker">合并后生成</span>
+      <h3 class="dpr-home-dashboard-title">今日简报</h3>
+    </div>
+    <strong class="dpr-home-dashboard-count">AI</strong>
+  </div>
+  <div class="dpr-home-dashboard-body">
+<p>今日聚焦安全领域12篇论文，重点精读2篇最高分研究：基于图神经网络的恶意软件检测，以及硬件-软件泄漏契约的模块化验证方法。速读中值得关注的是硬件木马插入评估（TroPUF）与功率侧信道泄漏的自动根因分析（SPARC），均指向芯片安全设计的前沿。普通读者可留意“图检测恶意软件”思路，未来或能更有效防范未知攻击。</p>
+  </div>
+</section>
+<section class="dpr-home-dashboard-card dpr-home-deep-card">
+  <div class="dpr-home-dashboard-header">
+    <div>
+      <span class="dpr-home-dashboard-kicker">今日累计</span>
+      <h3 class="dpr-home-dashboard-title">精读推荐</h3>
+    </div>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
+  </div>
+  <div class="dpr-home-dashboard-body">
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Guarding Organizations Against Malware Risk: A Novel Graph-Based Malware Detection Method">Guarding Organizations Against Malware Risk: A Novel Graph-Based Malware Detection Method</span></li><li><span class="dpr-home-dashboard-paper-title" title="Granite: A Modular Methodology for Foundational Verification of Hardware-Software Leakage Contracts">Granite: A Modular Methodology for Foundational Verification of Hardware-Software Leakage Contracts</span></li><li><span class="dpr-home-dashboard-paper-title" title="CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation">CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation</span></li></ul>
+  </div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+</section>
+<section class="dpr-home-dashboard-card dpr-home-skim-card">
+  <div class="dpr-home-dashboard-header">
+    <div>
+      <span class="dpr-home-dashboard-kicker">今日累计</span>
+      <h3 class="dpr-home-dashboard-title">速读推荐</h3>
+    </div>
+    <strong class="dpr-home-dashboard-count">9 篇</strong>
+  </div>
+  <div class="dpr-home-dashboard-body">
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow">SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow</span></li><li><span class="dpr-home-dashboard-paper-title" title="TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions">TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions</span></li><li><span class="dpr-home-dashboard-paper-title" title="Not In My Git Yard: Catching Backdoors at Commit and Release Time">Not In My Git Yard: Catching Backdoors at Commit and Release Time</span></li></ul>
+  </div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>9</strong></span></div>
+</section>
+</div>
 
-### 今日简报（AI）
-1) 今日聚焦11篇安全前沿研究，深度拆解图优化+AI加固活动目录、以及监控驱动的高保真Web模糊测试技术。
-2) 最大亮点：用图挖掘与AI自动识别AD攻击链路，及通过捕获分支/函数调用实现更精准的漏洞挖掘。
-3) 建议关注安全自动化新思路，试用图分析或监控增强的模糊测试工具来加固自身系统。
-- 详情：[/202607/29/README](/202607/29/README)
-
-### 精读区论文标签
-1. [Practical Graph Optimisation and AI-Driven Models for Active Directory Security Hardening](/202607/29/2607.22009v1-practical-graph-optimisation-and-ai-driven-models-for-active-directory-security-hardening)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：攻击图优化与AI驱动的AD安全加固
-2. [ZIMPAF & RedPhuzz: High-fidelity Web Application Fuzzing via Branch, Language Construct, and Function Call Monitoring](/202607/29/2607.25012v1-zimpaf--redphuzz-high-fidelity-web-application-fuzzing-via-branch-language-construct-and-function-call-monitoring)  
-   标签：评分：9.0/10、query:sys-security
-   evidence：新颖的运行时插桩用于高保真模糊测试，实现动态漏洞检测
-3. [Trusting-Trust Attack against an Entire Linux Distribution through Binary Manipulation](/202607/29/2607.24888v1-trusting-trust-attack-against-an-entire-linux-distribution-through-binary-manipulation)  
-   标签：评分：8.0/10、query:sys-security
-   evidence：通过二进制操控构建针对Linux发行版的信任信任攻击
-
-### 速读区论文标签
-1. [TrapHunter: Exposing Covert Pathways in Trap Token Contracts](/202607/29/2607.18753v1-traphunter-exposing-covert-pathways-in-trap-token-contracts)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：对智能合约进行静态分析以检测陷阱代币中的隐蔽路径
-2. [ChainWatch: A Kill Chain-Aligned Sequential Detection Framework for Multi-Step Attacks in MCP-Based AI Agent Systems](/202607/29/2607.19432v1-chainwatch-a-kill-chain-aligned-sequential-detection-framework-for-multi-step-attacks-in-mcp-based-ai-agent-systems)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：基于隐马尔可夫模型的动态运行时检测，分析AI代理工具调用序列以识别多步攻击
-3. [Twin Agent: Context Residual Compression for Privilege Separated Agents](/202607/29/2607.19595v1-twin-agent-context-residual-compression-for-privilege-separated-agents)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：特权分离设计缓解LLM智能体的提示注入攻击
-4. [SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow](/202607/29/2607.23218v1-sparc-automated-root-cause-analysis-of-pre-silicon-power-side-channel-leakage-in-the-processor-design-flow)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：利用信息流跟踪的流片前功耗侧信道泄漏自动分析
-5. [ZKP Security Tools and Verification: Coverage, Effectiveness, Adoption, and Challenges](/202607/29/2607.23752v1-zkp-security-tools-and-verification-coverage-effectiveness-adoption-and-challenges)  
-   标签：评分：7.0/10、query:sys-security
-   evidence：针对ZKP系统的缺陷检测与形式化验证工具综述，提升加密实现的漏洞检测能力
-6. [Build-Authorized Evidence for Opaque Calls: A Fail-Closed Rewrite-Authority Boundary](/202607/29/2607.18949v1-build-authorized-evidence-for-opaque-calls-a-fail-closed-rewrite-authority-boundary)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：通过构建时授权强制编译器重写安全，防止漏洞利用
-7. [The Illusion of Secure LLM Code: Closing the Security Gap via Iterative Reprompting](/202607/29/2607.23710v1-the-illusion-of-secure-llm-code-closing-the-security-gap-via-iterative-reprompting)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：使用静态和动态分析评估LLM生成的认证代码，提出迭代重提示
-8. [ALIBI: Adaptive Agentic Attacks on LLM-Based Vulnerability Detectors via Adversarial Code Comments](/202607/29/2607.24964v1-alibi-adaptive-agentic-attacks-on-llm-based-vulnerability-detectors-via-adversarial-code-comments)  
-   标签：评分：6.0/10、query:sys-security
-   evidence：对基于LLM的漏洞检测器进行对抗性攻击
-
-
-<div class="dpr-home-promo-card">
-  <h3 class="dpr-home-promo-title">💬 社区与支持</h3>
-  <ul class="dpr-home-promo-list">
-    <li>欢迎 Star / Fork / Issue / PR</li>
-    <li>QQ群：583867967（欢迎交流，已有：1151人）</li>
-  </ul>
+<div class="dpr-home-promo-card dpr-home-panel">
+  <div class="dpr-home-panel-header">
+    <h3 class="dpr-home-promo-title">社区与支持</h3>
+  </div>
+  <p class="dpr-home-promo-copy">欢迎通过 Star、Fork、Issue 或 PR 一起完善 Daily Paper Reader。</p>
+  <div class="dpr-home-promo-meta">
+    <span>QQ群 <strong>583867967</strong></span>
+    <span class="dpr-home-promo-separator" aria-hidden="true">·</span>
+    <span>已有 <strong>1,491</strong> 人参与交流</span>
+  </div>
 </div>
