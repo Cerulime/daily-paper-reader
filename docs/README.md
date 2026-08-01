@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-07-31</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-01</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 12 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 10 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>9</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-07-31 21:48:31 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-01 21:26:19 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日聚焦安全领域12篇论文，重点精读2篇最高分研究：基于图神经网络的恶意软件检测，以及硬件-软件泄漏契约的模块化验证方法。速读中值得关注的是硬件木马插入评估（TroPUF）与功率侧信道泄漏的自动根因分析（SPARC），均指向芯片安全设计的前沿。普通读者可留意“图检测恶意软件”思路，未来或能更有效防范未知攻击。</p>
+<p>今日精读聚焦芯片设计安全与AI编码安全，速读覆盖静态分析、攻击建模与硬件断言生成。最值得关注：预硅阶段功耗侧信道泄露的自动根因分析（SPARC），以及编码代理中恶意技能文件的运行时检测（SkillGate）。建议普通读者优先了解SkillGate思路，警惕AI编程工具引入的供应链风险。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -74,7 +74,7 @@
     <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Guarding Organizations Against Malware Risk: A Novel Graph-Based Malware Detection Method">Guarding Organizations Against Malware Risk: A Novel Graph-Based Malware Detection Method</span></li><li><span class="dpr-home-dashboard-paper-title" title="Granite: A Modular Methodology for Foundational Verification of Hardware-Software Leakage Contracts">Granite: A Modular Methodology for Foundational Verification of Hardware-Software Leakage Contracts</span></li><li><span class="dpr-home-dashboard-paper-title" title="CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation">CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow">SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow</span></li><li><span class="dpr-home-dashboard-paper-title" title="SkillGate: Cost Efficient Runtime Malicious Skill File Detection in Coding Agents">SkillGate: Cost Efficient Runtime Malicious Skill File Detection in Coding Agents</span></li><li><span class="dpr-home-dashboard-paper-title" title="Demystifying DRAM Read Disturbance: Bridging the Gap Between Experimental Characterization and Device-Level Modeling of RowHammer and RowPress Phenomena">Demystifying DRAM Read Disturbance: Bridging the Gap Between Experimental Characterization and Device-Level Modeling of RowHammer and RowPress Phenomena</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">9 篇</strong>
+    <strong class="dpr-home-dashboard-count">7 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow">SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow</span></li><li><span class="dpr-home-dashboard-paper-title" title="TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions">TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions</span></li><li><span class="dpr-home-dashboard-paper-title" title="Not In My Git Yard: Catching Backdoors at Commit and Release Time">Not In My Git Yard: Catching Backdoors at Commit and Release Time</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="FlowLog: Re-thinking Datalog for Fast and Extensible Static Analysis">FlowLog: Re-thinking Datalog for Fast and Extensible Static Analysis</span></li><li><span class="dpr-home-dashboard-paper-title" title="ThreatForest: Multi-Agent Attack Tree Generation with Pluggable TTP Framework Mapping">ThreatForest: Multi-Agent Attack Tree Generation with Pluggable TTP Framework Mapping</span></li><li><span class="dpr-home-dashboard-paper-title" title="CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation">CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>9</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
 </section>
 </div>
 
