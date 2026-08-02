@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-01</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-02</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 10 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 9 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>8</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-01 21:26:19 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-02 20:43:35 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精读聚焦芯片设计安全与AI编码安全，速读覆盖静态分析、攻击建模与硬件断言生成。最值得关注：预硅阶段功耗侧信道泄露的自动根因分析（SPARC），以及编码代理中恶意技能文件的运行时检测（SkillGate）。建议普通读者优先了解SkillGate思路，警惕AI编程工具引入的供应链风险。</p>
+<p>今日聚焦AI挖掘CVE基准与硬件安全，精读1篇、速读8篇，核心是HoF-Bench。</p>
+<p>最值得看的是《HoF-Bench: Rediscovering Real AI-Discovered CVEs Without Frontier Models》（9.0/10），揭示无需前沿模型复现AI发现真实CVE的路径。</p>
+<p>下一步可顺带关注硬件木马检测与侧信道分析（SPARC、神经ODE、TroPUF三篇均值得速览）。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +73,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow">SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow</span></li><li><span class="dpr-home-dashboard-paper-title" title="SkillGate: Cost Efficient Runtime Malicious Skill File Detection in Coding Agents">SkillGate: Cost Efficient Runtime Malicious Skill File Detection in Coding Agents</span></li><li><span class="dpr-home-dashboard-paper-title" title="Demystifying DRAM Read Disturbance: Bridging the Gap Between Experimental Characterization and Device-Level Modeling of RowHammer and RowPress Phenomena">Demystifying DRAM Read Disturbance: Bridging the Gap Between Experimental Characterization and Device-Level Modeling of RowHammer and RowPress Phenomena</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="HoF-Bench: Rediscovering Real AI-Discovered CVEs Without Frontier Models">HoF-Bench: Rediscovering Real AI-Discovered CVEs Without Frontier Models</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +86,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">7 篇</strong>
+    <strong class="dpr-home-dashboard-count">8 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="FlowLog: Re-thinking Datalog for Fast and Extensible Static Analysis">FlowLog: Re-thinking Datalog for Fast and Extensible Static Analysis</span></li><li><span class="dpr-home-dashboard-paper-title" title="ThreatForest: Multi-Agent Attack Tree Generation with Pluggable TTP Framework Mapping">ThreatForest: Multi-Agent Attack Tree Generation with Pluggable TTP Framework Mapping</span></li><li><span class="dpr-home-dashboard-paper-title" title="CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation">CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow">SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow</span></li><li><span class="dpr-home-dashboard-paper-title" title="Early Detection of Hardware Trojans Using Neural Controlled Differential Equations and Analysis of Power Traces">Early Detection of Hardware Trojans Using Neural Controlled Differential Equations and Analysis of Power Traces</span></li><li><span class="dpr-home-dashboard-paper-title" title="TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions">TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>8</strong></span></div>
 </section>
 </div>
 
