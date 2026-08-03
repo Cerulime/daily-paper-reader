@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-02</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-03</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 9 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 8 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>8</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-02 20:43:35 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-03 21:50:20 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,9 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日聚焦AI挖掘CVE基准与硬件安全，精读1篇、速读8篇，核心是HoF-Bench。</p>
-<p>最值得看的是《HoF-Bench: Rediscovering Real AI-Discovered CVEs Without Frontier Models》（9.0/10），揭示无需前沿模型复现AI发现真实CVE的路径。</p>
-<p>下一步可顺带关注硬件木马检测与侧信道分析（SPARC、神经ODE、TroPUF三篇均值得速览）。</p>
+<p>今日精读8篇论文，聚焦LLM Agent安全，其中《Isolated but Exposed》揭示基于持久性的记忆提取攻击，评分8.0最值得关注。速读方向涵盖硬件木马（TroPUF）与联邦学习隐私防御（TriShield），另见C转Rust的智能体翻译研究。建议普通读者优先了解Agent记忆泄露风险，并关注硬件与联邦学习中的隐蔽攻击面。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -76,7 +74,7 @@
     <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="HoF-Bench: Rediscovering Real AI-Discovered CVEs Without Frontier Models">HoF-Bench: Rediscovering Real AI-Discovered CVEs Without Frontier Models</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Isolated but Exposed: Persistence-Based Memory Extraction Attack on LLM Agents">Isolated but Exposed: Persistence-Based Memory Extraction Attack on LLM Agents</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
@@ -86,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">8 篇</strong>
+    <strong class="dpr-home-dashboard-count">7 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow">SPARC: Automated Root-Cause Analysis of Pre-Silicon Power Side-Channel Leakage in the Processor Design Flow</span></li><li><span class="dpr-home-dashboard-paper-title" title="Early Detection of Hardware Trojans Using Neural Controlled Differential Equations and Analysis of Power Traces">Early Detection of Hardware Trojans Using Neural Controlled Differential Equations and Analysis of Power Traces</span></li><li><span class="dpr-home-dashboard-paper-title" title="TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions">TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions">TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions</span></li><li><span class="dpr-home-dashboard-paper-title" title="TriShield: Zero-Utility-Loss Defense Against Privacy Backdoors in Federated Language Model Fine-Tuning via Orthogonal Gradient Projection and Optimizer State Entanglement">TriShield: Zero-Utility-Loss Defense Against Privacy Backdoors in Federated Language Model Fine-Tuning via Orthogonal Gradient Projection and Optimizer State Entanglement</span></li><li><span class="dpr-home-dashboard-paper-title" title="From C to Idiomatic Rust: A Ship-of-Theseus Agentic Translation">From C to Idiomatic Rust: A Ship-of-Theseus Agentic Translation</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>8</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
 </section>
 </div>
 
