@@ -1,0 +1,905 @@
+Title: TurboRetry: Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading
+
+URL Source: https://arxiv.org/pdf/2608.02264v1
+
+Published Time: Tue, 04 Aug 2026 02:29:01 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# TurboRetry: Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading 
+
+# Jiahao Wu 
+
+Institute of Computing Technology, Chinese Academy of Sciences Beijing, China University of Chinese Academy of Sciences Beijing, China wujiahao15@mails.ucas.ac.cn 
+
+# Heng Pan ∗
+
+Computer Network Information Center, Chinese Academy of Sciences Beijing, China panheng@cnic.cn 
+
+# Kai Lv 
+
+Institute of Computing Technology, Chinese Academy of Sciences Beijing, China University of Chinese Academy of Sciences Beijing, China lvkai20z@ict.ac.cn 
+
+# Zhenyu Li 
+
+Institute of Computing Technology, Chinese Academy of Sciences Beijing, China University of Chinese Academy of Sciences Beijing, China zyli@ict.ac.cn 
+
+# Yanbiao Li 
+
+Computer Network Information Center, Chinese Academy of Sciences Beijing, China University of Chinese Academy of Sciences Beijing, China lybmath@cnic.cn 
+
+# Gaogang Xie 
+
+Computer Network Information Center, Chinese Academy of Sciences Beijing, China University of Chinese Academy of Sciences Beijing, China xie@cnic.cn 
+
+## Abstract 
+
+The modern transport protocol QUIC is designed to enhance net-work performance and security, but it remains vulnerable to hand-shake flooding attacks. Such attacks exhaust CPU resources by forcing the server to perform expensive cryptographic operations via a large number of handshaking requests. QUIC provides a built-in defense mechanism, the Retry mechanism, to mitigate these attacks. However, our experiments reveal that it can still become a performance bottleneck under large-scale QUIC handshake floods due to substantial computational overhead. In this paper, we design and implement TurboRetry, a split de-sign, that offloads the Retry mechanism onto DPUs to efficiently mitigate QUIC handshake floods. TurboRetry partitions the tasks of the Retry into two categories, and then assigns them to the DPUs and the host, respectively. To preserve QUIC semantics and reduce the coordination overhead, TurboRetry designs an extended Retry token format and an efficient cooperation scheme. In addition, TurboRetry offloads the connection authorization task to the on-path DPA to further improve both performance and security. Our evaluation shows that TurboRetry outperforms the host-side im-plementation by a wide margin, improving throughput by 10–20 ×.
+
+## CCS Concepts 
+
+• Security and privacy → Denial-of-service attacks . 
+
+> ∗Corresponding author.
+> This work is licensed under a Creative Commons Attribution 4.0 International License.
+> CCS ’26, The Hague, Netherlands
+> ©2026 Copyright held by the owner/author(s). ACM ISBN 979-8-4007-2871-6/2026/11 https://doi.org/10.1145/3830454.3832585
+
+## Keywords 
+
+DDoS detection and mitigation, Data processing unit, QUIC 
+
+ACM Reference Format: 
+
+Jiahao Wu, Heng Pan, Kai Lv, Zhenyu Li, Yanbiao Li, and Gaogang Xie. 2026. TurboRetry: Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading. In Proceedings of the 2026 ACM SIGSAC Conference on Computer and Communications Security (CCS ’26), November 15–19, 2026, The Hague, Netherlands. ACM, New York, NY, USA, 17 pages. https://doi. org/10.1145/3830454.3832585 
+
+## 1 Introduction 
+
+QUIC (Quick UDP Internet Connections) is a modern transport pro-tocol built on UDP that combines the features of HTTP/2 and TLS, serving as the foundation of HTTP/3 [ 5, 23 , 26 , 36 ]. Its widespread adoption has made it a target for Distributed Denial-of-Service (DDoS) attacks against HTTP/3 servers [ 46 –48 ]. In particular, the connection establishment process has emerged as a critical attack surface, which is called QUIC handshake floods [ 7, 15 , 25 , 26 , 40 ,44 , 59 ]. In such attacks, adversaries send massive volumes of initial handshake packets to overwhelm servers, causing CPU-intensive cryptographic operations during the TLS-based handshake to be-come a major performance bottleneck [61, 66]. QUIC introduces the Retry 1 mechanism as a built-in defense against handshake floods [ 23 ]. Its core idea is to validate the source address of a client before performing the computationally expensive cryptographic handshake. Although the Retry mechanism indeed improves resilience against handshake floods [ 44 ], it can still be-come a bottleneck under large-scale QUIC handshake floods (see Section 2.2). This is because it requires several operations, including token generation, integrity tag computation, and token verification, which impose additional computational overhead that does not    
+
+> 1To avoid confusion, we denote the retry mechanism as Retry and the corresponding packet as the Retry packet. arXiv:2608.02264v1 [cs.CR] 3 Aug 2026 CCS ’26, November 15–19, 2026, The Hague, Netherlands Wu et al.
+
+scale well under heavy traffic. Consequently, offloading Retry to hardware emerges as a promising approach, with several drafts being proposed [ 12 ]. However, existing proposals either incur sig-nificant overhead due to encryption key synchronization or fail to satisfy required security guarantees. Recently, Data Processing Units (DPUs), such as BlueField-3 [ 51 ], provides a promising platform for offloading Retry . By extending network interface cards with integrated CPU cores and hardware look-aside accelerators [ 8, 38 ], DPUs offer high programmability, high-bandwidth interfaces and efficient processing of encrypted traffic (e.g., Pigasus [ 69 ]). Offloading defense mechanisms to DPUs enables the filtering of large volumes of attack traffic before it reaches the host, thereby effectively protecting critical services. Despite this potential, designing a practical offloading system to efficiently defend against QUIC handshake flood attacks is chal-lenging, as a DPU-based Retry mechanism must carefully balance task allocation, maintain protocol correctness, and ensure high performance. First, careful task partitioning is required because some Retry operations are poorly suited for the DPU’s relatively weaker processors, while others can benefit from hardware look-aside accelerators. The partitioning must consider both security and performance constraints to maximize throughput. Second, the correctness and consistency of the protocol must be preserved, as the Retry mechanism is tightly coupled with the QUIC protocol stack, and all connection states must be synchronized between the DPU and the host stack to ensure correct connection establishment. Third, most DPU processors and hardware accelerators reside off the fast path, requiring packets to be forwarded from the on-path pipeline to off-path units, which introduces significant additional la-tency. Minimizing this latency while maintaining high throughput is therefore a challenge. To cope with these challenges, we propose a defense system TurboRetry that adopts a split design to offload the QUIC Retry 
+
+mechanism onto DPUs, thereby achieving high-performance miti-gation against QUIC handshake floods. To this end, we introduce a universal token format, secured with AES-GCM encryption, to enhance protection. We partition the Retry mechanism into two categories of tasks: (i) stateless tasks (i.e., token generation, integrity tag computation, and token verification), and (ii) stateful tasks (i.e., 
+
+connection management). Stateless tasks are well-suited for ac-celeration by DPU hardware accelerators, whereas stateful tasks are processed by the more powerful host processors. To preserve protocol correctness, we design an efficient cooperation scheme between the host and DPUs, leveraging the universal token to synchronize connection states while maintaining compliance with QUIC semantics. We further offload the connection authorization task to the data path accelerator (DPA), an on-path component in DPUs, which directly forwards verified flows to the host with low transmission latency while proactively discarding unverified flows to enhance protection. We also support the 0-RTT feature of QUIC via the universal token design. Experimental results demon-strate that TurboRetry achieves strong resilience against adaptive adversaries, consistently maintaining reliable delivery of legitimate traffic under large-scale handshake flood attacks. Compared to a purely host-side implementation, TurboRetry delivers a 10 ∼20 ×
+
+throughput improvement while introducing only a negligible delay, and gracefully falls back to the host-based solution upon failures without disrupting service availability. In summary, our primary contributions are as follows: 
+
+• We propose a defense system, TurboRetry, with a split design (Section 4) that offloads the QUIC Retry mechanism onto DPUs (Section 5.1) to efficiently mitigate large-scale QUIC handshake floods. 
+
+• We devise an efficient cooperation scheme (Section 6) where DPUs and the host coordinate via encrypted tokens to syn-chronize connection states without violating QUIC seman-tics. In addition, we offload the connection authorization task to the DPA (Section 5.2), which directly forwards veri-fied flows to the host while proactively discarding unverified flows, thereby improving both performance and security. 
+
+• We implement the TurboRetry prototype on the BlueField 3 DPU and make it publicly available [ 3]. Experiments show that it is resilient against attack rates of 3 Mpps without any packet loss , gains 10-20 × throughput improvement over software solutions, and only introduces minimal additional latency (Section 8). We begin by outlining the limitations of the existing Retry mech-anism in Section 2, and then present the threat model, key chal-lenges, and system architecture of TurboRetry in Section 3. A secu-rity analysis is provided in Section 7. We further discuss additional features and potential future directions in Section 9, present related work in Section 10, and conclude in Section 11. 
+
+## 2 Background and Motivation 
+
+In this section, we first recall the key features of QUIC, with a focus on its handshake and retry mechanisms. We then further analyze the limitations of existing retry mechanisms and discuss the new opportunities enabled by DPUs. 
+
+## 2.1 QUIC Handshake and Retry Mechanism 
+
+QUIC is designed to improve the performance and security of net-work transmission [ 26 ]. It merges TCP’s three-way handshake and TLS negotiation into a single handshake [ 23 , 61 ], significantly reducing connection establishment latency. QUIC’s mandatory end-to-end encryption hides protocol metadata from on-path devices, effectively mitigating the security risks associated with plaintext transmission in TCP [16]. 
+
+QUIC packet formats. QUIC packets are carried inside UDP payloads and come in two forms: long-header and short-header packets. Long-header packets are used for connection establish-ment, involving Initial, Retry, Handshake, 0-RTT, and Version Ne-gotiation packets. Short-header packets ( i.e., 1-RTT packets) are used for normal data transmission. Note that the payloads of Initial, Handshake and 1-RTT packets are encrypted using Authenticated Encryption with Associated Data (AEAD) algorithms [ 42 ] (e.g., AES-GCM [58]). 
+
+QUIC handshake mechanism. A typical QUIC handshake comprises three main steps (Figure 1a). ① The client sends an Initial packet containing a TLS ClientHello (CH) message encrypted in its payload. ② Upon receiving this packet, the server decrypts its payload and replies with an Initial packet containing a TLS ServerHello (SH) message. The server then sends a Handshake TurboRetry : Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading CCS ’26, November 15–19, 2026, The Hague, Netherlands Client  Server                
+
+> Initial [1]: CRYPTO[SH] DCID=C1 SCID= S2
+> Handshake [1]: CRYPTO[EE,CERT,CV,FIN]
+> 1-RTT [1]: STREAM[“…”] DCID=C1
+> Initial [0]: CRYPTO[CH] DCID= S1 SCID=C1
+> Initial [2]: ACK DCID= S2 SCID=C1
+> Handshake [2]: CRYPTO[FIN], ACK
+> 1-RTT [2]: STREAM[“…”], ACK DCID= S2
+
+(a) 1-RTT handshake. Client  Server                    
+
+> Initial [3]: CRYPTO[SH]
+> Handshake [3]: CRYPTO[EE,CERT,CV,FIN]
+> 1-RTT [3]: STREAM[“…”]
+> Initial [0]: CRYPTO[CH]
+> Initial [4]: Token ,ACK
+> Handshake [4]: CRYPTO[FIN ], ACK
+> 1-RTT [4]: STREAM [“…”], ACK
+> Retry [1]: Token
+> Initial [2]: Token ,CRYPTO [CH]
+> DCID= C1 SCID= S3
+> DCID= C1
+> DCID= S2 SCID=C1
+> DCID= C1 SCID= S2
+> DCID= S1 SCID=C1
+> DCID= S3 SCID=C1
+> DCID= S3
+
+(b) 1-RTT handshake with Retry .Server       
+
+> No subsequent
+> handshake packets
+> Retry
+> Retry + Token
+> Attacker Integrity Tag
+> Computation
+> Connection
+> Management
+> Retry + Token
+> Retry +Token
+> Token
+> Generation
+> QUIC Initial
+> Token
+> Verification
+> QUIC Initial
+> QUIC Initial
+> Stateful
+> Stateless
+
+(c) Main functions of Retry .
+
+Figure 1: QUIC handshake and the Retry mechanism. The numbered labels indicate the order of packet-exchange rounds. 
+
+packet with its TLS handshake messages—Encrypted Extensions (EE), Certificate (CERT), and Certificate Verify (CV)—followed by a 1-RTT packet containing application data. ③ The connection is established once the server receives a sequence of packets from the client, including an Initial packet with ACK, a Handshake packet with the client’s TLS information, and a 1-RTT packet. 
+
+Retry mechanism. Retry [ 23 ] is a built-in defense designed to mitigate QUIC handshake floods and has been widely adopted by QUIC implementations listed by the QUIC Working Group [ 54 ]. As illustrated in Figure 1b, Retry introduces two additional steps prior to connection establishment: ① The server responds to the client’s first Initial packet with a Retry packet containing a stateless token ( Token ), without decrypting the payload; ② The client re-transmits the Initial packet carrying the token ( Token ) in the header. The server proceeds with the handshake only after successfully verifying the token. By deferring decryption and other expensive cryptographic operations, Retry prevents CPU exhaustion caused by spoofed Initial packets. Note that clients are required to include the retry token 𝑇 in all the subsequent Initial packets to prove its au-thenticity. Although Retry introduces additional interaction delay, it provides strong protection against QUIC handshake floods [44]. We summarize the main operations involved in Retry into two groups: stateless and stateful functions (shown in Figure 1c). State-less functions include token generation, Retry packet integrity tag computation, and token verification, which respectively generate tokens for client validation, protect Retry packets against tamper-ing using AEAD algorithms (e.g., AES-GCM), and validate returned tokens without maintaining per-connection state. The stateful func-tion primarily involves connection management, which requires maintaining server-side state across connections. Among these, only token-related functions (token generation and verification) vary significantly across different implementations, as retry tokens are self-produced and self-consumed by the same server and their formats are independently defined by each implementation [23]. 
+
+Connection identifier negotiation. QUIC decouples a connec-tion from the traditional five-tuple by using connection identifiers (CIDs). In a long-header packet, the destination CID (DCID) identi-fies the intended receiver and is used for routing, while the source CID (SCID) advertises the CID that the peer should use as the DCID in subsequent packets. Therefore, the DCID used by an endpoint is negotiated during the handshake. Once the negotiation completes, 1-RTT short-header packets only need to carry the peer-selected CID as the DCID for routing. To authenticate this negotiation, QUIC encodes the relevant DCID choices into the transport parameters extension, which are exchanged and authenticated as part of the TLS handshake to prevent CID tampering or Retry forgery. In the 1-RTT handshake (Figure 1a), the client’s DCID switches from its initial random value S1 to the server-selected CID S2 , which is advertised as the server’s SCID during the handshake. Accord-ingly, S1 and S2 are encoded in the server’s transport parameters. When Retry is used (Figure 1b), the DCID transition includes an additional Retry-issued CID. The client first uses S1 , the original DCID (ODCID), then switches to the Retry SCID (RSCID) S2 when retransmitting the Initial packet with the retry token, and finally uses the server’s post-validation SCID S3 for subsequent packets. In this case, S1 , S2 , and S3 are encoded in the server’s transport parameters. 
+
+Version negotiation and Zero Round-Trip Time (0-RTT) re-sumption. Version negotiation is triggered when a client proposes an unsupported QUIC version, causing the server to negotiate a mutually supported version before the standard 1-RTT handshake. 0-RTT resumption reduces connection setup latency by allowing a client to send encrypted application data in its first flight using cryptographic parameters from a prior connection. It is commonly combined with a server-issued NEW_TOKEN , which lets the client prove prior address validation and avoid being downgraded by an additional Retry exchange. However, because 0-RTT sends data before full authentication and key confirmation, it also expands the attack surface [55]. 
+
+## 2.2 Limitations of the Existing Retry Mechanism 
+
+We next introduce the limitations of existing Retry mechanisms, in-cluding host-based Retry mechanisms and Retry offloading drafts. 
+
+Host-based Retry solutions. Host-based Retry solutions refer to QUIC implementations built on the host UDP stack that support the Retry mechanism. As mentioned before, one of their major dif-ferences lies in the token format, which provides varying levels of security. More complex token formats incur higher computational overhead, resulting in reduced Retry throughput. We evaluate the maximum attack rate that the host-based Retry can withstand using different token formats selected from [ 54 ] (see Appendix Ta-ble 5). In our experiment, we use Quiche [ 10 ], a Rust-based QUIC implementation, as the test platform. Specifically, we customize Quiche to implement five distinct token formats: plaintext, HMAC, AES encryption, RSA encryption, and ECC encryption (Ed25519). The plaintext format directly embeds the source IP address, source CCS ’26, November 15–19, 2026, The Hague, Netherlands Wu et al. 
+
+port, and source connection identifier into the token without cryp-tographic protection. The HMAC-based format computes the hash value of the plaintext content and appends the resulting hash to the end. The AES- and ECC-based formats encrypt this plaintext content using the AES-GCM/Ed25519 algorithm. The RSA-based format generates and maintains an RSA key pair to encrypt the same plaintext content. We adopt the experimental setup described in Section 8.1 and use the successful request ratio as the metric to characterize the server’s state under attack. 0 25 50 75 100 125 150 175 200 
+
+> Attack rate (kpps)
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Request success rate (%)
+> w/o Retry
+> w/ Retry (Plaintext)
+> w/ Retry (HMAC)
+> w/ Retry (RSA)
+> w/ Retry (AES-GCM)
+> w/ Retry (Ed25519)
+
+Figure 2: Retry performance measurement. Note that the attack rate is measured in kilo packets per second (kpps). Limitations of host-based Retry . As depicted in Figure 2, the basic QUIC handshake without Retry can withstand attacks of up to 28 kpps. When Retry is enabled, plaintext tokens, HMAC-based tokens, AES-encrypted tokens, ECC-encrypted tokens, and RSA-encrypted tokens can mitigate attack rates of up to 209 kpps, 207 kpps, 188 kpps, 38 kpps, and 32 kpps, respectively. These results demonstrate that enabling Retry improves DDoS resistance by 1.1–7.5 ×. However, the host-based Retry can still become a per-formance bottleneck under large-scale attacks ( > 209 kpps), and increasing the complexity of token-encryption operations can sig-nificantly reduce Retry throughput ( i.e., defense efficiency). There-fore, the community has turned to offloading Retry to hardware to balance token security and Retry performance. 
+
+Table 1: Comparison between the Retry offloading draft and TurboRetry.             
+
+> Solution Fail-open Easy-to-deploy 0-RTT No-shared-state [12] ✗✓✗
+> Shared-state [12] ✓✗✓
+> TurboRetry ✓✓✓
+
+Overall, a practical Retry offloading solution should satisfy three key requirements: (1) it should operate in a fail-open manner to preserve service availability when the offloading device fails or becomes unavailable, (2) it should be easy-to-deploy without complex host–device coordination, and (3) it should support the prominent 0-RTT resumption feature, rather than forcing resumed connections to fall back to a full 1-RTT handshake. Table 1 sum-marizes two approaches proposed in the existing Retry offloading draft [12]: no-shared-state and shared-state offloading. In no-shared-state offloading, the device independently gen-erates and validates plaintext Retry tokens without sharing state with the host. This design keeps the data path simple and avoids host–device synchronization. However, since the device does not share the server’s token format or cryptographic state, it cannot recognize server-issued NEW_TOKEN s. As a result, 0-RTT packets carrying such tokens are dropped at the offloading device, forcing QUIC’s low-latency 0-RTT resumption to degrade into a full 1-RTT handshake. The design also makes availability depend on the of-floading device. When the device fails, the host cannot directly take over token validation, causing the system to fail closed. In shared-state offloading, the device and the host share the cryptographic state needed to generate and validate encrypted retry tokens. This enables both sides to validate each other’s tokens and allows the device to support 0-RTT resumption with NEW_TOKEN .However, this benefit comes at the cost of deployability. The system must synchronize keys, nonces, and rotation epochs between the host and the device. More importantly, to avoid security vulnera-bilities caused by nonce reuse in AES-GCM, the system ought to adopt an aggressive key-rotation strategy, such as enforcing key rotation after every 223 packets. Such frequent multi-state man-agement and synchronization introduce substantial operational overhead, creating significant engineering barriers to deployment and scaling in practical network environments. Thus, shared-state offloading turns Retry offloading into a distributed cryptographic state-management problem. In summary, existing designs expose a tradeoff: no-shared-state offloading is easy to deploy but fails closed and breaks 0-RTT, whereas shared-state offloading supports 0-RTT but requires com-plex and frequent key and nonce synchronization. TurboRetry bridges this gap by deriving per-connection keys and nonces from a single pre-shared master key using HKDF (see Algorithm 1), elim-inating complex cryptographic state distribution between the host and the offloading device. It further introduces a universal retry token format (mentioned in Section 5.1) that supports both Retry validation and NEW_TOKEN -based 0-RTT resumption, preserving sim-ple deployment without sacrificing QUIC’s low-latency resumption feature. 
+
+## 2.3 Opportunities of Data Processing Units 
+
+A Data Processing Unit (DPU), also known as a Smart Network Interface Card (SmartNIC), is a high-performance programmable system-on-chip (SoC) processor that integrates a multi-core CPU, network interfaces, and hardware accelerator engines. It can re-place traditional NICs and offer performance improvements by offloading specific tasks (e.g., networking, storage, security, etc. )from host CPU cores to the DPU. Table 2 compares the cost and key capabilities of representative off-the-shelf DPUs, highlighting the trade-offs between device functionality and deployment cost. DPUs have emerged as a promising solution for data centers and cloud environments [ 29 , 41 , 57 ]. In this paper, we focus on the state-of-the-art (SOTA) DPU, NVIDIA BlueField-3 [51]. 
+
+BlueField-3 architecture. Figure 3 shows the overall architec-ture of BlueField-3 (BF3) DPU. BF3 comprises two ConnectX-7 NICs, several SoC cores and domain-specific hardware accelerators, and off-chip DDR5 memory. Each NIC supports 200/400 Gbps Ethernet TurboRetry : Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading CCS ’26, November 15–19, 2026, The Hague, Netherlands 
+
+Table 2: Comparison of representative off-the-shelf DPUs.                        
+
+> Device Cap. Cost ($) Power (W) Data Plane Programmability AES-GCM Accelerator Nvidia BlueField-3 400Gbps 3,455 75 ✓✓
+> AMD Pensando DSC3 400Gbps --✓✓
+> Intel IPU 200Gbps 4,318 75 ✓✓
+> Marvell OCTEON 16 ×50Gbps -50 ✓✓
+> *Entries marked with ’-’ indicate that the corresponding information is not publicly available.
+
+or InfiniBand. The SoC includes two types of processors: (i) an off-path general-purpose processor with 16 Arm Cortex-A78 cores, and (ii) a programmable on-path Data Path Accelerator (DPA). These two processors are connected via an embedded PCIe switch. BlueField -3  
+
+> Host
+> 16 -core
+> Arm
+> DDR5
+> DRAM
+> Cache
+> PCIe Switch
+> DPA
+> (RISC -V)
+> ConnectX
+> NIC
+> Lookaside
+> Accelerators
+> AES -GCM
+> Erasure
+> Coding
+> Compress
+> PCIe Gen 5.0 ×16
+> IB/Ethernet
+> Port
+
+Figure 3: BlueField-3 DPU architecture. 
+
+The DPA processor features a 16-core, 256-thread RISC-V archi-tecture and resides on the network critical path, providing inline programmability for every incoming and outgoing packet. In ad-dition to its own three-level cache backed by NIC private mem-ory, the DPA can access the last-level cache (LLC) and memory of both the Arm processor and the host system via the PCIe bus using load/store instructions [ 52 ]. In contrast, the Arm processor serves as a co-processor to the host CPUs, offloading computation-intensive tasks. It is connected to 32GB DDR5 memory and a suite of hardware accelerators (e.g., AES-GCM engines, erasure coding units, compression modules, etc. ). 16 64 256 1024 2048 4096 8192  
+
+> Block size (B)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Throughput (MOPS)  Arm Host
+
+(a) Throughput. 16 64 256 1024 2048 4096 8192   
+
+> Block size (B)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Avg. Latency (us)  Arm Host
+
+(b) Latency. 
+
+Figure 4: Benchmarking the AES-GCM hardware accelerator on BlueField-3. Benchmarking the AES-GCM accelerator. The QUIC hand-shake and data transmission involve numerous AES-GCM crypto-graphic operations. Although these operations can be accelerated with AES-NI [ 20 ] instructions on the host CPU, they still occupy significant CPU resources under attacks. The AES-GCM accelerator on BF3 offers promising opportunities to both relieve CPU burden and accelerate these operations. Therefore, we measure the through-put and latency when invoking the hardware accelerator on both the host CPU and the DPU’s Arm processor using the doca_bench 
+
+tool. Figure 4a and Figure 4b show that, compared with the host, invoking the AES-GCM accelerator on the Arm processor achieves higher throughput ( ≈4 million operations per second for one core) and lower latency ( < 2 μs). This demonstrates the potential for offloading AES-GCM operations to BF3. 
+
+Limitations of BlueField-3 . Although the Arm processor pro-vides hardware-accelerated processing capabilities that outperform host CPUs for specific tasks, it introduce additional latency because traffic must traverse the PCIe switch to reach them. This poses chal-lenges in achieving both low latency and high throughput when offloading network functions from host CPUs to the DPU. 
+
+## 3 TurboRetry Problem Setting 
+
+To mitigate QUIC handshake floods, we design TurboRetry, a DPU-based Retry offloading mechanism (see Figure 5). In TurboRetry, stateless functions are offloaded to the DPU to leverage hardware accelerators for potential performance improvement, while stateful functions remain on the host to ensure correct maintenance of connection state within the protocol stack. Within the split design, the DPU synchronizes the necessary connection state with the host QUIC stack via the PCIe bus to ensure that verified connections continue to operate correctly. Under this design, we next present the threat model and the key technical challenges of TurboRetry. Server   
+
+> No subsequent
+> handshake packets
+> Attacker
+> DPU
+> Connection
+> Management
+> QUIC Initial Host CPU
+> QUIC Initial
+> QUIC Initial
+> PCIe
+> Connection
+> State
+> Sync
+> Stateless Stateful
+> Token Verification
+> Token Generation
+> Integrity Tag
+> Computation
+> Arm
+> Processor
+> AES -GCM
+
+Figure 5: Overview of DPU-based Retry .
+
+## 3.1 Threat Model 
+
+Our threat model considers three key actors: clients, adversaries, and network providers. 
+
+Clients . We assume that benign clients follow the QUIC specifi-cation and generate well-formed connection attempts. The primary security objective of TurboRetry is to protect these clients from ser-vice disruption caused by QUIC handshake flooding. In particular, the defense must not drop or rate-limit benign traffic. 
+
+Adversaries . We focus on asymmetric QUIC handshake flood-ing attacks, in which the adversary expends significantly fewer resources than the defender [ 11 , 66 ]. In this setting, we assume the adversary controls a botnet [ 4] capable of generating massive volumes of QUIC Initial packets. To evade simple blacklisting, the adversary employs IP spoofing, ensuring that attack traffic appears to originate from a diverse range of source IP addresses. We assume CCS ’26, November 15–19, 2026, The Hague, Netherlands Wu et al. 
+
+the adversary is off-path (or blind), meaning they cannot observe the return traffic from the victim. 
+
+Network providers. We assume that the network provider manages the physical infrastructure, including servers and DPUs. TurboRetry adopts a least-privilege design for provider-managed DPUs. The DPU is delegated only the stateless address-validation logic required for QUIC Retry and is provisioned with a pre-shared token secret for generating and validating Retry tokens. It does not possess the server’s long-term TLS private keys, QUIC/TLS session keys, or application-layer secrets, and therefore cannot decrypt or forge protected QUIC application data. We do not assume an arbitrarily malicious DPU that can exfiltrate secrets. Instead, we consider realistic DPU-side failures, including software bugs, crashes, and transient unavailability. The host does not blindly trust DPU forwarding decisions; instead, it revalidates the Retry token before admitting an Initial packet into the QUIC stack. This secondary verification prevents buggy DPU behavior, stale cache entries, packet corruption, or erroneous forwarding decisions from injecting invalid connection state into the host QUIC stack. 
+
+## 3.2 Challenges 
+
+Overall, TurboRetry needs to address several key technical chal-lenges to defend against QUIC handshake flooding attacks. 
+
+Challenge 1: Strategic partitioning of Retry under security and performance constraints. The Retry mechanism involves multiple tasks. Some are ill-suited for execution on the DPU due to its relatively weaker general-purpose processors compared to host CPUs, while others can benefit significantly from the DPU’s hardware accelerators. The core challenge lies in determining an appropriate division of labor that should satisfy two constraints: (i) identifying which functions must remain on the host, and (ii) determining which computations can be safely offloaded to the DPU to achieve performance gains. At the same time, Retry security requires encrypting its retry tokens. However, stronger encryption improves security but inevitably increases computational overhead, degrading overall system throughput (see Section 2.2). We show how TurboRetry navigates these trade-offs in Section 5.1. 
+
+Challenge 2: Coordinating the split design without violat-ing QUIC semantics. QUIC requires the host protocol stack to track all connection identifiers that the host negotiates with the client during the Retry . The host encodes these identifiers as trans-port parameters in the TLS-encrypted payload of the Handshake packet and sends them to the client to complete connection setup. Omitting these parameters causes the client to reject the connec-tion. In our split design, these identifiers are managed on the DPU and needs to be synchronized with the host QUIC protocol stack. Although one could introduce a new packet format to convey this information to the host, doing so would violate QUIC semantics. Section 6 shows how TurboRetry efficiently coordinates the host and the DPU to handle this challenge. 
+
+Challenge 3: Minimizing end-to-end transmission latency for verified connections. Most processors and hardware accel-erators in DPUs reside off the fast path, requiring packets to be forwarded from the on-path pipeline to off-path units. This forward-ing indeed introduces significant additional transmission latency (mentioned in Section 2.3). We show how TurboRetry addresses this challenge in Section 5.2. 
+
+## 4 TurboRetry Architecture 
+
+In this section, we first present an overview of TurboRetry, and then describe its end-to-end workflow for benign requests, including both the connection setup and the data transmission. 
+
+## 4.1 Overview 
+
+As mentioned before, TurboRetry adopts a split design paradigm that offloads stateless functions of Retry to the DPU (including Arm and DPA processors) while managing QUIC connections through coordinated DPU–host cooperation (see Figure 6). Overall, Tur-boRetry consists of three components: Arm agent, DPA cache, and host cooperator. Adversary      
+
+> Client
+> Arm
+> Agent
+> DPA
+> Cache
+> Initial
+> Retry +Token
+> No return
+> Initial packet
+> Retry +Token
+> Host
+> Cooperator
+> Data Transfer
+> Initial + Token
+> Handshake
+> Update
+> DPU
+> Host
+> Data Transfer
+> Handshake
+> Connection
+> Management
+> Token Generation
+> Integrity Tag Computation
+> Token Verification
+> Fast-path
+> Authorization
+> Initial
+> Initial + Token
+
+Figure 6: TurboRetry architecture. Arm agent. The Arm agent handles the stateless functions in 
+
+Retry , including retry token generation, retry integrity tag com-putation, and token verification (Section 5.1). Note that all these functions involve AES-GCM operations. This design fully leverages the AES-GCM hardware accelerator directly attached to the Arm processor, significantly improving its performance. For each Ini-tial packet without a token, the Arm agent can generate a Retry packet with very low latency ( < 2𝜇 s) and withstand large-scale QUIC Handshake flooding attacks. After successful token verifica-tion, the Arm agent forwards the client’s Initial packet to the host and installs the validated connection identifier in the DPA cache to accelerate subsequent data transmission. 
+
+DPA cache. The DPA cache is primarily designed to reduce data transmission latency (Section 5.2). Although the Arm agent offers greater computational capability and storage resources, its off-path architecture introduces additional latency due to PCIe switch traversal. In contrast, the on-path DPA processor resides on the network’s critical path and can steer traffic directly to the host, thereby minimizing transmission latency. Thus, the DPA cache au-thorizes validated connections to accelerate their data transmission and drops invalid flows before they reach the host. 
+
+Host cooperator. The host-side design focuses on cooperating with the DPU to complete stateful connection management within the QUIC protocol stack for benign connections (Section 6). During 
+
+Retry , the server negotiates its own connection identifiers with the client. To preserve the integrity of this process, QUIC requires the server to include all negotiated connection identifiers, i.e., original TurboRetry : Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading CCS ’26, November 15–19, 2026, The Hague, Netherlands Client 
+
+Arm 
+
+Agent 
+
+DPA 
+
+Cache 
+
+Host 
+
+Coop-
+
+erator  
+
+> 1) Initial[CH]
+> 2) Retry(Token )
+> 3) Initial(Token)[CH]
+> n) 1-RTT
+> 6) Add new DCID
+> 4) Initial(Token )[CH]
+> m) 1-RTT
+> 5) Initial[SH] & Handshake & 1-RTT
+> 7) Initial[SH] & Handshake & 1-RTT
+> 8a) Initial (Token )[ACK]
+> 9a) Initial (Token )[ACK]
+> 8b) Handshake & 1-RTT 9b) Handshake & 1-RTT
+
+DPU Host 
+
+Figure 7: End-to-end connection setup and data transfer procedure for verified connections. 
+
+DCID (ODCID) and retry SCID (RSCID), as transport parameters in the TLS handshake, which the client uses to verify that the server has not been hijacked. In TurboRetry, these identifiers are generated and maintained on the DPU and must be synchronized with the host. To preserve QUIC semantics, we embed these two connection identifiers into the proposed secure retry token and deliver them to the host together with successfully verified Initial packets. The host then decrypts the token, extracts the identifiers, and supplies them to the QUIC stack to continue the handshake. Notably, both the DPU and the host derive cryptographic keys using the same key-derivation process, eliminating the need to explicitly share cryptographic materials for token encryption or decryption. 
+
+## 4.2 End-to-end Workflow 
+
+Figure 7 illustrates the complete end-to-end connection setup and data transfer procedure in TurboRetry for verified connections. Upon receiving the first Initial packet from the client ( step 1), Tur-boRetry’s Arm agent generates a token according to the proposed format (Section 5.1), computes the retry integrity tag, and delivers a Retry packet containing the token to the client ( step 2). In step 
+
+3, the Arm agent performs token verification upon receiving the client’s second Initial packet, which contains the token and Clien-tHello message, to authenticate the client. If verification succeeds, the second Initial packet will be forwarded to the host immediately (step 4). The host stack recovers the RSCID and ODCID from the client’s Initial packet, and then generates an Initial packet con-taining the ServerHello message, a Handshake packet carrying the associated TLS information, and a 1-RTT packet ( step 5). Before these packets are transmitted to the client ( step 7), the DPU Arm agent extracts the new connection identifier assigned by the host and updates the DPA cache ( step 6), ensuring that subsequent pack-ets from the client are directly steered to the host. The Arm agent also verifies the token in the subsequent Initial packet with ACK (step 8a) and steers it to the host ( step 9a). The DPA then handles subsequent Handshake and 1-RTT packets ( step 8b), forwarding them to the host only after confirming that the DCID is present in its records ( step 9b). Finally, all bidirectional data transmission 1-RTT packets are managed by the DPA cache ( step n and m). 
+
+## 5 Handshake Floods Defense on DPU 
+
+In this section, we first present stateless function offloading on the Arm agent, and then describe the DPA cache, which accelerates the data path by caching verified connections. 
+
+## 5.1 Unified Stateless Offloading 
+
+To efficiently offload stateless Retry processing to the DPU, Tur-boRetry unifies the stateless functions under a single AES-GCM pipeline and proposes a universal token design that simultaneously supports both Retry and 0-RTT address validation. 
+
+Unifying stateless functions with AES-GCM. Existing QUIC implementations employ various algorithms (e.g., AES or RSA) [ 54 ]to protect tokens. This diversity complicates efficient offloading and leads to suboptimal utilization of the DPU’s hardware acceler-ators. To address this issue, TurboRetry standardizes all stateless operations, including token generation, validation, and integrity tag computation, on AES-GCM-128. Our rationale is threefold. First, AES-GCM is an AEAD algorithm that simultaneously ensures the confidentiality of the token struc-ture (preventing structural analysis) and the integrity of the token (preventing forgery). Second, unlike asymmetric algorithms (e.g., RSA) which impose prohibitive latency, AES-GCM is symmetric and highly efficient. Third, the target BF3 DPU features a dedicated AES-GCM hardware engine. In practice, hardware-accelerated AES-GCM on the DPU incurs a lower per-packet latency (<2 𝜇 s) than host-side lightweight HMAC [ 34 ] computation ( ≈3 𝜇 s), making AES-GCM a more efficient choice for stateless retry processing. By unifying the stateless functions with a single AEAD pipeline, TurboRetry maximizes the utilization of the hardware accelerator and sustains high validation performance even under flood attacks. Token                 
+
+> Integrity  Tag
+> (128 bits)
+> Token Payload
+> -Timestamp (64 bits)
+> -Source IP (32/128 bits)
+> -Source Port (16 bits)
+> -ODCIDL (8 bits)
+> -ODCID (0...160 bits)
+> Plaintext Encrypted
+> Token Header
+> - Source (2 bits)
+> - Type (2 bits)
+> - Token ID (64 bits)
+> - Nonce (96 bits)
+> Retry 0-RTT
+> AAD
+
+Figure 8: Universal secure token format. The token header is authenticated as AAD when computing the integrity tag. Universal token format. We introduce a universal token for-mat (Figure 8), which supports both Retry and 0-RTT address validation. Each token consists of a plaintext header, an AES-GCM-encrypted payload, and a 128-bit token integrity tag. The header in-cludes (i) a 2-bit source field indicating the token issuer ( 0x1 for host CCS ’26, November 15–19, 2026, The Hague, Netherlands Wu et al. 
+
+and 0x2 for DPU), (ii) a 2-bit type field specifying the token purpose (0x1 for Retry and 0x2 for 0-RTT), (iii) a token identifier (ID), and (iv) a 96-bit nonce. The token header is authenticated as associated data (AAD) to bind the token metadata to the ciphertext. The en-crypted payload carries the information needed for stateless client validation and freshness checks. For Retry tokens, the payload en-codes a creation timestamp, the client’s source IP address (32 bits for IPv4 and 128 bits for IPv6) and source port, and the original DCID (length and bytes) to bind the token to the intended connection context. For 0-RTT tokens carried in NEW_TOKEN , the payload simi-larly includes a timestamp and the client address tuple (omits the source port, ODCIDL, and ODCID), enabling the DPU to perform address validation for 0-RTT attempts without maintaining per-connection state. Tokens that fail AEAD authentication or violate freshness/address checks are rejected. Appendix Table 5 compares token formats and protection algorithms across QUIC implementa-tions listed in [ 54 ]. AES-GCM is the most commonly adopted protec-tion mechanism in this set. However, AES-GCM-based designs still differ substantially in their concrete token formats. TurboRetry dis-tills the common requirements of existing token designs—freshness, client-address binding, connection-context binding, and integrity protection—into a unified AES-GCM-128 token format. This unified format allows Retry tokens and NEW_TOKEN tokens to share the same DPU-side parsing and verification pipeline, making token val-idation hardware-friendly while preserving the security properties expected from existing QUIC token designs. 
+
+0-RTT validation on the DPU. 0-RTT reduces connection setup latency by allowing early data, but it also expands the re-play surface [ 55 ]. In QUIC, servers can issue address validation tokens to clients via NEW_TOKEN frames for future connections [ 23 ]. TurboRetry reuses the same universal token format for NEW_TOKEN 
+
+(type= 0x2 ), so the DPU can validate 0-RTT attempts using the same stateless AES-GCM pipeline as Retry . This design allows the DPU to independently gate 0-RTT handshakes based on authenticated token contents (including freshness and address binding), while keeping validation stateless. We configure the 0-RTT token valid-ity window to match the session ticket lifetime (e.g., 24 hours), consistent with common TLS resumption deployments [56]. 
+
+Lightweight key derivation with a single pre-shared mas-ter key. Offloading requires the host and the DPU to derive iden-tical cryptographic materials without complex synchronization. TurboRetry uses HKDF [ 35 ] to derive per-connection AEAD keys from a single pre-shared master key, 𝐾 psk , which is shared between the host and the DPU, periodically rotated, and shown in Algo-rithm 1. For each token, TurboRetry deterministically derives an initial secret using HKDF-Extract over (𝐾 psk , 𝑇 𝐼𝐷 ), where 𝑇 𝐼𝐷 is the randomly generated token ID. It then derives a token secret 
+
+𝑆 token using HKDF-Expand-Label with label retry token , and fi-nally expands 𝑆 token into an AES-GCM key 𝐾 enc and a base nonce 
+
+𝑁 base using distinct labels. The token header is used as AAD, and the payload is encrypted to produce the integrity tag. To avoid nonce reuse when multiple tokens are generated for the same 𝑇 𝐼𝐷 under the same 𝐾 psk (e.g., repeated Retry issuance), we derive the final per-token nonce by mixing runtime entropy into the base nonce. Specifically, we compute 𝑁 enc = 𝑁 base ⊕ ( 𝑇 ∥ 𝑅 ),where 𝑇 is a 64-bit timestamp and 𝑅 is a 32-bit random value. This construction ensures that each AEAD invocation uses a distinct nonce even under repeated token issuance. 
+
+Algorithm 1: Derivation of the key and nonce 
+
+Input: Pre-shared master key 𝐾 psk and token identifier 𝑇 𝐼𝐷 
+
+Output: Encryption key 𝐾 enc and nonce 𝑁 enc 
+
+// Denote HKDF-Extract as Extract // Denote HKDF-Expand-Label as Expand  
+
+> 1
+
+𝑇 ← current_timestamp ; // 64-bit timestamp  
+
+> 2
+
+𝑅 ← random_bytes (4) ; // 32-bit random value  
+
+> 3
+
+𝑆 initial ← Extract (𝐾 psk , 𝑇 𝐼𝐷 ); 
+
+> 4
+
+𝑆 token ← Expand (𝑆 initial , "retry token" , "" , 32 ); 
+
+> 5
+
+𝐾 enc ← Expand (𝑆 token , "token key" , "" , 16 ); 
+
+> 6
+
+𝑁 enc ← Expand (𝑆 token , "token iv" , "" , 12 ); 
+
+> 7
+
+𝑁 enc ← 𝑁 enc ⊕ ( 𝑇 ∥ 𝑅 ) ; 
+
+> 8
+
+return (𝐾 enc , 𝑁 enc );
+
+Master key rotation. To limit the impact of potential key com-promise, the pre-shared master key 𝐾 psk is rotated periodically, following the 0-RTT token expiration time, e.g., every 24 hours. Because per-token cryptographic materials are derived from 𝐾 psk 
+
+and diversified by 𝑇 𝐼𝐷 , compromising one derived token key does not reveal the master key or the keys of other tokens. Therefore, TurboRetry can adopt a relatively long rotation interval without maintaining per-connection keys. To avoid dropping legitimate packets during rotation, tokens encrypted under the previous mas-ter key remain valid within a short transition window. 
+
+## 5.2 DPA Accelerated Data Transmission 
+
+This section focuses on optimizing the data path to reduce data transmission latency. We first contrast our on-path processing ap-proach with off-path designs that incur additional overhead, and then present the mechanisms employed by TurboRetry to reduce end-to-end transmission latency. Offloading Retry to the off-path Arm processor on the DPU can significantly improve throughput. However, it introduces additional latency for each packet. This overhead stems from the off-path architecture of the Arm processor, where all the incoming and outgoing packets must first be forwarded through the embedded PCIe switch (~500 ns delay in BF3 [ 9]) before reaching the host. This traffic path is commonly referred to as slow path .An alternative traffic path powered by the on-path DPA proces-sor, i.e., the fast path , can process all traffic and forward it directly to the host without passing the off-path Arm processor. As discussed in Section 2.3, the DPA processor sits on the critical path of traffic, and provides per-packet programmability for all traffic traversing it. That said, some Retry functions can be further offloaded from the Arm processor to the DPA processor to reduce the end-to-end transmission latency. 
+
+Fast-path authorization. The three core Retry functions are ill-suited for the DPA fast path, as each relies on AES-GCM op-erations through the hardware accelerator attached to the Arm processor. Accessing this accelerator via the PCI switch adds extra latency, thereby contradicting our objective of minimizing delay. Conversely, connection authorization , which involves only simple TurboRetry : Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading CCS ’26, November 15–19, 2026, The Hague, Netherlands 
+
+matching of DCIDs, is well suited for fast-path offloading. In the offloading design, the fast path is dedicated to processing all packets except Initial packets, as Initial packets are handled by the Arm processor for stateless Retry . Upon packet arrival, the DPA inspects the DCID field in the QUIC header to determine whether the con-nection ID belongs to the validated set. Packets with DCIDs not in the set are dropped, while those with valid DCIDs are forwarded directly to the host, bypassing the slow path. 
+
+Bloom filters for approximate connection tracking. In prac-tical applications, a server may handle tens of thousands of legiti-mate concurrent connections per second. Maintaining the DCID of every connection at the DPA would be prohibitively expensive in terms of hardware cost. To address this issue, the DPA cache introduces Bloom filters [ 6] to track verified legitimate connections with extremely low memory overhead. The core advantage of this data structure lies in its absence of false negatives, which funda-mentally ensures that benign connections will not be mistakenly blocked due to matching failures. Although Bloom filters have a very small probability of false positives, which may allow a small number of unverified packets to bypass the front-end check, this is an acceptable trade-off in the overall defense architecture. 
+
+Aging mechanism based on time-window rotation. To pre-vent the false positive rate from deteriorating due to the long-term accumulation of stale states in the Bloom filter, the DPA cache adopts an automatic aging mechanism based on dual-table rotation over a time window ( 𝑇 𝑊 ). The DPA cache maintains two filters in parallel, periodically alternating them between the ACTIVE and 
+
+PASSIVE_AGING states. The liveness of a connection is dynamically refreshed by actual traffic: when a 1-RTT packet arrives, the DPA cache concurrently matches it against both tables; if it hits the passive aging table, the corresponding DCID is reinserted into the active table to extend its lifetime. This means that as long as con-tinuous data exchange exists, the connection can migrate smoothly between the two tables without being cleared. In this mechanism, the choice of 𝑇 𝑊 must carefully balance preventing idle connections from expiring prematurely against suppressing the increase in the filter’s false positive rate. Accordingly, the DPA cache sets 𝑇 𝑊 to 30 seconds, following Chromium’s default maximum idle timeout to balance defense accuracy and throughput. 
+
+Parameter trade-off of the Bloom filter. The Bloom filter in DPA cache uses 𝑘 = 3 hash functions and a total memory budget of 
+
+𝑚 = 1 MB. With an assumed arrival rate of 40 K QUIC connections per second and the rotation window 𝑇 𝑊 = 30 seconds (mentioned before), the expected number of inserted elements is 𝑛 = 40000 × 30 .The resulting false positive rate (FPR) is 
+
+𝐹 𝑃𝑅 =
+
+
+
+1 − 𝑒 − 𝑘 ·𝑛 𝑚 
+
+𝑘 
+
+≈ 4.25% , (1) where 𝑚 is measured in bits. Note that this FPR does not weaken the protection against QUIC handshake floods because the Bloom filter is used only for fast authorization of post-handshake 1-RTT packets in the DPA cache. Handshake-related packets are still handled by the Arm agent and are not admitted solely based on the Bloom filter result. We further discuss attacks against the DPA cache in Section 7. 
+
+## 6 Host Cooperation 
+
+This section presents the design of the host-side cooperator. Tur-boRetry redesigns the connection setup process to enable tight coop-eration between the DPU and the host. This design preserves QUIC semantics for benign traffic and requires only minimal changes to the host QUIC stack. While stateless Retry functions can be efficiently offloaded to the DPU (Section 5), the stateful function, connection management ,is not amenable to offloading because it is tightly coupled with the host QUIC stack. In particular, connection management is re-sponsible for selecting, negotiating, and validating the CIDs used during the handshake. QUIC requires the relevant handshake CIDs, such as ODCID, RSCID, and the server’s final SCID, to be encoded as transport parameters. These parameters are carried in the en-crypted TLS Handshake payload and authenticated by the peer, as discussed in Section 2.1. Since these CID values must remain consistent with the host’s connection state and TLS handshake transcript, offloading connection management would require tight synchronization between the DPU and the host QUIC stack. 
+
+Strawman solution. A simple approach is to run a QUIC proxy on the DPU’s Arm processor. In this design, the proxy completes the handshake with the client, establishes a separate QUIC connec-tion with the host, and relays traffic between the two. Although this approach preserves host transparency, it introduces additional latency during connection setup and increases system complexity by requiring connection state management on the Arm processor. 
+
+Token-based connection state synchronization. TurboRetry instead adopts a lightweight cooperation mechanism that uses the Retry token as a carrier for connection identifier state. The retry token format described in Section 5.1 encodes the ODCID within its encrypted payload. After validating the token, the DPU forwards the Initial packet directly to the host without modification (mentioned in Section 4.2). Upon receiving the validated Initial packet, the host derives the token decryption key using the pre-shared master key ( 𝐾 psk ) and the TID extracted from the token, following Algorithm 1. It then decrypts the token payload and recovers the ODCID. Note that the RSCID ( S2 ) is obtained directly from the DCID field of the received Initial packet. Both identifiers are then passed to the QUIC stack, ensuring correct handshake processing and transport parameter construction. Because the host and the DPU share only a single rotating master key, this design avoids the need to synchronize multiple cryptographic materials, which makes TurboRetry easy to deploy. 
+
+Time consistency. Maintaining clock consistency between the DPU and the host is essential. Any time drift in the DPU may lead to incorrect token validity checks, posing a risk to system security. Therefore, periodic time synchronization via NTP is necessary. 
+
+Fail-open mechanism. TurboRetry is designed to operate in a fail-open manner, ensuring that DPU-side failures do not compro-mise security or service availability. When the DPU-side program crashes or the Arm operating system on the DPU becomes unavail-able, packet forwarding continues to be handled by the embedded switch on the NIC, allowing traffic to be transparently delivered to the host. In this case, TurboRetry automatically falls back to a host-only processing path without interrupting existing or new con-nections. The host QUIC stack implements the same stateless Retry CCS ’26, November 15–19, 2026, The Hague, Netherlands Wu et al. 
+
+logic as the DPU-offloaded path, allowing independent Retry pro-cessing even when the DPU is unavailable. While this fallback path incurs higher CPU overhead and reduced performance compared to DPU acceleration, it preserves service availability and does not weaken security guarantees. 
+
+## 7 Security Analysis 
+
+We discuss possible attacks from adversaries against our system it-self (above and beyond the QUIC handshake flooding attack vector), and explain how we address them. 
+
+Token replay attacks. TurboRetry embeds the current UNIX timestamp into the token body and encrypts it using the key–nonce pair generated by Algorithm 1. When a QUIC Initial packet contain-ing a token arrives, TurboRetry decrypts the token to extract the timestamp and checks whether it has expired. The token expiration is set to 1 second, representing the common 1-RTT duration in the modern Internet. This design ensures that TurboRetry accepts only retry tokens issued within a 1-RTT period, providing strong resilience against replay attacks with outdated tokens. 
+
+Token forgery attacks. An adversary may send crafted QUIC Initial packets to TurboRetry and analyze the tokens contained in the returned Retry packets in an attempt to reverse-engineer the token generation mechanism. If successful, the attacker could forge valid tokens and bypass TurboRetry. That said , this process constitutes a Chosen-Plaintext Attack (CPA) against our token generation mechanism. The security against token forgery directly reduces to the security of the AES-GCM encryption algorithm. AES-GCM is proven to be secure in the chosen-plaintext attack (CPA) model, provided that the input nonce is never reused with the same key [ 13 , 22 ]. In TurboRetry, for each key, the nonce is computed by performing an XOR operation with the timestamp (Algorithm 1), ensuring nonce uniqueness for each key. The proposed key–nonce derivation scheme provides security against token forgery attacks under the security guarantees of the AES-GCM algorithm. 
+
+DPU-targeted DDoS attacks. Since TurboRetry offloads Retry 
+
+processing from the host CPU to the DPU, an adversary may at-tempt to attack the DPU itself by sending high-rate Initial packets, 1-RTT packets, or traffic patterns that intentionally trigger the DPU processing. Such attacks aim to exhaust DPU Arm cores, crypto engines, and the DPA cache. TurboRetry mitigates these attacks by keeping the DPU processing path bounded and stateless for unvalidated clients. Malformed 1-RTT packets that fail DPA cache authorization are dropped in the fast path before reaching the Arm cores or the host. When the DPU approaches saturation, the system can shed load at the DPU by dropping or rate-limiting unauthenti-cated Initial packets, rather than forwarding all traffic to the host and exposing the QUIC stack to the original flooding attack. Thus, DPU saturation may degrade availability for new handshakes, but will not amplify the attack into host CPU exhaustion. 
+
+State exhaustion attacks on the DPA cache. An adversary with many real source addresses may try to pollute the DPA cache by completing Retry for many short-lived connections. This can increase the Bloom filter false-positive rate within the current aging window. However, such an attack requires real address validation and client-side resources, making it substantially more expensive than spoofed Initial floods. The time-window-based aging mech-anism bounds the duration of pollution. Once the saturated filter is retired, stale DCIDs are removed and the false-positive rate is restored. Thus, cache pollution may temporarily admit a bounded fraction of unauthorized DCIDs, but it does not permanently com-promise the cache’s ability to distinguish validated DCIDs from invalid ones. 
+
+## 8 Evaluation 
+
+We evaluate TurboRetry by running several experiments on a hard-ware testbed. We (1) demonstrate the throughput of TurboRetry in mitigating QUIC handshake floods, and (2) show the overall per-formance of TurboRetry in comparison to the host-based solution. Note that we own all testbed infrastructure, and attack traffic was only directed to dedicated testbed servers, raising no ethical issues. 
+
+## 8.1 Experimental Setup 
+
+Prototype implementation. We implement TurboRetry on the BlueField-3 DPU [ 51 ] using DOCA v2.7.0 [ 50 ], leveraging the DPA, the Arm processor, and AES-GCM hardware accelerators. The im-plementation comprises about 15,000 lines of code (LOC) in C/C++. For the host cooperation, we utilize both Cloudflare’s quiche [ 10 ](Rust) and aioquic [ 1] (Python 3) libraries to implement the pro-posed collaborative retry mechanism with about 1,000 LOC. 
+
+Testbed. The testbed consists of three servers and an Intel Tofino Wedge32X-BF programmable switch serving as an L2 switch. The server machines are all connected to the switch via Direct Attach Copper (DAC) cables and consistently run Ubuntu 22.04 with kernel version 5.15.0. One server acts as the adversary, with a 48-core Intel Xeon Silver 4214R CPU @ 2.4Ghz and a Mellanox ConnectX-6 2×100Gbps NIC, generating attack traffic using DPDK 23.03 [ 14 ]. The second server functions as the client, featuring a 48-core Intel Xeon 4214R CPU@2.4Ghz and an Intel X710 2 ×10Gbps NIC to send benign requests. The third server hosts the HTTP/3 service, powered by a 96-core Intel Xeon Gold 5318Y CPU@2.10 GHz and a BlueField-3 2 ×200Gbps NIC [51]. 
+
+Background traffic. We use real HTTP/3 requests as back-ground traffic. An HTTP/3 client based on quic-go [ 53 ] is imple-mented and deployed on the client machine. During the experiment, the client sends 40k requests per second to the server running an HTTP/3 service and records both the connection setup latency and the response latency for each request. To prevent requests from hanging due to DDoS interference, the timeout for each request is set to 3 seconds. 
+
+Attack traffic generation. We implement a QUIC handshake flood generator on the adversary machine with DPDK [ 14 ]. It can generate 100Gbps attack traffic using the Mellanox ConnectX-6 NIC. The attack traffic primarily consists of QUIC Initial packets whose source IP (drawn from public prefixes), source port, DCID, and SCID are randomized. The QUIC payload is sampled from legitimate QUIC Initial packets. Each attack packet is 1242 bytes in length, complying with the QUIC design requirement that the UDP payload in QUIC Initial packets must be at least 1200 bytes [23]. 
+
+Evaluation metrics. We utilize the connection establishment latency (ms), the data transmission latency (ms) of QUIC, and the maximum sustainable attack rate without packet loss as key metrics TurboRetry : Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading CCS ’26, November 15–19, 2026, The Hague, Netherlands 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 
+
+Number of Cores 
+
+> 0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> 4.0
+> Attack Rate (Mpps)  Aioquic
+> Quiche
+> TurboRetry
+> TurboRetry-XDP
+> Ideal
+
+Figure 9: Maximum sustained attack rate. TurboRetry de-fends against attacks without packet loss until a rate of 3 Mpps, outperforming Aioquic and Quiche by 10 × and 20 ×,respectively. 
+
+to evaluate the system performance. Note that the attack rate metric is measured in kilo packets per second (kpps). Additionally, we mea-sure the host CPU load using the Million Instructions Per Second (MIPS) metric to assess the effectiveness of Retry offloading. 
+
+Baselines. We implement three variants of our system. On the BF3 DPU, we implement a slow-path-only version (TurboRetry †)and a hybrid version (TurboRetry) that leverages both the slow-path and fast-path processors to reduce data transmission latency. To isolate the impact of the retry mechanism from that of hardware acceleration, we also implement a host-based TurboRetry variant, 
+
+i.e., TurboRetry-XDP, that ports the DPU-side functionality to the server host. Specifically, the Arm agent logic is implemented using 
+
+AF_XDP , where packets are steered to user-space retry workers for token generation and validation. The DPA cache is implemented in eBPF to provide fast in-kernel filtering. We compare these three variants with the end-host protocol stacks. 
+
+## 8.2 Resilience against Handshake Floods 
+
+Under the setup described above, we evaluate TurboRetry against host-based implementations (Aioquic [ 1 ] and Quiche [ 10 ]) and TurboRetry-XDP. Since the Retry in TurboRetry is primarily of-floaded to the 16-core Arm processor, we further evaluate the speedup ratio with respect to the number of active cores. For multi-core measurements of the protocol stack, we enable SO_REUSEPORT 
+
+so that multiple HTTP/3 worker processes listen on the same UDP port. We further attach an eBPF reuseport selector that dispatches incoming packets to workers based on the DCID, ensuring that pack-ets belonging to the same connection are consistently delivered to the same worker. In addition, for each experiment, we configure IRQ affinity according to the number of active workers: the NIC receive queues are pinned to the CPU cores running the correspond-ing workers, reducing cross-core packet handoff and improving measurement stability. 
+
+Maximum sustained attack rate measurement. We measure the maximum attack rate, in Mpps (million packets per second), that each solution can sustain without incurring packet loss . Each measurement is repeated 10 times to ensure that no packet loss occurs during packet processing. 
+
+Results. As shown in Figure 9, TurboRetry outperforms the XDP-based variant (TurboRetry-XDP), Quiche, and Aioquic by 4.2×, 10 ×,and 20 ×, respectively, achieving the maximum sustained attack rate of 3 Mpps on the BlueField-3 DPU with 15 cores (1 left for the main thread). Importantly, this performance is achieved on the DPU’s embedded Arm processor cores, which operate at lower clock frequencies and provide substantially lower per-core com-pute capability than the x86 server-class CPUs used by Aioquic and Quiche. Despite this hardware disadvantage, TurboRetry is able to sustain significantly higher attack rates, highlighting the effectiveness of offloading Retry processing to the DPU. We further observe that 3 Mpps represents the maximum sustained attack rate of TurboRetry. When the attack rate exceeds this threshold, packet loss begins to occur, indicating that the system has reached its processing capacity. The scalability trend shows that TurboRetry’s maximum sustainable attack rate increases almost linearly with the number of parallel processor cores when fewer than nine cores are used. Beyond this point, the growth rate tapers off, limiting further performance gains. When the number of active cores is small (e.g.,, 
+
+≤ 9), the overhead of hardware-accelerated AES-GCM encryption is very low ( < 2𝜇𝑠 ) and accounts for only a small fraction of the total Retry processing time; thus, accelerator contention is negli-gible and the system scales nearly linearly. As more cores process packets in parallel and the aggregate packet rate increases, accesses to the shared crypto accelerator become more frequent, causing contention and slowing down the increase in sustainable attack rate. In contrast, both the host-based and TurboRetry-XDP imple-mentations do not achieve linear throughput scaling as the number of workers increases. For the host-stack baselines, SO_REUSEPORT 
+
+only improves packet distribution across workers; it does not re-move the shared bottlenecks in the host receive path. Packets still traverse the NIC driver, skb allocation, UDP socket lookup, and reuseport selection before reaching the selected worker. As the worker count increases, these shared per-packet costs, together with cache and memory-system contention, eventually dominate the execution time, causing throughput to plateau. A similar effect appears in TurboRetry-XDP. Although AF_XDP bypasses part of the conventional kernel networking stack, the retry logic is still executed on host CPU cores. Each packet still incurs costs for XDP execution, AF_XDP ring and buffer management, user-space packet processing, and two AES-GCM operations. As more retry workers are added, the host CPU execution resources, LLC capacity, memory bandwidth, and cache-coherence traffic become increasingly con-tended. Consequently, TurboRetry-XDP improves throughput only up to the point where these host-side resources become saturated, after which adding more cores brings little additional benefit. 
+
+## 8.3 Connection Setup Latency 
+
+In this experiment, we measure the connection setup latency of benign HTTP/3 clients while the server is subjected to handshake flooding attacks of varying intensities. Both benign and attack traffic are generated as described in Section 8.1. We compare TurboRetry †
+
+and TurboRetry against host-based implementations. 
+
+Connection setup latency measurement. The QUIC connec-tion setup latency refers to the duration from when the client sends its first Initial packet to when it receives the first 1-RTT packet. To measure this latency, we modified an aioquic-based HTTP/3 client to record the time 𝑇 1 when the client sends its first QUIC CCS ’26, November 15–19, 2026, The Hague, Netherlands Wu et al. 
+
+Table 3: Connection setup latency under no-attack conditions. Both TurboRetry † and TurboRetry introduce negligible con-nection setup latency overhead ( ≈ 0.2 ms).                 
+
+> Server Latency (ms) Types Baseline +TurboRetry †+TurboRetry Aioquic 31.77 32.02 (+0.25) 32.03 (+0.26) Quiche 22.96 23.18 (+0.22) 23.22 (+0.24) 0500 1000 1500 2000 2500 3000
+> Attack Rate (kpps)
+> 20
+> 25
+> 30
+> 35
+> 40
+> 45
+> 50
+> 55
+> 60
+> 65
+> Avg. Setup Latency (ms)
+> Aioquic
+> Aioquic-TurboRetry
+> Aioquic-TurboRetry
+> Quiche
+> Quiche-TurboRetry
+> Quiche-TurboRetry
+
+Figure 10: Connection setup latency under handshake flood-ing attacks. Both TurboRetry † and TurboRetry maintain low connection setup latency under increasing attack rates with minimal overhead. 
+
+Initial packet, and the time 𝑇 2 when the handshake completion event callback is triggered. The connection setup latency is then obtained by computing 𝑇 2 − 𝑇 1. For each attack rate, we repeat the experiment 10 times, reporting the average setup latency. Note that in all experiments, the server-side retry mechanism adopts the token format described in Section 5.1, and parses RSCID and ODCID from the token after decryption to synchronize connection identifiers in the QUIC stack (as described in Section 6). 
+
+Results. As shown in Table 3, both TurboRetry † (TR †) and Tur-boRetry (TR) introduce negligible connection setup overhead under no attack. Across both Aioquic and Quiche, the additional latency remains within the sub-millisecond range ( ≈0.2 ms). As shown in Figure 10, servers equipped with TurboRetry † and TurboRetry ac-celeration maintain low connection setup latency under varying attack intensities with minimal overhead. Both TurboRetry † and TurboRetry exhibit similar connection setup latency overhead be-cause the fast-path approach is primarily optimized for the data transfer stage. During the handshake, when the client receives the server’s 1-RTT packet, traffic in both cases still traverses the slow path. However, in the original Aioquic [ 1] and Quiche [ 10 ] imple-mentations, connection establishment latency grows sharply as the attack rate increases, and both become unresponsive at approxi-mately 20 kpps and 150 kpps, respectively. It is worth noting that the difference in average connection establishment latency between Aioquic-based and Quiche-based solutions arises from differences in their host-side implementations. 
+
+## 8.4 Data Transmission Latency 
+
+In this section, we measure the data transmission latency of various file sizes (e.g., 1 KB, 512 KB, 1 MB, 10 MB, and 100 MB). Following the same experimental setting in Section 8.3, we send HTTP/3 GET 
+
+requests to the server under different attack rates, and measure the data transmission latency of these requests. We then compare the performance of TurboRetry † and TurboRetry with that of the host-based implementations. 
+
+Data transmission latency measurement. The data trans-mission latency is defined by the time elapsed from connection setup to the connection closed of a GET request. In particular, we record the whole request latency ( 𝑇 1) and the connection setup latency ( 𝑇 2), and obtain the data transmission latency as 𝑇 1 −𝑇 2. For each attack rate, we compute the average data transmission latency of all requests. We use files of different sizes to emulate diverse workloads. Files smaller than 1 MB (1 KB and 512 KB) represent typical web objects, such as HTML, JavaScript, CSS, and images. Files between 1 MB and 10 MB simulate compressed documents or short high-definition video clips. A large 100 MB file is used to emulate long video transfers, enabling a deeper evaluation of the stability and effectiveness of the offloaded retry mechanism. Note that attack rates are also measured in kilo packets per second (kpps). In addition, we use the normalized transmission latency overhead to quantify the overall extra transmission latency introduced by TurboRetry. Let 𝑇 ℎ𝑜𝑠𝑡 denote the transmission latency of the host-based implementation and 𝑇 𝑇 𝑅 denote the transmission latency of TurboRetry. This metric is defined as (𝑇 𝑇 𝑅 − 𝑇 ℎ𝑜𝑠𝑡 )/ 𝑇 ℎ𝑜𝑠𝑡 .
+
+Table 4: The normalized transmission latency overhead.          
+
+> Server Normalized Transmission Latency Overhead Type TurboRetry †TurboRetry Aioquic 2.0% 0.6% Quiche 2.6% 1.1% Average 2.3% 0.85%
+
+Results. As shown in Figure 11, regardless of attack intensity, both TurboRetry † and TurboRetry maintain consistent latencies across different file sizes. Compared with host-based implementa-tions (Aioquic and Quiche), TurboRetry † and TurboRetry introduce only about 2.3% and 0.85% additional transmission latency on aver-age across various file sizes (shown in Table 4), respectively. This shows that offloading data transmission from the slow path to the fast path further reduces the additional transmission latency. Com-pared with TurboRetry †, TurboRetry leverages the on-path RISC-V processor to handle validated connection traffic, eliminating the need to steer all packets to the Arm processor (slow path) and thereby significantly reducing NIC-to-host latency. 
+
+## 8.5 Host CPU Load 
+
+Using the same experimental setup as in Section 8.1, we measure the host CPU load under varying attack intensities. TurboRetry incurs no additional CPU load during QUIC handshake floods, re-ducing host CPU utilization by over 99% compared with host-based implementations. Note that Aioquic can sustain only 8 kpps of con-current connections on a single core. In this experiment, we config-ure Aioquic’s background load as 8 kpps, while keeping Quiche’s background load at 40 kpps. TurboRetry : Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading CCS ’26, November 15–19, 2026, The Hague, Netherlands 8000     
+
+> 10000
+> 12000
+> 9119.0
+> 9035.4
+> 7679.1
+> 7610.1
+> Aioquic-TR†
+> Aioquic-TR
+> Quiche-TR†
+> Quiche-TR
+> 1K 512K 1M 10M 100M
+
+Message Size 
+
+> 0
+> 400
+> 800
+> 1200
+> 133.6
+> 175.4
+> 224.4
+> 960.2
+> 132.0
+> 173.9
+> 221.6
+> 959.4
+> 92.4
+> 152.8
+> 199.2
+> 900.7
+> 91.7
+> 150.4
+> 196.5
+> 890.6
+> Latency (ms)
+
+(a) No attack. 8000     
+
+> 10000
+> 12000
+> 9139.5
+> 9037.5
+> 7691.9
+> 7635.8
+> Aioquic-TR†
+> Aioquic-TR
+> Quiche-TR†
+> Quiche-TR
+> 1K 512K 1M 10M 100M
+
+Message Size  
+
+> 0
+> 400
+> 800
+> 1200
+> 134.8
+> 177.9
+> 225.3
+> 976.4
+> 132.8
+> 175.0
+> 221.9
+> 963.9
+> 93.1
+> 154.8
+> 200.4
+> 903.0
+> 91.8
+> 151.5
+> 197.3
+> 891.2
+> Latency (ms)
+
+(b) 1500 kpps attack. 8000     
+
+> 10000
+> 12000
+> 9151.9
+> 9089.6
+> 7721.6
+> 7669.7
+> Aioquic-TR†
+> Aioquic-TR
+> Quiche-TR†
+> Quiche-TR
+> 1K 512K 1M 10M 100M
+
+Message Size  
+
+> 0
+> 400
+> 800
+> 1200
+> 135.7
+> 178.6
+> 232.7
+> 986.9
+> 133.1
+> 175.5
+> 224.9
+> 975.0
+> 93.2
+> 155.3
+> 205.1
+> 909.6
+> 91.9
+> 153.2
+> 197.9
+> 894.0
+> Latency (ms)
+
+(c) 3 Mpps attack. 
+
+Figure 11: Transmission latency under different message sizes and attack rates. CPU load measurement. We measure CPU load using perf stat to record instructions and cycles during HTTP/3 service. With these values, we calculate MIPS (million instructions per second) to estimate CPU load. Each measurement is repeated ten times, and the results are averaged. All CPU cores are fixed at 3.4GHz for more stable results. 0 10 0 10 1 10 2 10 3
+
+Attack Rate (kpps) 
+
+> 2000
+> 3000
+> 4000
+> 5000
+> 6000
+> 7000
+> Host CPU Usage (MIPS)
+> Aioquic
+> Quiche
+> Aioquic-TurboRetry
+> Quiche-TurboRetry
+
+Figure 12: Host CPU load. TurboRetry has no host CPU over-head against QUIC handshake flooding attacks. Results. Figure 12 shows that the CPU load of both Aioquic and Quiche rises sharply with increasing attack rates, peaking at 22 kpps and 150 kpps, respectively. The difference in MIPS between Aioquic ( ≈ 5400 ) and Quiche ( ≈ 4700 ) stems from their execution efficiency. Across all measurements, Aioquic executes an average of 1.7 instructions per CPU cycle (IPC), whereas Quiche achieves 1.5 IPC. Note that TurboRetry processes all QUIC handshake flooding packets entirely on the DPU, fully shielding the server CPUs from resource exhaustion during source address validation. With Tur-boRetry enabled, both Aioquic and Quiche maintain only the CPU utilization required for serving benign background traffic under a 3 Mpps attack, corresponding to 8 kpps for Aioquic ( ≈ 5300 MIPS) and 40 kpps for Quiche ( ≈ 2500 MIPS). 
+
+## 8.6 Fail-open Mechanism 
+
+In this experiment, we evaluate the fail-open behavior of Tur-boRetry by examining the connection setup latency of benign clients when the DPU-side program becomes unavailable. Fail-open ensures that system failures do not block service availability, and that traffic can continue to be served through the host path. 
+
+Fail-open setup. To emulate a fail-stop failure, we explicitly terminate the DPU-side program at runtime while the client con-tinuously generates benign HTTP/3 requests. Throughout the ex-periment, the client issues requests at a fixed rate of 10 requests per second over a duration of 40 seconds. At 𝑡 = 20 s, we terminate the DPU program to trigger a failure. When the DPU program becomes unavailable, packets are transparently processed by the host QUIC stack by design, allowing the system to fall back to the host path without interrupting service. 0 10 20 30 40 
+
+Time (s) 
+
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> Setup Latency (ms)  Crash
+> Aioquic
+> Quiche
+
+Figure 13: Connection setup latency during a fail-open event. When the DPU-side program crashes at 𝑡 = 20 s, a brief latency spike ( ≈ 30 ms) is observed, reflecting the transition from DPU offloading to host-based processing. Results. Figure 13 shows the connection setup latency when the DPU-side program is terminated at 𝑡 = 20 s. Before the failure, TurboRetry maintains low and stable latency with DPU offloading enabled. At the moment of termination, a brief latency spike of approximately 30 ms is observed, reflecting the transition from DPU offloading to host-based processing. This spike is transient and bounded. Additionally, the latency converges to the corresponding host-only baseline and remains stable for the rest of the experiment. No service disruption or request failures are observed, confirming that TurboRetry operates in a fail-open manner by transparently falling back to the host QUIC stack upon DPU failure. 
+
+## 9 Discussion 
+
+Architectural restructuring of QUIC Retry. QFAM [ 24 ] pro-poses a retry-based defense mechanism to balance the resource usage between the attacker and the server. It embeds a crypto-graphic challenge into the retry token and requires the client to CCS ’26, November 15–19, 2026, The Hague, Netherlands Wu et al. 
+
+solve it during the handshake process. Although this approach re-quires modifications to both client and server implementations, it addresses the inherent imbalance in resource consumption between attackers and victims during QUIC handshake flooding attacks. Our system, TurboRetry, can be integrated with QFAM [ 24 ] to further enhance its mitigation effectiveness. 
+
+Extending to a protection cluster. The current evaluation of TurboRetry focuses on a single DPU-equipped server. Extending it to a protection cluster is a direction for future work. In such a deployment, a group of servers equipped with DPUs could collabora-tively mitigate handshake flooding attacks, allowing the aggregate defense capacity to scale with available host and DPU resources. The split architecture of TurboRetry makes it well-suited for this ex-tension, as mitigation logic can be scaled out without fundamental changes to the system design. 
+
+Generality and applicability of TurboRetry. While our eval-uation focuses on comparing HTTP/3 service performance across various QUIC implementations, TurboRetry can be extended to provide DDoS protection for other application-layer services built on QUIC, e.g., DNS over QUIC [ 17 ] (DoQ), gRPC over HTTP/3, and so on. This generality stems from the design of TurboRetry as a defense system operating at the QUIC protocol layer. 
+
+Portability of TurboRetry across DPU vendors. TurboRetry relies only on capabilities that are commonly available on modern DPUs, rather than vendor-specific primitives. The offloaded logic mainly consists of packet parsing, token generation, and token validation based on symmetric cryptography. Therefore, any DPU equipped with an AES-GCM acceleration engine can implement this functionality. The DPA cache of TurboRetry further relies on on-path packet steering and parsing capabilities, which allow the DPU to identify QUIC packets, extract the relevant header fields, and direct packets to the corresponding processing path. Such on-path steering support is widely provided by commercial DPUs for functions such as load balancing and security filtering. 
+
+Deployment scenario. TurboRetry targets cloud servers where QUIC services run with DPU-assisted infrastructure offloading. Although host CPUs provide cryptographic instructions such as AES-NI, CPU-based Retry is not free: normal QUIC processing al-ready consumes host cryptographic resources, and Retry further adds token generation, integrity tag computation, and token veri-fication under attack traffic. This extra cryptographic data-plane workload can make host-based Retry a bottleneck under large-scale handshake floods. Moreover, in cloud environments, host CPU cores are tenant-facing resources. Recent SmartNIC/DPU systems simi-larly motivate offloading by preserving server resources for paying customers [ 18 ], saving host CPU cycles for repetitive data-plane I/O [ 32 ], and avoiding contention between host-side infrastructure processing and tenant VMs [ 37 ]. Therefore, TurboRetry adopts a split design that offloads stateless Retry processing to the DPU-side AES-GCM pipeline and retains stateful connection management in the host QUIC stack. 
+
+## 10 Related Work 
+
+Defense against QUIC handshake floods. Prior work can be clas-sified into software-based and hardware-based schemes. Software-based solutions leverage sophisticated algorithms to detect and mitigate QUIC handshake floods. QUICShield [ 60 ] detects mali-cious traffic with Bloom filters and utilizes the general similar-ity ratio CUSUM algorithm [ 64 ] to adapt to evolving attack pat-terns. QUICwand [ 28 ] further leverages dynamic counting Bloom filters [ 45 ] and a Bayesian optimizer [ 19 , 30 , 62 ] for automatic parameter tuning to reduce false positives. QUICPro [ 27 ] applies re-inforcement learning for detection. A hardware-based solution [ 11 ]uses Intel QuickAssist Technology [ 21 ] to drop QUIC Initial packets with invalid integrity tags, but remains vulnerable to replay attacks. 
+
+DPU-based TLS offloading. Previous studies [ 31 , 33 , 43 , 49 ]have leveraged DPUs to offload cryptographic algorithms, thereby reducing the CPU burden on the host. However, these works pri-marily focus on enhancing the performance of the TCP stack or TLS over TCP, with limited exploration of QUIC offloading. 
+
+In-network DDoS defense. Previous studies [ 2 , 39 , 63 , 65 , 67 ,68 ] have employed programmable switches to mitigate a wide spec-trum of DDoS attacks beyond QUIC handshake flooding. These approaches are complementary to TurboRetry and can be inte-grated to address other types of DDoS flooding attacks, e.g., SYN flooding, UDP flooding, etc. , to further protect the server. 
+
+## 11 Conclusion 
+
+The modern transport protocol QUIC is designed to enhance net-work performance and security, but both QUIC and its built-in 
+
+Retry defense remain vulnerable to handshake flooding attacks. We design and implement a defense system, TurboRetry, with a split design that offloads the QUIC Retry mechanism onto off-the-shelf DPUs to mitigate large-scale QUIC handshake floods with high performance. Through extensive experiments and analysis, we show that TurboRetry outperforms the host-side implementation by a wide margin, delivering a 10–20 × throughput improvement while only introducing negligible additional latency. 
+
+## Acknowledgments 
+
+We want to thank our anonymous reviewers for their valuable comments. This work is supported by the National Natural Science Foundation of China (Grant No. 62472404). 
+
+## References                
+
+> [1] aiortc orgnization. 2025. aioquic. https://github.com/aiortc/aioquic. [2] Albert Gran Alcoz, Martin Strohmeier, Vincent Lenders, and Laurent Vanbever. 2022. Aggregate-based congestion control for pulse-wave DDoS defense. In
+> Proceedings of the ACM SIGCOMM 2022 Conference (Amsterdam, Netherlands)
+> (SIGCOMM ’22) . Association for Computing Machinery, New York, NY, USA, 693–706. doi:10.1145/3544216.3544263 [3] Anonymous authors. 2025. TurboRetry Artifact. https://anonymous.4open. science/r/TurboRetry-Artifact-F34B. [4] Manos Antonakakis, Tim April, Michael Bailey, Matt Bernhard, Elie Bursztein, Jaime Cochran, Zakir Durumeric, J. Alex Halderman, Luca Invernizzi, Michalis Kallitsis, Deepak Kumar, Chaz Lever, Zane Ma, Joshua Mason, Damian Menscher, Chad Seaman, Nick Sullivan, Kurt Thomas, and Yi Zhou. 2017. Understanding the Mirai Botnet. In 26th USENIX Security Symposium (USENIX Security 17) . USENIX Association, Vancouver, BC, 1093–1110. [5] Mike Bishop. 2022. HTTP/3. RFC 9114. doi:10.17487/RFC9114 [6] Burton H Bloom. 1970. Space/time trade-offs in hash coding with allowable errors. Commun. ACM 13, 7 (1970), 422–426. [7] Efstratios Chatzoglou, Vasileios Kouliaridis, Georgios Karopoulos, and Georgios Kambourakis. 2022. Revisiting QUIC attacks: a comprehensive review on QUIC security and a hands-on study. Int. J. Inf. Secur. 22, 2 (Dec. 2022), 347–365. [8] Xiang Chen, Xi Sun, Wenbin Zhang, Xin Yao, Zizheng Wang, Hongyan Liu, Qun Huang, Gaoning Pan, Xuan Liu, Haifeng Zhou, and Chunming Wu. 2024. Ac-celerating Sketch-based End-Host Traffic Measurement with Automatic DPU
+
+TurboRetry : Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading CCS ’26, November 15–19, 2026, The Hague, Netherlands 
+
+Offloading. In IEEE INFOCOM 2024 - IEEE Conference on Computer Communica-tions . 171–180. doi:10.1109/INFOCOM52122.2024.10621293 [9] Xuzheng Chen, Jie Zhang, Ting Fu, Yifan Shen, Shu Ma, Kun Qian, Lingjun Zhu, Chao Shi, Yin Zhang, Ming Liu, and Zeke Wang. 2024. Demystifying Datap-ath Accelerator Enhanced Off-path SmartNIC. In 2024 IEEE 32nd International Conference on Network Protocols (ICNP) . 1–12. [10] Cloudflare, Inc. 2025. quiche. https://github.com/cloudflare/quiche. [11] Bo Cui, Zixuan Li, and Fei Yu. 2022. Manipulated Client Initial Attack and Defense of QUIC. In 2022 IEEE 24th Int Conf on High Performance Computing & Communications; 8th Int Conf on Data Science & Systems; 20th Int Conf on Smart City; 8th Int Conf on Dependability in Sensor, Cloud & Big Data Systems & Application (HPCC/DSS/SmartCity/DependSys) . 611–618. [12] Martin Duke and Nick Banks. 2022. QUIC Retry Offload . Internet-Draft draft-ietf-quic-retry-offload-00. Internet Engineering Task Force. Work in Progress. https://datatracker.ietf.org/doc/draft-ietf-quic-retry-offload/00/ [13] Morris Dworkin. 2007. Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC. https://tsapps.nist.gov/publication/ get_pdf.cfm?pub_id=51288 [14] Linux Foundation. 2015. Data Plane Development Kit (DPDK). https://dpdk.org [15] Konrad Yuri Gbur and Florian Tschorsch. 2023. QUICforge: Client-side Request Forgery in QUIC. In 30th Annual Network and Distributed System Security Sympo-sium (NDSS 2023), San Diego, USA . The Internet Society. [16] Michio Honda, Yoshifumi Nishida, Costin Raiciu, Adam Greenhalgh, Mark Hand-ley, and Hideyuki Tokuda. 2011. Is it still possible to extend TCP?. In Proceedings of the 2011 ACM SIGCOMM Conference on Internet Measurement Conference (IMC ’11) . Association for Computing Machinery, New York, NY, USA, 181–194. [17] Christian Huitema, Sara Dickinson, and Allison Mankin. 2022. DNS over Dedi-cated QUIC Connections. RFC 9250. doi:10.17487/RFC9250 [18] Jack Tigar Humphries, Neel Natu, Kostis Kaffes, Stanko Novaković, Paul Turner, Henry M Levy, David Culler, and Christos Kozyrakis. 2025. Wave: Offloading resource management to SmartNIC cores. In Proceedings of the 30th ACM Inter-national Conference on Architectural Support for Programming Languages and Operating Systems, Volume 3 . 264–281. [19] MohammadNoor Injadat, Fadi Salo, Ali Bou Nassif, Aleksander Essex, and Ab-dallah Shami. 2018. Bayesian Optimization with Machine Learning Algorithms Towards Anomaly Detection. In 2018 IEEE Global Communications Conference (GLOBECOM) . 1–6. doi:10.1109/GLOCOM.2018.8647714 [20] Intel. 2025. Intel Advanced Encryption Standard Instructions (AES-NI). https://www.intel.com/content/www/us/en/developer/articles/technical/advanced-encryption-standard-instructions-aes-ni.html. [21] Intel. 2025. What Is Intel QuickAssist Technology (Intel QAT). https://www.intel.com/content/www/us/en/products/docs/accelerator-engines/what-is-intel-qat.html. [22] Tetsu Iwata, Keisuke Ohashi, and Kazuhiko Minematsu. 2012. Breaking and Repairing GCM Security Proofs. In Advances in Cryptology – CRYPTO 2012 ,Reihaneh Safavi-Naini and Ran Canetti (Eds.). Springer Berlin Heidelberg, Berlin, Heidelberg, 31–49. [23] Jana Iyengar and Martin Thomson. 2021. QUIC: A UDP-Based Multiplexed and Secure Transport. RFC 9000. doi:10.17487/RFC9000 [24] Abdollah Jabbari, Y A Joarder, Benjamin Teyssier, and Carol Fung. 2024. QFAM: Mitigating QUIC Handshake Flooding Attacks Through Crypto Challenges. arXiv:2412.08936 [cs.CR] https://arxiv.org/abs/2412.08936 [25] Y A Joarder and Carol Fung. 2022. A Survey on the Security Issues of QUIC. In 2022 6th Cyber Security in Networking Conference (CSNet) . 1–8. doi:10.1109/ CSNet56116.2022.9955622 [26] Y A Joarder and Carol Fung. 2024. Exploring QUIC Security and Privacy: A Comprehensive Survey on QUIC Security and Privacy Vulnerabilities, Threats, Attacks, and Future Research Directions. IEEE Transactions on Network and Service Management 21, 6 (2024), 6953–6973. doi:10.1109/TNSM.2024.3457858 [27] Y A Joarder and Carol Fung. 2024. QUICPro: Integrating Deep Reinforcement Learning to Defend against QUIC Handshake Flooding Attacks. In Proceedings of the 2024 Applied Networking Research Workshop (ANRW ’24) . Association for Computing Machinery, New York, NY, USA, 94–96. [28] Y A Joarder and Carol Fung. 2024. QUICwand: A Machine Learning Optimization-Based Hybrid Defense Approach Against QUIC Flooding Attacks. In 2024 20th In-ternational Conference on the Design of Reliable Communication Networks (DRCN) .92–99. doi:10.1109/DRCN60692.2024.10539170 [29] Rick Johnston. 2023. Improving Data Center Energy Efficiency and Scalabil-ity. https://www.device42.com/blog/2023/12/14/improving-data-center-energy-efficiency-and-scalability [30] Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu. 2017. LightGBM: a highly efficient gradient boosting decision tree. In Proceedings of the 31st International Conference on Neural Information Processing Systems (Long Beach, California, USA) (NIPS’17) . Curran Associates Inc., Red Hook, NY, USA, 3149–3157. [31] Duckwoo Kim, SeungEon Lee, and KyoungSoo Park. 2020. A Case for SmartNIC-accelerated Private Communication. In Proceedings of the 4th Asia-Pacific Work-shop on Networking (Seoul, Republic of Korea) (APNet ’20) . Association for Com-puting Machinery, New York, NY, USA, 30–35. doi:10.1145/3411029.3411034 [32] Taehyun Kim, Deondre Martin Ng, Junzhi Gong, Youngjin Kwon, Minlan Yu, and KyoungSoo Park. 2023. Rearchitecting the {TCP } stack for {I/O-Offloaded }
+
+content delivery. In 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) . 275–292. [33] Taehyun Kim, Deondre Martin Ng, Junzhi Gong, Youngjin Kwon, Minlan Yu, and KyoungSoo Park. 2023. Rearchitecting the TCP Stack for I/O-Offloaded Content Delivery. In 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) . USENIX Association, Boston, MA, 275–292. https: //www.usenix.org/conference/nsdi23/presentation/kim-taehyun [34] Hugo Krawczyk, Mihir Bellare, and Ran Canetti. 1997. HMAC: Keyed-Hashing for Message Authentication. RFC 2104. doi:10.17487/RFC2104 [35] Hugo Krawczyk and Pasi Eronen. 2010. HMAC-based Extract-and-Expand Key Derivation Function (HKDF). RFC 5869. doi:10.17487/RFC5869 [36] Adam Langley, Alistair Riddoch, Alyssa Wilk, Antonio Vicente, Charles Krasic, Dan Zhang, Fan Yang, Fedor Kouranov, Ian Swett, Janardhan Iyengar, Jeff Bai-ley, Jeremy Dorfman, Jim Roskind, Joanna Kulik, Patrik Westin, Raman Tenneti, Robbie Shade, Ryan Hamilton, Victor Vasiliev, Wan-Teh Chang, and Zhongyi Shi. 2017. The QUIC Transport Protocol: Design and Internet-Scale Deployment. In 
+
+Proceedings of the Conference of the ACM Special Interest Group on Data Commu-nication (SIGCOMM ’17) . Association for Computing Machinery, New York, NY, USA, 183–196. [37] Xing Li, Xiaochong Jiang, Ye Yang, Lilong Chen, Yi Wang, Chao Wang, Chao Xu, Yilong Lv, Bowen Yang, Taotao Wu, et al . 2024. Triton: A flexible hard-ware offloading architecture for accelerating apsara vswitch in alibaba cloud. In 
+
+Proceedings of the ACM SIGCOMM 2024 Conference . 750–763. [38] Yuke Li, Arjun Kashyap, Weicong Chen, Yanfei Guo, and Xiaoyi Lu. 2024. Acceler-ating Lossy and Lossless Compression on Emerging BlueField DPU Architectures . In 2024 IEEE International Parallel and Distributed Processing Symposium (IPDPS) .IEEE Computer Society, Los Alamitos, CA, USA, 373–385. [39] Zaoxing Liu, Hun Namkung, Georgios Nikolaidis, Jeongkeun Lee, Changhoon Kim, Xin Jin, Vladimir Braverman, Minlan Yu, and Vyas Sekar. 2021. Jaqen: A High-Performance Switch-Native Approach for Detecting and Mitigating Volumetric DDoS Attacks with Programmable Switches. In 30th USENIX Se-curity Symposium (USENIX Security 21) . USENIX Association, 3829–3846. https: //www.usenix.org/conference/usenixsecurity21/presentation/liu-zaoxing [40] Robert Lychev, Samuel Jero, Alexandra Boldyreva, and Cristina Nita-Rotaru. 2015. How Secure and Quick is QUIC? Provable Security and Performance Analyses. In 2015 IEEE Symposium on Security and Privacy . 214–231. doi:10.1109/SP.2015.21 [41] Josh Mahan. 2024. Data Processing Unit (DPU): Meaning and Role in Modern Computing. https://cc-techgroup.com/dpu/. [42] David McGrew. 2008. An Interface and Algorithms for Authenticated Encryption. RFC 5116. doi:10.17487/RFC5116 [43] Hailong Nan, Zhe Zhou, and Min Yang. 2025. Plug & Offload: Trans-parently Offloading TCP Stack onto Off-path SmartNIC with PnO-TCP. arXiv:2503.22930 [cs.DC] https://arxiv.org/abs/2503.22930 [44] Marcin Nawrocki, Raphael Hiesgen, Thomas C. Schmidt, and Matthias Wählisch. 2021. QUICsand: quantifying QUIC reconnaissance scans and DoS flooding events. In Proceedings of the 21st ACM Internet Measurement Conference (IMC ’21) .Association for Computing Machinery, New York, NY, USA, 283–291. [45] Sabuzima Nayak and Ripon Patgiri. 2021. countBF: A General-purpose High Accuracy and Space Efficient Counting Bloom Filter. In 2021 17th International Conference on Network and Service Management (CNSM) . 355–359. [46] NIST National Vulnerability Database and GitHub, Inc. 2024. CVE-2024-53259. https://nvd.nist.gov/vuln/detail/CVE-2024-53259. [47] NIST National Vulnerability Database and GitHub, Inc. 2025. CVE-2025-29785. https://nvd.nist.gov/vuln/detail/CVE-2025-29785. [48] NIST National Vulnerability Database and GitHub, Inc. 2025. CVE-2025-29908. https://nvd.nist.gov/vuln/detail/CVE-2025-29908. [49] Felipe A. S. Novais and Fábio L. Verdi. 2024. Unlocking Security to the Board: An Evaluation of SmartNIC-driven TLS Acceleration with kTLS. In NOMS 2024-2024 IEEE Network Operations and Management Symposium . 1–9. doi:10.1109/ NOMS59830.2024.10575053 [50] NVIDIA Inc. 2024. DOCA Documentation v2.7.0. https://docs.nvidia.com/doca/ archive/2-7-0/index.html. [51] NVIDIA Inc. 2024. NVIDIA BLUEFIELD-3 DPU. https://www.nvidia.com/ content/dam/en-zz/Solutions/Data-Center/documents/datasheet-nvidia-bluefield-3-dpu.pdf. [52] NVIDIA Inc. 2025. DPA Subsystem. https://docs.nvidia.com/doca/sdk/dpa+ subsystem/index.html. [53] quic-go orgnization. 2025. quic-go. https://github.com/quic-go/quic-go. [54] QUIC Working Group. 2025. QUIC Working Group - Implementations and tools. https://github.com/quicwg/quicwg.github.io/blob/main/implementations.md. [55] Eric Rescorla. 2018. The Transport Layer Security (TLS) Protocol Version 1.3. RFC 8446. doi:10.17487/RFC8446 [56] Eric Rescorla and Tim Dierks. 2008. The Transport Layer Security (TLS) Protocol Version 1.2. RFC 5246. doi:10.17487/RFC5246 CCS ’26, November 15–19, 2026, The Hague, Netherlands Wu et al. 
+
+[57] Daniel Robinson. 2021. Data processing units accelerate infrastructure perfor-mance. https://www.techtarget.com/searchdatacenter/feature/Data-processing-units-accelerate-infrastructure-performance [58] Joseph A. Salowey, David McGrew, and Abhijit Choudhury. 2008. AES Galois Counter Mode (GCM) Cipher Suites for TLS. RFC 5288. doi:10.17487/RFC5288 [59] Jayasree Sengupta, Debasmita Dey, Simone Ferlin-Reiter, Nirnay Ghosh, and Vaibhav Bajpai. 2025. How Resilient is QUIC to Security and Privacy Attacks? arXiv:2401.06657 [cs.CR] https://arxiv.org/abs/2401.06657 [60] Benjamin Teyssier, Y A Joarder, and Carol Fung. 2023. QUICShield: A Rapid Detec-tion Mechanism Against QUIC-Flooding Attacks. In 2023 IEEE Virtual Conference on Communications (VCC) . 43–48. doi:10.1109/VCC60689.2023.10474735 [61] Martin Thomson and Sean Turner. 2021. Using TLS to Secure QUIC. RFC 9001. doi:10.17487/RFC9001 [62] Jia Wu, Xiu-Yun Chen, Hao Zhang, Li-Dong Xiong, Hang Lei, and Si-Hao Deng. 2019. Hyperparameter Optimization for Machine Learning Models Based on Bayesian Optimizationb. Journal of Electronic Science and Technology 17, 1 (2019), 26–40. doi:10.11989/JEST.1674-862X.80904120 [63] Wenhao Wu, Zhenyu Li, Xilai Liu, Zhaohua Wang, Heng Pan, Guangxing Zhang, and Gaogang Xie. 2025. Lemon: Network-Wide DDoS Detection with Routing-Oblivious Per-Flow Measurement. In 34th USENIX Security Symposium (USENIX Security 25) . USENIX Association. [64] Liyan Xie, Shaofeng Zou, Yao Xie, and Venugopal V. Veeravalli. 2021. Sequential (Quickest) Change Detection: Classical Results and New Directions. IEEE Journal on Selected Areas in Information Theory 2, 2 (2021), 494–514. doi:10.1109/JSAIT. 2021.3072962 [65] Jiarong Xing, Wenqing Wu, and Ang Chen. 2021. Ripple: A Programmable, Decentralized Link-Flooding Defense Against Adaptive Adversaries. In 30th USENIX Security Symposium (USENIX Security 21) . USENIX Association, 3865– 3881. https://www.usenix.org/conference/usenixsecurity21/presentation/xing. https://www.usenix.org/conference/usenixsecurity21/presentation/xing [66] Xiangrui Yang, Lars Eggert, Jörg Ott, Steve Uhlig, Zhigang Sun, and Gianni Antichi. 2020. Making QUIC Quicker With NIC Offload. In Proceedings of the Workshop on the Evolution, Performance, and Interoperability of QUIC (Virtual Event, USA) (EPIQ ’20) . Association for Computing Machinery, New York, NY, USA, 21–27. doi:10.1145/3405796.3405827 [67] Sophia Yoo, Xiaoqi Chen, and Jennifer Rexford. 2024. SmartCookie: Blocking Large-Scale SYN Floods with a Split-Proxy Defense on Programmable Data Planes. In 33rd USENIX Security Symposium (USENIX Security 24) . USENIX Association, Philadelphia, PA, 217–234. https://www.usenix.org/conference/ usenixsecurity24/presentation/yoo [68] Menghao Zhang, Guanyu Li, Shicheng Wang, Chang Liu, Ang Chen, Hongxin Hu, Guofei Gu, Qi Li, Mingwei Xu, and Jianping Wu. 2020. Poseidon: Mitigating Volumetric DDoS Attacks with Programmable Switches. In 27th Annual Network and Distributed System Security Symposium, NDSS 2020, San Diego, California, USA, February 23-26, 2020 . The Internet Society. doi:10.14722/ndss.2020.24007 [69] Zhipeng Zhao, Hugo Sadok, Nirav Atre, James C. Hoe, Vyas Sekar, and Justine Sherry. 2020. Achieving 100Gbps Intrusion Prevention on a Single Server. In 14th USENIX Symposium on Operating Systems Design and Implementation (OSDI 20) .USENIX Association, 1083–1100. 
+
+## Ethical Considerations 
+
+Our study focuses on accelerating and securing the QUIC Retry mechanism by offloading critical operations to a data processing unit (DPU). We conduct a stakeholder-based ethics analysis to identify potential benefits and risks. The key stakeholders include: 
+
+• End-users of QUIC-based services. They can benefit from stronger protection against handshake flooding attacks and experience more robust service. 
+
+• Cloud service providers and network operators . They gain improved scalability and security efficiency for QUIC-based services, but must carefully manage deployment com-plexity and hardware costs. 
+
+• The broader research and security community . They may benefit from the split design insights and open discus-sion of offloading techniques, but also face the risk of ad-versaries adapting their attack strategies based on disclosed details. 
+
+• Standards organizations. They may incorporate insights from our work into protocol evolution, but must balance interoperability with deployment feasibility. To mitigate potential negative outcomes, we ensure that all ex-periments were conducted in our controlled testbeds without real-world damage. Overall, our research does not raise additional ethical concerns beyond the controlled testbed setting. 
+
+## A Open Science 
+
+We adhere to the open science policy and make the prototype of Tur-boRetry publicly available. The anonymized artifact repository is hosted at the following website: https://anonymous.4open.science/ r/TurboRetry-Artifact-F34B. The repository includes the following key components: 
+
+• TurboRetry Source Code: The complete implementation of the proposed DPU-based offloading prototype. 
+
+• Host-side Integration: Patches for standard QUIC imple-mentations ( aioquic and quiche ) enabling the cooperative 
+
+Retry mechanism. 
+
+• Attack Tool: A high-performance traffic generator capable of synthesizing large-scale QUIC handshake floods. 
+
+• Client Tool: Scripts and tools for generating legitimate background HTTP/3 traffic. 
+
+• Documentation: Guides written in Markdown, namely 
+
+README.md files, for compiling and running the artifact. 
+
+## B Token Formats and Lifetimes of Existing QUIC implementations 
+
+Table 5 summarizes our survey of Retry-token handling in the open-source QUIC implementations listed by the QUIC working group [ 54 ]. We examine the token format, protection mechanism, and lifetime used by each implementation. The results show that Retry-token handling is implementation-specific: different imple-mentations encode different fields and adopt different expiration policies. At the same time, most implementations protect tokens cryptographically and use them to carry address-validation state. TurboRetry : Mitigating Large-Scale QUIC Handshake Floods with Off-the-Shelf DPU Offloading CCS ’26, November 15–19, 2026, The Hague, Netherlands 
+
+Table 5: Token encryption, formats, binding methods, and lifetimes in existing QUIC implementations 
+
+Implementation Encryption Algorithm Token format and major fields AAD binding information (AES-GCM specific) Lifetime and implementation characteristics 
+
+aioquic RSA Encrypted(Client IP || ODCID || RSCID) Implicitly protected by the RSA-encrypted payload, with-out AAD. Server-maintained RSA key; asym-metric protection of token payload. Haskwell quic AES-GCM-256 Masked Header(10B) || Encrypted(content) || Auth Tag . The content includes QUIC Version || Token_LifeTime || Timestamp || DCID || SCID || ODCID .Empty AAD. Token includes QUIC version, token lifetime, timestamp, and connection IDs. Linuxquic AES-GCM-128 AAD(Flag || Client IP) || Encrypted(Timestamp || ODCID) || Auth Tag . The flag distinguishes regular tokens from retry tokens. 
+
+Flag || Client IP Retry token: 3 s; NEW_TOKEN: 10 s; binding to token usage and client IP. HAProxy AES-GCM-128 Flag(1B) || Encrypted(ODCIDL || ODCID || Timestamp(4B)) || Auth Tag || Salt . Salt is a plaintext field used with the server key to derive the AES key and nonce. 
+
+QUIC Version || Client IP || Client Port || DCID 
+
+Retry token: 10 s; NEW_TOKEN: 7 days; binding to version, client ad-dress, port, and DCID. lsquic AES-GCM-128 Nonce(12B) || Encrypted(content) || Auth Tag(16B) .The content includes TokenVersion || Timestamp || IPPROTO || Client IP || Client Port || ODCID . IP-PROTO distinguishes IPv4 from IPv6. 
+
+DCID Retry token: 600 s; binding to DCID. MsQuic AES-GCM-128/256 
+
+AAD(Flag(1b) || Timestamp(63b)) || Encrypted(Client IP || ODCIDL || ODCID) || Auth Tag(16B) . The flag indicates whether the token is a NEW_TOKEN. 
+
+Flag || Timestamp Key rotation: 30 s; token lifetime: 60 s; authenticated timestamp in AAD. mvfst AES-GCM-128 Nonce(12B) || Encrypted(Timestamp)(8B) || Auth Tag(16B) “RetryToken" || ODCID || Client IP 
+
+Retry token: 5 min; AAD-level bind-ing to original DCID and client IP. quic-go AES-GCM-256 Nonce(32B) || Encrypted(ASN.1-encoded content) || Auth Tag(16B) . The encoded content includes IsRetryToken || Client IP || Timestamp || ODCID || RSCID .Empty AAD. No AAD binding; prefix-based client-IP encoding for IP/string distinction. quinn AES-GCM-256 Encrypted(content) || Auth Tag(16B) || Nonce(16B) .The content includes Type(1B) || IPPROTO || Client IP || Client Port || ODCIDL || ODCID || Timestamp(8B) .Type 0x00 denotes Retry; IPPROTO values 0 and 1 denote IPv4 and IPv6, respectively. Empty AAD. Retry token: 15 s; NEW_TOKEN: 14 days; binding fields carried in en-crypted token content. neqo AES-GCM-128 Header || Encrypted(content) || Auth Tag . The header includes Identifier(5B) || Version(1B) || KeyID || Salt(16B) . Identifier distinguishes Retry from NEW_TOKEN. The encrypted content includes Expiration || ODCID .
+
+Identifier || IPPROTO || Client IP || Client Port 
+
+Retry token: 5 s; NEW_TOKEN: 24 h; binding to token type, client address, and client port. ngtcp2 AES-GCM-128 Magic(1B) || Encrypted(content) || Auth Tag(16B) || Salt(16B) . Magic is 0xB7 . The content is Client IP || ODCIDL || ODCID || Timestamp(8B) .
+
+Version(4B) || RSCID Binding to QUIC version and RSCID; fixed lifetime not exposed in this ta-ble. picoquic AES-GCM-128 RandomSequence(8B) || Encrypted(content) || Auth Tag . The most significant bit of RandomSequence is a flag, and the remaining 63 bits are random. The flag has the same meaning as in neqo. The content includes Expire Time(8B) || ODCID || RSCID || Initial PN || Zero Padding .
+
+Client IP Retry token: 2 min; NEW_TOKEN: 24 h; binding to client IP. quicly AES-GCM-128 Type(1B) || IV || Encrypted(content) || Auth Tag .Type has the same meaning as the flag in picoquic. The content includes Timestamp(8B) || Client IP || Client Port || ODCID || SCID || RSCID || App Data . App Data is optional application-defined data. Optional AAD, typically Type || IV .Retry token: 30 s; NEW_TOKEN: 10 min; optional AAD with token type and IV. xquic AES-GCM-128 Random IV(12B) || Flag(1B) || Encrypted(Client IP || Expire Time) || Auth Tag(16B) . The upper 6 bits of Flag indicate the IP type, where 0 denotes IPv4 and 1 denotes IPv6; the lower 2 bits indicate the key-rotation version. No AAD. Retry token: 5 s; NEW_TOKEN: 7 days; no AAD binding; IP type and key version encoded in flag. Cloudflare Quiche Application-defined; examples use no protection or HMAC-SHA256 The quiche-server.rs example uses "quiche"(6B) || Client IP || ODCID , without encryption or cryptographic au-thentication. The tokio-quiche example uses HMAC-SHA256 Tag(32B) || Client IP || Original DCID .Application-defined. 
+
+tokio-quiche uses HMAC-SHA256 to authenticate the client address and ODCID. Application-defined token handling; examples from unprotected tokens to HMAC-authenticated tokens. Google Quiche Application-defined The NEW_TOKEN format is Prefix(0x00) || Nonce(12B) || Encrypted(content) || Auth Tag , where the content in-cludes Client IP || Timestamp || Optional Parameters .Application-defined. NEW_TOKEN: 86400 s; application-side Retry token generation; AES-256-GCM protection for NEW_TOKEN. kwik None Random Token(37B) . The server generates a 37-byte random token using SecureRandom .No encryption, no AAD field. No cryptographic binding; server-side token storage and comparison.

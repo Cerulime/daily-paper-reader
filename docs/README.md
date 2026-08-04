@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-03</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-04</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 8 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 14 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>4</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>10</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-03 21:50:20 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-04 21:17:18 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精读8篇论文，聚焦LLM Agent安全，其中《Isolated but Exposed》揭示基于持久性的记忆提取攻击，评分8.0最值得关注。速读方向涵盖硬件木马（TroPUF）与联邦学习隐私防御（TriShield），另见C转Rust的智能体翻译研究。建议普通读者优先了解Agent记忆泄露风险，并关注硬件与联邦学习中的隐蔽攻击面。</p>
+<p>今日共分析14篇论文，精读4篇、速读10篇，聚焦安全与代码分析前沿。最值得关注的是两篇9分精读：《Exposed by Design》揭示互联网MCP服务器动态安全风险，《Vulnerability Detection in AArch64 Machine Code》用数字孪生检测ARM64机器码漏洞。建议普通读者优先关注MCP服务器暴露面问题，并留意数字孪生在二进制安全分析中的落地应用。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">1 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Isolated but Exposed: Persistence-Based Memory Extraction Attack on LLM Agents">Isolated but Exposed: Persistence-Based Memory Extraction Attack on LLM Agents</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Exposed by Design: A Dynamic Security Assessment of Internet-Facing MCP Servers at Scale">Exposed by Design: A Dynamic Security Assessment of Internet-Facing MCP Servers at Scale</span></li><li><span class="dpr-home-dashboard-paper-title" title="Vulnerability Detection in AArch64 Machine Code Using a Digital Twin">Vulnerability Detection in AArch64 Machine Code Using a Digital Twin</span></li><li><span class="dpr-home-dashboard-paper-title" title="EntailLLM: Verifying LLM-Generated Vulnerability Discovery Paths with Domain Knowledge via Logic Programming">EntailLLM: Verifying LLM-Generated Vulnerability Discovery Paths with Domain Knowledge via Logic Programming</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">7 篇</strong>
+    <strong class="dpr-home-dashboard-count">10 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions">TroPUF: Evaluating Hardware Trojan Insertion in Delay-Based Physical Unclonable Functions</span></li><li><span class="dpr-home-dashboard-paper-title" title="TriShield: Zero-Utility-Loss Defense Against Privacy Backdoors in Federated Language Model Fine-Tuning via Orthogonal Gradient Projection and Optimizer State Entanglement">TriShield: Zero-Utility-Loss Defense Against Privacy Backdoors in Federated Language Model Fine-Tuning via Orthogonal Gradient Projection and Optimizer State Entanglement</span></li><li><span class="dpr-home-dashboard-paper-title" title="From C to Idiomatic Rust: A Ship-of-Theseus Agentic Translation">From C to Idiomatic Rust: A Ship-of-Theseus Agentic Translation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation">CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation</span></li><li><span class="dpr-home-dashboard-paper-title" title="From C to Idiomatic Rust: A Ship-of-Theseus Agentic Translation">From C to Idiomatic Rust: A Ship-of-Theseus Agentic Translation</span></li><li><span class="dpr-home-dashboard-paper-title" title="CWEEP: A Lexical Static Analysis Framework for CWE Early Prevention">CWEEP: A Lexical Static Analysis Framework for CWE Early Prevention</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>10</strong></span></div>
 </section>
 </div>
 
