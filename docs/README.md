@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-04</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-07</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 14 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 13 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>4</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>10</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>6</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-04 21:17:18 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-07 02:18:31 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共分析14篇论文，精读4篇、速读10篇，聚焦安全与代码分析前沿。最值得关注的是两篇9分精读：《Exposed by Design》揭示互联网MCP服务器动态安全风险，《Vulnerability Detection in AArch64 Machine Code》用数字孪生检测ARM64机器码漏洞。建议普通读者优先关注MCP服务器暴露面问题，并留意数字孪生在二进制安全分析中的落地应用。</p>
+<p>今日精读6篇、速读7篇，共梳理13篇安全方向论文；最值得关注AMD SEV-SNP机密计算综述与基于因果上下文的智能体漏洞检测（CLEAR）。建议普通读者优先精读这两篇，再浏览恶意代码检测与大模型辅助漏洞验证等速读文章。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">4 篇</strong>
+    <strong class="dpr-home-dashboard-count">6 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Exposed by Design: A Dynamic Security Assessment of Internet-Facing MCP Servers at Scale">Exposed by Design: A Dynamic Security Assessment of Internet-Facing MCP Servers at Scale</span></li><li><span class="dpr-home-dashboard-paper-title" title="Vulnerability Detection in AArch64 Machine Code Using a Digital Twin">Vulnerability Detection in AArch64 Machine Code Using a Digital Twin</span></li><li><span class="dpr-home-dashboard-paper-title" title="EntailLLM: Verifying LLM-Generated Vulnerability Discovery Paths with Domain Knowledge via Logic Programming">EntailLLM: Verifying LLM-Generated Vulnerability Discovery Paths with Domain Knowledge via Logic Programming</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="AMD SEV-SNP: A Confidential Computing Primer">AMD SEV-SNP: A Confidential Computing Primer</span></li><li><span class="dpr-home-dashboard-paper-title" title="CLEAR: Causal Context-Based Agentic Reasoning for Vulnerability Detection">CLEAR: Causal Context-Based Agentic Reasoning for Vulnerability Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="NotDec: WebAssembly Decompilation With Inter-Procedural Type Recovery">NotDec: WebAssembly Decompilation With Inter-Procedural Type Recovery</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">10 篇</strong>
+    <strong class="dpr-home-dashboard-count">7 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation">CHARGE: Leveraging CWE Hierarchies for Hardware Security SystemVerilog Assertion Generation</span></li><li><span class="dpr-home-dashboard-paper-title" title="From C to Idiomatic Rust: A Ship-of-Theseus Agentic Translation">From C to Idiomatic Rust: A Ship-of-Theseus Agentic Translation</span></li><li><span class="dpr-home-dashboard-paper-title" title="CWEEP: A Lexical Static Analysis Framework for CWE Early Prevention">CWEEP: A Lexical Static Analysis Framework for CWE Early Prevention</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="MalTotal: Cost-Effective and Language-Agnostic Malicious Code Poisoning Detection for Millions of Repositories">MalTotal: Cost-Effective and Language-Agnostic Malicious Code Poisoning Detection for Millions of Repositories</span></li><li><span class="dpr-home-dashboard-paper-title" title="Neuro-Symbolic Proof-of-Vulnerability Generation with Open-Weight Models">Neuro-Symbolic Proof-of-Vulnerability Generation with Open-Weight Models</span></li><li><span class="dpr-home-dashboard-paper-title" title="Hardware Design and Security in the Era of Chiplets and LLMs">Hardware Design and Security in the Era of Chiplets and LLMs</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>10</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
 </section>
 </div>
 
