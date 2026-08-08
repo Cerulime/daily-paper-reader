@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-07</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-08</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 17 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 3 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
-    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>2 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>9</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>8</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-07 21:23:51 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-08 20:50:34 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,9 +62,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共读17篇论文，精读9篇，重点覆盖机密计算与AI安全。</p>
-<p>最值得关注AMD SEV-SNP机密计算入门（10分）与CLEAR漏洞检测框架（9分），前者厘清硬件信任边界，后者用因果上下文化解检测难点。</p>
-<p>下一步建议普通读者优先浏览速读中的《Hardware Design and Security in the Era of Chiplets and LLMs》，把握芯片与AI融合的安全趋势。</p>
+<p>今日阅读3篇论文，聚焦恶意代码与硬件安全领域，精读1篇高分研究。</p>
+<p>最值得关注的是《MalTotal》提出的低成本、跨语言恶意代码投毒检测方案，适用于大规模代码仓库场景。</p>
+<p>可结合Android恶意检测与Verilog硬件漏洞修复的速读内容，补充移动端与硬件安全视角。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -73,12 +73,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">9 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="AMD SEV-SNP: A Confidential Computing Primer">AMD SEV-SNP: A Confidential Computing Primer</span></li><li><span class="dpr-home-dashboard-paper-title" title="CLEAR: Causal Context-Based Agentic Reasoning for Vulnerability Detection">CLEAR: Causal Context-Based Agentic Reasoning for Vulnerability Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="NotDec: WebAssembly Decompilation With Inter-Procedural Type Recovery">NotDec: WebAssembly Decompilation With Inter-Procedural Type Recovery</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="MalTotal: Cost-Effective and Language-Agnostic Malicious Code Poisoning Detection for Millions of Repositories">MalTotal: Cost-Effective and Language-Agnostic Malicious Code Poisoning Detection for Millions of Repositories</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>9</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -86,12 +86,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">8 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Neuro-Symbolic Proof-of-Vulnerability Generation with Open-Weight Models">Neuro-Symbolic Proof-of-Vulnerability Generation with Open-Weight Models</span></li><li><span class="dpr-home-dashboard-paper-title" title="Hardware Design and Security in the Era of Chiplets and LLMs">Hardware Design and Security in the Era of Chiplets and LLMs</span></li><li><span class="dpr-home-dashboard-paper-title" title="dfence: Fine-Grained Speculation Barriers for Efficient and Effective Hardware-Software Protection in the Spectre Era (Extended Version)">dfence: Fine-Grained Speculation Barriers for Efficient and Effective Hardware-Software Protection in the Spectre Era (Extended Version)</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="ShielDroid: A Hybrid Approach Integrating Machine and Deep Learning for Android Malware Detection">ShielDroid: A Hybrid Approach Integrating Machine and Deep Learning for Android Malware Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>8</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 </div>
 
