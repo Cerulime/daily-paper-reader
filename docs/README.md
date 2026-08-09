@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-08</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-09</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 3 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 2 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-08 20:50:34 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-09 19:53:39 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,9 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日阅读3篇论文，聚焦恶意代码与硬件安全领域，精读1篇高分研究。</p>
-<p>最值得关注的是《MalTotal》提出的低成本、跨语言恶意代码投毒检测方案，适用于大规模代码仓库场景。</p>
-<p>可结合Android恶意检测与Verilog硬件漏洞修复的速读内容，补充移动端与硬件安全视角。</p>
+<p>今日速读2篇论文，聚焦硬件安全与微服务访问控制。最值得关注的是LLM辅助Verilog硬件漏洞检测修复，以及基于eBPF的微服务实时多跳访问控制方案。建议优先精读前者，结合实际设计验证其有效性。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -73,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">1 篇</strong>
+    <strong class="dpr-home-dashboard-count">0 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="MalTotal: Cost-Effective and Language-Agnostic Malicious Code Poisoning Detection for Millions of Repositories">MalTotal: Cost-Effective and Language-Agnostic Malicious Code Poisoning Detection for Millions of Repositories</span></li></ul>
+<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
+
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -89,7 +87,7 @@
     <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="ShielDroid: A Hybrid Approach Integrating Machine and Deep Learning for Android Malware Detection">ShielDroid: A Hybrid Approach Integrating Machine and Deep Learning for Android Malware Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="eMicro: Real-Time Multi-Hop Access Control for Microservices with eBPF">eMicro: Real-Time Multi-Hop Access Control for Microservices with eBPF</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
