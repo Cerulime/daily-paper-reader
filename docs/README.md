@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-09</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-10</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 2 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 9 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-09 19:53:39 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-10 21:08:00 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日速读2篇论文，聚焦硬件安全与微服务访问控制。最值得关注的是LLM辅助Verilog硬件漏洞检测修复，以及基于eBPF的微服务实时多跳访问控制方案。建议优先精读前者，结合实际设计验证其有效性。</p>
+<p>今日共读9篇，2篇精读、7篇速读，聚焦AI安全与漏洞检测。最值得关注：仓库级漏洞注入框架CyberForge用于训练安全Agent，以及反编译可执行性统计助力IoT漏洞发现。建议优先精读这两篇，了解自动化漏洞训练与检测的最新手段。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">0 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CyberForge: Verified Vulnerability Injection at Repository Level for Cybersecurity Agent Training">CyberForge: Verified Vulnerability Injection at Repository Level for Cybersecurity Agent Training</span></li><li><span class="dpr-home-dashboard-paper-title" title="Statistical Analysis of Executability and Program Equivalence in Decompilation for IoT Vulnerability Detection">Statistical Analysis of Executability and Program Equivalence in Decompilation for IoT Vulnerability Detection</span></li></ul>
   </div>
-
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">7 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="eMicro: Real-Time Multi-Hop Access Control for Microservices with eBPF">eMicro: Real-Time Multi-Hop Access Control for Microservices with eBPF</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Technical Report: A Formal Semantics for Java Symbolic Evaluation using Large-Block Encoding">Technical Report: A Formal Semantics for Java Symbolic Evaluation using Large-Block Encoding</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Canonicalization Failures as a Recurring Vulnerability Class: Representation Divergence in Cryptographic Systems and Its Avoidance">Canonicalization Failures as a Recurring Vulnerability Class: Representation Divergence in Cryptographic Systems and Its Avoidance</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
 </section>
 </div>
 
