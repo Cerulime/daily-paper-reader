@@ -1,0 +1,336 @@
+Title: Memoir: Learning, Verifying, and Evolving False-Positive Memories for Static Application Security Testing Tools
+
+URL Source: https://arxiv.org/pdf/2608.09181v1
+
+Published Time: Tue, 11 Aug 2026 01:54:22 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# Memoir: Learning, Verifying, and Evolving False-Positive Memories for Static Application Security Testing Tools 
+
+Shenyuan Guan 1, Qiaodan Hou 2, Yanjun Chen 2, Xincheng Wen 1, Jia Feng 1, Keke Lian 2,Cuiyun Gao 1* 
+
+> 1
+
+Harbin Institute of Technology, Shenzhen, China 
+
+> 2
+
+Fudan University, shanghai, China 
+
+25S151190@stu.hit.edu.cn, 21210240188@m.fudan.edu.cn, 20210240329@fudan.edu.cn, xiamenwxc@foxmail.com, jiafeng@stu.hit.edu.cn, kekelian20@fudan.edu.cn, gaocuiyun@hit.edu.cn 
+
+Abstract —Static Application Security Testing (SAST) tools have become indispensable in modern secure software devel-opment. However, these tools often generate false-positive (FP) alerts, imposing substantial manual inspection costs and reducing the trust from developers. Existing FP reduction methods still face two primary challenges. First, the large differences among SAST tools and vulnerability categories make it difficult for these methods to learn recurring patterns in historical false positives. Moreover, the knowledge used by these methods are largely static and cannot be updated as newly validated cases accumulate. To address these challenges, we propose Memoir , a memory-driven framework for identifying false positives by transform-ing historical FP alerts into reusable semantic memories. It consists of two key modules. First, historical semantic memory construction converts historical FP alerts into structured semantic memories through LLM-guided annotation, pattern clustering, and memory synthesis to capture reusable behavioral patterns. Moreover, memory-driven identification and evolution retrieves relevant memories and performs semantic verification against taxonomy consistency and security invariants before making the final prediction. It then incorporates verified predictions back into the memory repository, allowing the knowledge base to evolve as new cases accumulate. We evaluate Memoir on CWE-Bench-Java to demonstrate its effectiveness in real-world security analysis. Specifically, Memoir achieves an F1-score of 99.43% with a Recall of 98.88% and perfect Precision, consistently outperforming other baselines. Furthermore, an industrial case study on production software systems from a top IT company shows that the learned memory base generalizes effectively across different SAST tools without retraining. 
+
+Index Terms —Static Application Security Testing; False Posi-tive Triage; Memory-Augmented Reasoning 
+
+I. I NTRODUCTION 
+
+Static Application Security Testing (SAST) has become an indispensable component of modern secure software devel-opment for detecting vulnerabilities such as SQL injection (CWE-089), path traversal (CWE-022), and command injec-tion (CWE-078) without executing programs. Industrial SAST tools, including CodeQL [1], Checkmarx [2], and Fortify [3], are routinely integrated into continuous integration and contin-uous deployment (CI/CD) pipelines to identify security flaws before software release. By statically analyzing source code, these tools help developers discover vulnerabilities early and reduce the risk of deploying insecure software. Despite their widespread adoption, the practical effective-ness of SAST tools is severely limited by the large number of false-positive alerts. Previous studies have reported that false positives frequently account for more than half of all reported warnings in real-world software projects [4], [5]. On the public CWE-Bench-Java benchmark [6], our evaluation shows that CodeQL reports 865 alerts across 120 Java projects, of which 
+
+95.66% are manually verified as false positives. Such over-whelming numbers of spurious alerts substantially increase manual triage effort, create alert fatigue, and ultimately reduce developers’ trust in static analysis tools [7]. Existing approaches for false-positive reduction generally fall into three categories [8], [9]. Rule-based techniques manu-ally encode expert knowledge to suppress known false-positive patterns [10], [11]; while effective in specific scenarios, these handcrafted rules require continuous maintenance and are dif-ficult to transfer across programming languages, analysis tools, or software frameworks. Learning-based approaches formulate false-positive identification as a supervised classification prob-lem; although they achieve encouraging results on benchmark datasets, they heavily depend on labeled training data and often fail to generalize to unseen projects or vulnerability categories. More recently, Large Language Models (LLMs) have demonstrated remarkable reasoning capabilities for soft-ware engineering tasks, and retrieval-based reasoning methods typically rely on zero-shot prompting or Retrieval-Augmented Generation (RAG) to analyze each alert independently. Despite their improvements in specific settings, these approaches still face two primary challenges: 
+
+(1) Difficulty in learning complex FP semantics. False-positive alerts are not isolated events but recurring semantic phenomena : although they may be reported from different repositories, frameworks, and vulnerability categories, many of them share common semantic characteristics. As illus-trated in Listing 1, whitelist mapping, framework-managed escaping, prepared-statement binding, and path normalization arXiv:2608.09181v1 [cs.SE] 10 Aug 2026 with boundary checks repeatedly explain why tainted input cannot control a security-sensitive operation, even across entirely different CWE categories. On CWE-Bench-Java, a single sanitization pattern (e.g., framework-managed escaping in Spring/Thymeleaf) alone accounts for the false-positive rationale of over 30% of XSS alerts across more than 15 distinct projects. Therefore, these cases forced developers to repeatedly rediscover the same evidence, severely limiting their generalization across projects, analysis tools, and vul-nerability categories. 
+
+(2) Lack of continuously updatable knowledge. Even when recurring rationales have been captured, the knowledge base that stores them must keep pace with an ever-changing software landscape: codebases are refactored, frameworks are upgraded, and new vulnerability categories emerge on a reg-ular basis. However, existing FP reduction techniques rely on largely static knowledge that cannot be incrementally updated as new cases accumulate. Prior experience progressively drifts out of alignment with the evolving codebase and vulnerability landscape, causing the effectiveness of these techniques to gradually deteriorate over time. Listing 1: Examples of recurring false-positive semantics across different vulnerability types.                                                                                                                                                                           
+
+> 1/* (a) Path Traversal: Whitelist mapping */
+> 2String name =req.getParameter("file");
+> 34String safe =switch (name) {
+> 5case "report" -> "report.pdf";
+> 6case "log" -> "server.log";
+> 7default -> "default.txt";
+> 8};
+> 910 Path p=BASE.resolve(safe);
+> 11 return Files.readString(p);
+> 12 13 14 /* (b) XSS: Framework-managed escaping */
+> 15 String msg =req.getParameter("msg");
+> 16 17 model.addAttribute("msg", msg);
+> 18 return "result";
+> 19 20 // result.html
+> 21 // <span th:text="${msg}"></span>
+> 22 23 24 /* (c) Command Injection: Constant command selection */
+> 25 String act =req.getParameter("action");
+> 26 27 String cmd =switch (act) {
+> 28 case "status" -> "/bin/status";
+> 29 case "clean" -> "/bin/clean";
+> 30 default -> "/bin/help";
+> 31 };
+> 32 33 new ProcessBuilder(cmd).start();
+> 34 35 36 /* (d) SQL Injection: Parameter binding */
+> 37 String id =req.getParameter("id");
+> 38 39 PreparedStatement ps =
+> 40 conn.prepareStatement(
+> 41 "SELECT *FROM users WHERE id=?");
+> 42 43 ps.setString(1, id);
+> 44 ResultSet rs =ps.executeQuery();
+> 45 46 47 /* (e) Code Injection: Type whitelist */
+> 48 String type =req.getParameter("type");
+> 49 50 Class<?> c=switch (type) {
+> 51 case "json" -> JsonParser. class ;
+> 52 case "xml" -> XmlParser. class ;
+> 53 default -> SafeParser. class ;
+> 54 };
+> 55 56 Parser p=(Parser)
+> 57 c.getConstructor().newInstance();
+> 58 59 60 /* (f) Path Traversal: Security invariant */
+> 61 String file =req.getParameter("file");
+> 62 63 Path p=BASE.resolve(file).normalize();
+> 64 65 if (!p.startsWith(BASE)) {
+> 66 throw new SecurityException();
+> 67 }
+> 68 69 return Files.readString(p);
+
+Our work. To address these challenges, we propose Mem-oir , a memory-driven false-positive identification frame-work that reformulates SAST false-positive identification as a reusable semantic memory learning problem. Rather than treating each alert as an independent reasoning task, Mem-oir learns, verifies, and continuously evolves reusable false-positive memories, so that recurring rationales are abstracted 
+
+once and then reused across projects, tools, and vulnerability categories. Specifically, Memoir consists of two key modules that directly target the two challenges above: (1) A historical se-mantic memory construction module, which distills historical false-positive alerts into structured semantic memories through LLM-guided annotation, semantic clustering, and memory synthesis. Each memory captures reusable security knowledge, including false-positive taxonomy, security invariants, taint-breaking semantics, and representative evidence, thereby turn-ing heterogeneous historical alerts into transferable knowledge units; and (2) A memory-driven identification and evolution 
+
+module, which, for each new SAST alert, retrieves the most relevant memories and performs semantic verification against taxonomy consistency and security invariants before producing the final prediction. Verified cases are subsequently incorpo-rated back into the memory repository, enabling the memory base to continuously evolve as new cases accumulate and to progressively improve future reasoning. We evaluate Memoir on the public CWE-Bench-Java 
+
+benchmark [6], using CodeQL-generated alerts. Compared with representative baselines including Zero-shot prompting, IRIS [12], conventional Retrieval-Augmented Generation, Bu-gLens [13], and ZeroFalse [14], Memoir consistently achieves the best overall performance, reaching an F1-score of 99.43% ,
+
+98.88% Recall , and 100% Precision . Furthermore, industrial validation on large-scale production software from a top IT company demonstrates that the learned memory repository generalizes effectively across different SAST tools without retraining, reducing false positives by 80.0% for CodeQL and 
+
+94.6% for XCheck. These results demonstrate that reusable and continuously evolving false-positive memories provide an effective and generalizable foundation for improving the practicality of modern SAST systems. Contributions. The major contributions of this paper are summarized as follows: 1) We propose Memoir , a memory-driven framework that reformulates SAST false-positive identification as areusable semantic memory learning problem, jointly ad-dressing the difficulty of learning complex FP semantics and the lack of continuously updatable knowledge in existing techniques. 2) We design a structured memory architecture together with a historical semantic memory construction mod-ule and a memory-driven identification and evolution module, allowing historical diagnosis experience to be abstracted, verified, and continuously reused across projects, analysis tools, and vulnerability categories. 3) We evaluate Memoir on the public CWE-Bench-Java benchmark and on large-scale industrial software projects from a top IT company. Results show that Mem-oir consistently outperforms representative LLM-based baselines and substantially improves the practicality of modern SAST tools. II. P ROPOSED FRAMEWORK 
+
+A. Problem Formulation 
+
+We formulate SAST false-positive identification as amemory-guided decision problem. Unlike conventional alert classification approaches that independently analyze each warning, Memoir aims to exploit historical triage experience by learning reusable false-positive patterns from previously verified alerts. Existing SAST false-positive reduction approaches mainly focus on alert-level reasoning, where each warning is analyzed independently based on its local context. However, many false positives are caused by recurring semantic patterns, such as framework-provided protections, implicit validation mecha-nisms, secure data transformations, or non-user-controlled data flows. These patterns are repeatedly observed during security triage but cannot be effectively reused by conventional ap-proaches. Memoir addresses this limitation by explicitly mod-eling historical triage knowledge as structured false-positive memories. A CodeQL alert is represented as: 
+
+A = ⟨trace, cwe, rule, source, sink, analysis ⟩, (1) where trace denotes the taint propagation path, cwe and 
+
+rule represent vulnerability metadata, and source , sink , and 
+
+analysis describe the taint endpoints and analyzer informa-tion. Each alert has a ground-truth label y ∈ { F P, T P }.Given a set of historical false-positive alerts, Memoir con-structs a false-positive memory repository: 
+
+M = {m1, m 2, . . . , m n}, (2) where each memory entry encodes a generalized false-positive pattern with semantic security knowledge rather than a single alert instance. The objective is to learn a decision function: 
+
+f (A, M) → { F P, T P }, (3) which identifies false positives while preserving true vulnera-bilities. 
+
+B. Framework Overview 
+
+Figure 1 presents the overall architecture of Memoir, a learning-verifying-evolving framework for SAST false-positive identification. The key idea is to transform scattered historical triage results into structured memories that can be retrieved, verified, and continuously refined. Memoir follows three stages: (1) constructing reusable false-positive memories from historical alerts, (2) identifying new alerts through memory retrieval and semantic verification, and (3) evolving memories using verified feedback. Different from conventional retrieval-based methods that di-rectly reuse historical examples, Memoir performs knowledge abstraction before reuse. Instead of memorizing individual alerts, Memoir summarizes multiple similar cases into general-ized patterns with explicit security reasoning elements. There-fore, retrieved memories provide not only similar examples but also interpretable evidence for final decision making. The memory repository is organized into three complemen-tary levels. 
+
+Taxonomy Memory stores coarse-grained false-positive categories, CWE information, and semantic tags for efficient memory filtering. 
+
+Pattern Memory captures reusable false-positive knowl-edge, including security invariants, taint breakers, retrieval keys, verification rules, and representative examples. 
+
+Evolution Memory records historical verification feedback and usage statistics, allowing the memory repository to adapt to newly observed code patterns. 
+
+C. False-Positive Memory Construction 
+
+The goal of this stage is to transform historical case-level false positives into reusable pattern-level memories. Each memory entry is represented as: 
+
+m = ⟨T, I, B, K, V, E ⟩, (4) where T , I, B, K, V , and E denote taxonomy information, security invariants, taint breakers, retrieval keys, verification rules, and representative examples, respectively. Given historical CodeQL alerts and triage labels, Memoir first extracts standardized false-positive traces containing taint paths, CWE information, source/sink contexts, and relevant code semantics. Instead of directly storing raw alerts, Memoir applies LLM-based semantic annotation to identify the underlying reasons why an alert is considered a false positive, including false-positive categories, root causes, security invariants, and taint-breaking mechanisms. The annotated cases are then clustered according to se-mantic similarity over invariants, taint breakers, and security-related features. Unlike surface-level similarity clustering, Memoir focuses on semantic factors that determine whether an alert is actually a false positive, such as whether input Codeql Alerts    
+
+> Project Code
+> Label Data(FP/TP)
+> Collect Verified Hits Memory Uptate Memory Strength Adjustment Phase Ⅲ ：Memory Evolution(Evolving)
+> Alert Matching
+> Memory Retrieval
+> Phase Ⅱ ：Memory Identification(Verfying)
+> FP Verification
+> Phase Ⅰ ：FP Memory Construction(Learning)
+> FP Trace Extraction Input Data
+> Filter
+> Memory Annotation
+> vul_type trace
+> Taxonomy-Guided Annotation
+> Pattern Clustering
+> Structured Memory
+> Pattern Synthesis
+> Memory Structuring Type Mapping
+> Taxonomy Grouping
+> Semantic Aggregation Noise Filtering
+> Cluster Summarization
+> Pattern Generation
+> Instance Memory Extraction
+
+Fig. 1: Overall architecture of Memoir. HIERARCHICAL MEMORY RETRIEVAL            
+
+> ...
+> exp exp exp Same taxonomy Same CWE Similar semantic tags
+> ...
+> Invariant match Taint breaker match Retrieval key match Rank
+> Top-k Memories
+> M1 M2 M3 Mk ...
+> Retrieval candidate memories
+> MUTI-STAGE FP VERIFICATION
+> Taxonomy Consisyency Check
+> Verification Score Aggregation
+> Verification Score
+> Recalculate Strength
+> DECISION and MEMORY EVOLUTION UPDATE
+> 0~1
+> Score-based Decision
+> Score>=θ FP Score< θ TP
+> Output
+> FP TP
+> If FP is Verified Memory Update
+> Add Verified Example
+> Update Statistics
+> Update Retrieval Keys
+> INPUT ALERT CONTEXT
+> CWE Type
+> Rule/Query ID
+> Source/Sink
+> Execution Path
+> Additional Context Invariant Consisyency Check Taint-Breaker Check Reasoning Verification(LLM) Recalculate Strength
+> Priority1:Taxonomy Retrieval(L1) Priority2:Pattern Retrieval(L2)
+> exp exp exp
+> Verification Score experience
+
+Fig. 2: Memory retrieval and verification workflow. is constrained by validation, transformed by secure APIs, or protected by framework-level mechanisms. Cases belonging to the same cluster are synthesized into a generalized memory entry that summarizes the shared false-positive pattern and provides retrieval keys and verification rules. The synthesized memory therefore represents reusable security knowledge rather than a collection of historical ex-amples. Through this abstraction process, Memoir converts indi-vidual triage decisions into structured security knowledge, enabling knowledge transfer across different alerts, projects, and vulnerability instances. 
+
+D. Memory-Guided False-Positive Identification 
+
+Given a new CodeQL alert, Memoir retrieves relevant mem-ories and verifies their semantic consistency before producing the final decision, as shown in Figure 2. The main challenge during identification is that retrieved memories may be relevant at the lexical level but invalid at the security semantic level. For example, two alerts may share similar source and sink locations but differ in whether the data is user-controlled or protected by validation logic. Therefore, Memoir separates retrieval from verification instead of directly applying historical decisions. Memoir adopts a hierarchical retrieval strategy to balance retrieval efficiency and semantic accuracy. It first performs taxonomy-level filtering using CWE categories, rule types, and semantic tags to eliminate obviously irrelevant memories. Then, candidate memories are ranked according to multiple semantic signals, including security invariant similarity, taint-breaker consistency, and retrieval-key matching. The Top-K
+
+candidates are selected as verification evidence. Since similar alerts may still correspond to different security conditions, Memoir performs progressive verification before applying retrieved knowledge. First, taxonomy consistency is checked to ensure that the retrieved memory belongs to the same false-positive category. Second, the current alert is validated against the security invariant and taint-breaking mechanism described by the mem-ory. Finally, an LLM performs semantic reasoning over the alert context, retrieved memory, and verification evidence. Only memories that pass verification contribute to the final FP/TP prediction, reducing the risk of incorrectly suppressing true vulnerabilities. Retrieved memories serve as supporting evidence rather than direct decisions, allowing Memoir to benefit from previous triage experience while maintaining conservative security judgment. 
+
+E. Memory Evolution 
+
+Static false-positive knowledge may become incomplete as software frameworks, coding practices, and security rules evolve. Memoir therefore introduces a closed-loop evolution mechanism that updates memories using verified results. For each confirmed false-positive case, Memoir augments the corresponding memory with new examples, expands re-trieval keys, and updates reliability statistics according to historical retrieval and verification outcomes. These feedback signals allow frequently validated memo-ries to become stronger evidence sources, while ineffective memories are gradually weakened through temporal decay. Moreover, evolution enables Memoir to adapt to changes in software ecosystems, including newly introduced frameworks, coding conventions, and security practices. Through continuous learning from verified decisions, Mem-oir evolves from a static knowledge repository into an adaptive false-positive memory system that improves over time. III. E XPERIMENTAL SETUP 
+
+This section describes the experimental setup used to evalu-ate Memoir. We first introduce the research questions, followed by the compared baselines, datasets, evaluation metrics, and implementation details. 
+
+A. Research Questions 
+
+We evaluate Memoir from three complementary perspec-tives. 
+
+RQ1 (Overall Performance). How effective is Memoir in identifying false-positive SAST alerts compared with existing LLM-based approaches? 
+
+RQ2 (Ablation Study). How much does each component of Memoir, including memory clustering, memory verification, and retrieval strategy, contribute to the overall performance? 
+
+RQ3 (Backbone Generalizability). Can Memoir maintain stable performance when different foundation models are used as the reasoning backbone? 
+
+B. Baselines 
+
+We compare Memoir with four representative LLM-based false-positive identification approaches. 
+
+Zero-shot directly prompts the LLM to determine whether a CodeQL alert is a true vulnerability or a false positive using only the original alert information, without retrieval or external knowledge. 
+
+IRIS [12] is a recent LLM-based static analysis frame-work that performs structured reasoning over CodeQL alerts. Following its official setting, IRIS [12] receives the warning message, source, sink, and taint propagation path, and predicts whether the alert corresponds to a true vulnerability or a false positive. 
+
+BugLens (adapted) [13] is a recent LLM-based post-refinement framework for taint-style static-analysis warnings. Following its structured analysis workflow, BugLens performs security-impact assessment and constraint analysis over each warning, and predicts whether the warning corresponds to a real vulnerability or a false positive. Since the original BugLens targets Linux kernel taint-style bugs, we adapt its reasoning workflow to our Java CodeQL alert setting by providing the warning message, source, sink, taint propagation path, vulnerability type, and relevant code context. 
+
+Retrieval-Augmented Generation (RAG) retrieves seman-tically similar historical false-positive cases and incorporates them into the LLM prompt as in-context examples. Unlike Memoir, conventional RAG does not construct abstract false-positive memories, does not organize them into reusable patterns, and does not perform explicit semantic verification after retrieval. 
+
+ZeroFalse [14] is a recent LLM-based false-positive re-duction framework for static analysis. It improves the input evidence for LLM adjudication by enriching static-analysis reports with flow-sensitive traces, contextual evidence, and CWE-specific knowledge. Unlike Memoir, ZeroFalse [14]fo-cuses on single-alert adjudication and does not explicitly learn reusable, verifiable, and evolvable false-positive memories from historical alerts. For fair comparison, all approaches are evaluated using the same data split, alert representation, backbone model whenever applicable, and evaluation scripts. 
+
+C. Public Benchmark Dataset 
+
+For public evaluation, we use CWE-Bench-Java [6], a manually verified benchmark proposed for evaluating LLM-assisted static application security testing on Java applications. We execute CodeQL on all repositories included in the bench-mark and collect a total of 865 security alerts covering multiple CWE categories. Each alert is manually annotated as either a true positive (TP) or a false positive (FP) according to the benchmark ground truth. To avoid data leakage, we divide the 865 alerts into training, validation, and test sets using a 7:1.5:1.5 ratio. The training set is exclusively used to construct the false-positive memory knowledge base, including false-positive trace extraction, tax-onomy annotation, pattern clustering, memory synthesis, and memory evolution. The validation set is used for parameter tuning, such as retrieval thresholds and retrieval depth. The test set is reserved exclusively for final evaluation. No validation or test samples are used during memory construction. 
+
+D. Industrial Case Study Dataset 
+
+In addition to the public benchmark, we conduct an in-dustrial case study using an internal dataset collected from production software systems at a top IT company. The dataset contains alerts generated by two widely used SAST tools, CodeQL and XCheck. All alerts were manually reviewed and labeled by experienced security engineers. This industrial dataset is used only for practical validation and is not used in the controlled benchmark evaluation for RQ1–RQ3. Due to confidentiality constraints, the dataset can-not be released publicly, and we report only aggregated results, including false-positive reduction and precision improvement. 
+
+E. Evaluation Metrics 
+
+Following previous work, we report Precision, Recall, and F1-score. Precision measures the proportion of predicted false positives that are indeed false positives. Recall measures the proportion of manually verified false positives that are success-fully identified. F1-score is the harmonic mean of Precision and Recall. Since Memoir is a retrieval-based memory framework, we additionally report Mean Reciprocal Rank (MRR) to evaluate whether the correct or most relevant false-positive memory is ranked near the top of the retrieved candidate list. For non-memory-ranking baselines, MRR is not applicable. For the industrial case study, we further report false-positive reduction and precision improvement. 
+
+F. Implementation Details 
+
+Memoir is implemented in Python and consists of seven se-quential stages: false-positive trace extraction, memory annota-tion, pattern clustering, memory synthesis, memory matching, memory verification, and memory evolution. Unless otherwise specified, GPT-4o [15] is used as the default backbone LLM. To evaluate backbone generalizability, we further replace GPT-4o [15] with Claude-3.5-Sonnet [16], Gemini-1.5-Pro [17], and DeepSeek-Coder-V2-Instruct [18] while keeping all memory construction, retrieval, and veri-fication components unchanged. The memory retrieval module combines keyword-based matching with semantic similarity retrieval. By default, Mem-oir retrieves the Top-5 most relevant memory entries for each alert. Retrieved memories are then validated according to taxonomy consistency, security invariant matching, and semantic similarity before producing the final prediction. During test-time evaluation, the evolved memory knowledge base generated from the training set remains fixed, and no information from the evaluation data is incorporated into the memory repository. All experiments are conducted using identical prompts, retrieval configurations, and evaluation scripts to ensure fair comparison across different methods and backbone models. IV. E XPERIMENTAL RESULTS AND ANALYSIS 
+
+This section presents the experimental results of Memoir on the public benchmark. We first compare Memoir with existing LLM-based baselines (RQ1), then quantify the contribution of key components through ablation study (RQ2), and finally analyze the cross-backbone generalization ability of Memoir (RQ3). 
+
+A. RQ1: Overall False-Positive Identification Performance 
+
+RQ1. How effective is Memoir in identifying false-positive SAST alerts compared with existing LLM-based baselines? To answer this question, we compare Memoir with Zero-shot prompting, IRIS [12], conventional RAG, BugLens (adapted) [13], and ZeroFalse [14] on the manually verified CodeQL alert dataset. Table I summarizes the overall results. As shown in Table I, Memoir substantially outperforms all compared baselines. With GPT-4o [15] as the backbone model, Memoir achieves a Precision of 1.0000, a Recall of 0.9843, and an F1-score of 0.9921. Compared with the strongest baseline, ZeroFalse, Memoir improves the F1-score from 0.9183 to 0.9921, corresponding to an absolute improve-ment of 7.38 percentage points. Compared with BugLens (adapted), Memoir improves the F1-score from 0.8502 to 0.9921, corresponding to an absolute improvement of 14.19 percentage points. Compared with conventional RAG, Memoir improves the F1-score from 0.7800 to 0.9921, corresponding to an absolute improvement of 21.21 percentage points. The results reveal a clear progression among different LLM-based false-positive identification strategies. Zero-shot prompting achieves perfect Precision but only 0.0945 Recall, indicating that direct LLM reasoning is highly conservative and identifies only a small fraction of false-positive alerts. IRIS improves Recall to 0.3937 by using structured reasoning over CodeQL alert information, but it still fails to capture many recurring false-positive patterns. RAG further improves Recall to 0.6800 by retrieving historical cases; however, its Precision decreases to 0.9200 because textually similar examples are not always semantically applicable to the current alert. BugLens (adapted) achieves stronger performance than Zero-shot, IRIS, and RAG, with a Precision of 0.9324, a Recall of 0.7813, and an F1-score of 0.8502. This suggests that structured post-refinement over the current alert, includ-ing security-impact assessment and constraint validation, is more effective than directly retrieving raw historical examples. However, BugLens still analyzes each alert independently and does not explicitly learn reusable false-positive memories from historical triage results, limiting its ability to recognize recurring false-positive patterns across alerts. ZeroFalse achieves the strongest baseline performance, with a Precision of 0.9600, a Recall of 0.8800, and an F1-score of 0.9183. This confirms that enriching the current static-analysis report with flow-sensitive traces, contextual evidence, and CWE-specific knowledge can substantially improve LLM-based false-positive adjudication. Nevertheless, ZeroFalse still performs single-alert adjudication and does not explicitly learn reusable false-positive memories from historical cases. As a result, it cannot directly reuse verified false-positive patterns, memory-level security invariants, or evolution statistics across alerts. In contrast, Memoir achieves both higher Precision and substantially higher Recall. The key reason is that Memoir does not simply enhance the current alert context or retrieve raw historical examples. Instead, it abstracts historical false-positive cases into structured memories containing taxon-omy information, security invariants, taint breakers, semantic features, and verification logic. During inference, retrieved memories are further checked through semantic verification before being used for the final decision. This design enables Memoir to recover substantially more false positives while avoiding incorrect suppression of true vulnerabilities. The MRR of Memoir with GPT-4o [15] reaches 0.9398, showing that relevant memories are usually ranked near the top of the retrieved candidate list. Since Zero-shot, IRIS [12], RAG, and ZeroFalse [14] do not maintain an explicit memory-ranking mechanism comparable to Memoir, MRR is not appli-cable to these baselines. The high MRR further confirms that Memoir’s retrieval module provides effective and well-ranked evidence for subsequent verification. 
+
+RQ1 Answer: Memoir achieves the best overall false-positive identification performance. Compared with Zero-shot prompting, IRIS [12], RAG, and ZeroFalse, Memoir significantly improves Recall and F1-score while preserv-ing the highest Precision. These results demonstrate that reusable, structured, and verifiable false-positive memories provide stronger evidence than direct prompting, raw re-trieval, or single-alert evidence-enriched LLM adjudication. 
+
+B. RQ2: Ablation Study 
+
+RQ2. How does each component of Memoir contribute to the overall performance? To investigate the contribution of each module, we conduct ablation studies by removing verification, removing clustering, and varying the retrieval depth. Table II reports the results. 
+
+1) Effect of Verification: Removing the verification module decreases Precision from 1.000 to 0.920. Although Recall TABLE I: Overall false positive identification performance comparison                                                   
+
+> Approach Backbone Model Precision Recall F1-score MRR Zero-shot GPT-4o [15] 1.0000 0.0945 0.1727 –IRIS [12] GPT-4o [15] 1.0000 0.3937 0.5650 –RAG GPT-4o [15] 0.9200 0.6800 0.7800 –ZeroFalse [14] GPT-4o [15] 0.9600 0.8800 0.9183 –BugLens (adapted) [13] GPT-4o [15] 0.9324 0.7813 0.8502 –Memoir (Ours) GPT-4o [15] 1.0000 0.9843 0.9921 0.9398
+> Memoir (Ours) Claude-3.5-Sonnet [16] 0.9921 0.9685 0.9802 0.9217 Memoir (Ours) Gemini-1.5-Pro [17] 0.9840 0.9606 0.9722 0.9064 Memoir (Ours) DeepSeek-Coder-V2-Instruct [18] 0.9762 0.9685 0.9723 0.9142
+
+TABLE II: Ablation study results of Memoir components                      
+
+> Configuration Precision Recall F1-score Full Model 1.000 0.984 0.992 – Verification 0.920 0.990 0.950 – Clustering 0.950 0.880 0.910 Top-1 Retrieval 1.000 0.930 0.960 Top-3 Retrieval 1.000 0.970 0.980 Top-5 Retrieval 1.000 0.984 0.992
+
+slightly increases from 0.984 to 0.990, the F1-score decreases from 0.992 to 0.950. This indicates that retrieval alone can identify more candidate false positives, but some retrieved memories are not semantically applicable to the current alert. Without explicit verification, incorrect memory matches may be directly accepted, resulting in false-positive predictions on true vulnerabilities. Therefore, the verification module is essential for maintaining prediction reliability. 
+
+2) Effect of Pattern Clustering: Removing pattern clus-tering causes the largest performance degradation. Precision decreases to 0.950, Recall drops to 0.880, and F1-score drops to 0.910. Without clustering, historical false-positive cases are transformed into isolated instance-level memories rather than reusable pattern-level memories. As a result, retrieval becomes more sensitive to superficial textual similarity and less capable of generalizing to unseen alerts. This confirms that clustering is critical for abstracting reusable false-positive knowledge from individual cases. 
+
+3) Effect of Retrieval Depth: We further study the effect of retrieval depth by comparing Top-1, Top-3, and Top-5 retrieval. Figure 3 visualizes the Recall and F1-score under different Top-k settings. As shown in Table II and Figure 3, increasing retrieval depth consistently improves Recall and F1-score. Top-1 retrieval achieves an F1-score of 0.960, but its Recall is limited to 0.930 because useful supporting memories may be missed when only the highest-ranked memory is considered. Increasing the retrieval depth to Top-3 improves Recall to 0.970 and F1-score to 0.980. Top-5 achieves the best performance, matching the full model with a Recall of 0.984 and an F1-score of 0.992. These results suggest that retrieving multiple candidate memories provides complementary evidence for verification. Importantly, Precision remains 1.000 across all Top-k settings, indicating that the verification module effectively filters irrel-evant memories even when more candidates are retrieved. Top-1 Top-3 Top-5 
+
+> Retrieval Depth (k)
+> 0.90 0.92 0.94 0.96 0.98 1.00
+> Score 0.930 0.970 0.984 0.960 0.980 0.992
+> Recall F1-score
+
+Fig. 3: Impact of retrieval depth on Memoir performance. Precision remains 1.000 across all Top-k settings and is omitted for clarity. Increasing retrieval depth improves both Recall and F1-score. 
+
+4) Comparison with Conventional RAG: The performance gap between Memoir and RAG further demonstrates that the improvement does not come from retrieval alone. RAG retrieves similar historical examples but does not abstract them into reusable false-positive patterns. It also lacks explicit representations of security invariants, taint breakers, and veri-fication rules. Consequently, retrieved examples only provide contextual evidence, while Memoir provides structured rea-soning knowledge. This explains why Memoir substantially outperforms RAG in both Recall and F1-score. 
+
+RQ2 Answer: The ablation study confirms that pattern clustering and semantic verification are both essential. Clustering enables reusable pattern abstraction, while veri-fication preserves prediction reliability. Increasing retrieval depth improves coverage, and Top-5 provides the best trade-off between Recall and F1-score. 
+
+C. RQ3: Generalization Across Backbone Models 
+
+RQ3. Does Memoir generalize across different backbone models? To evaluate whether Memoir depends on a specific LLM, we replace GPT-4o [15] with Claude-3.5-Sonnet [16], Gemini-1.5-Pro [17], and DeepSeek-Coder-V2-Instruct [18] while keeping the memory construction, retrieval, and verification pipeline unchanged. Figure 4 visualizes the cross-backbone results. 
+
+Fig. 4: Heatmap of Memoir performance across different back-bone models. Memoir maintains consistently high Precision, Recall, F1-score, and MRR under different LLM backbones. As shown in Table I and Figure 4, Memoir maintains strong performance across all tested backbone models. GPT-4o [15] achieves the best overall result, with an F1-score of 0.9921 and an MRR of 0.9398. Claude-3.5-Sonnet [16] achieves an F1-score of 0.9802, Gemini-1.5-Pro [17] achieves 0.9722, and DeepSeek-Coder-V2-Instruct [18] achieves 0.9723. Although different models exhibit small variations, all Memoir variants substantially outperform the compared base-lines, including ZeroFalse. This indicates that the main perfor-mance gain comes from the proposed memory-based frame-work rather than the intrinsic reasoning capability of a par-ticular LLM. The structured memory representation provides reusable security knowledge, while the verification stage con-strains the final prediction using taxonomy and invariant-level evidence. The heatmap also shows that MRR remains consistently high across backbones, ranging from 0.9064 to 0.9398. This suggests that the memory retrieval mechanism remains ef-fective even when the backbone model changes. Therefore, Memoir is largely backbone-agnostic and can be deployed with different proprietary or open-source LLMs depending on practical constraints. 
+
+RQ3 Answer: Memoir generalizes well across different backbone models. The consistently high F1-score and MRR indicate that the proposed memory representation and ver-ification mechanism, rather than a specific LLM, are the primary sources of performance improvement. V. I NDUSTRIAL CASE STUDY 
+
+To further evaluate the practical applicability of Memoir beyond the public benchmark, we conduct an industrial case study on production software projects from a top IT company. Unlike the controlled benchmark evaluation in RQ1–RQ3, which focuses on reproducible model comparison, this case study aims to examine whether Memoir can reduce false-positive alerts and improve the practical usability of existing SAST tools in real-world deployment scenarios. The industrial dataset contains alerts generated by two widely used SAST tools, CodeQL and XCheck. All alerts were manually reviewed and labeled by experienced security engineers. Due to confidentiality constraints, the dataset cannot be released publicly, and only aggregated results are reported. Table III summarizes the industrial validation results. 
+
+A. Overall False-Positive Reduction 
+
+As shown in Table III, Memoir substantially reduces false-positive alerts for both SAST tools. For CodeQL, the number of false positives decreases from 30 to 6, corresponding to an 80.0% reduction. For XCheck, false positives decrease from 149 to 8, corresponding to a 94.6% reduction. These results demonstrate that the false-positive memories learned by Memoir can generalize beyond the public bench-mark and effectively suppress redundant alerts in production-scale software systems. Unlike rule-based filtering methods that are usually tied to a specific static analyzer, Memoir cap-tures reusable semantic patterns from historical false-positive cases, allowing the learned memories to be applied across different detection engines. 
+
+B. Precision Improvement 
+
+Table III also reports the precision before and after applying Memoir. For CodeQL, precision increases from 0.42 to 0.68, corresponding to an absolute improvement of 0.26 and a rela-tive improvement of 61.9%. For XCheck, precision increases from 0.65 to 0.85, corresponding to an absolute improvement of 0.20 and a relative improvement of 30.8%. Importantly, these improvements are achieved while pre-serving genuine vulnerability reports. This suggests that Mem-oir does not simply suppress alerts aggressively; instead, it uses structured memories and verification logic to identify alerts that are semantically consistent with known false-positive patterns. 
+
+C. Performance Across Vulnerability Categories 
+
+To further examine whether Memoir generalizes across vulnerability types, we evaluate false-positive suppression on three representative vulnerability categories. Table IV reports the results. As shown in Table IV, Memoir achieves different levels of suppression across vulnerability categories. The largest improvement is observed for SQL Injection, where the false-positive rate decreases from 23.29% to 0.00%. This suggests that SQL injection false positives often share reusable semantic patterns, such as whitelist validation, parameterized queries, and secure mapping transformations. Memoir also substantially reduces false positives for Path Traversal, decreasing the false-positive rate from 46.97% to 3.03%. Many of these cases involve common defensive se-mantics, including canonical path normalization and whitelist-based directory validation, which can be effectively captured by structured memories. TABLE III: Industrial case study results on real-world software projects from a top IT company. Precision gain reports both absolute improvement and relative improvement over the baseline.                   
+
+> SAST Tool Baseline FP Memoir FP FP Reduction Baseline Precision Memoir Precision Precision Gain CodeQL 30 680.0% 0.42 0.68 +0.26 / +61.9% XCheck 149 894.6% 0.65 0.85 +0.20 / +30.8%
+
+TABLE IV: False-positive suppression performance across different vulnerability categories              
+
+> Vulnerability Type Alerts Original FPR Residual FPR FP Reduction SQL Injection 73 23.29% 0.00% 23.29% Path Traversal 66 46.97% 3.03% 43.94% Command Injection 45 35.56% 28.89% 6.67%
+
+In contrast, the improvement for Command Injection is relatively limited. Although Memoir reduces the false-positive rate from 35.56% to 28.89%, the remaining false positives indicate that command injection alerts often involve more diverse program semantics and project-specific sanitization logic. This suggests that enriching the memory base with more command-injection-specific experiences could further improve performance. 
+
+Industrial Finding: Memoir substantially improves the practical usability of industrial SAST tools by reducing false-positive alerts and increasing precision on real-world software projects from a top IT company. The results further show that structured false-positive memories can generalize across tools, projects, and vulnerability cate-gories. VI. R ELATED WORK 
+
+A. Static Application Security Testing and False Positives 
+
+Static Application Security Testing (SAST) tools are widely adopted in modern software development to detect security vulnerabilities without executing programs. Early systems such as FlawFinder [19] and RATS [20] mainly relied on syntactic pattern matching, while FindBugs [21], [22] incorpo-rated data-flow analysis for Java bug detection. More recently, industrial SAST tools such as CodeQL [1], Semgrep [23], Checkmarx [2], and Fortify [3] have significantly improved vulnerability detection by combining inter-procedural analysis, taint tracking, and rich security rule sets. Despite these advances, false positives remain the primary obstacle preventing the practical adoption of SAST tools. Mul-tiple empirical studies report that false-positive rates frequently exceed 50% on real-world software projects [4], [5], and no existing tool simultaneously achieves both high vulnerabil-ity coverage and low false-positive rates [24]–[26]. Large-scale evaluations on Java projects further demonstrate that substantial manual effort is still required to inspect reported alerts [27]. To alleviate this problem, previous research has explored heuristic filtering [10], [28], [29], supervised learning [30]– [34], and developer-feedback-based refinement [11], [35], [36]. Although these approaches reduce false positives under certain settings, they generally treat false-positive identification as an instance-level classification problem and do not explicitly capture reusable semantic knowledge underlying recurring false-positive patterns. Consequently, their effectiveness often degrades when applied to unseen projects, analysis tools, or vulnerability categories. 
+
+B. Large Language Models for Software Security 
+
+Large language models (LLMs) have recently demonstrated remarkable capabilities in program understanding and software security analysis. Pre-trained code models such as Code-BERT [37] and Devign [38] established strong foundations for vulnerability detection, while subsequent work includ-ing LineVul [39], VulDeePecker [40], DiverseVul [41], and transformer-based approaches [42] further improved vulnera-bility identification through large-scale learning. More recently, general-purpose LLMs such as GPT-4o [15] have been applied to vulnerability detection, program repair, and security auditing [43], [44]. Several studies have also investigated using LLMs to analyze SAST alerts and assist developers during alert triage [12]. Representative work such as IRIS further augments LLM reasoning with retrieval-based prompting to improve false-positive identification. However, existing LLM-based approaches still analyze alerts independently and largely rely on transient reasoning or textual retrieval. Knowledge extracted from previous false-positive cases is not explicitly accumulated, verified, or reused, making it difficult to generalize recurring false-positive seman-tics across projects and analysis tools. In contrast, Memoir treats false-positive identification as a memory-driven reasoning problem. Instead of repeatedly rea-soning over isolated alerts, Memoir continuously learns struc-tured false-positive memories from historical cases, retrieves reusable semantic knowledge for new alerts, verifies retrieved memories before prediction, and incrementally evolves the memory repository as new experience becomes available. VII. D ISCUSSION 
+
+A. Why Memory Matters for False-Positive Reduction 
+
+The experimental results suggest that false-positive identi-fication cannot be fully addressed by single-alert reasoning alone. Although structured prompting, retrieval, and evidence-enriched adjudication can improve over zero-shot LLM rea-soning, they still mainly operate on the current alert. In contrast, Memoir explicitly accumulates historical triage ex-perience and abstracts recurring false-positive causes into reusable memories. This enables the model to reason with prior security knowledge rather than repeatedly rediscovering the same defensive semantics for each alert. The key advantage of Memoir lies in its structured memory representation. By encoding taxonomy information, security invariants, taint breakers, retrieval keys, verification rules, and representative examples, Memoir provides more reliable evi-dence than raw retrieved examples. The ablation study further shows that both clustering and verification are necessary: clus-tering enables reusable pattern abstraction, while verification prevents irrelevant memories from being incorrectly applied to true vulnerabilities. 
+
+B. Practical Implications 
+
+Memoir is designed as a post-processing layer for existing SAST tools rather than a replacement for static analysis. This makes it practical for deployment because it can be integrated after tools such as CodeQL or industrial analyzers have already generated alerts. The industrial case study further indicates that structured false-positive memories can reduce triage burden and improve alert precision in real-world software projects. Another practical benefit is that Memoir is largely backbone-agnostic. The cross-model results show consis-tently strong performance across GPT-4o, Claude-3.5-Sonnet, Gemini-1.5-Pro, and DeepSeek-Coder-V2-Instruct. This sug-gests that the main performance gain comes from the memory-based framework itself rather than from a specific proprietary model. 
+
+C. Limitations 
+
+Memoir still has several limitations. First, the quality of the memory base depends on the availability and correctness of historical triage labels. If the training set contains noisy labels or insufficient examples for rare vulnerability types, the generated memories may be incomplete. Second, although memory verification reduces the risk of incorrectly suppress-ing true vulnerabilities, it cannot provide formal soundness guarantees. For high-risk security settings, Memoir should therefore be used as a decision-support system rather than an automatic replacement for expert review. Third, the current evaluation focuses mainly on CodeQL alerts for Java secu-rity vulnerabilities. Future work should evaluate Memoir on more programming languages, SAST tools, and vulnerability categories. VIII. C ONCLUSION 
+
+We presented Memoir, a memory-augmented framework for identifying false-positive SAST alerts. Memoir learns reusable false-positive memories from historical alerts, retrieves rel-evant memories for new alerts, verifies their semantic ap-plicability, and evolves the memory base through feedback. Experiments on a manually verified CodeQL alert dataset show that Memoir outperforms zero-shot prompting, IRIS, RAG, BugLens, and ZeroFalse, while the ablation study confirms the importance of memory clustering, verification, and re-trieval depth. Cross-backbone and industrial evaluations fur-ther demonstrate the robustness and practical value of Memoir. Overall, Memoir shifts LLM-assisted false-positive reduction from isolated alert adjudication to reusable and evolvable memory-guided reasoning.Our code and data are available at https://anonymous.4open.science/r/anon-repo-7x2z/. REFERENCES [1] P. Avgustinov, O. de Moor, M. P. Jones, and M. Sheridan, “QL: Object-oriented queries on relational data,” in 30th European Conference on Object-Oriented Programming (ECOOP) . Schloss Dagstuhl–Leibniz-Zentrum fuer Informatik, 2016, pp. 2:1–2:25. [2] Checkmarx Ltd., “Checkmarx SAST,” https://checkmarx.com/, 2024, accessed: 2025. [3] OpenText, “Fortify Static Code Analyzer,” https://www.opentext.com/p roducts/fortify-static-code-analyzer, 2024, accessed: 2025. [4] B. Johnson, Y. Song, E. Murphy-Hill, and R. Bowdidge, “Why don’t software developers use static analysis tools to find bugs?” in Pro-ceedings of the 35th International Conference on Software Engineering (ICSE) . IEEE, 2013, pp. 672–681. [5] M. Christakis and C. Bird, “What developers want and need from program analysis: An empirical study,” in Proceedings of the 31st IEEE/ACM International Conference on Automated Software Engineer-ing (ASE) . ACM, 2016, pp. 332–343. [6] iris-sast, “CWE-Bench-Java: A benchmark for java vulnerability detec-tion,” https://github.com/iris- sast/cwe- bench- java, 2024, accessed: 2025. [7] A. Bessey, K. Block, B. Chelf, A. Chou, B. Fulton, S. Hallem, C. Henri-Gros, A. Kamsky, S. McPeak, and D. Engler, “A few billion lines of code later: Using static analysis to find bugs in the real world,” 
+
+Communications of the ACM , vol. 53, no. 2, pp. 66–75, 2010. [8] S. Heckman and L. Williams, “A systematic literature review of action-able alert identification techniques for automated static code analysis,” 
+
+Information and Software Technology , vol. 53, no. 4, pp. 363–387, 2011. [9] T. Muske and A. Serebrenik, “Survey of approaches for handling static analysis alarms,” in Proceedings of the 16th IEEE International Working Conference on Source Code Analysis and Manipulation (SCAM) . IEEE, 2016, pp. 157–166. [10] T. Kremenek and D. Engler, “Z-Ranking: Using statistical analysis to counter the impact of static analysis approximations,” in Proceedings of the 10th International Conference on Static Analysis (SAS) . Springer, 2003, pp. 295–315. [11] C. Sadowski, J. van Gogh, C. Jaspan, E. S¨ oderberg, and C. Winter, “Tricorder: Building a program analysis ecosystem,” in Proceedings of the 37th International Conference on Software Engineering (ICSE) .IEEE, 2015, pp. 598–608. [12] Z. Li, S. Dutta, and M. Naik, “IRIS: LLM-assisted static analysis for detecting security vulnerabilities,” in International Conference on Learning Representations , 2025. [Online]. Available: https: //openreview.net/forum?id=9LdJDU7E91 [13] H. Li, H. Zhang, K. Pei, and Z. Qian, “Towards more accurate static analysis for taint-style bug detection in linux kernel,” in 
+
+Proceedings of the 40th IEEE/ACM International Conference on Automated Software Engineering , 2025, pp. 380–392. [Online]. Available: https://www.cs.ucr.edu/ ∼zhiyunq/pub/ase25 buglens.pdf [14] M. Iranmanesh, S. Moradi Sabet, S. Marefat, A. Javidi Ghasr, A. Wilson, I. Sharafaldin, and M. A. Tayebi, “ZeroFalse: Improving precision in static analysis with LLMs,” 2025. [Online]. Available: https://arxiv.org/abs/2510.02534 [15] OpenAI, “GPT-4o system card,” arXiv preprint arXiv:2410.21276 , 2024. [16] Anthropic, “Introducing claude 3.5 sonnet,” https://www.anthropic.com/ news/claude-3-5-sonnet, 2024, accessed: 2026-06-27. [17] Gemini Team, Google, “Gemini 1.5: Unlocking multimodal understanding across millions of tokens of context,” 2024. [Online]. Available: https://arxiv.org/abs/2403.05530 [18] DeepSeek-AI, “DeepSeek-Coder-V2: Breaking the barrier of closed-source models in code intelligence,” 2024. [Online]. Available: https://arxiv.org/abs/2406.11931 [19] D. A. Wheeler, “Flawfinder: A static analysis tool for finding security vulnerabilities in C/C++ source code,” https://dwheeler.com/flawfinder/, 2021, accessed: 2025. [20] Fortify Software, “RATS: Rough auditing tool for security,” https://gi thub.com/andrew-d/rough-auditing-tool-for-security, 2013, accessed: 2025. [21] D. Hovemeyer and W. Pugh, “Finding bugs is easy,” in Companion to the 19th Annual ACM SIGPLAN Conference on Object-Oriented Programming Systems, Languages, and Applications (OOPSLA) . ACM, 2004, pp. 132–136. [22] N. Ayewah, W. Pugh, D. Hovemeyer, J. D. Morgenthaler, and J. Penix, “Using static analysis to find bugs,” IEEE Software , vol. 25, no. 5, pp. 22–29, 2008. [23] Semgrep, Inc., “Semgrep: Lightweight static analysis for many lan-guages,” https://semgrep.dev/, 2024, accessed: 2025. [24] A. Habib and M. Pradel, “How many of all bugs do we find? a study of static bug detectors,” in Proceedings of the 33rd IEEE/ACM International Conference on Automated Software Engineering (ASE) .ACM, 2018, pp. 317–328. [25] S. Lipp, S. B˘ anescu, and A. Pretschner, “An empirical study on the effectiveness of static C code analyzers for vulnerability detection,” in 
+
+Proceedings of the 31st ACM SIGSOFT International Symposium on Software Testing and Analysis (ISSTA) . ACM, 2022, pp. 215–227. [26] S. Wagner, J. Jurjens, C. Koller, and P. Trischberger, “Comparing bug finding tools with reviews and tests,” in Proceedings of the 17th IFIP TC6/WG 6.1 International Conference on Testing of Communicating Systems (TestCom) . Springer, 2005, pp. 40–55. [27] K. Li, S. Chen, L. Fan, R. Feng, H. Liu, C. Liu, Y. Liu, and Y. Chen, “Comparison and evaluation on static application security testing (SAST) tools for Java,” in Proceedings of the 31st ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering (ESEC/FSE) . ACM, 2023, pp. 921–933. [28] Q. Hanam, L. Tan, R. Holmes, and P. Lam, “Finding patterns in static analysis alerts: Improving actionable alert ranking,” in Proceedings of the 11th Working Conference on Mining Software Repositories (MSR) .ACM, 2014, pp. 152–161. [29] O. Tripp, S. Guarnieri, M. Pistoia, and A. Aravkin, “ALETHEIA: Improving the usability of static security analysis,” in Proceedings of the 2014 ACM SIGSAC Conference on Computer and Communications Security (CCS) . ACM, 2014, pp. 762–774. [30] J. R. Ruthruff, J. Penix, J. D. Morgenthaler, S. Elbaum, and G. Rother-mel, “Predicting accurate and actionable static analysis warnings: An experimental approach,” in Proceedings of the 30th International Con-ference on Software Engineering (ICSE) . ACM, 2008, pp. 341–350. [31] U. Y¨ uksel and H. S¨ ozer, “Automated classification of static code analysis alerts: A case study,” in Proceedings of the 13th IEEE International Conference on Software Maintenance (ICSM) . IEEE, 2013, pp. 532– 535. [32] U. Koc, P. Saadatpanah, J. S. Foster, and A. A. Porter, “Learning a classifier for false positive error reports emitted by static code analysis tools,” in Proceedings of the 1st ACM SIGPLAN International Workshop on Machine Learning and Programming Languages (MAPL) . ACM, 2017, pp. 35–42. [33] S. Wang, T. Liu, J. Nam, and L. Tan, “Is there a “golden” feature set for static warning identification? an experimental evaluation,” in Pro-ceedings of the 12th ACM/IEEE International Symposium on Empirical Software Engineering and Measurement (ESEM) . ACM, 2018. [34] H. Liu, J. Zhang, C. Zhang, X. Zhang, K. Li, S. Chen, S.-W. Lin, Y. Chen, X. Li, and Y. Liu, “DeepFWI: Identifying bug-sensitive warnings with multi-modal code-warning semantics,” IEEE Transactions on Software Engineering , pp. 1–17, 2026. [35] R. Mangal, X. Zhang, A. V. Nori, and M. Naik, “A user-guided approach to program analysis,” in Proceedings of the 2015 10th Joint Meeting on Foundations of Software Engineering (FSE) . ACM, 2015, pp. 462–473. [36] M. Raghothaman, S. Kulkarni, K. Heo, and M. Naik, “User-guided program reasoning using Bayesian inference,” in Proceedings of the 39th ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI) . ACM, 2018, pp. 722–735. [37] Z. Feng, D. Guo, D. Tang, N. Duan, X. Feng, M. Gong, L. Shou, B. Qin, T. Liu, D. Jiang, and M. Zhou, “CodeBERT: A pre-trained model for programming and natural languages,” in Findings of the Association for Computational Linguistics: EMNLP 2020 , 2020, pp. 1536–1547. [38] Y. Zhou, S. Liu, J. Siow, X. Du, and Y. Liu, “Devign: Effective vulner-ability identification by learning comprehensive program semantics via graph neural networks,” in Advances in Neural Information Processing Systems (NeurIPS) , vol. 32, 2019. [39] M. Fu and C. Tantithamthavorn, “LineVul: A transformer-based line-level vulnerability prediction,” in Proceedings of the 19th International Conference on Mining Software Repositories (MSR) . ACM, 2022, pp. 608–620. [40] Z. Li, D. Zou, S. Xu, X. Ou, H. Jin, S. Wang, Z. Deng, and Y. Zhong, “VulDeePecker: A deep learning-based system for vulnerability detec-tion,” in Proceedings of the 25th Annual Network and Distributed System Security Symposium (NDSS) , 2018. [41] Y. Chen, Y. Ding, Z. Bhatt, D. Wagner, and B. Ray, “DiverseVul: A new vulnerable source code dataset for deep learning based vulnerability detection,” in Proceedings of the 26th International Symposium on Research in Attacks, Intrusions and Defenses (RAID) , 2023, pp. 654– 668. [42] C. Thapa, S. I. Jang, M. E. Ahmed, S. Camtepe, J. Piber, and S. Nepal, “Transformer-based language models for software vulnerability detec-tion,” in Proceedings of the 38th Annual Computer Security Applications Conference (ACSAC) . ACM, 2022, pp. 481–496. [43] H. Pearce, B. Ahmad, B. Tan, B. Dolan-Gavitt, and R. Karri, “Examining zero-shot vulnerability repair with large language models,” in Proceed-ings of the 2023 IEEE Symposium on Security and Privacy (S&P) .IEEE, 2023, pp. 2339–2356. [44] B. Steenhoek, M. M. Rahman, M. K. Roy, M. S. Alam, H. Tong, S. Das, E. T. Barr, and W. Le, “To err is machine: Vulnerability detection challenges LLM reasoning,” arXiv preprint arXiv:2403.17218 , 2024.

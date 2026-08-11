@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-10</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-11</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 9 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 11 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>6</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-10 21:08:00 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-11 21:29:17 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共读9篇，2篇精读、7篇速读，聚焦AI安全与漏洞检测。最值得关注：仓库级漏洞注入框架CyberForge用于训练安全Agent，以及反编译可执行性统计助力IoT漏洞发现。建议优先精读这两篇，了解自动化漏洞训练与检测的最新手段。</p>
+<p>今日处理11篇论文，精读6篇，聚焦硬件安全与LLM辅助设计验证领域。最值得关注的是Apple Silicon系统级缓存侧信道攻击（9.0分）与LLM检测修复Verilog漏洞（8.0分）两篇。建议优先精读这两篇高分研究，同时可速览分支预测攻击的RTL检测框架。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">6 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CyberForge: Verified Vulnerability Injection at Repository Level for Cybersecurity Agent Training">CyberForge: Verified Vulnerability Injection at Repository Level for Cybersecurity Agent Training</span></li><li><span class="dpr-home-dashboard-paper-title" title="Statistical Analysis of Executability and Program Equivalence in Decompilation for IoT Vulnerability Detection">Statistical Analysis of Executability and Program Equivalence in Decompilation for IoT Vulnerability Detection</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SLAC: Access-Driven CPU-to-GPU Side-channel Attacks via System-Level Cache on Apple Silicon">SLAC: Access-Driven CPU-to-GPU Side-channel Attacks via System-Level Cache on Apple Silicon</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Velosiraptor: Code Synthesis for Memory Translation">Velosiraptor: Code Synthesis for Memory Translation</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">7 篇</strong>
+    <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Technical Report: A Formal Semantics for Java Symbolic Evaluation using Large-Block Encoding">Technical Report: A Formal Semantics for Java Symbolic Evaluation using Large-Block Encoding</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Canonicalization Failures as a Recurring Vulnerability Class: Representation Divergence in Cryptographic Systems and Its Avoidance">Canonicalization Failures as a Recurring Vulnerability Class: Representation Divergence in Cryptographic Systems and Its Avoidance</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="ANTMAN: An Efficient and Interpretable RTL-Level Run-Time Detection Framework for Stealthy Branch Predictor Attacks on BOOM">ANTMAN: An Efficient and Interpretable RTL-Level Run-Time Detection Framework for Stealthy Branch Predictor Attacks on BOOM</span></li><li><span class="dpr-home-dashboard-paper-title" title="Sound Enforcement of Dynamic Release Information Flow Policy-Full Version">Sound Enforcement of Dynamic Release Information Flow Policy-Full Version</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Runnable to Verifiable: An Independent Reproducibility Study of LLM/Agent-Driven Vulnerability Validation Artifacts">From Runnable to Verifiable: An Independent Reproducibility Study of LLM/Agent-Driven Vulnerability Validation Artifacts</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>
 </div>
 
