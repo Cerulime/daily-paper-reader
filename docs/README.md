@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-11</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-12</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 11 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>6</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>4</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>0</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-11 21:29:17 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-12 20:09:13 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日处理11篇论文，精读6篇，聚焦硬件安全与LLM辅助设计验证领域。最值得关注的是Apple Silicon系统级缓存侧信道攻击（9.0分）与LLM检测修复Verilog漏洞（8.0分）两篇。建议优先精读这两篇高分研究，同时可速览分支预测攻击的RTL检测框架。</p>
+<p>今日精读4篇论文，聚焦二进制安全与硬件安全两大方向。最值得关注的是N2NMatcher（9.0分）提出抗内联的二进制分解与模块匹配方法，以及LLM辅助Verilog硬件漏洞检测与修复（8.0分）。建议普通读者优先浏览这两篇，后续可结合源码或复现实验加深理解。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">6 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SLAC: Access-Driven CPU-to-GPU Side-channel Attacks via System-Level Cache on Apple Silicon">SLAC: Access-Driven CPU-to-GPU Side-channel Attacks via System-Level Cache on Apple Silicon</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Velosiraptor: Code Synthesis for Memory Translation">Velosiraptor: Code Synthesis for Memory Translation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="N2NMatcher: Towards Inlining-Resilient Binary Decomposition and Module Matching">N2NMatcher: Towards Inlining-Resilient Binary Decomposition and Module Matching</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Synthesizing Probabilistic Saturating Counters with Differentially Private Formal Guarantees">Synthesizing Probabilistic Saturating Counters with Differentially Private Formal Guarantees</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">5 篇</strong>
+    <strong class="dpr-home-dashboard-count">0 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="ANTMAN: An Efficient and Interpretable RTL-Level Run-Time Detection Framework for Stealthy Branch Predictor Attacks on BOOM">ANTMAN: An Efficient and Interpretable RTL-Level Run-Time Detection Framework for Stealthy Branch Predictor Attacks on BOOM</span></li><li><span class="dpr-home-dashboard-paper-title" title="Sound Enforcement of Dynamic Release Information Flow Policy-Full Version">Sound Enforcement of Dynamic Release Information Flow Policy-Full Version</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Runnable to Verifiable: An Independent Reproducibility Study of LLM/Agent-Driven Vulnerability Validation Artifacts">From Runnable to Verifiable: An Independent Reproducibility Study of LLM/Agent-Driven Vulnerability Validation Artifacts</span></li></ul>
+<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
+
 </section>
 </div>
 
