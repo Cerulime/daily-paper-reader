@@ -1,0 +1,466 @@
+Title: Generics-Aware Fuzz Target Generation for Rust Libraries via Structured API Analysis
+
+URL Source: https://arxiv.org/pdf/2608.08637v1
+
+Published Time: Tue, 11 Aug 2026 01:16:13 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Generics-Aware Fuzz Target Generation for Rust Libraries via Structured API Analysis 
+
+Yiming Chen 1[0009 −0007 −7021 −365 X], Kaiwen Zhang 1[0000 −0003 −4573 −8968] ,Guanjun Liu 1[0000 −0002 −7523 −4827] , Xiaofeng Li 2, and Xiaogang Dong 2 
+
+> 1
+
+School of Computer Science and Technology, Tongji University, Shanghai, China 
+
+{chenyiming2024,zhangkw,liuguanjun}@tongji.edu.cn  
+
+> 2
+
+Beijing Institute of Control Engineering, Beijing, China li_x_feng@126.com, dongxiaogang@263.net 
+
+Abstract. Fuzzing Rust library APIs requires constructing well-typed, compilable call sequences that satisfy ownership rules, generic param-eters, and trait bounds; existing tools ignore these constraints or use shallow heuristics, yielding low coverage. We present GRAFT, which ex-tracts structured API information from Rust documentation, builds an API dependency graph via recursive generics-aware type matching, and uses topology-guided traversal plus LLM synthesis with compiler-error feedback to produce compilable fuzz targets. On 13 crates from crates.io ,GRAFT achieves 80.75% macro-average API coverage at 96.19% compi-lation success, outperforming RULF and RPG by 4.76 × and 2.43 ×, and reaching 1.41 × the average API coverage of deepSURF on crates with unsafe-reaching APIs. 
+
+Keywords: fuzz target generation · Rust · generics-aware type matching · API dependency graph · large language models · software testing 
+
+1 Introduction 
+
+Rust is increasingly adopted for safety-critical systems due to its compile-time guarantees on memory safety and data race freedom [13, 23], and library fuzzing is widely used to detect bugs that arise despite these guarantees [36, 28, 41]. Rust library fuzzing is challenging, however, because valid fuzz targets must construct API sequences that simultaneously satisfy ownership rules, generic type parameters, and trait bounds. Generating inputs for individual functions in isolation fails to capture inter-API dependencies: effective testing requires sequences of mutually-dependent calls in which each invocation produces type-consistent values consumed by later calls. Existing tools either ignore generic type relationships entirely or rely on shallow heuristics, resulting in low API coverage and generation failures on complex generic crates [17, 37]. To address this challenge, we present Generics-aware Rust API Fuzz Target generator (GRAFT). GRAFT employs a three-stage pipeline: (1) structured API analysis extracts type requirements—including generic parameters, trait bounds, and return types—from Rust documentation; (2) a generics-aware recursive type arXiv:2608.08637v1 [cs.SE] 9 Aug 2026 2 Y. Chen et al. 
+
+matching algorithm determines which API outputs are type-compatible with which parameters, yielding a directed API dependency graph; and (3) a large language model (LLM) [8] translates topology-guided sequences from this graph into compilable fuzz targets, with failed compilations iteratively refined using compiler error feedback. In summary, this paper makes the following contributions: (1) We propose a generics-aware recursive type matching algorithm that explic-itly resolves generic parameters, trait bounds, and composite type structures, and tracks constraint satisfaction across API call boundaries to determine whether an API output can serve as a parameter of a given type. (2) Based on this algorithm, we design a directed API dependency graph and a topology-guided API call sequence generation procedure that targets maxi-mum API-level coverage. (3) We implement the proposed approach in GRAFT and evaluate it on 13 real-world Rust libraries sourced from crates.io . GRAFT achieves a macro-average API coverage of 80.75% and a macro-average compilation success rate of 96.19%. On the eight crates where GRAFT, RULF, and RPG all produce runnable fuzz targets, GRAFT achieves 4.76 × and 2.43 × the av-erage API coverage of RULF and RPG, respectively. On the eight crates with unsafe-reaching APIs, GRAFT outperforms deepSURF—a concurrent LLM-augmented tool targeting memory-safety vulnerability detection—by 1.41 × in average API coverage. 
+
+2 Background and Motivation 
+
+2.1 The Rust Programming Language 
+
+Rust is a modern systems programming language designed to provide strong memory safety guarantees without relying on garbage collection. Unlike tradi-tional systems languages such as C and C++, Rust enforces memory safety through a combination of ownership, borrowing, and lifetime rules that are stat-ically checked at compile time. These mechanisms regulate aliasing, mutation, and resource lifetimes in a disciplined manner, significantly reducing the likeli-hood of common memory safety errors [19, 18]. To support low-level systems programming and interoperability, Rust pro-vides an unsafe mechanism that allows developers to bypass certain compile-time checks. Code marked as unsafe may perform operations such as raw pointer manipulation, manual memory management, or foreign function interface calls, which are beyond the guarantees enforced by the Rust type system. Although 
+
+unsafe code is intended to be used sparingly and encapsulated behind safe ab-stractions, incorrect usage can still lead to memory-related vulnerabilities in practice [13, 36]. As a result, memory-related bugs can still arise in real-world Rust software. In addition to its ownership model, Rust features a highly expressive type system underlying both its safety guarantees and zero-cost abstractions. Rust ex-tensively relies on generics to enable reusable and zero-cost abstractions. These Generics-Aware Fuzz Target Generation for Rust Libraries 3
+
+generics include type generics, lifetime generics, and constant generics, often com-bined with trait bounds to constrain permissible instantiations. Such rich type constructs enable powerful abstractions but also introduce significant complexity for program analysis and automated test generation [17, 37]. 
+
+2.2 Motivating Example  
+
+> pub trait Element {} impl Element for u8 {} impl Element for i32 {} pub struct Buffer<T: Element> { ptr: NonNull<T>, len: usize, }impl<T: Element> Buffer<T> { pub fn new(slice: &mut [T]) -> Self { Self { ptr: NonNull::new(slice.as_mut_ptr()).unwrap(), len: slice.len(), }}pub unsafe fn get_unchecked(&self, index: usize) -> &T { &*self.ptr.as_ptr().add(index) }}pub fn read_element<T: Element>(buf: &Buffer<T>, index: usize) -> &T { unsafe { buf.get_unchecked(index) } }
+> Listing 1.1. A generic Rust example with trait bounds and unsafe code
+
+Listing 1.1 shows a generic buffer Buffer<T> with bound T: Element and an 
+
+unsafe method get_unchecked . Fuzzing read_element<T> requires a &Buffer<T> 
+
+from Buffer::new (itself needing &mut [T] with T: Element ): T and the trait bound must stay consistent across calls, so no API can be fuzzed in isolation. Shallow generators that ignore these multi-call dependencies cannot build such sequences. As illustrated in Figure 1, GRAFT addresses this gap by constructing a generics-aware API dependency graph. The blue edges are generics-aware type-flow edges that remain undiscovered under purely syntactic matching. Because GRAFT prefers deeper nodes during traversal, it recovers the green call chain 
+
+Buffer::new → &self → get_unchecked → &Buffer<T> → read_element , exer-cising all three APIs. Without generics-aware matching, no typed producer of 
+
+&Buffer<T> is found and read_element remains unreachable. 4 Y. Chen et al. 
+
+Fig. 1. API dependency graph generated by GRAFT for Listing 1.1, annotated with additional information. GRAFT Target rust crate 
+
+> (source code)
+> Rust standard library
+> (same analysis)
+> cargo doc --output-format json Deserialize JSON
+> into structured API info
+
+Rust documentation analysis Structured API info 
+
+> signatures, generics, trait bounds, consts, type definitions
+
+Generics-aware type matching Recursive type matching 
+
+> per API pair refs, primitives, generics, trait objects, paths; unsupported forms conservatively -> false
+> Type compatibility relations
+> boolean matrix / edge set
+
+API dependency graph construction Build directed heterogeneous graph  
+
+> nodes: constant, parameter, function edges: belongs-to, type-match
+> API dependency graph Depth calculation
+> queue propagation;
+> ≥1 predecessor satisfied
+> Topology-guided traversal
+> low usage first; tie-break by larger depth
+> Transient type pool
+> immutable-borrow reuse; discarded after each sequence
+> Global usage count
+> persists across sequences (never reset)
+
+API sequence generation 
+
+> build sequence in reverse, then flip to execution order
+> API call sequences
+> signature, doc comments, module path, safety annotation
+
+LLM-based fuzz target synthesis Encode as one-shot prompt LLM: generate fuzz target   
+
+> Qwen3.5-Plus
+> cargo build
+> + AFL++ instrumentation
+> Build succeeds? LLM: generate initial fuzzing seeds yes Inject compiler errors
+> into repair prompt (retry ≤3×)
+> no Fuzzing seed files
+> LLM-generated seeds
+> Fuzz target binary
+> compiled .rs target
+> AFL++
+> coverage-guided fuzzing
+> Coverage collection
+> LLVM instrument-coverage + llvm-cov
+> bugs found
+
+Fig. 2. Overview of GRAFT 
+
+3 Approach 
+
+3.1 Overall Framework 
+
+GRAFT is a generics-aware fuzz target generation framework for Rust libraries that automatically produces compilable fuzz targets and initial seeds for use with coverage-guided fuzzers such as AFL++ [14]. As illustrated in Figure 2, the framework consists of five stages. 
+
+– Rust Documentation Analysis. GRAFT invokes cargo doc to obtain a struc-tured, compiler-produced view of the crate’s public API surface. It extracts function signatures, generic parameters, trait bounds, public constants, and type definitions, preserving all information in structured form to support precise reasoning in later stages. 
+
+– Generics-aware Type Matching. For each pair of APIs, GRAFT determines whether the output of one API can satisfy a parameter of another via a recursive type matching algorithm. The algorithm handles references, prim-itives, generic parameters, trait objects, and resolved path types, and con-servatively returns ⊥ for unsupported forms to avoid introducing infeasible dependencies. 
+
+– API Dependency Graph Construction. Based on the type matching results, GRAFT builds a directed heterogeneous graph whose nodes represent pub-lic constants, function parameters, and functions, and whose edges encode parameter ownership and type-compatible value-flow relationships among APIs. 
+
+– API Sequence Generation. Guided by the dependency graph, GRAFT gen-erates type-consistent API call sequences using a topology-guided traversal strategy. APIs are prioritized first by usage count and then by dependency depth to maximize API-level coverage, and a transient type pool enables value reuse for immutable-borrow parameters. Generics-Aware Fuzz Target Generation for Rust Libraries 5
+
+– LLM-based Fuzz Target Synthesis. Each API sequence is translated into a self-contained, compilable Rust fuzz target by a large language model [8]. The LLM resolves type instantiations, ownership patterns, and necessary bind-ing code, and is retried on compilation failure with compiler error feedback. Initial fuzzing seeds are generated alongside each target. 
+
+3.2 Rust Documentation Analysis 
+
+GRAFT builds its analysis on top of Rust’s official documentation infrastructure. Given a target crate, GRAFT invokes cargo doc with JSON output enabled and deserializes the result into a structured rustdoc_types::Crate object, provid-ing a compiler-produced view of the crate’s public API surface. For each public function or method, GRAFT records its parameter list, return type, generic pa-rameters, and declared trait bounds; public types are collected with their generic parameters and implemented traits; and public constants are recorded as poten-tial value sources. The same pipeline is applied to the Rust standard library for commonly used standard types. All type information is preserved in its structured rustdoc_types 
+
+form rather than reduced to textual signatures, enabling precise reasoning about nested generic instantiations in later stages. 
+
+3.3 Generics-aware Type Matching 
+
+Determining whether one API’s output can feed another is non-trivial in Rust because generics and trait bounds are pervasive. GRAFT addresses this with a generics-aware recursive type matching algorithm. 
+
+Definition 1 (Type Compatibility). Let from and to be Rust types drawn from the public API surface of a crate. from is type-compatible with to , written 
+
+Match (from , to ) = ⊤, if a value of type from can serve as an argument for a parameter of type to . Match is a conservative approximation: it returns ⊥
+
+whenever compatibility cannot be established with confidence, to avoid introducing infeasible API dependencies. 
+
+For each source–target API pair, a checker is parameterized by both APIs’ generic parameters and trait bounds (including those inherited from enclosing 
+
+struct /enum /impl blocks) and a global type pool of definitions and imple-mented traits. It recurses on to : wrappers (references, slices, arrays, pointers) are stripped; generic/ impl /dyn targets require all trait bounds of from to hold; resolved-path types use structural equality; unsupported forms yield ⊥. Table 1 summarizes these rules. Trait-bound checks query the type pool (std impls for primitives, documented impls for resolved paths, recursive handling for composites) and succeed only when every required bound of to is matched by name and recursively compatible type arguments. The implementation covers inline bounds and simple where T: Trait predicates, but not associated-type predicates, trait aliases, negative/auto-trait reasoning, or higher-ranked lifetimes; such cases fail conservatively (possible false negatives). 6 Y. Chen et al. 
+
+Table 1. Summary of generics-aware type matching rules.               
+
+> Target Type (to )Source Type (from )Matching Strategy Reference / Slice / Array / Pointer Any Recursively match inner type Primitive parameter External fuzz input Satisfied directly; no producer edge Generic / impl /
+> dyn trait Any Check required trait bounds Resolved path Resolved path Structural equality Tuple (single non-primitive) Any Match non-primitive element Unsupported forms Any Conservatively fail
+
+3.4 API Dependency Graph Construction Definition 2 (API Dependency Graph). The API dependency graph is a directed heterogeneous graph G = ( V, E ) over a crate’s public API surface. The node set V = Vc ∪ Vp ∪ Vf comprises public constant nodes Vc, function parameter nodes Vp, and function nodes Vf (methods are treated uniformly as functions; type definitions are not graph nodes). The edge set E = Eown ∪ Eflow 
+
+comprises: 
+
+– parameter ownership edges Eown ⊆ Vp × Vf , connecting each parameter node to its owning function; and 
+
+– type-flow edges Eflow ⊆ (Vc∪Vf )×Vp, where (v, p ) ∈ Eflow iff Match (τ (v), τ (p)) = 
+
+⊤ (Definition 1), with τ (·) denoting the associated type: the return type for 
+
+v ∈ Vf , the parameter type for p ∈ Vp, and the declared type for v ∈ Vc.In the implementation, τ (v) for v ∈ Vf denotes the unwrapped return type: 
+
+Result<T, E> and Option<T> are expanded to their inner type T ; tuple and 
+
+Box wrappers are handled as composite types per Definition 1. 
+
+A function node f ∈ Vf is reachable in G if 
+
+∀ p ∈ p′ ∈ Vp | (p′, f ) ∈ Eown ,
+
+prim( τ (p)) ∨ ∃ v ∈  Vc ∪ (Vf \ { f }) : ( v, p ) ∈ Eflow ,
+
+where prim( τ (p)) holds when τ (p) is a primitive type whose values are directly supplied by the fuzzer without a producer API, and f is excluded from the pro-ducer set to avoid circular self-dependency. Such edges represent type-compatible candidate value flows; they do not by themselves guarantee that borrowing, own-ership transfer, or moves are realizable in Rust code. Figure 1 instantiates this construction on the motivating Buffer<T> example: Buffer::new feeds param-eters requiring &Buffer<T> with consistent T , while per-sequence usage bounds control cycles. 
+
+3.5 API Sequence Generation Definition 3 (API-Level Coverage). Given G = ( V, E ) (Definition 2), a sequence s = ( f1, . . . , f k) ∈ V + 
+
+> f
+
+is type-consistent if for every fi and each pa-Generics-Aware Fuzz Target Generation for Rust Libraries 7
+
+rameter p of fi:
+
+prim( τ (p)) ∨ ∃ c ∈ Vc : ( c, p ) ∈ Eflow 
+
+∨ ∃ j < i : Match (τ (fj ), τ (p)) = ⊤,
+
+where Match is as in Definition 1. Let S be a set of type-consistent sequences. The API-level coverage of S is: 
+
+Cov( S) = |{ f ∈ Vf : ∃ s ∈ S , f ∈ s}| |Vf |
+
+GRAFT maximizes API-level coverage by generating type-consistent sequences via topology-guided traversal. Each reachable function gets a depth : d(v) = 
+
+d(f ) = 0 for constants and all-primitive APIs; otherwise 
+
+d(f ) = max    
+
+> p: ( p,f )∈Eown
+> ¬prim( τ(p))
+
+min 
+
+> v: ( v,p )∈Eflow
+
+ d(v) + 1 .
+
+Unreachable nodes have undefined depth and are excluded from target selection. Depth is computed by queue propagation (a parameter needs any predecessor; an API needs all parameters), rather than a classical topological sort. Algorithm 1 constructs one sequence. Targets are chosen by low global usage, then high depth; a per-sequence bound B guarantees termination. Construction proceeds backward from the target: primitives are skipped, immutable-borrow needs may reuse a transient type pool, and other parameters enqueue a least-used producer under B. The collected list is reversed so producers precede consumers. An outer driver repeats the procedure until a coverage quota or a requested sequence count is met. Each sequence carries signatures, docs, module paths, and safety qualifiers for LLM synthesis. On Figure 1, the green edges depict the recovered chain Buffer::new →
+
+&self → get_unchecked → &Buffer<T> → read_element .
+
+3.6 LLM-based Fuzz Target Synthesis 
+
+GRAFT uses an LLM [8] only to concretize sequences into compilable fuzz targets and seeds; sequence choice and coverage decisions remain graph-driven. Each sequence is encoded as a one-shot JSON prompt (signatures with generic-s/bounds, docs, module paths; no bodies). Three templates cover generation, re-pair (compiler errors after failed builds), and seed input synthesis; exact prompts are in the artifact. Experiments use qwen3.5-plus via DashScope (tempera-ture 0.0, 8192-token cap). The model emits a self-contained AFL++-ready pro-gram [14]; on failure, repair retries up to three times. Seeds are written as a JSON-derived corpus into the fuzzer input directory. 
+
+4 Evaluation 
+
+4.1 Evaluation Setup 
+
+Environment. All experiments are conducted on a server equipped with two Intel Xeon Silver 4314 processors (16 cores / 32 threads each, 2.40 GHz base, 3.40 GHz 8 Y. Chen et al. 
+
+Algorithm 1: Heuristic API Sequence Generation with Type Pool                                                                             
+
+> Input: API dependency graph Gwith API depths, maximum per-sequence usage bound B
+> Output: Candidate API call sequence S
+> if a target API is specified then
+> a←specified target API;
+> else
+> a←API with minimum usage count and maximum depth; Initialize sequence S←[a];Initialize empty type pool P;Initialize queue Q←[a];Initialize per-sequence usage counter C[x]←0for each API x;Increment global usage count of aand set C[a]←1;
+> while Qis not empty do
+> Pop an API ufrom Q;
+> foreach parameter pof udo if pis primitive-typed then
+> continue;
+> else if prequires only an immutable reference and a compatible producer exists in Pthen
+> continue; Select a value-producing API bthat can satisfy p, with minimum global usage count and C[b]< B ;
+> if such a producer exists then
+> Add bto Sand Q;Increment global usage count of band set C[b]←C[b] + 1 ;
+> if prequires only an immutable reference then
+> Add bto P;
+> else
+> Mark punresolved in the current pass and continue; Reverse S;
+> return S;
+
+boost) and 128 GB RAM, running Rocky Linux 9.7. The implementation uses Rust stable 1.94.1 and nightly 1.97.0-nightly, AFL++ 4.40c through afl.rs ,and clang/LLVM 20.1.8. GRAFT uses qwen3.5-plus through the DashScope OpenAI-compatible API for fuzz target synthesis. The artifact package includes raw command lines for all pipeline stages. 
+
+Benchmark Crates. We evaluate GRAFT on 13 widely-used Rust libraries sourced from crates.io , covering diverse application domains including encoding ( base64 ,
+
+byteorder ), Unicode processing ( unicode-segmentation , idna ), data struc-tures ( fixedbitset , bumpalo ), serialization ( csv ), date and time handling ( chrono ,
+
+time ), byte manipulation ( bytes ), and text processing ( regex , ryu , autocfg ). These crates span a wide range of API set sizes (5 to 518 public APIs) and com-plexity levels, and include crates on which both RULF and RPG are known to fail or underperform. The evaluated versions are base64 0.22.1, bumpalo 3.20.2, 
+
+byteorder 1.5.0, autocfg 1.5.0, fixedbitset 0.5.7, idna 1.1.0, regex 1.12.3, 
+
+ryu 1.0.23, time 0.3.47, unicode-segmentation 1.13.2, chrono 0.4.44, bytes 
+
+1.11.1, and csv 1.4.0. All crates are evaluated with their default feature sets. 
+
+Baselines. We compare GRAFT against three baselines. RULF [17] generates fuzz targets via API dependency graph traversal (up to 10 targets per crate). RPG [37] employs a pool-based BFS strategy with generic support (up to 300 Generics-Aware Fuzz Target Generation for Rust Libraries 9
+
+targets per crate). deepSURF [2] is a concurrent LLM-augmented Rust fuzzing tool that uses a custom compiler plugin ( rustc_surf ) to identify unsafe-reaching APIs (URAPIs) and generates fuzz targets targeting those APIs; it is designed for memory-safety vulnerability detection rather than broad API coverage. For the deepSURF comparison, we use the same crate versions, LLM backend ( qwen3.5-plus 
+
+via DashScope), coverage measurement methodology, and fuzzing budget (3 hours per fuzz target with AFL++) as GRAFT. 
+
+Metrics. We measure two primary metrics: (1) compilation success rate , defined as the proportion of generated fuzz targets that compile successfully, and (2) API coverage rate , defined as the proportion of public APIs in a crate that are exer-cised by at least one compiled fuzz target. The API denominator is derived from the rustdoc-extracted public API surface after two filtering steps. filter_api() 
+
+removes 28 universally-implemented methods by name—type conversions ( into ,
+
+from , try_into , try_from ), operator overloads ( add , bit_and , etc.), iterator adapters ( iter , into_iter ), and serde helpers ( serialize , deserialize )—as these reflect uniform language-level behavior rather than library-specific func-tionality; type conversions among these are handled implicitly by the LLM dur-ing synthesis. filter_types() removes enums that represent error types, as these serve as return types rather than callable API entry points. Across all 13 benchmark crates, filtering reduces the API count from 4,258 to 1,745 (59.02% re-moved). To confirm that this does not inflate coverage numbers, GRAFT’s depen-dency graph connects 3,853 of the 4,258 unfiltered APIs (90.49% graph reachabil-ity) even without filtering; actual post-synthesis coverage on the unfiltered sur-face would be slightly lower due to LLM compilation failures, but the graph struc-ture demonstrates that the approach is effective across the full unfiltered API surface. Re-exported public items, trait-implementation methods, and macro-generated public APIs are counted whenever rustdoc exposes them in the crate’s public interface. Coverage is measured using LLVM’s instrument-coverage in-strumentation together with llvm-cov export . Each compiled fuzz target is fuzzed with AFL++ [14] for 3 hours; post-fuzzing API coverage is computed by replaying the accumulated corpus through LLVM-instrumented binaries, follow-ing the same methodology as the baselines. GRAFT targets the fuzz target generation problem: given a Rust library, au-tomatically produce compilable, type-correct fuzz targets with broad API cov-erage. Consistent with RULF [17] and RPG [37]—the closest prior tools—we evaluate on compilation success rate and API coverage as direct measures of target quality; bug-finding effectiveness is a downstream property of coverage breadth, discussed further in the threats to validity section. The experiments address the following research questions: 
+
+RQ1. How effective is GRAFT in generating compilable fuzz targets with high API coverage? 
+
+RQ2. What is the contribution of each component of GRAFT to fuzz target qual-ity? 
+
+RQ3. How does GRAFT compare to state-of-the-art approaches RULF [17], RPG [37], and deepSURF [2] in terms of API coverage? 10 Y. Chen et al. 
+
+Table 2. Fuzz target quality of GRAFT on 13 benchmark crates.                                                                            
+
+> Crate Targets Compiled Comp.% Covered API Cov.%
+> ryu 66100.00% 5/5 100.00% bumpalo 24 24 100.00% 44/44 100.00% base64 23 23 100.00% 24/26 92.31% regex 150 142 94.67% 183/210 87.14% idna 10 10 100.00% 15/18 83.33% fixedbitset 60 57 95.00% 75/91 82.42% chrono 534 524 98.13% 404/518 77.99% time 381 375 98.43% 316/409 77.26% csv 43 35 81.40% 113/148 76.35% autocfg 51 51 100.00% 23/31 74.19% bytes 109 105 96.33% 108/152 71.05% unicode-segmentation 24 24 100.00% 23/35 65.71% byteorder 52 45 86.54% 36/58 62.07%
+> Macro average ––96.19% –80.75%
+
+4.2 RQ1: Quality of Generated Fuzz Targets 
+
+Table 2 presents the compilation success rates and API coverage rates achieved by GRAFT across all 13 benchmark crates. Overall, GRAFT generates 1467 fuzz targets in total, of which 1421 compile successfully, corresponding to a micro-average compilation success rate of 96.86%. At the crate level, the macro-average compilation success rate is 96.19%. API coverage ranges from 62.07% (byteorder ) to 100% ( ryu and bumpalo ), with a macro-average of 80.75% across all 13 crates. The compilation success rate exceeds 94% for 10 of the 13 crates; the two outliers— csv (81.40%) and byteorder (86.54%)—involve complex generic trait bounds and type conversions that occasionally require more than the allotted retry budget to resolve. In terms of API coverage, GRAFT achieves 100% coverage for ryu and 
+
+bumpalo and above 90% for base64 and regex . Even for the largest crate in the benchmark ( chrono , 518 public APIs), GRAFT covers 77.99% of APIs. The generics-aware type matching algorithm and dependency-guided traversal strat-egy enable GRAFT to reach APIs that are only accessible through specific se-quences of type-constrained calls. 
+
+4.3 RQ2: Ablation Study 
+
+To assess the individual contribution of each structural component, we evalu-ate three degraded variants of GRAFT on five representative crates ( base64 ,
+
+byteorder , fixedbitset , time , regex ), generating 20 fuzz targets per crate and fuzzing each for one hour with AFL++ [14]. 
+
+– w/o generic matching : The generics-aware type matching is replaced by syntactic equality; generic parameters, trait objects, and impl Trait bounds are not resolved. 
+
+– random sequence assembly : The dependency graph is still constructed, but API sequences are assembled by random sampling rather than graph-guided traversal, so type compatibility between consecutive calls is not guar-anteed. Generics-Aware Fuzz Target Generation for Rust Libraries 11 
+
+Table 3. API coverage (%) of GRAFT and ablation variants.                               
+
+> Crate GRAFT w/o generic random seq. assembly w/o topo
+> base64 92.31 61.54 69.23 80.77 byteorder 24.14 12.07 20.69 8.62 fixedbitset 56.04 15.38 48.35 35.16 time 49.88 35.70 11.00 40.34 regex 52.38 14.29 36.67 41.90
+> Average 54.95 27.80 37.19 41.36 base64 byteorder fixedbitset time regex
+> 020 40 60 80 100
+> API Coverage (%)
+> GRAFT (full) w/o generic matching random sequence assembly w/o topo traversal
+
+Fig. 3. API coverage of GRAFT and ablation variants across five benchmark crates. Dashed lines indicate per-variant averages. 
+
+– w/o topo traversal : The dependency graph is used, but the topology-guided target selection (prioritizing APIs by dependency depth and usage count) is replaced by random selection. 
+
+Impact on dependency graph structure. Disabling generics-aware matching drasti-cally reduces dependency graph edges: across the four crates with non-zero edges, the reduction averages 84.5%, ranging from 56.7% ( time ) to 99.97% ( regex ). The near-total collapse for regex reflects that almost all of its APIs rely on generic or trait-bounded types, leaving almost no type-compatible connections identifiable without generics-aware reasoning. 
+
+Impact on API coverage. Table 3 and Figure 3 compare the API coverage of the full GRAFT against each ablation variant. Removing any single component substantially degrades coverage. The full GRAFT achieves an average of 54.95% across the five crates, compared to 41.36% without topology-guided traversal, 37.19% with random sequence assembly, and 27.80% without generics-aware type matching. The degradation patterns differ by crate characteristics. For regex and fixedbitset ,which have high generic density, disabling generics-aware matching is the most damaging: regex drops from 52.38% to 14.29% and fixedbitset from 56.04% to 15.38%, consistent with the near-total collapse of graph edges observed for these crates. For time , whose APIs form strong construction chains, removing the dependency graph causes the sharpest drop (49.88% → 11.00%), confirming that random sequence assembly cannot satisfy the type-level ordering required to reach deep API paths. Topology-guided traversal provides a further consistent 12 Y. Chen et al. 
+
+Table 4. API coverage (%) of GRAFT, RPG, RULF, and deepSURF across 13 bench-mark crates.                                                                 
+
+> Crate GRAFT RPG RULF deepSURF
+> ryu 100.00% 0.00% —80.00% bumpalo 100.00% 40.91% 56.67% 96.67% base64 92.31% 26.92% 7.69% N/A regex 87.14% 39.05% 14.76% N/A idna 83.33% 88.89% —N/A fixedbitset 82.42% 51.65% 10.99% 80.22% chrono 77.99% —5.79% 60.04% time 77.26% 44.99% 8.41% 26.86% csv 76.35% —13.51% 50.00% autocfg 74.19% 19.35% 3.23% N/A bytes 71.05% —17.76% 51.32% unicode-seg. 65.71% 20.00% 15.62% N/A byteorder 62.07% 20.69% 17.24% 13.79%
+> Avg. (a) 80.14% 32.95% 16.83% —
+> Avg. (b) 80.89% ——57.36%
+
+Note: “—” = no runnable fuzz targets generated; “N/A” = no unsafe-reaching APIs (deepSURF skips by design). Avg. (a): 8 crates where GRAFT, RPG, and RULF all succeed. Avg. (b): 8 crates with unsafe-reaching APIs where deepSURF runs. 
+
+lift: the w/o-topo variant consistently underperforms full GRAFT across all five crates, indicating that prioritizing under-covered, deeper APIs materially im-proves coverage breadth. The three components thus contribute independently: their combined effect yields a 27.15 percentage-point improvement in average API coverage over the weakest ablation variant. 
+
+4.4 RQ3: Comparison with State-of-the-Art 
+
+Table 4 and Figure 4 compare the API coverage achieved by GRAFT, RPG [37], RULF [17], and deepSURF [2] across all 13 benchmark crates. RPG fails to pro-duce runnable targets for chrono , csv , and bytes ; RULF fails on idna and ryu .deepSURF skips five crates— base64 , regex , idna , autocfg , and unicode-segmentation —because its URAPI static analysis detects no unsafe-reaching APIs in them, reflecting deepSURF’s design focus on memory-safety vulnerability detection rather than broad API coverage. 
+
+Comparison with RULF and RPG. On the 8 crates where GRAFT, RPG, and RULF all produce runnable results, GRAFT achieves an average API coverage of 80.14%, compared to 16.83% for RULF and 32.95% for RPG—representing 4.76 × and 2.43 × the respective averages. The advantage is particularly pro-nounced on crates with complex generic APIs: for regex , GRAFT covers 87.14% of APIs versus 39.05% (RPG) and 14.76% (RULF); for fixedbitset , 82.42% versus 51.65% (RPG) and 10.99% (RULF). GRAFT is the only tool to generate runnable fuzz targets for all 13 crates; RPG fails on chrono , csv , and bytes due to compilation errors, while RULF fails on idna and ryu due to syntactic errors and private API access. The single crate where RPG marginally outperforms GRAFT is idna (88.89% vs. 83.33%), likely owing to idna ’s small API surface Generics-Aware Fuzz Target Generation for Rust Libraries 13 ryu bumpalo base64 regex idna fixedbitset chrono time csv autocfg bytes unicode-seg. byteorder 020 40 60 80 100 
+
+> API Coverage (%)
+> GRAFT RPG RULF deepSURF Failed (---) No unsafe API (N/A)
+
+Fig. 4. API coverage of GRAFT, RPG, RULF, and deepSURF across 13 benchmark crates. Hatched bars: “—” = tool failed; “N/A” = no unsafe-reaching APIs (deepSURF skips by design). 
+
+(18 APIs) and RPG’s BFS strategy achieving high coverage with simple fuzz targets. 
+
+Comparison with deepSURF. On the 8 crates with unsafe-reaching APIs where deepSURF produces results, GRAFT achieves an average API coverage of 80.89% versus 57.36% for deepSURF—a 1.41 × improvement. The gap is largest on time 
+
+(77.26% vs. 26.86%) and byteorder (62.07% vs. 13.79%), where deepSURF’s fuzz targets are constrained to APIs reachable from unsafe blocks, leaving many safe-but-important APIs uncovered. On crates with dense unsafe usage such as bumpalo (96.67%) and fixedbitset (80.22%), deepSURF performs compet-itively. On the five crates without unsafe-reaching APIs— base64 , regex , idna ,
+
+autocfg , and unicode-segmentation —deepSURF produces no fuzz targets at all, reflecting its fundamental design trade-off between unsafe-API reachability and general API coverage. 
+
+4.5 Threats to Validity 
+
+Benchmark selection. Our evaluation uses 13 widely-used crates from crates.io ,spanning multiple domains and API sizes (RQ1–RQ3), but they may not rep-resent the full diversity of Rust libraries in terms of macro-heavy codebases, specialized domains, or complex feature configurations. To mitigate this, we de-liberately included crates on which prior tools are known to fail or underperform, ensuring the benchmark is sufficiently challenging. 
+
+Baseline fairness. RULF and RPG are evaluated under their default configu-rations (RQ3); their target-generation budgets and failure modes differ from GRAFT’s, so absolute coverage comparisons should be interpreted under each tool’s reported configuration. Observed failures may stem from unsupported Rust features, synthesis limitations, or budget constraints that are difficult to disentangle without tool-internal instrumentation. To mitigate this, the deep-SURF comparison (RQ3) uses identical crate versions, LLM backend, fuzzing budget, and coverage measurement methodology across both tools. 14 Y. Chen et al. 
+
+LLM nondeterminism and API counting. GRAFT relies on an LLM for fuzz target synthesis (RQ1, RQ2); model outputs may vary across revisions and ser-vice updates, affecting compilation success and downstream API coverage. To mitigate this, we fix the model temperature to 0.0 and report results from a single fixed model version. Additionally, our API coverage metric counts only rustdoc-visible public APIs after two filtering steps; APIs exposed through re-exports, macros, or non-default features may not be captured, potentially over-or under-estimating the true coverage achievable (RQ1–RQ3). 
+
+Bug-finding scope. This evaluation measures fuzz target quality—compilability and API coverage—rather than vulnerability discovery, consistent with the eval-uation methodology of RULF [17] and RPG [37]. The benchmark crates are ma-ture, widely-used libraries in which latent bugs are unlikely to manifest within a 3-hour AFL++ session per target. A crash-oriented evaluation would require extended fuzzing budgets, bug-injection benchmarks, or evaluation on known-vulnerable library versions; we consider this complementary future work. 
+
+5 Related Work 
+
+Despite Rust’s strong safety guarantees, prior work has shown that Rust libraries may still contain bugs and security vulnerabilities [41, 23, 13, 28, 36]. Automated techniques for systematically testing such libraries are therefore needed, partic-ularly for crates that expose complex generic APIs. 
+
+5.1 Static Analysis 
+
+Static analysis detects defects without execution, using foundations such as ab-stract interpretation, data-flow analysis, model checking, and symbolic execu-tion [12, 21, 6, 11, 22]. For Rust, prior work formally models ownership and borrowing semantics [19, 18, 20] and builds practical analyzers on Rust’s Mid-level Intermediate Representation (MIR) and LLVM IR to detect undefined be-havior and unsafe misuse [24, 5, 26, 34, 25]. However, generics, trait bounds, and associated types significantly complicate static reasoning over Rust library APIs [1, 31]. 
+
+5.2 Fuzz Target Generation 
+
+Fuzz target generation focuses on constructing program entry points that enable effective fuzzing of libraries. Unlike application fuzzing, library fuzzing requires synthesizing valid API call sequences and inputs that satisfy type and semantic constraints [29]. Early approaches rely on manually written fuzz targets, which are labor-intensive and difficult to scale. Several automated approaches instead generate fuzz targets by analyzing API signatures or extracting call sequences from doc-umentation and examples [16, 35, 42]. Other approaches construct fuzz targets by reusing values across API calls to improve coverage [40, 4]. Generics-Aware Fuzz Target Generation for Rust Libraries 15 
+
+For Rust, RULF generates fuzz targets by leveraging Rust’s type system and randomized API invocation strategies, enabling coverage-guided fuzzing of Rust libraries [17]. Its Rust-specific fuzz target generation strategy makes it a strong baseline for library fuzzing, but our evaluation shows that it can still suffer from low coverage on highly generic crates and from generation failures on some targets. RPG further introduces a pool-based fuzz target generation method that incrementally constructs fuzz targets by reusing previously gener-ated values, improving public API coverage [37]. Compared with RULF, RPG offers stronger value reuse and generic support in practice, and it even slightly outperforms GRAFT on idna in our evaluation; however, our experiments also show crate-level failures on several harder libraries. deepSURF [2] is a concur-rent LLM-augmented Rust fuzzing tool that employs a custom compiler plu-gin ( rustc_surf ) to perform static analysis and identify unsafe-reaching APIs (URAPIs), then uses an LLM to generate fuzz targets targeting these APIs. deepSURF focuses specifically on reaching unsafe code blocks for memory-safety vulnerability detection, and does not aim to maximize general API coverage; it produces no fuzz targets for crates in which no unsafe-reaching APIs are de-tected. Recent work also explores dependency-aware and structure-guided fuzz target synthesis to ensure type correctness and deeper API exploration [3, 27, 7]. In contrast to RULF’s syntactic matching, RPG’s pool-based reuse, and deep-SURF’s URAPI-targeted LLM fuzz targets, GRAFT combines explicit recursive generics-aware type matching with topology-guided dependency traversal and LLM-based concretization, targeting both compilability and broad API cover-age. 
+
+5.3 Fuzzing 
+
+Fuzzing is a widely used dynamic testing technique that discovers bugs by exe-cuting programs with mutated inputs. Coverage-guided fuzzers such as AFL and AFL++ have demonstrated significant success in uncovering real-world vulner-abilities across diverse software systems [39, 14]. LibFuzzer enables in-process fuzzing and is commonly used for library testing [29]. Numerous extensions improve fuzzing effectiveness by incorporating addi-tional program analysis. Angora introduces gradient-guided input mutation to solve complex branch conditions [9]. Driller and QSYM combine fuzzing with symbolic execution to overcome path constraints and improve coverage [30, 38]. Other hybrid approaches integrate taint analysis or concolic execution to guide mutation strategies [33, 10]. Structure-aware fuzzing techniques aim to preserve input validity by lever-aging grammars or input models [15, 32]. However, these approaches primarily target input formats rather than API-level program structure. For Rust libraries, the effectiveness of fuzzing depends on the quality of fuzz targets. Poorly con-structed targets may fail to compile, panic prematurely, or exercise only shallow API paths. 16 Y. Chen et al. 
+
+6 Conclusion 
+
+We presented GRAFT, a generics-aware fuzz target generation framework for Rust libraries. GRAFT extracts structured API information from Rust docu-mentation, constructs an API dependency graph via a recursive type matching algorithm that explicitly handles generic parameters and trait bounds, and syn-thesizes compilable fuzz targets from dependency-guided API sequences using a large language model. Evaluation on 13 real-world Rust libraries shows that GRAFT achieves a macro-average API coverage of 80.75% and a macro-average compilation suc-cess rate of 96.19%. On the eight crates where GRAFT, RULF, and RPG all produce runnable fuzz targets, GRAFT achieves 4.76 × and 2.43 × the average API coverage of RULF and RPG, respectively, while being the only tool to generate fuzz targets for all evaluated crates. On the eight crates with unsafe-reaching APIs, GRAFT outperforms deepSURF—a concurrent LLM-augmented tool designed for memory-safety vulnerability detection—by 1.41 × in average API coverage. Ablation studies confirm that each of the three core components— generics-aware type matching, the API dependency graph, and topology-guided traversal—contributes independently to coverage quality. One natural extension is cross-crate API interaction, where type-flow edges span crate boundaries. Runtime feedback from fuzzing runs could further guide API sequence selection, and the dependency-graph approach may generalize to detecting semantic bugs beyond memory-safety violations. Bibliography 
+
+[1] Amann, S., Nguyen, H.A., Nadi, S., Nguyen, T.N., Mezini, M.: A system-atic evaluation of static API-misuse detectors. IEEE Transactions on Soft-ware Engineering 45 (12), 1170–1188 (2019). https://doi.org/10.1109/ TSE.2018.2827384 
+
+[2] Androutsopoulos, G.C., Bianchi, A.: deepsurf: Detecting memory safety vul-nerabilities in rust through fuzzing llm-augmented harnesses. In: Proceed-ings of the IEEE Symposium on Security & Privacy (S&P) (2026), to appear [3] Atlidakis, V., Godefroid, P., Polishchuk, M.: RESTler: Stateful REST API fuzzing. In: Proceedings of the 41st International Conference on Software Engineering. pp. 748–758. ICSE 2019, IEEE Press (2019). https://doi. org/10.1109/ICSE.2019.00083 
+
+[4] Babic, D., Bucur, S., Chen, Y., Ivancic, F., King, T., Kusano, M., Lemieux, C., Szekeres, L., Wang, W.: FUDGE: Fuzz driver generation at scale. In: Proceedings of the ACM Joint Meeting on European Software Engineering Conference and Symposium on the Foundations of Software Engineering. pp. 975–985. ESEC/FSE 2019, ACM (2019). https://doi.org/10.1145/ 3338906.3340456 
+
+[5] Bae, Y., Kim, Y., Askar, A., Lim, J., Kim, T.: Rudra: Finding memory safety bugs in Rust at the ecosystem scale. In: Proceedings of the ACM SIGOPS 28th Symposium on Operating Systems Principles. pp. 84–99. ACM (2021). 
+
+https://doi.org/10.1145/3477132.3483570 
+
+[6] Binkley, D.W.: Source code analysis: A road map. In: Future of Software Engineering (FOSE at ICSE 2007). pp. 104–119. IEEE Computer Society (2007). https://doi.org/10.1109/FOSE.2007.27 
+
+[7] Böhme, M., Pham, V., Nguyen, M., Roychoudhury, A.: Directed greybox fuzzing. In: Proceedings of the 2017 ACM SIGSAC Conference on Computer and Communications Security. pp. 2329–2344. CCS 2017, ACM (2017). 
+
+https://doi.org/10.1145/3133956.3134020 
+
+[8] Chen, M., et al.: Evaluating large language models trained on code. CoRR 
+
+abs/2107.03374 (2021), https://arxiv.org/abs/2107.03374 
+
+[9] Chen, P., Chen, H.: Angora: Efficient fuzzing by principled search. In: Pro-ceedings of the 39th IEEE Symposium on Security and Privacy. pp. 711–725. S&P 2018, IEEE (2018). https://doi.org/10.1109/SP.2018.00046 
+
+[10] Cho, M., Kim, S., Kwon, T.: Intriguer: Field-level constraint solving for hybrid fuzzing. In: Proceedings of the 2019 ACM SIGSAC Conference on Computer and Communications Security. pp. 515–530. ACM (2019). https: //doi.org/10.1145/3319535.3354249 
+
+[11] Clarke, E.M., Grumberg, O., Peled, D.A.: Model Checking. MIT Press (2000) [12] Cousot, P., Cousot, R.: Abstract interpretation: A unified lattice model for static analysis of programs by construction or approximation of fixpoints. In: Conference Record of the Fourth ACM Symposium on Principles of 18 Y. Chen et al. 
+
+Programming Languages. pp. 238–252. ACM (1977). https://doi.org/ 10.1145/512950.512973 
+
+[13] Evans, A.N., Campbell, B., Soffa, M.L.: Is rust used safely by software de-velopers? In: Proceedings of the ACM/IEEE 42nd International Conference on Software Engineering. p. 246–257. ICSE ’20, Association for Comput-ing Machinery, New York, NY, USA (2020). https://doi.org/10.1145/ 3377811.3380413 , https://doi.org/10.1145/3377811.3380413 
+
+[14] Fioraldi, A., Maier, D., Eißfeldt, H., Heuse, M.: AFL++: Combining in-cremental steps of fuzzing research. In: Proceedings of the 14th USENIX Workshop on Offensive Technologies. WOOT 2020, USENIX Association (2020) [15] Godefroid, P., Kiezun, A., Levin, M.Y.: Grammar-based whitebox fuzzing. In: Proceedings of the 29th ACM SIGPLAN Conference on Programming Language Design and Implementation. pp. 206–215. PLDI 2008, ACM (2008). https://doi.org/10.1145/1375581.1375607 
+
+[16] Ispoglou, K.K., Austin, D., Mohan, V., Payer, M.: FuzzGen: Automatic fuzzer generation. In: Proceedings of the 29th USENIX Security Symposium. pp. 2271–2288. USENIX Association (2020) [17] Jiang, J., Xu, H., Zhou, Y.: RULF: Rust library fuzzing via API dependency graph traversal. In: Proceedings of the 36th IEEE/ACM International Con-ference on Automated Software Engineering. pp. 581–592. ASE 2021, IEEE (2021). https://doi.org/10.1109/ASE51524.2021.9678813 
+
+[18] Jung, R., Dang, H., Kang, J., Dreyer, D.: Stacked borrows: An aliasing model for Rust. Proceedings of the ACM on Programming Languages 
+
+4(POPL), 41:1–41:32 (2020). https://doi.org/10.1145/3371109 
+
+[19] Jung, R., Jourdan, J., Krebbers, R., Dreyer, D.: RustBelt: Securing the foundations of the Rust programming language. Proceedings of the ACM on Programming Languages 2(POPL), 66:1–66:34 (2018). https://doi.org/ 10.1145/3158154 
+
+[20] Jung, R., Jourdan, J., Krebbers, R., Dreyer, D.: Safe systems programming in Rust. Communications of the ACM 64 (4), 144–152 (2021). https://doi. org/10.1145/3418295 
+
+[21] Kildall, G.A.: A unified approach to global program optimization. In: Con-ference Record of the ACM Symposium on Principles of Programming Languages. pp. 194–206. ACM Press (1973). https://doi.org/10.1145/ 512927.512945 
+
+[22] King, J.C.: Symbolic execution and program testing. Communications of the ACM 19 (7), 385–394 (1976). https://doi.org/10.1145/360248.360252 
+
+[23] Li, H., Guo, L., Yang, Y., Wang, S., Xu, M.: An empirical study of Rust-for-Linux: The success, dissatisfaction, and compromise. In: 2024 USENIX Annual Technical Conference (USENIX ATC 24). pp. 425–443. USENIX Association, Santa Clara, CA (Jul 2024), https://www.usenix. org/conference/atc24/presentation/li-hongyu 
+
+[24] Li, Z., Wang, J., Sun, M., Lui, J.C.S.: MirChecker: Detecting bugs in Rust programs via static analysis. In: Proceedings of the 2021 ACM SIGSAC Con-Generics-Aware Fuzz Target Generation for Rust Libraries 19 
+
+ference on Computer and Communications Security. pp. 2183–2196. ACM (2021). https://doi.org/10.1145/3460120.3484541 
+
+[25] Matsakis, N.D.: An alias-based formulation of the borrow checker. Baby Steps Blog (2018), https://smallcultfollowing.com/babysteps/blog/ 2018/04/27/an-alias-based-formulation-of-the-borrow-checker/ 
+
+[26] Olson, S.: Miri: An Interpreter for Rust’s Mid-Level Intermediate Represen-tation. Master’s thesis, University of Saskatchewan (2016) [27] Padhye, R., Lemieux, C., Sen, K., Papadakis, M., Traon, Y.L.: Semantic fuzzing with Zest. In: Proceedings of the 28th ACM SIGSOFT International Symposium on Software Testing and Analysis. pp. 329–340. ISSTA 2019, ACM (2019). https://doi.org/10.1145/3293882.3330576 
+
+[28] Qin, B., Chen, Y., Yu, Z., Song, L., Zhang, Y.: Understanding memory and thread safety practices and issues in real-world rust programs. In: Proceed-ings of the 41st ACM SIGPLAN Conference on Programming Language De-sign and Implementation. p. 763–779. PLDI 2020, Association for Comput-ing Machinery, New York, NY, USA (2020). https://doi.org/10.1145/ 3385412.3386036 , https://doi.org/10.1145/3385412.3386036 
+
+[29] Serebryany, K.: Continuous fuzzing with libFuzzer and AddressSanitizer. In: 2016 IEEE Cybersecurity Development Conference. p. 157. SecDev 2016, IEEE Computer Society (2016). https://doi.org/10.1109/SecDev.2016. 043 
+
+[30] Stephens, N., Grosen, J., Salls, C., Dutcher, A., Wang, R., Corbetta, J., Shoshitaishvili, Y., Kruegel, C., Vigna, G.: Driller: Augmenting fuzzing through selective symbolic execution. In: Proceedings of the 23rd Annual Network and Distributed System Security Symposium. NDSS 2016, The Internet Society (2016). https://doi.org/10.14722/ndss.2016.23368 
+
+[31] Strom, R.E., Yemini, S.: Typestate: A programming language concept for enhancing software reliability. IEEE Transactions on Software Engineering 
+
+12 (1), 157–171 (1986). https://doi.org/10.1109/TSE.1986.6312929 
+
+[32] Wang, J., Chen, B., Wei, L., Liu, Y.: Superion: Grammar-aware greybox fuzzing. In: Proceedings of the 41st International Conference on Software Engineering. pp. 724–735. ICSE 2019, IEEE (2019). https://doi.org/10. 1109/ICSE.2019.00081 
+
+[33] Wang, T., Wei, T., Gu, G., Zou, W.: TaintScope: A checksum-aware directed fuzzing tool for automatic software vulnerability detection. In: Proceedings of the 31st IEEE Symposium on Security and Privacy. pp. 497–512. S&P 2010, IEEE (2010). https://doi.org/10.1109/SP.2010.37 
+
+[34] Weiss, A., Patterson, D., Matsakis, N.D., Ahmed, A.: Oxide: The essence of Rust. CoRR abs/1903.00982 (2019), https://arxiv.org/abs/1903. 00982 
+
+[35] Xie, D., Li, Y., Kim, M., Pham, H.V., Tan, L., Zhang, X., Godfrey, M.W.: DocTer: Documentation-guided fuzzing for testing deep learning API functions. In: Proceedings of the 31st ACM SIGSOFT International Symposium on Software Testing and Analysis. ISSTA 2022, ACM (2022). 
+
+https://doi.org/10.1145/3533767.3534220 20 Y. Chen et al. 
+
+[36] Xu, H., Chen, Z., Sun, M., Zhou, Y.: Memory-safety challenge considered solved? an empirical study with all rust cves. ArXiv abs/2003.03296 
+
+(2020), https://api.semanticscholar.org/CorpusID:212628327 
+
+[37] Xu, Z., Wu, B., Wen, C., Zhang, B., Qin, S., He, M.: RPG: Rust library fuzzing with pool-based fuzz target generation and generic support. In: Pro-ceedings of the 46th IEEE/ACM International Conference on Software En-gineering. ICSE 2024, ACM (2024). https://doi.org/10.1145/3597503. 3639102 
+
+[38] Yun, I., Lee, S., Xu, M., Jang, Y., Kim, T.: QSYM: A practical concolic execution engine tailored for hybrid fuzzing. In: Proceedings of the 27th USENIX Security Symposium. pp. 745–761. USENIX Association (2018) [39] Zalewski, M.: American fuzzy lop. Software tool (2013), https://github. com/google/AFL 
+
+[40] Zhang, C., Lin, X., Li, Y., Xue, Y., Xie, J., Chen, H., Ying, X., Wang, J., Liu, Y.: APICRAFT: Fuzz driver generation for closed-source SDK libraries. In: Proceedings of the 30th USENIX Security Symposium. pp. 2811–2828. USENIX Association (2021) [41] Zheng, X., Wan, Z., Zhang, Y., Chang, R., Lo, D.: A closer look at the secu-rity risks in the rust ecosystem. ACM Trans. Softw. Eng. Methodol. 33 (2) (Dec 2023). https://doi.org/10.1145/3624738 , https://doi.org/10. 1145/3624738 
+
+[42] Zhong, H., Xie, T., Zhang, L., Pei, J., Mei, H.: MAPO: Mining and rec-ommending API usage patterns. In: Proceedings of the 23rd European Conference on Object-Oriented Programming. pp. 318–343. ECOOP 2009, Springer (2009). https://doi.org/10.1007/978-3-642-03013-0_15

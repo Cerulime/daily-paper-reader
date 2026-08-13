@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-12</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-13</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 9 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>4</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>0</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>5</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>4</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-12 20:09:13 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-13 20:07:45 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精读4篇论文，聚焦二进制安全与硬件安全两大方向。最值得关注的是N2NMatcher（9.0分）提出抗内联的二进制分解与模块匹配方法，以及LLM辅助Verilog硬件漏洞检测与修复（8.0分）。建议普通读者优先浏览这两篇，后续可结合源码或复现实验加深理解。</p>
+<p>今日精读聚焦运行时控制流异常检测与Rust库模糊测试，速读覆盖Verilog硬件漏洞修复及LLM代码安全评测；最值得关注的是硬件监控与结构化API分析带来的安全检测新思路；建议普通读者优先关注硬件安全漏洞的AI辅助检测方向。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">4 篇</strong>
+    <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="N2NMatcher: Towards Inlining-Resilient Binary Decomposition and Module Matching">N2NMatcher: Towards Inlining-Resilient Binary Decomposition and Module Matching</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Synthesizing Probabilistic Saturating Counters with Differentially Private Formal Guarantees">Synthesizing Probabilistic Saturating Counters with Differentially Private Formal Guarantees</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Towards Model-based Run-time Cybersecurity: On Control-Flow Anomaly Detection, Attack Identification, and Hardware Monitoring">Towards Model-based Run-time Cybersecurity: On Control-Flow Anomaly Detection, Attack Identification, and Hardware Monitoring</span></li><li><span class="dpr-home-dashboard-paper-title" title="Generics-Aware Fuzz Target Generation for Rust Libraries via Structured API Analysis">Generics-Aware Fuzz Target Generation for Rust Libraries via Structured API Analysis</span></li><li><span class="dpr-home-dashboard-paper-title" title="A Study of Kernel Telemetry Options for Security-Oriented Provenance">A Study of Kernel Telemetry Options for Security-Oriented Provenance</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">0 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs">LLM-Assisted Detection and Repair of Hardware Security Vulnerabilities in Verilog Designs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Security Tests as Executable Specifications for LLM Code Generation: Benefits, Trade-offs, and Coverage Limits">Security Tests as Executable Specifications for LLM Code Generation: Benefits, Trade-offs, and Coverage Limits</span></li><li><span class="dpr-home-dashboard-paper-title" title="VICBench: A Multi-Language Benchmark for Code Vulnerability Detection">VICBench: A Multi-Language Benchmark for Code Vulnerability Detection</span></li></ul>
   </div>
-
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 </div>
 
