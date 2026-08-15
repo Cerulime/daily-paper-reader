@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-14</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-15</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 8 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>5</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-14 21:26:24 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-15 19:27:14 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共读8篇论文，精读5篇、速读3篇，聚焦系统安全与新型虚拟化防护。最值得关注的是《ROLoad-PMP》与《RealmEye》，前者强化内核及裸机固件敏感操作保护，后者实现Arm CCA Realm虚拟机内省。普通读者可优先精读这两篇，并延伸了解信息流控制与字节码安全方向。</p>
+<p>今日研读5篇论文，聚焦模糊测试与安全验证，精读2篇、速读3篇。</p>
+<p>最值得关注：LLM驱动JavaScript引擎模糊测试挖零日漏洞，以及软件图谱引导的定向模糊测试。</p>
+<p>建议优先细读这两篇精读文章，可快速把握漏洞发现与测试优化的前沿方法。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +73,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">5 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="ROLoad-PMP: Securing Sensitive Operations for Kernels and Bare-Metal Firmware">ROLoad-PMP: Securing Sensitive Operations for Kernels and Bare-Metal Firmware</span></li><li><span class="dpr-home-dashboard-paper-title" title="RealmEye: Virtual Machine Introspection for Arm CCA Realm VMs">RealmEye: Virtual Machine Introspection for Arm CCA Realm VMs</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-Assisted Dynamic Threat Analysis for Attacker-Reachable Software Weaknesses in Autonomous Vehicles">LLM-Assisted Dynamic Threat Analysis for Attacker-Reachable Software Weaknesses in Autonomous Vehicles</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="From Documentation to Zero-day Vulnerabilities: LLM-Driven Fuzzing of JavaScript Engines in PDF Readers">From Documentation to Zero-day Vulnerabilities: LLM-Driven Fuzzing of JavaScript Engines in PDF Readers</span></li><li><span class="dpr-home-dashboard-paper-title" title="Dissecting Software Graphs: Structural Insights for Driver-Guided Fuzzing">Dissecting Software Graphs: Structural Insights for Driver-Guided Fuzzing</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -87,7 +89,7 @@
     <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Directed Neuro-Symbolic Stochastic Execution for Verification of Distributed Parallel AI Programs">Directed Neuro-Symbolic Stochastic Execution for Verification of Distributed Parallel AI Programs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Renaming or Tightness: Enforcing Disjunctive Information Flow Policies">Renaming or Tightness: Enforcing Disjunctive Information Flow Policies</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond Source: An Empirical Study of Python Bytecode Security Risks">Beyond Source: An Empirical Study of Python Bytecode Security Risks</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Smart Contract Invariants Protect Against Cybercriminals">Smart Contract Invariants Protect Against Cybercriminals</span></li><li><span class="dpr-home-dashboard-paper-title" title="A Lightweight Fault-Detection Scheme for Barrett Modular Multiplication Using Multiple Conditional Reduction Paths">A Lightweight Fault-Detection Scheme for Barrett Modular Multiplication Using Multiple Conditional Reduction Paths</span></li><li><span class="dpr-home-dashboard-paper-title" title="Synchronous Observers Revisited for Runtime Verification of Lustre Using STL">Synchronous Observers Revisited for Runtime Verification of Lustre Using STL</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
