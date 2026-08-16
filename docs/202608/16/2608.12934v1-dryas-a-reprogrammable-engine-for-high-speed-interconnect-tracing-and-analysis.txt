@@ -1,0 +1,294 @@
+Title: Dryas: A Reprogrammable Engine for High-Speed Interconnect Tracing and Analysis
+
+URL Source: https://arxiv.org/pdf/2608.12934v1
+
+Published Time: Fri, 14 Aug 2026 00:49:19 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Dryas: A Reprogrammable Engine for High-Speed Interconnect Tracing and Analysis 
+
+# Manuel Bröchin *
+
+SBB Switzerland 
+
+maneul.broechin@sbb.ch 
+
+# Tom Kuchler 
+
+ETH Zürich Switzerland 
+
+tom.kuchler@inf.ethz.ch 
+
+# Michael Giardino *
+
+Huawei Switzerland 
+
+michael.giardino@huawei.com 
+
+# David Cock *
+
+Neutrality Switzerland 
+
+david@neutrality.ch 
+
+# Timothy Roscoe 
+
+ETH Zürich Switzerland 
+
+trocoe@inf.ethz.ch 
+
+## Abstract 
+
+The proliferation of heterogeneous components in modern computing systems has been accompanied by new higher bandwidth and lower latency interconnects. These interfaces and protocols are enormously complex and the process of developing, debugging, and analyzing FPGA-based imple-mentations requires significant engineering work. Moreover, once a functional implementation is completed, optimization of the controller and associated software requires processing potentially hundreds of gigabytes of trace data. In this paper, we present Dryas, an open source tool for an-alyzing such an interconnect. We developed our tool, using minimal hardware resources, alongside an FPGA implemen-tation of a very high speed, low latency (30 GiB /s, 200 ns) interconnect. With our run-time reprogrammable overlay en-gine we can inspect this interconnect to find rare, complex, or transient events even at full operation. This filtering engine is based on non-deterministic finite automata (NFAs), e ffi -ciently implemented using state transition elements (STEs), allowing us to trace events at a cache-line granularity. More-over we can change the filters in less than a second, without reprogramming the FPGA or interfering with the running ap-plication. This data enables not only debugging the imple-mentation of the interconnect itself, but analyzing the behav-ior of accelerated applications. We examine the mathematical basis for using NFAs and describe their implementation on a real coherent CPU-FPGA research platform. We then evaluate the scalability of Dryas for various size NFAs, followed by two di ff erent use cases: debugging FPGA implementation of the interconnect and an-alyzing cache behavior. 
+
+## 1 Introduction 
+
+Modern computer architecture has been moving towards more specialized and heterogeneous hardware topologies. While 
+
+> *Work was done at ETH Zürich
+
+smart network interface cards [18] and GPUs are the most prevalent examples, Field Programmable Gate Arrays (FP-GAs) have also seen significant use as accelerators. Their increased flexibility in execution unit design and host system interaction leads to a number of interesting topologies. Aside from traditional PCIe-attached FPGA accelerators such as Xilinx Alveo [2, 3] which tend to mirror a GPU-inherited batch-processing model, there is increasing interest in more tightly-coupled CPU +FPGA systems [7, 4, 8, 5]. This tight coupling generally comes with the advantages of high band-width, low latency, and the possibility of fine-grained mem-ory management including caching and coherence. However, implementation of not only application software but the pro-tocols themselves require performant systems to analyze low-level interactions. High-bandwidth interconnects produce enormous amounts of data in very short times, making finding a specific mes-sage or sequence di ffi cult. While capturing all data and then performing o ffl ine analysis is possible, just the boot process can create traces of hundreds of gigabyes, necessitating fast storage connected via a channel with equivalent bandwidth. For low-level tracing data to be useful, there must be a mechanism to filter only relevant messages. Moreover, a fil-ter should be easily reconfigurable, allowing for di ff erent fil-ters to be quickly loaded, even into a running system. If re-configuration takes too long, or worse, requires resynthesis of the FPGA design, it severely limits the usefulness of it for active debugging and analysis. We present Dryas, a run-time reprogrammable filter en-gine that transparently taps into the FPGA implementation of the interconnect interface in order to extract specific se-quences of messages at a cache-line granularity. In order to meet the requirements of line-rate high-bandwidth through-put, complex event filtering, and fast reconfigurability, we look to existing FPGA stream processing tools for inspira-tion. nondeterministic finite automata (NFAs) composed of state transition elements (STEs) allow for the creation of arXiv:2608.12934v1 [cs.AR] 13 Aug 2026 Manuel Bröchin, Tom Kuchler, Michael Giardino, David Cock, and Timothy Roscoe 
+
+complex, expressive filtering queries that can be reconfig-ured in less than a second without reprogramming the FPGA or even stopping application execution. Dryas uses a mini-mal amount of FPGA resources and on our test system can filter data at a 30 GiB /s line rate. Dryas can not only give in-sight into existing communication protocols and assist in the extension and improvement of them, it can also be deployed alongside running applications on the FPGA, to perform re-altime, fine-grained analysis of the application’s use of the protocol. FPGA vendors provide some hardware tracing tools in their software platforms that support low-level debugging of interconnects. For instance, Xilinx ILAs allow observing arbitrary signals on the FPGA and specifying trigger condi-tions as state machines of these signal values. However, they have significant shortcomings that make them unsuitable for our needs. First, ILAs are connected to the remote machine over a low-bandwidth JTAG interface that is not suitable to stream out large amounts of data. Second, the state machines are limited to 16 states with one accepting state, and each state has fan-out at most 3, severely limiting the trigger con-dition complexity. In Section 2, we provide background information on the hardware platform under test, NFAs and overlays for FPGAs. We then examine the design and implementation in Sections 3 and 4. Section 5 evaluates the Dryas’s scalability and ex-amines two use cases: an exploration of cross-socket latency at the protocol layer and cache behavior of a simple FPGA benchmark. 
+
+## 2 Background 
+
+The design of Dryas is motivated by the need to analyse and debug the Enzian Coherent Interconnect (ECI) [21]. In Sec-tion 2.1 we briefly introduce the relevant features of the in-terconnect, and the challenges found in such a system. We elaborate the crucial design choices that result from these features, then examine NFAs and overlay architectures and how they can be used for analysis. 
+
+## 2.1 Problem Statement 
+
+Enzian [1] [6] is a heterogeneous research server with a 48-core Marvell Thunder-X (THX) CPU connected to a Xilinx Virtex Ultrascale + FPGA via ECI, a 30 GiB /s coherent inter-connect. ECI connects the THX’s L2 cache to the FPGA. ECI comprises 2 links, each consisting of 12 x 10 Gb /sserial lines, using a 3-layer protocol. At the lowest layer, an Interlaken-like protocol [26] provides reliable delivery of a bidirectional datastream between the endpoints. The middle (block) layer divides this reliable stream into fixed-size 64 B blocks, each of which carries an 8 B header and seven 8 B data words.                      
+
+> 64 61 60 54 52 40 32 24 0SYNC Ack Req TXSEQ RXSEQ CRC HI /LO Ack Credits VCs CRC IDLE Ack TXSEQ RXSEQ CRC
+
+Figure 1: The four types of block layer headers: sync, hi /lo data, and idle blocks. The first three bits indicate the type of the block: SYNC = 110 , HI = 100 , LO = 101 
+
+and IDLE = 111 .
+
+There are four types of blocks: sync, high-data, low-data, and idle blocks, indentified by the first 3 b of its header. The structure of each type of block header is depicted in Figure 1. Sync blocks carry only meta information in the header and are used to synchronize the two nodes after an error condition or at startup. High- and low-data blocks carry higher-layer messages in the seven data words. Idle blocks are sent when neither data nor sync blocks are sent in order to keep the link active and synchronized. Every header contains a 24-bit CRC checksum field to provide error detection. Moreover, both endpoints acknowledge the reception of data blocks using the dedicated Ack field in all headers. Using block-level metadata, this layer provides link mon-itoring and initialization, credit-based flow control, and the multiplexed transmission of independent virtual channels (VCs). The third, VC layer is responsible for interpreting the mes-sages for each of the 14 VCs (See Table 1) and performing the corresponding action. Each of the 14 VCs carries a dif-ferent message type (e.g. forward request, or read response), and it is the responsibility of the top layer to correctly in-terpret the per-VC packet format [17] and route and process individual messages correctly. The VCs field of data blocks indicates the recipient VC for each of the seven data words. The block layer consumes VC-layer messages from the VC layer and puts them into data blocks. Because VC-layer mes-sages have variable size, messages may be split across mul-tiple blocks. Thus, the block layer is also responsible for re-assembly of VC messages at the receive side before handing them up to the VC layer. Messages on di ff erent VCs are used di ff erently. Their header information and payload size thus varies depending on the type of message [17]. A detailed account of all message types and their meaning can be found in previous work [17, 21]. We are most inter-ested in memory coherency messages which are handled by the Directory Controller (DirC) module using VCs 2 to 11. Given the 300 MHz system clock of Enzian the number of blocks transmitted per cycle and direction is just under 1.5, while the number of VC layer messages transported by Dryas: A Reprogrammable Engine for High-Speed Interconnect Tracing and Analysis 
+
+VC id Message types Acronym 0 I/O request IREQ 1 I/O response IRSP 2,3 Memory request w data MREQ 4,5 Memory response w data MRSP 6,7 Memory request w /o data MREQ 8,9 Memory forward request MFWD 10,11 Memory response w /o data MRSP 12 Multiplexed co-processor data MXC 13 Multicore debugging & link data MDLD 
+
+Table 1: Virtual channels as provided by the block layer. 
+
+these blocks is limited to 10.5 per cycle per direction — a little over 6 billion messages per second. Dryas is intended to monitor messages at either the block or the VC layer. Dryas filters the high-speed stream of messages transmit-ted over ECI using an NFA engine. While stream processing using FPGAs is common, our setting imposes unique con-straints: We want to understand the protocol implementation itself. As a consequence, we are interested in the interactions 
+
+between observed messages. In other words, we look for pat-terns in the sequence of messages. This is an important dif-ference compared to common applications of stream process-ing on FPGAs, many of which are either interested in pattern matching in a stream of text (e.g. regex matching [12], net-work intrusion detection [27, 15], log processing [23, 10]) or in detecting complex predicates within a single message (e.g. high-frequency trading [22], SQL query processing [20, 19]). To understand the interaction between messages, we need to detect the intent or eff ect of an individual message. We extract this as a predicate over the message header and send only the relevant information to the NFA. Thus Dryas has two stages: first evaluating predicates on headers, then driv-ing an NFA with these predicates to implement the filter. The block layer and the di ff erent VC protocols have di ff er-ent header structures and require di ff erent predicates. More-over, the predicates may be complex and contain pieces of information from multiple headers. The input decoding in each STE must thus be very flexible. On the other hand, the NFAs expressing our filters contain a relatively small num-ber of states: The NFA’s complexity depends largely on the underlying protocol’s complexity. Compared to regex search in text, with arbitrarily-large patterns, the ECI protocols con-sist of comparatively short sequences of interactions, thus the patterns themselves have moderate size.   
+
+> 012
+> aabbba0
+> 0
+> 1a
+> 1
+> 2a
+> 0
+> 3a
+> 1
+> 4b
+> 2
+> b5a
+> 2
+> a6a
+> 2
+> a7b
+> 1
+> 8a
+> 0
+> 9a
+> 1
+> 10 b
+> 2
+> btime: input: state: output:
+
+Figure 2: The NFA is graphically depicted on the left. In-put, active state and filtered output are listed ordered by time on the right. 
+
+## 2.2 Nondeterministic Finite Automata (NFAs) 
+
+We use NFAs as a means to filter streams of messages. The goal is to take an input stream of messages ( 1, 2, ) and out-put a substream of it according to a filter rule. Formally, the NFA consists of a set of states and a transition function for state updates. Two special subsets of the states are initial states 0, which are active at the start, and accepting states ,which indicate when the NFA accepts a message (indicating it should be added to the output stream). The transition func-tion defines the conditions for a state to become active . For each message that is read from the input stream, the transi-tion function is executed to find new active states from cur-rent ones. If any states in are activated by the arrival of a message, this message is added to the output stream. Figure 2 shows an example NFA corresponding to the for-mal description in Equation 1. The right side of Figure 2 shows how this NFA filters a stream of abstract messages. 
+
+= –, ˝ 
+
+= –0, 1, 2˝
+
+= –( 0, ) – 1˝, ( 0, ) – 0˝, ( 1, ) – 0˝, (1, ) – 2˝, ( 2, ) – 2˝, ( 2, ) – 1˝˝  
+
+> 0
+
+=0
+
+= –2˝(1) Alphabet is the set of all inputs the NFA recognizes. In our use case this is a set of all possible predicates of mes-sage headers (e.g. message types). The predicates are ex-tracted from the messages outside of the NFA and allow re-purposing the NFA to recognize use case-specific properties. NFAs allow composing basic conditions on predicates to more complicated patterns. Formally, these patterns are called regular languages over the alphabet . By implementing the pattern matching using NFAs, which can have multiple states active at the same time, as opposed to Deterministic Finite Automata (DFAs), where only one state is active at any time, Manuel Bröchin, Tom Kuchler, Michael Giardino, David Cock, and Timothy Roscoe   
+
+> 01
+> a,b ab
+> (a) General NFA
+> 01,1 1,2
+> a,b abab
+> (b) homogeneous NFA (hNFA) equivalent to Figure 3a
+
+Figure 3: Correspondence between general NFA and ho-mogeneous NFA 
+
+we can make use of the parallel hardware of the FPGA. Since an NFA uses less states than an equivalent DFA, the hardware cost of using NFAs is smaller than that of using DFAs. Runtime configurable NFAs are commonly implemented on FPGAs using an overlay architecture [12, 13]: The ba-sic blocks, often called STEs in the context of NFAs, are overprovisioned and statically connected with each other at synthesis time. Each STE implements the functional behav-ior of a single state of the NFA. Logic inside an STE allows representing di ff erent transition functions, often by match-ing the input symbol against some configurable memory. To reduce the logic within a single STE, NFAs are commonly transformed into homogeneous form before mapping them to the overlay: In homogeneous form, all transitions into a state trigger on the same set of inputs. This ensures that each STE needs to check only a single transition function for all its neighbors. Importantly, any NFA can be represented by a hNFA, by duplicating some states. An example of a NFA and the equivalent hNFA is illustrated in Figure 3a and Figure 3b respectively. Static connections in the network of STEs can be switched on and o ff to implement NFA with a di ff erent graph structures. The static hardware layout requires the de-sign to trade o ff hardware resources for the generality of the NFAs. We will go further into detail about our STE imple-mentation in Section 3.2 
+
+## 2.3 Related Work 
+
+Karakchi et al. [14, 13] use an STE-based overlay architec-ture to implement Napoly, a large-scale, general-purpose NFA engine on FPGAs. Napoly is targeted towards regex search over a one-byte symbol alphabet such as ASCII text, thus the input decoding is a single lookup table with 256 entries. Moreover, to support large regex patterns, the design is opti-mized for packing as many STEs as possible onto an FPGA. Napoly achieves packing 24k states on a Stratix 5 GX 7A FPGA. As a consequence of the dense and large design, rout-ing data to and between STEs becomes challenging and the design bandwidth is limited to 90 MB /s. Thus Napoly is un-suitable for us because we require di ff erent trade-o ff s: In-stead of many STEs with a limited input decoding and low bandwidth, we require few STEs that can consume composed predicates from message headers in each cycle and compute complex transition functions on these predicates. Teubner et al. [24] implement XML projection on FPGAs. Their approach has at its core a runtime configurable NFA en-gine implemented as an overlay architecture. The individual hardware components making up the overlay graph, called segments, allow matching arbitrary XML tags. Because of the hierarchical structure of XML, projection specifiers are strictly linear, so each segment selects an XML node-set based on the selection of its sole predecessor segment. Thus the overlay architecture has the very simple path structure. Since we want to allow general NFAs, this simple structure is not suitable for our work. Moreover, the input decoding, while more complex than in Napoly, is restricted to string matching. Our input decoding will need to match on message headers, or predicates derived from headers, which contain multiple pieces of information. We thus need to allow more complex matching mechanisms such as combinations of string match-ing and logical operators. 
+
+## 3 Design 
+
+Dryas processes incoming ECI data in three conceptual steps: First, predicates are extracted from the ECI message header. Second, each STE computes its transition function on these predicates and update their state accordingly. Third, based on whether the NFA is in an accepting state, the input data is added to the output or discarded. The concrete predicates that are extracted from message headers in step one must be specified at synthesis time and depend on the application. We will discuss two concrete ex-amples of extracted predicates in Section 4. We will now go into more detail on how transition func-tions are computed and states are updated.. In Section 3.1 we first describe the rings-of-cliques graph, a parametrizable graph we use as the structure of our overlay. In Section 3.2 we describe how we implement reconfigurable STEs as the basic blocks of our overlay architecture. 
+
+## 3.1 Overlay Graph 
+
+The overlay is a static graph of STEs that is fixed at syn-thesis time. An hNFA is then implemented by the overlay at Dryas: A Reprogrammable Engine for High-Speed Interconnect Tracing and Analysis 
+
+runtime by configuring each STE. The process of implement-ing a hNFA on the overlay is called mapping , whereby each state of the hNFA is mapped to exactly one STE. Therefore, we need to ensure that adjacent states are mapped to adjacent STEs. The synthesized overlay graph limits the expressibil-ity of the NFAs (i.e. filters) in two ways: First, the number of STEs determines the maximum number of hNFA states. Sec-ond, STE connectivity limits hNFA connectivity. It is there-fore crucial to allow the user to flexibly trade-o ff number of states and density of the overlay graph at synthesis time. The overlay graph chosen to allow this trade-o ff is a rings-of-cliques (RoC) graph. An instance of an RoC graph is de-fined by 4 parameters: clique size C, ring length L, number of rings R and number of neighboring rings N. (, , , ) denotes a particular configuration. Each vertex ,, in the structure is uniquely identified by indices [], [], [] denoting the node’s index in the clique, the clique’s index in the ring and the ring’s index. Two vertices ,, and ,, are connected if either of the following is true Their rings are not more than apart and their cliques are in the same position of their respective ring. This includes the case where two vertices are in the same clique. More formally, if = and ( , )They are in neighboring cliques on the same ring or formally, if = and ( , ) = 1Figure 4 illustrates several configurations of the RoC overlay graph. The problem of mapping each state to an STE, such that the neighborship relation is preserved is commonly referred to as subgraph mapping problem. The subgraph mapping problem is well-known to be NP-complete. We formulate the subgraph mapping problem as an Integer Program (IP) and solve it using standard IP solvers such as Gurobi [11] or Coin-OR [16]. Other authors use heuristics to speed up the mapping from NFA to the overlay graph [14, 9]. As men-tioned earlier, we expect the hNFA size of most filters to be small to moderate (at most several 100 states), therefore map-ping can easily be performed as a standard IP formulation. 
+
+## 3.2 State Transition Elements 
+
+Given a mapping of NFA states to STEs, we need to config-ure each STE such that it implements the behavior of its state. As discussed, each STE represents one state of an hNFA. The functional behavior of a state in an hNFA is the following 
+
+A state activates if either it is an initial state and time = 0, or one of its predecessors was active at 1 and it accepts the input of time . A state de-activates at time if it doesn’t acti-vate at time and it receives valid input. 
+
+The restriction on de-activating is unique to our design and was added because the interfaces considered often have valid tra ffi c only on a subset of all clock cycles. In order to allow runtime configuration of Dryas, the fol-lowing four components of the overlay need to be config-urable at runtime: (1) The input decoding of the STE that computes the transition function on the input predicate, (2) the start register value that determines if an STE is a start-ing state, (3) whether or not a state is accepting, and (4) the routing between STEs. This behavior is implemented to be runtime reconfigurable as depicted in Figure 5. Red are registers used for runtime reconfigurations, black are data path elements. We shift a bit-string into the configuration registers at runtime to control the functional behavior of the STE. At time , we choose one out of three possible values as the next activation: If reset is asserted, we choose the start register value. Else, if no valid input was received in this cycle, as indicated by the valid 
+
+output of Input Decoding , we keep the previous activation. Else, we check if any transition into this state is active. A transition is active at time if (1) the input of time is ac-cepted by Input Decoding , i.e. if acc is asserted, and (2) if a predecessor state was active at time 1. We output the acti-vation of this state at time to all connected STEs, which use it to compute their activation at time + 1. Further, if this STE corresponds to an accepting state of the NFA, as indicated by the Accept configuration register, we assert the Accept output that is aggregated centrally by the NFA engine. The STE design so far is relatively standard. The main dif-ference to the related work is in the Input Decoding module. As discussed before, the main challenge of our work comes from wanting to interpret complex predicates extracted from one or multiple headers. Moreover, we want to be able to con-sider multiple protocols, where the structure and contents of the headers change with the protocol. The concrete predicates depend on the message headers of the interface protocol under consideration and the pred-icate extraction performed on these headers. As discussed above, this predicate extraction is specified at synthesis time. Similarly, the structure of the configurable input decoding logic of the STE needs to be fixed at synthesis time as it will generally depend on the shape and content of the extracted predicates. However, the basic structure of the Input Decod-ing is always composed of the Configurable Lookup Table (CFGLUT5) Xilinx primitive: A CFGLUT5 implements an arbitrary 5-to-1 logic function. It can be configured at run-time by sequentially pushing a 32-bit configuration string. The loading of a config string is synchronized by a clock, but the input-output behavior of the CFGLUT5 is combina-torial. The output of the 5-bit input –0, , 31˝ is given by bit of the configuration. The Input Decoding uses CFGLUT5s to match on parts of the message headers. Which parts of the Manuel Bröchin, Tom Kuchler, Michael Giardino, David Cock, and Timothy Roscoe          
+
+> (a) (8, 1, 1, 0) (b) (1, 8, 1, 0) (c) (1, 4, 2, 1) (d) (2, 4, 1, 0) (e) (1, 1, 8, 2)
+
+Figure 4: Various configurations (C,L,R,N) of the rings-of-cliques overlay graph.        
+
+> Predecessor CFGLUT CFGLUT Start Accept Input Decoding
+> x1 10 00
+> acc valid Input Reset Conf_in Conf_out Accept Activation neighbors activa-tion
+
+Figure 5: Logic diagram of a single STE with 4 predecessor STEs. 
+
+message headers are matched depends on the protocol and use case. Moreover, we often want to aggregate the outputs of di ff erent CFGLUT5s in order to represent more complex transition functions. We will discuss two examples in 4. Now, instead of one input stream, Dryas should be able to process interleaved input streams at the same time with the same filter. This is useful for independently filtering co-herency messages addressing di ff erent cache lines (CLs) (see Section 5.3). Conceptually, this can be achieved by replicat-ing the overlay architecture times, mapping the same NFA onto each overlay, and de-multiplexing the input stream into input streams, one per overlay. Interleaved stream process-ing can also be accomplished with less hardware duplication by generalizing the STEs in a way that allows them to keep track of activations concurrently. Instead of receiving one ac-tivation per neighboring STE, now activations are received. Similarly, the input decoding computes an -vector where en-try indicates that the predicate matches on substream . The implementation of the STE displayed in 5 stays mostly the same, with the di ff erence that some of the signals are now -bit buses and some of the gates additionally need to aggre-gate -bit buses to signals or broadcast signals to -bit buses. 
+
+## 4 Implementation 
+
+We will now examine how we apply the design discussed in Section 3 to concrete use cases. To reduce the width of the configurable input decoding logic, we perform data re-duction on the incoming data by extracting only the rele-vant predicates of the message headers. This preprocessing is fixed at compile time and thus determines a specific set of queries that can be expressed at runtime using the input de-coding logic. This specialization of Dryas reduces flexibility of expressible patterns, but the reduced data width improves scalability of the design in two ways: (1) the input decoding logic can be made slimmer, and (2) fewer routing resources are needed. Moreover, it allows us to enrich the data sent to the NFA with derived predicates, described below. Now we describe the data reduction performed on block and VC layers and the resulting query languages. Note that for sim-plicity, we will describe the structure and behavior of a single link, but for full ECI these structures are duplicated. 
+
+4.0.1 Block Layer. The block layer receives an incoming and outgoing block each cycle, leaving Dryas with two 64 b headers per cycle. This data is further reduced to a 44 b input containing important fields of the block headers, specifically, the header type, the VC indices of data blocks, and control Dryas: A Reprogrammable Engine for High-Speed Interconnect Tracing and Analysis           
+
+> type Ack Req Word to VC SH/Lack req VC has data state 22b reduced block header 64 block header Some word has data for VC
+> ?
+> =110
+> ?
+> =10
+
+Figure 6: Data reduction performed at the block layer with both incoming and outgoing block header. 
+
+bits. Additionally, the input contains the estimated states of the input and output links which are derived from the ob-served headers within the data reduction module. The structure and content of the reduced input is depicted in Figure 6. The input decoding logic then allows the formulation of an arbitrary logic function on 8 b from the input: 4 b each from the incoming and outgoing block headers. The selection of 2 x 4 b is implemented in one logic slice (see [25]). The runtime configurable 8-to-1 logic function is implemented by multiplexing between 8 CFGLUT5s, also in a single logic slice. We will see examples of these transition functions in 5.2. 
+
+4.0.2 VC Layer. The 10 cache coherency VCs allow ex-changing necessary messages for implementing a directory-based MOESI-style cache coherence protocol. Messages can be grouped into memory requests, forward requests, responses, and eviction notifications containing di ff erent information in their headers. However the most interesting fields are com-mon to all coherency headers: The opcode of the ECI message (bits [63, 59]). The memory address aff ected by the ECI message (bits [39, 7]). In contrast to the block layer, where an incoming and an out-going block are processed in every clock cycle, messages on each VC are received whenever they have been fully as-sembled on the block layer. The interface between block and VC layer consists of message first-in-first-outs (FIFOs), one FIFO per VC per direction. Dryas directly taps this interface and therefore must be able to handle a full set of 10 incoming and 10 outgoing VC messages in a cycle. The input to Dryas at the VC layer consists of a message batch each cycle (in )9 
+
+> =0
+
+(out )9 
+
+> =0
+
+(2) where in /out is a valid ECI message for coherency VC , or all ones if there is no data on the VC this cycle. From each            
+
+> op addr[32: +1] addr[:0] 64b ECI header mode1 addr[32 +1] =
+> op vidx (+7)b reduced ECI header mode2 addr[ 0]
+
+Figure 7: Predicate extraction performed at the VC layer for mode1, where CL addresses are ignored and mode2, where 2+1 separate substreams are observed, dis-tinguished by CL address. 
+
+message in the batch we extract opcode and address field and pass them to the NFA. By sending these fields in the order of the messages in the batch, we implicitly also pass the VC and the sender information to the NFA. The input decoding implemented in the STEs allows ex-pressing the following transition functions on the extracted predicates of a message batche : (1) A basic transition function checks opcode, sender and VC of all messages in the message batch and accepts if there is a message that matches the selection. (2) Any (P 1, , P): is true if any of the basic transition functions P 1, , P match on . (3) None (P 1, , P): is true if none of the basic transition functions P 1, , P matches on . This is implemented using one CFGLUT5 for each of the ten headers sent by both FPGA and CPU. Each CFGLUT5 can match the opcode against an arbitrary pattern. By correctly configuring the individual CFGLUT5s and aggregating their partial matches using either logical Or or And, we can imple-ment the full set of transition functions above. We will see examples in 5.3. Since caches maintain separate state for each CL, we are often interested in tracking and filtering the messages for each CL individually. However, some use cases such as sim-ple message filters, may ignore CL information entirely. Dryas thus supports the following two modes of dealing with CL address field: (1) ignoring CL information or (2) partitioning the ECI message stream into disjoint substreams, based on CL address and filtering each substream independently The first mode feeds all input messages to the same NFA. The second mode allows the user to specify a base CL ad-dress and a number of subsequent CLs that should be tracked. The stream of messages is then partitioned into substreams based on the lowest bits of the CL index. Conceptually, each Manuel Bröchin, Tom Kuchler, Michael Giardino, David Cock, and Timothy Roscoe 
+
+of the substreams in the user-specified range is then fed to a di ff erent instance of the same NFA (see: Section 3.2). 
+
+## 5 Evaluation 
+
+We first evaluate how Dryas scales with overlay size and filter complexity in Section 5.1, and the show Dryas’s versatility in two use-cases: cross-socket memory latency (Section 5.2) and cache-miss characterization (Section 5.3). These two examples demonstrate the filtering engine’s util-ity for understanding the underlying system. Moreover, they show that Dryas is versatile enough to allow inspecting prop-erties at both the block and the VC layer. 
+
+## 5.1 Scalability 
+
+We show the hardware cost in LUTs and FFs when synthe-sizing Dryas for a given overlay. We use a Xilinx Virtex Ul-trascale + with 1.1 M LUTs and 2.3 M FFs. Dryas has a fixed base cost of Dryas accounts for about 20k LUTs and 29k FFs, most of which (18k LUTs and 23k FFs) due to the AXI XDMA IP core used over PCIe to configure Dryas and out-put the trace; using ECI and FPGA DRAM would reduce this significantly. Figure 8 plots Dryas’s hardware cost as measured in LUTs and FFs. The base configuration in the left and right plots has 4 states, fan-in 4 and considers 1 unified stream. The base configuration in the middle plot has 200 STEs, such that the connectivity can be increased without modifying the number of STEs. To examine the scaling from these base configurations we scale along three dimensions: number of STEs, the fan-in of each STE, and the number of filtered sub-streams (NCLS). In the left plot, we increase the number of STEs without increasing their connectivity (increasing ). In the middle plot, we increase the connectivity between STEs (increasing ). In the right plot we increase the copies of the fil-tering NFA that are executed on de-multiplexed substreams. In all cases, the cost scales approximately linearly with the increase of the overlay parameter, allowing the user to trade-off these parameters at will. The cost of Dryas scales well and has a small cost, taking up less than 2.17% of the LUTs and less than 3.64% of FFs for a configuration with 600 states, even when using the XDMA IP. Figure 9 shows maximal configurations we could synthe-size without timing issues. The largest clique we can handle (red) has 100 STEs, all pairwise connected, and so any hNFA up to 100 states can be mapped to this configuration without application knowledge. Violet and green configurations show how we can trade o ff connectivity for states by decreasing clique size and increasing ring length. The yellow, blue and orange configurations introduce more parallel streams: yel-low and blue are plausible use cases, whereas orange shows maximally feasible parallelism. Figure 9 also shows the resource usage for these configu-rations, which is small in compared with the total resources available. Dryas can thus be synthesized alongside major ap-plications with require most of the hardware resources of the FPGA, while still supporting a wide variety of filtering use-cases for them. 
+
+## 5.2 Understanding Cross-Socket Latency 
+
+Next we show Dryas filtered traces for relevant information, significantly reducing the volume of output data that must be post processed. Our example is the ECI protocol stack, in-strumented running a memory scanning benchmark we built to better understand the limits of cross-socket bandwidth and latency on Enzian. This entails tracing actual memory trans-actions on the 30 GiB /s ECI link. In the benchmark, 16 cores on the CPU each scan CL-by-CL through a di ff erent 4 kB region of FPGA DRAM. Each core thus scans the region [0x000, 0x( + 1)000]. After each scan, the cores all synchro-nize with a barrier and then repeat. Dryas works here as a simple filter extracting CPU mem-ory requests of type MREQ_RLDD (“read CL as shared or exclusive”) and the FPGA responses of type MRSP_PEMD 
+
+(“memory response with data”). At the VC layer, Dryas can directly match on the message opcode field and discard mes-sages without the desired type and sender. At the block layer, the type cannot directly be accessed without deep packet in-spection, but we know that MREQ_RLDD arrives on VC 6 or 7, and MRSP_PEMD is sent on VC 4 or 5. This in-formation is su ffi cient to dramatically reduce the trace size, enough to handle remaining false positives in a postprocess-ing step. The NFA used requires only three STEs with fan-in 2 and need not distinguish multiple substreams. A minimal overlay fitting this simple NFA uses only 21k LUTs and 32k FFs, including functionality to timestamp each message. The VC layer tracing (not shown) shows that memory re-quest latency at this layer averages 0.135s, with average la-tency at the block layer of 5.2s. These are the time between arrival of an MREQ_RLDD request at the VC /block layer and the arrival of the corresponding MRSP_PEMD response at the same layer, respectively. The 40x di ff erence in latency shows that a large portion of available bandwidth is lost be-tween block and VC layer in the ECI stack. Figure 10 shows individual MREQ_RLDD and MRSP_PEMD 
+
+messages with timestamp on the x-axis and the CL address on the y-axis. Request-response pairs are connected with a blue horizontal line, indicating the latency of each request at the block layer of the FPGA. We see the single-threaded nature of the cores: each core has at most one request outstanding, and the red MREQ_RLDD 
+
+markers never cross a horizontal blue line, as in orange box Dryas: A Reprogrammable Engine for High-Speed Interconnect Tracing and Analysis 0 00 00 00 00 00 00  "000 0000 000 0000 000 $!  "" 0 0 00 0   0000 0000 0000 0000 0000 0 0 0 0 0 00 0  000 0000 000  
+
+> "# "   #! 
+
+Figure 8: Hardware cost of Dryas measured in Look-Up Tables (LUTs) and flip-flops (FFs) when increasing number of STEs (STEs), fan-in per state (FAN-IN) and the number of filtered substreams (NSTR). 
+
+States Fan-in NSTR 
+
+> 416 64 256 1024 416 64 256 1024 416 64 256 1024
+
+C L R N NSTR LUTs FFs red 100 1 1 0 1 31k 43k violet 8 20 1 0 1 32k 41k green 2 302 1 0 1 47k 40k yellow 10 5 3 1 4 53k 42k blue 1 6 6 1 32 48k 35k orange 2 2 1 0 128 38k 33k 
+
+Figure 9: Spider diagram showing maximal configura-tions that can be implemented witout timing violations. 
+
+“A”. Overall, there are often 16 requests outstanding at the FPGA, one per core. Actual link latency and processing overhead on the CPU is minimal; cores spend most of their time waiting for the FPGA’s VC layer. Moreover, this latency is largely due to congestion: the more requests outstanding at the FPGA, the longer the response time. Observed latency is low when few cores are running and high when many are running (seen on core 0 at “E”), showing most of the 16 in-flight requests at the block layer are serialized at the FPGA’s VC layer. MREQ_RLDD MRSP_PEMD Latency Addr 0xF000 0xE000 0xD000 0xC000 0xB000 0xA000 0x9000 0x8000 0x7000 0x6000 0x5000 0x4000 0x3000 0x2000 0x1000 0x0000     
+
+> 0200000 400000 600000 800000
+> Cycle
+
+Figure 10: Memory transactions at the FPGA block layer during a scanning benchmark. Requests and responses are plotted against referenced memory address and clock cycle at which they were captured. Annotations are in or-ange. 
+
+We also see the loss in performance incurred by the bar-rier synchronization between the cores (the vertical line “C”); some cores spend time waiting for their peers to complete – for example, core 0 is waiting about 30% of the time. More-over, cores don’t all start immediately after synchronization and some see a further delay, likely due to thread scheduling. This analysis provides insights into the FPGA interface implementation the system in general, and is only possible because Dryas annotates the output stream with timestamps and performs significant on-board data reduction on the trace. Manuel Bröchin, Tom Kuchler, Michael Giardino, David Cock, and Timothy Roscoe    
+
+> 001231,23
+> R12,R13 V21,V31 F21,F31 R12,R13 R12,R13 else else else else
+
+Figure 11: Life-cycle of a CL with di ff erent miss types. States corresponding to cache misses 0, (1, 2) and 3 are red. Transition labels use an abbreviated notation for VC layer messages: Rxy are memory requests, Fxy are for-ward requests, and Vxy are voluntary downgrades. 
+
+At the block layer, we receive about 1.5 blocks of 512 bits each cycle. The filtered trace used for Figure 10 spans about 1.6 10 9 cycles of 300 MHz clock of the FPGA, about 5 sec-onds of the benchmark. Since blocks arrive at a constant rate, an unfiltered trace would consist of 2.4 10 9 blocks with a total size of 1.2 TiB. Dryas reduces the size of the captured trace by a factor of over 10 5, largely reducing the false pos-itive rate, and correspondingly reducing the post processing time required by the same factor. 
+
+## 5.3 Characterizing cache misses 
+
+We now show the use of more complex filters and the abil-ity to track multiple substreams, in this case to characterize cache misses of a given workload using the coherency mes-sages. In this experiment, we store a perfectly balanced binary tree in FPGA-attached memory and the CPU repeatedly ac-cesses random entries of it. We use Dryas to characterize the cache misses into the traditional taxonomy of compulsory ( 0),
+
+capacity ( 1), conflict ( 2) or coherency ( 3) misses. Figure 11 shows an NFA which distinguishes compulsory from capacity /conflict and from coherency misses on some fixed CL; note that we cannot distinguish capacity from con-flict misses using ECI messages alone, since we have no in-formation on node-local CLs resident in a node’s cache. 00 000 000 0 00 0 00 0 00                   
+
+> 0 
+> 00 000 000 0 00 0 00 0 00
+>   
+> 00 000 000 0 00 0 00 0 00
+>  
+>  0 00  0 
+> 
+> root
+
+Figure 12: Top: heatplot of the number of cache misses for each CL per type. Bottom: the layout of the binary search tree in memory, explaining the miss pattern. 
+
+The first request for a CL is a compulsory miss. Any subsequent request to the FPGA is a witness for a further miss, which can be categorized into capacity /conflict or co-herency based on the reason for the eviction. A prior volun-tary eviction message (V31, V21) from the CPU implies that the present miss is a capacity /conflict miss. Similarly, a prior downgrade request from the FPGA (F21, F31) implies the present miss is a coherency miss. The number of times state is active thus corresponds to the number of misses of type . The NFA has 7 states and the highest degree node 1 has fan-in 6. Here we want to observe multiple substreams, one for each CL, and we synthesize an overlay with 8 STEs and fan-in 6 that can trace 32 independent substreams. Implementing this uses 31k LUTs and 37k FFs. We characterize the workload’s cache misses by running the benchmark three times, tracing the ECI messages with this NFA, changing (at runtime) the set of accepting states of the NFA each time: first, filtering compulsory misses with =
+
+–0˝; second, filtering capacity /conflict misses with = –( 1, 2)˝; and third, filtering coherence misses with = –3˝. Each result-ing trace consisting of memory requests corresponding to the given type of cache miss. In order to track the state of every CL independently, we need to track 24 substreams, since the binary search tree used spans 24 CLs. Figure 12 shows a heatmap of the number of cache misses of each type per CL. We observe the miss pattern of each cache miss type, and that there are many more capacity /con-flict misses than coherence misses. While this memory access behavior might be explained an-alytically, for real workloads this is impossible. In contrast, Dryas’s ability to reconfigure at runtime and simultaneously Dryas: A Reprogrammable Engine for High-Speed Interconnect Tracing and Analysis 
+
+trace multiple streams of messages can help the user to under-stand the behavior of its workload. Moreover, the scalability of Dryas ensures that it can be used for complex workloads. 
+
+## 6 Conclusion 
+
+We have presented Dryas, a reconfigurable, low resource us-age filter engine that is easily deployed alongside other ap-plications on an FPGA. Dryas employs a flexible overlay ar-chitecture to support easily-reconfigurable NFA filters. Our design is scalable to various sizes of hNFAs, while maintain-ing low resource usage. We have demonstrated Dryas by employing it to analyze ECI in two di ff erent scenarios: First we showed how even a simple filter can greatly decrease analytical e ff orts in post processing of traces to analyze the communication protocol. Second we used more advanced filtering to observe memory access patterns in a specific application and find hot spots for access bottlenecks. Dryas is a flexible, scalable, e ffi cient analysis and debug-ging tool for live applications on modern, high-performance interconnects for cache-coherent FPGA systems. 
+
+## References 
+
+[1] Gustavo Alonso, Timothy Roscoe, David Cock, Muh-sen Owaida, Kaan Kara, Dario Korolija, Zeke Wang, et al. “Tackling Hardware /Software co-design from a database perspective”. In: Proceedings of the 6th bien-nial Conference on Innovative Data Systems Research (CIDR), Amsterdam, Netherlands, January 2020. 2020. [2] Alveo U200 and U250 Data Center Accelerator Cards Data Sheet . v.1.3.1. https://www.xilinx.com/products/ boards - and - kits / alveo / u250 . html . Xilinx. May 2020. [3] Alveo U280 Data Center Accelerator Card Data Sheet .v.1.3. https://www.xilinx.com/products/boards-and-kits/alveo/u280.html . Xilinx. May 2020. [4] CCIX Consortium and others. Cache Coherent Inter-connect for Accelerators (CCIX) . http://www.ccixconsortium. com . Jan. 2019. [5] Young-Kyu Choi, Jason Cong, Zhenman Fang, Yuchen Hao, Glenn Reinman, and Peng Wei. “In-Depth Anal-ysis on Microarchitectures of Modern Heterogeneous CPU-FPGA Platforms”. In: ACM Trans. Reconfigurable Technol. Syst. 12.1 (Feb. 2019). issn : 1936-7406. doi :
+
+10.1145/3294054 . url : https://doi.org/10.1145/ 3294054 .[6] David Cock, Abishek Ramdas, Daniel Schwyn, Michael Giardino, Adam Turowski, Zhenhao He, Nora Hossle, Dario Korolija, Melissa Licciardello, Kristina Mart-senko, Reto Achermann, Gustavo Alonso, and Tim-othy Roscoe. “Enzian: an open, general, CPU /FPGA platform for systems software research”. In: Proceed-ings of the 27th ACM International Conference on Ar-chitectural Support for Programming Languages and Operating Systems . ASPLOS 2022. Lausanne, Switzer-land: Association for Computing Machinery, 2022, pp. 1– 18. [7] Louise Helen Crockett, Ross Elliot, Martin Enderwitz, and Robert Stewart. The Zynq Book: Embedded Pro-cessing with the Arm Cortex-A9 on the Xilinx Zynq-7000 All Programmable SoC . Strathclyde Academic Media, 2014. [8] CXL Consortium. Compute Express Link . https : / / www.computeexpresslink.org/ . May 2020. [9] P. Dlugosch, D. Brown, P. Glendenning, M. Leven-thal, and H. Noyes. “An E ffi cient and Scalable Semi-conductor Architecture for Parallel Automata Process-ing”. In: IEEE Transactions on Parallel and Distributed Systems 25.12 (2014), pp. 3088–3098. doi : 10.1109/ TPDS.2014.8 .[10] Vaibhav Gogte, Aasheesh Kolli, Michael J Cafarella, Loris D’Antoni, and Thomas F Wenisch. “HARE: Hard-ware accelerator for regular expressions”. In: 2016 49th Annual IEEE /ACM International Symposium on Mi-croarchitecture (MICRO) . IEEE. 2016, pp. 1–12. [11] LLC Gurobi Optimization. Gurobi Optimizer Refer-ence Manual . 2021. url : http://www.gurobi.com .[12] Zsolt István, David Sidler, and Gustavo Alonso. “Run-time parameterizable regular expression operators for databases”. In: 2016 IEEE 24th Annual International Symposium on Field-Programmable Custom Comput-ing Machines (FCCM) . IEEE. 2016, pp. 204–211. [13] Rasha Karakchi, Charles Daniels, and Jason Bakos. “An Overlay Architecture for Pattern Matching”. In: 
+
+2019 IEEE 30th International Conference on Application-specific Systems, Architectures and Processors (ASAP) .Vol. 2160. IEEE. 2019, pp. 165–172. [14] Rasha Karakchi, Lothrop O Richards, and Jason D Bakos. “A dynamically reconfigurable automata pro-cessor overlay”. In: 2017 International Conference on Reconfigurable Computing and FPGAs (ReConFig) .IEEE. 2017, pp. 1–8. [15] Lin Tan and T. Sherwood. “A high throughput string matching architecture for intrusion detection and pre-vention”. In: 32nd International Symposium on Com-puter Architecture (ISCA’05) . 2005, pp. 112–122. doi :
+
+10.1109/ISCA.2005.5 .[16] R. Lougee-Heimer. “The Common Optimization In-terface for Operations Research: Promoting open-source software in the operations research community”. In: 
+
+IBM Journal of Research and Development 47.1 (2003), pp. 57–66. doi : 10.1147/rd.471.0057 .Manuel Bröchin, Tom Kuchler, Michael Giardino, David Cock, and Timothy Roscoe 
+
+[17] J. Meier. “Tools for Cache Coherence Protocol Inter-operability”. Masters thesis, ETH Zürich. MA thesis. ETH Zürich, Mar. 2020. [18] Mellanox. Mellanox Innova ™-2 FlexOpen Programmable SmartNIC . https://www.mellanox.com/files/doc-2020/pb-innova-2-flex.pdf . 2020. [19] Rene Mueller, Jens Teubner, and Gustavo Alonso. “Streams on wires: a query compiler for FPGAs”. In: Proceed-ings of the VLDB Endowment 2.1 (2009), pp. 229– 240. [20] Mohammadreza Najafi, Mohammad Sadoghi, and Hans-Arno Jacobsen. “Flexible query processor on FPGAs”. In: Proceedings of the VLDB Endowment 6.12 (2013), pp. 1310–1313. [21] Abishek Ramdas, David Cock, Michael Giardino, Dario Korolija, Anastasiia Ruzhanskaia, Daniel Schwyn, Adam Turowski, Gustavo Alonso, and Timothy Roscoe. “CCKit: An open-source toolkit for cache coherent accelera-tors”. In: ACM Trans. Comput. Syst. 43.3 (Sept. 2025). 
+
+issn : 0734-2071. doi : 10.1145/3763790 . url : https: //doi.org/10.1145/3763790 .[22] Mohammad Sadoghi, Martin Labrecque, Harsh Singh, Warren Shum, and Hans-Arno Jacobsen. “E ffi cient event processing through reconfigurable hardware for algo-rithmic trading”. In: Proceedings of the VLDB Endow-ment 3.1-2 (2010), pp. 1525–1528. [23] Prateek Tandon, Faissal M Sleiman, Michael J Cafarella, and Thomas F Wenisch. “Hawk: Hardware support for unstructured log processing”. In: 2016 IEEE 32nd In-ternational Conference on Data Engineering (ICDE) .IEEE. 2016, pp. 469–480. [24] Jens Teubner, Louis Woods, and Chongling Nie. “Skele-ton automata for FPGAs: reconfiguring without recon-structing”. In: Proceedings of the 2012 ACM SIGMOD International Conference on Management of Data . 2012, pp. 229–240. [25] UltraScale Architecture Configurable Logic Block - UG574 .v1.5. Xilinx. Xilinx, Feb. 2017. [26] Various. Interlaken Protocol Definition: A Joint Spec-ification of Cortina Systems and Cisco Systems, Rev. 1.2, 52 pp.(Oct. 7, 2008) . http://interlakenalliance. com/wp- content/uploads/2019/12/Interlaken_ Protocol_Definition_v1.2.pdf . Accessed: 2021-09-02. 2008. [27] Louis Woods, Jens Teubner, and Gustavo Alonso. “Com-plex event detection at wire speed with FPGAs”. In: 
+
+Proceedings of the VLDB Endowment 3.1-2 (2010), pp. 660–669.
