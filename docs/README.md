@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-16</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-17</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 7 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>4</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-16 19:48:22 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-17 20:47:57 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,9 +62,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日速读4篇论文，聚焦提示词注入、网络靶场与硬件安全，暂无精读。</p>
-<p>最值得关注的方向是提示词注入的结构化分析与多跳网络靶场的高效构建，二者均获6分评价。</p>
-<p>建议优先精读首篇，以掌握攻击组件的系统拆解方法。</p>
+<p>今日共分析7篇论文，其中2篇精读、5篇速读，聚焦硬件安全与AI安全前沿。</p>
+<p>最值得关注：Spectre遥测的多维特性分析，以及用LLM增强语义感知类型检查来发现漏洞，均获8.0高分。</p>
+<p>建议优先阅读这两篇精读论文，理解跨架构侧信道风险与AI辅助漏洞挖掘的实用方法。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -73,12 +73,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">0 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Characterizing the Variance Envelope: A Multi-Dimensional Analysis of Spectre Telemetry Across Architectures and Workloads">Characterizing the Variance Envelope: A Multi-Dimensional Analysis of Spectre Telemetry Across Architectures and Workloads</span></li><li><span class="dpr-home-dashboard-paper-title" title="Finding Vulnerabilities via LLM-Augmented Semantics-Aware Type-Checking">Finding Vulnerabilities via LLM-Augmented Semantics-Aware Type-Checking</span></li></ul>
   </div>
-
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -86,12 +86,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">4 篇</strong>
+    <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="The Anatomy of a Prompt Injection: A Component Model for Structured Analysis">The Anatomy of a Prompt Injection: A Component Model for Structured Analysis</span></li><li><span class="dpr-home-dashboard-paper-title" title="RangeFactory: Scalable Construction of Multi-Hop Cyber Ranges">RangeFactory: Scalable Construction of Multi-Hop Cyber Ranges</span></li><li><span class="dpr-home-dashboard-paper-title" title="A Lightweight Fault-Detection Scheme for Barrett Modular Multiplication Using Multiple Conditional Reduction Paths">A Lightweight Fault-Detection Scheme for Barrett Modular Multiplication Using Multiple Conditional Reduction Paths</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="MazeRunner: Nonlinear Task and Clue Orchestration for LLM-driven Black-Box Automated Penetration Testing">MazeRunner: Nonlinear Task and Clue Orchestration for LLM-driven Black-Box Automated Penetration Testing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Overcoming Data Scarcity and Confidentiality in Hardware Assurance via Synthetic Generation">Overcoming Data Scarcity and Confidentiality in Hardware Assurance via Synthetic Generation</span></li><li><span class="dpr-home-dashboard-paper-title" title="MAP-Graph: Provenance-Aware Shared Memory for Multi-Agent Workflows">MAP-Graph: Provenance-Aware Shared Memory for Multi-Agent Workflows</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>
 </div>
 
