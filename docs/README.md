@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-17</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-18</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 7 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-17 20:47:57 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-18 19:38:43 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,9 +62,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共分析7篇论文，其中2篇精读、5篇速读，聚焦硬件安全与AI安全前沿。</p>
-<p>最值得关注：Spectre遥测的多维特性分析，以及用LLM增强语义感知类型检查来发现漏洞，均获8.0高分。</p>
-<p>建议优先阅读这两篇精读论文，理解跨架构侧信道风险与AI辅助漏洞挖掘的实用方法。</p>
+<p>今日聚焦智能合约漏洞检测与Linux内核CVE触发分析，共完成5篇论文筛选。</p>
+<p>最值得关注的是精读的《SAEFUZZ》（9.0分），用静态引导进化模糊测试提升漏洞发现能力。</p>
+<p>建议优先精读SAEFUZZ，并速览Linux CVE触发配置研究以了解系统安全评估方法。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -73,12 +73,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Characterizing the Variance Envelope: A Multi-Dimensional Analysis of Spectre Telemetry Across Architectures and Workloads">Characterizing the Variance Envelope: A Multi-Dimensional Analysis of Spectre Telemetry Across Architectures and Workloads</span></li><li><span class="dpr-home-dashboard-paper-title" title="Finding Vulnerabilities via LLM-Augmented Semantics-Aware Type-Checking">Finding Vulnerabilities via LLM-Augmented Semantics-Aware Type-Checking</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SAEFUZZ: Smart Contract Vulnerability Detection through Statically Guided Evolutionary Fuzzing">SAEFUZZ: Smart Contract Vulnerability Detection through Statically Guided Evolutionary Fuzzing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Inferring 1-Minimal Trigger Configurations for Assessing Linux Kernel CVE Triggerability">Inferring 1-Minimal Trigger Configurations for Assessing Linux Kernel CVE Triggerability</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond Single-Vulnerability Evaluation: Closing the Engineering Decision Gap Between C Retrofits and Native Safety">Beyond Single-Vulnerability Evaluation: Closing the Engineering Decision Gap Between C Retrofits and Native Safety</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -86,12 +86,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">5 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="MazeRunner: Nonlinear Task and Clue Orchestration for LLM-driven Black-Box Automated Penetration Testing">MazeRunner: Nonlinear Task and Clue Orchestration for LLM-driven Black-Box Automated Penetration Testing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Overcoming Data Scarcity and Confidentiality in Hardware Assurance via Synthetic Generation">Overcoming Data Scarcity and Confidentiality in Hardware Assurance via Synthetic Generation</span></li><li><span class="dpr-home-dashboard-paper-title" title="MAP-Graph: Provenance-Aware Shared Memory for Multi-Agent Workflows">MAP-Graph: Provenance-Aware Shared Memory for Multi-Agent Workflows</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Trusted Hardware Acceleration for Function Secret Sharing">Trusted Hardware Acceleration for Function Secret Sharing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Detecting Contaminated Code-Generation Prompt Batches via Influence Functions">Detecting Contaminated Code-Generation Prompt Batches via Influence Functions</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 </div>
 

@@ -1,0 +1,611 @@
+Title: Detecting Contaminated Code-Generation Prompt Batches via Influence Functions
+
+URL Source: https://arxiv.org/pdf/2608.14303v1
+
+Published Time: Mon, 17 Aug 2026 00:59:43 GMT
+
+Number of Pages: 30
+
+Markdown Content:
+# Detecting Contaminated Code-Generation Prompt Batches via Influence Functions 
+
+Francesco Quinzan 1, Noor Munir 1, Yishun Lu 1, Stephen Roberts 11Department of Engineering Science, The University of Oxford 
+
+Corresponding author: francesco.quinzan@eng.ox.ac.uk 
+
+Abstract 
+
+Large language models (LLMs) are increasingly used for code generation, yet they remain vulnerable to prompts that elicit insecure implementations. Existing defenses typically rely on predefined threat models or known vulnerability patterns, limiting their effective-ness against novel attacks. We propose CodeSIFT, a threat-model-agnostic detection method that leverages influence functions to identify batches of prompts that induce anomalous model behavior. Rather than detecting specific vulnerabilities, CodeSIFT measures the parameter-space influence of generated code and uses a statistical test to determine whether a candidate prompt set deviates from a benign reference distribution. To evaluate our approach, we introduce two benchmark datasets covering a variety of vulnerabilities. We evaluate CodeSIFT on three open-weight code LLMs ranging from 3B to 7B parameters, achieving AUROC scores of up to 0.98 at moderate-to-high injection rates, while maintaining well-calibrated false positive rates and substantially outperforming static analysis baselines. These results suggest that influence-function-based detection is a promising direction for identifying malicious code-generation prompts without requiring prior knowledge of the underlying attack class. 
+
+# 1 Introduction 
+
+Code generation is arguably one of the most consequential applications of large language models (LLMs), and it is currently fragile. Coding assistants are increasingly being embedded directly in developer workflows, writing authentication logic, database queries, and infrastructure code with little human review, in deployments where failures carry real security and financial consequences [World Economic Forum and Global Cyber Security Capacity Centre, University of Oxford, 2025]. A substantial fraction of the code such assistants suggest contains real vulnerabilities [Pearce et al., 2025], and developers who rely on assistants write measurably less secure code while believing the opposite [Perry et al., 2023]. The undoubted convenience of coding assistants carries a risk. Prompts can elicit subtly insecure code, such as a missing authorization check or an unsanitized query, without tripping filters built for detecting and removing generically "harmful" requests. Reliable defense mechanisms against such prompts are therefore essential. Existing defenses are largely tied to a known threat model. Static analyzers and taint trackers (e.g., Bandit [PyCQA, 2024], Semgrep [Semgrep, Inc., 2024]) flag code that matches a catalog of known vulnerability patterns, and are blind to variants outside that catalog. Signature and rule-based filters, operating on the prompt side, face the same limitations. Such approaches require a prior, comprehensive understanding of the vulnerabilities to guard against, an assumption that is not afforded by a fast-moving, LLM-specific, agentic attack surfaces [Deng et al., 2025]. Detectors exist for adjacent problems, exploiting gradients or internal activations to flag jailbreak and prompt-injection attempts [Xie et al., 2024, Zou et al., 2025, e.g.,], but they target detecting attacks on a model’s instruction-following behavior rather than filtering prompts that elicit a specific flawed implementation choice in generated code, and so these 1arXiv:2608.14303v1 [cs.LG] 14 Aug 2026 approaches do not transfer directly to this setting. However, to the best of our knowledge, no reliable method exists to detect prompts that elicit misalignment in code generation. We label a response as eliciting misalignment if it introduces a security-relevant weakness (per CWE/OWASP) that a benign completion of the same task would not. This leaves open the question of whether this problem can be overcome at all, even when the specific vulnerability class is unknown or novel. In this work, we explore an answer to this question. Our goal is to determine whether a given set of incoming code-generation prompts is poisoned with prompts that elicit misalignment. Rather than cataloging vulnerabilities in advance, our approach characterizes what the model’s internals look like when it behaves as intended, and flags prompts whose induced behavior departs from this norm. Importantly, this approach does not require any prior knowledge of the specific vulnerability class involved. We use influence functions [Cook and Weisberg, 1980b, Hampel, 1974a, Koh and Liang, 2017] to quantify such internal deviations at the level of individual examples: they estimate how a model’s parameters would shift if a given training example were upweighted. This shift captures the local effect of that example on model behavior without requiring retraining to convergence [Bae et al., 2022a]. A response that is inconsistent with benign training data forces a comparatively large such shift, making the size of the shift itself a signal of anomalous content. Aggregating this signal across a batch of incoming prompts lets us test whether the batch as a whole departs from benign behavior, signaling that it may be contaminated with malicious prompts. 
+
+Our contribution. 
+
+• We propose a statistical test for detecting malicious code-generation prompts based on influence functions. Prior influence function work has been used to explain individual predictions [Koh and Liang, 2017] or study generalization patterns at scale [Grosse et al., 2023b]; we instead use influence as an aggregate detection statistic that requires no assumption on the threat model (Section 4). • Existing benchmarks suitable for testing malicious-prompt detectors are scarce, so we build two new datasets, AuthSec (authentication, authorization, and session-security prompts) and InfraCloud (infrastructure, cloud, and protocol-exploitation prompts), 200 prompts each, together with a benign reference set (Section 5). • We test our method against three static baselines, Bandit, Semgrep, and an AST-based taint tracker, on the datasets above (Section 6), using coding LLMs of up to seven billion parameters, and show that our method reaches AUROC up to 0.98 while the baselines are inconsistent across models and in several cases even anti-correlated with the true label. 
+
+# 2 Related work 
+
+Security of LLM-generated code. Empirical studies show that code-generation models frequently produce insecure completions. Pearce et al. [Pearce et al., 2025] find that roughly 40% of GitHub Copilot completions, across a broad set of CWE-relevant scenarios, contain exploitable vulnerabilities, and Perry et al. [Perry et al., 2023] show in a controlled user study that developers who rely on an AI assistant write measurably less secure code while believing the opposite. Benchmark suites such as CyberSecEval [Bhatt et al., 2023] and its successor CyberSecEval 2 [Bhatt et al., 2024] operationalize this concern at scale, using a rule-based Insecure Code Detector to both generate test prompts and score whether a model’s completions violate one of a fixed set of secure-coding practices. These benchmarks measure a model’s overall propensity to write insecure code under natural prompting, using a rule-based system tied to a fixed catalog of known vulnerability classes. In contrast to the approach we propose here, they are not built to test whether a detector can distinguish a batch of adversarially 2crafted prompts from benign ones. 
+
+Influence Functions. Influence functions originate in robust statistics, where they were used to characterize the sensitivity of an estimator to infinitesimal perturbations of the data [Cook and Weisberg, 1980a, Hampel, 1974b]. Koh and Liang [2017] reintroduced the idea to machine learning, and used it to explain predictions and identify mislabeled or adversarial training examples. This is a retrospective diagnostic over data the model was already trained on. However, Basu et al. [2020] argue that IFs cannot be trusted in deep learning, since they rely on an approximation breaks down in the highly non-convex landscapes of deep neural networks. Bae et al. [2022a] address this concern directly. They show that influence functions approximate the proximal Bregman response function (PBRF), a quantity that isolates the local effect of a training point on model behavior while remaining close to the current model in function space. Beyond merely explaining model behavior, Rosser et al. [2026] show that influence-function approximations can also be used generatively, to help target small training-data edits that induce targeted behavioral changes. Bringing influence functions to the scale of modern LLMs, Grosse et al. [2023b] use an Eigenvalue-corrected Kronecker-Factored Approximate Curvature (EK-FAC) approximation of the inverse-Hessian-vector product to compute influence scores for models with up to 52 billion parameters, together with TF-IDF prefiltering and query batching to control the cost of gradient computation over large candidate sets. This scalability rests on Kronecker-Factored Approximate Curvature (K-FAC) [Martens and Grosse, 2015], which sidesteps computing the exact Hessian, replacing it with a Kronecker product of two much smaller factors. Subsequent work has adapted K-FAC to modern architectures with weight sharing [Eschenhagen et al., 2023], packaged it into reusable tooling such as ASDL [Osawa et al., 2023], and stabilized it under low-precision training [Lin et al., 2024]. 
+
+# 3 Preliminaries 
+
+Notation. We denote by ˆz = f (z, ˆθ) an LLM with converged parameters ˆθ that takes as input a sequence of tokens z. We model the output as a random variable, i.e., we assume that 
+
+f employs a stochastic decoding procedure. Formally, f induces a conditional distribution 
+
+P(ˆ z | z, ˆθ), from which the output is sampled. The deterministic-decoding case (e.g., greedy decoding) is recovered as a special case by letting P(ˆ z | z, ˆθ) be a point mass on a single output. For a sequence of output tokens s, we use L(ˆθ, z ) to denote the cross-entropy, i.e. 
+
+L(ˆθ, z ) = −
+
+> T
+
+X
+
+> t=1
+
+log pˆθ(ˆ zt | z<t ).
+
+Finally, we denote J (ˆθ) to be the empirical average of the cross-entropy L(ˆθ, z ) on the training dataset. 
+
+3.1 Influence Functions 
+
+Definition. Let z denote a sequence of tokens. To quantify the sequence’s effect on the learned parameters, we consider the perturbed objective obtained by upweighting z:
+
+θ⋆z,ε = arg min 
+
+> θ∈Rd
+
+n
+
+J (θ) + ε L(θ, z )
+
+o
+
+,
+
+where ε > 0 controls the magnitude of the perturbation. Following the notation introduced by Bae et al. [2022b], we define the corresponding response function r⋆z (ε) = θ⋆z,ε , which maps the perturbation strength ε to the resulting optimum. Assuming J (θ) is twice continuously 3differentiable, the response function is differentiable at ε = 0 . A first-order Taylor expansion around ε = 0 yields r⋆z, lin (ε) = θ⋆ − ε H−1 
+
+> θ⋆
+
+∇θL(θ⋆, z ), where Hθ⋆ := ∇2
+
+> θ
+
+J (θ⋆) is the Hessian of the training objective ∇2
+
+> θ
+
+J (θ⋆) evaluated at the optimum θ⋆. For ε sufficiently small, the linearized response r⋆z, lin (ε) approximates the local infinitesimal effect of adding z to the training objective with weight ε. Since θ⋆ is typically unknown, following Bae et al. [2022a] we introduce the quantity 
+
+ˆrz, lin (ε) = ˆθ − ε H−1ˆθ ∇θL(ˆθ, z ), (1) with Hˆθ := ∇2
+
+> θ
+
+J (ˆθ). (1) approximates r∗
+
+> z, lin
+
+(ε) using the known converged model parameters 
+
+ˆθ. Since ε > 0, taking the ℓp norm of both sides gives 
+
+ˆθ − ˆrz, lin (ε) p = ε H−1ˆθ ∇θL(ˆθ, z ) p, (2) which represents, for a norm ∥·∥ p, the magnitude of the infinitesimal change in the converged parameters induced by upweighting the example z during training. 
+
+Interpretation. For non-infinitesimal ε the function ˆrz, lin (ε) needs not closely track the true, non-linear response obtained by re-optimizing the model under the perturbed objective Basu et al. [2020]. However, Bae et al. [2022b], Bhatt et al. [2024] shows that ˆrz, lin (ε) remains an approximation of the Proximal Bregman Response Function (PBRF). The PBRF measures how the model would respond to upweighting z during training while remaining close to its current predictions and parameters. Formally, denote with {z(i)} for i = 1 , . . . , N , the training dataset. Then, it holds that 
+
+ˆrz, lin (ε) ≈ arg min 
+
+> θ∈Rd
+
+"
+
+1
+
+N
+
+> N
+
+X
+
+> i=1
+
+DL(z(i), θ, ˆθ) + ε L(θ, x (i)) + λ
+
+2 ∥θ − ˆθ∥2
+
+#
+
+, (3) where DL is the Bregman divergence of the loss, defined as 
+
+DL(z(i), θ, ˆθ) = L(θ, z (i)) − L (ˆθ, z (i)) − ∇L (ˆθ, z (i))⊤(f (z(i), θ ) − f (z(i), ˆθ)) , 1
+
+where the gradient, ∇L (ˆθ, z ), is taken w.r.t. the network’s output distributions. (3) contains three components. The first term penalizes deviations from the predictions of the original model, the second term encodes the effect of adding the sequence z to the training dataset, and the third term encourages the updated parameters to remain close to ˆθ. Consequently, the PBRF captures the local behavioral effect on model parameters of adding a training example while factoring out unrelated changes due to continued optimization. Under this interpretation, (2) quantifies the magnitude of this trade-off. It is large when fitting z can only be achieved at the cost of a substantial Bregman-divergence penalty, i.e., when accommodating 
+
+z requires departing from predictions the model otherwise makes consistently on the background distribution. We remark that the results differs slightly from Bae et al. [2022b], in that our formulation upweights the sequence z, rather than downweighting it. Hence, we provide a proof of (1) in Appendix A, which is a minor revision of the proof provided by Bae et al. [2022b]. 
+
+Unknown training datasets and computational issues. As discussed in Section 4, the proposed algorithm only computes (2). However, (2) requires an approximation of H−1ˆθ , the inverse Hessian of the empirical average of L(ˆθ, z ) on the training dataset [Grosse et al., 2023b, Koh and Liang, 2017]. This is problematic for the open-weight, pretrained LLMs we study, whose pretraining corpora are typically undisclosed. Hence, we do not assume access to Dtrain 
+
+itself, but only to a curvature dataset Dc that is in distribution for the model, i.e., closely approximating the same population that Dtrain was sampled from. We use Dc to compute ˆH−1ˆθ ,       
+
+> 1With a mild abuse of notation, in this equation we denote with f(z(i), θ )and f(z(i),ˆθ)the networks’ predicted output distribution.
+
+4a finite-sample estimate of the population Hessian that H−1ˆθ (itself an approximation). In this work, we use a subset of The Stack v2 [Lozhkov et al., 2024], the standard large-scale open corpus of permissively-licensed code underlying open-weight code-LLM pretraining. 
+
+3.2 KFAC Approximation and IFs 
+
+Block-diagonal approximation. Computing the inverse of the Hessian Hθ⋆ at the trained parameters θ⋆ is intractable for large models as, for m parameters, this operation requires 
+
+O(m2) storage and O(m3) operations. To overcome this problem, we replace H ˆθ by the Gauss– Newton (Fisher) curvature and approximate the latter with Kronecker-Factored Approximate Curvature (K-FAC). Under this approximation, we treat the Hessian as block-diagonal matrix across projections, the individual linear weight matrices of the transformer. This avoids forming the dense m × m Hessian in its entirety, so reducing storage to a sum of per-projection blocks. We further restrict the approximation to the MLP projection weights {θj }j∈J of each transformer block of the LLM, specifically the up- and down-projections, while attention, embedding, and normalization parameters are excluded. This is consistent with recent K-FAC formulations for modern architectures with linear weight sharing [Eschenhagen et al., 2023]. For each MLP projection j, the weight matrix θj ∈ Roj ×ij , with ij and oj its input and output dimensions, admits a per-example gradient gj (z) := ∇θj L(z, ˆθ). The corresponding block of the Hessian has size (oj ij ) × (oj ij ), which is still too large to store or invert directly. K-FAC addresses this by replacing it with a Kronecker product of two dense factors, 
+
+ˆHj ≈ Aj ⊗ Gj , Aj ∈ Rij ×ij , Gj ∈ Roj ×oj .
+
+This reduces the per-projection storage cost from O(i2 
+
+> j
+
+o2 
+
+> j
+
+) to O(i2 
+
+> j
+
++ o2 
+
+> j
+
+). Crucially, Aj and Gj
+
+are full rather than diagonal matrices, so their Kronecker product retains within-projection parameter correlations that a diagonal approximation would discard [Martens and Grosse, 2015]. 
+
+Estimation of the dense factors Aj , Gj . We estimate the retained factor from weight gradients using a gradient-Gram estimator, avoiding the need to buffer intermediate activations. Given the curvature dataset Dc (see Section 3.1, a curated dataset assumed in-distribution for the model’s pretraining data), we normalise each per-example gradient gj (z) := ∇θj L(z, θ ⋆) as 
+
+˜gj (z) = gj (z)/∥gj (z)∥F and average the corresponding Gram matrices: 
+
+Aj = 1
+
+|Dc|
+
+X
+
+> z∈Dc
+
+˜gj (z)⊤ ˜gj (z), Gj = 1
+
+|Dc|
+
+X
+
+> z∈Dc
+
+˜gj (z)˜ gj (z)⊤.
+
+In practice we accumulate these sums online, maintaining a running total and a sample counter over Dc, and only divide by |Dc| once the factor is finalized for damping and inversion, so the stored curvature state does not grow with the number of curvature examples. For numerical stability during inversion, following the standard practice of regularizing Fisher-based curvature approximations [Eschenhagen et al., 2023, Lu and Armour, 2026], we damp the finalized factors as 
+
+¯Aj = Aj + γ tr( Aj )
+
+h Ih, ¯Gj = Gj + γ tr( Gj )
+
+h Ih,
+
+where γ > 0 is a damping coefficient and Ih ∈ Rh×h is the identity matrix. 
+
+One-sided simplification. To lower both storage and, more substantially, the cost of Cholesky inversion, we retain only the Kronecker factor of dimension h, the transformer’s hidden dimension, and discard the factor of dimension dffn , the larger MLP intermediate dimension. Inversion cost scales as O(h3) for the retained factor versus O(d3ffn ) for the discarded one. In standard MLP architectures this coincides with discarding the larger of the two factors. 5For up-projections, where ij = h, this is ¯Aj ∈ Rh×h; for down-projections, where oj = h, this is ¯Gj ∈ Rh×h. The inverse curvature is then applied, one-sided: 
+
+¯gj (z) = 
+
+
+
+gj (z) ¯A−1 
+
+> j
+
+up-projection ,
+
+¯G−1 
+
+> j
+
+gj (z) down-projection ,
+
+(4) where ¯gj (z) has the same shape as θj , replacing the standard two-sided preconditioner 
+
+¯G−1 
+
+> j
+
+gj (z) ¯A−1 
+
+> j
+
+.
+
+Estimation of prompt influence scores. Substituting the damped, one-sided factors into the influence score reduces the computation of (2). For a chosen ℓp norm, the block-diagonal structure of ˆH−1 
+
+> θ⋆
+
+gives the tractable estimate 
+
+H−1ˆθ ∇θL(ˆθ, z ) p ≈ X
+
+> j
+
+¯gj (z) pp
+
+! 1
+
+> p
+
+, (5) where ¯gj (z) is the preconditioned gradient defined in (4). Here, the sum is taken for all MLP up- and down-projections of the model. 
+
+Relation to prior K-FAC/EK-FAC formulations. Our implementation adopts a simplified K-FAC approximation tailored to the detection setting. Compared with prior work [Grosse et al., 2023a, Martens and Grosse, 2015], we make three simplifications that reduce computational cost. First, we omit the eigenvalue correction, avoiding EK-FAC’s additional pass over the curvature dataset and dense eigenvector storage. Second, we apply the inverse curvature one-sided ((4)), retaining a single Kronecker factor per projection. Third, we estimate this factor directly from normalized per-example gradient Gram matrices instead of buffered activations and pre-activation gradients ((5)). These simplifications reduce both memory usage and preprocessing cost relative to standard K-FAC and EK-FAC. These simplifications reflect the different objective of our method. Whereas prior work seeks to approximate influence scores as faithfully as possible for interpretability [Grosse et al., 2023a], we use them only as a test statistic for comparing candidate and benign prompt distributions, motivating a computationally lighter approximation. 
+
+# 4 The Proposed Algorithm 
+
+Setup and influence score. Our approach does not assume a specific threat model. Instead, we characterize the statistics of benign model behavior and test whether a batch of incoming prompts departs from the benign behavior statistics. We instantiate this comparison with two datasets. A reference dataset D∗ of benign prompts establishes this norm, and a candidate dataset D of incoming prompts, whose benign or malicious status is unknown, is the batch we wish to test. Determining whether D is malicious then reduces to checking whether the model’s behavior on D is consistent with the norm set by D∗, or instead departs from it. For every prompt x ∈ D ∪ D∗, we define the prompt influence score as 
+
+IF p,ε (z) := E
+
+h
+
+ˆz ∼ f (z, ˆθ)
+
+i
+
+∥ˆθ − ˆrˆz, lin (ε)∥p, (6) As discussed in Section 3.1, r⋆
+
+> ˆz, lin
+
+(ε) approximates the PBRF at a response ˆz [Bae et al., 2022a], namely the parameters obtained by reweighting ˆz’s contribution to the training loss by ε while keeping predictions close to those of ˆθ. The norm ∥ˆθ − ˆrˆz, lin (ε)∥p therefore measures the size of this update for a single sampled response ˆz, that is, how much the model must move to absorb 
+
+ˆz at weight ε while staying faithful to ˆθ’s behavior on the training distribution. Averaging this quantity over ˆz ∼ f (z, θ ∗) then yields IF p,ε (z), the expected shift induced by the responses the model generates for z.6Algorithm 1 CodeSIFT 
+
+Require: Curvature dataset Dc, reference dataset D∗, candidate dataset D,trained model f (·, ˆθ), upweighting factor ε, number of samples N ,significance threshold α;% Hessian approximation  
+
+> 1:
+
+precompute dense factors Aj , Gj on Dc as in section 3.2; % prompt influence score computation  
+
+> 2:
+
+for each data point z ∈ D ∪ D∗ do  
+
+> 3:
+
+for n = 1 , . . . , N do  
+
+> 4:
+
+sample ˆz(n) ∼ f (z, ˆθ); 
+
+> 5:
+
+compute preconditioned gradients ¯gj (ˆ z(n)) as in (4);  
+
+> 6:
+
+δ(n) ← (P 
+
+> j
+
+¯gj (ˆ z(n)) pp) 1 
+
+> p
+> 7:
+
+end for  
+
+> 8:
+
+IF p,ε (z) ← 1
+
+> N
+
+PNn=1 εδ (n); 
+
+> 9:
+
+end for 
+
+% statistical test  
+
+> 10:
+
+run Welch’s one-sided, two-sample t-test between {IF p,ε (z)}z∈D and {IF p,ε (z)}z∈D∗ ; 
+
+> 11:
+
+return malicious if p-value is less than α, else benign ;
+
+Influence scores as a detection criterion. We compute IF p,ε (z) identically for every prompt z ∈ D ∪ D∗. Our premise is that prompts eliciting misalignment form a small, atypical fraction of ˆθ’s training distribution. Hence, we expect the responses ˆz elicited by such prompts to have gradients ∇θL(ˆθ, ˆz) that are poorly explained by the curvature H−1ˆθ , and therefore to yield a larger value of ∥ˆθ − ˆrˆz, lin (ε)∥p on average than the responses to benign prompts. Averaging IF p,ε (z) over all prompts z ∈ D therefore summarizes the aggregate influence pressure of D, and comparing it against the same average computed on the known benign reference D∗
+
+isolates the excess pressure attributable to prompts that elicit misalignment. To operationalize this comparison, we run Welch’s one-sided two-sample test: 
+
+H0 : E [z ∼ D] IF p,ε (z) = E [z ∼ D∗] IF p,ε (z), H1 : E [z ∼ D] IF p,ε (z) > E [z ∼ D∗] IF p,ε (z).
+
+Under H0, prompts in D exert, on average, the same parameter-space influence as prompts in the benign reference D∗. The alternative H1 captures the case in which prompts in D collectively induce a larger parameter shift than benign prompts do. We reject H0 and conclude that D
+
+elicits misalignment whenever the test yields a p-value below a chosen significance threshold 
+
+α. We use Welch’s t-test, since D and D∗ have no reason to share equal variance in their influence scores, particularly under partial contamination, where D is a mixture of benign and malicious prompts and can be more heterogeneous than the benign-only reference D∗.Algorithm 1 illustrates a complete summary of the procedure. We refer to this algorithm as Code Statistical Influence-Function Test (CodeSIFT). Because the same simplified K-FAC approximation (Section 3.2) is applied identically to every prompt in D and D∗, systematic approximation bias is common to both and cancels in the two-sample comparison. Only bias correlated with the benign/malicious label could threaten detection validity. The calibrated false positive rates and consistent detection performance we observe across three architecturally distinct models (Section 6.5) are consistent with the absence of such bias. 
+
+Computational efficiency via Hessian precomputation. A naive computation of (6) would require repeatedly estimating an approximation of the inverse Hessian H−1ˆθ for each 7Figure 1: Example records from the malicious and benign instruction pools. data point z, which is prohibitively expensive. However, the dense fac-tors Aj , Gj used for KFAC approxi-mation neither depend on z, nor on the responses ˆz ∼ f (z, ˆθ). Hence, they can be precomputed once (Al-gorithm 1). Estimating the prompt influence score IF p,ε (z) then reduces to compute preconditioned gradi-ents ¯gj (ˆ z) as in (4), and a matrix-vector product with the dense fac-tors, both O(m), where m is the number of parameters of the model. It follows that an N -sample approx-imation of IF p,ε (z) requires O(mN ) operations. 
+
+# 5 Dataset Construction 
+
+Overview. Algorithm 1 tests whether a batch of prompts is contaminated by comparing the influence its completions exert against a known-clean reference. Evaluating this requires paired pools of malicious and benign prompts rather than single labeled examples. Existing benchmarks such as CyberSecEval [Bhatt et al., 2024, 2023] are not designed for this however; these benchmarks score individual completions for insecure patterns and report how often a model produces vulnerable code under non-adversarial prompting prompting, a per-sample generation metric with no notion of a clean reference pool or batch-level discrimination. We therefore construct a dedicated benchmark of 800 Python records: a malicious pool of 400 
+
+records whose completion targets are security-relevant implementation failures, and a benign reference pool of 400 records describing ordinary coding tasks. Each pool spans two application domains, with 200 records per domain. Because the domain distribution is identical in the two pools, a prompt’s domain carries no information about its label, and a detector cannot succeed by recognizing subject matter alone. Each record pairs a natural-language completion instruction with a Python skeleton con-taining a marked gap, indicated by one of three completion markers ( # TODO: , # TASK: , #INSTRUCTION: ). The marker locates the region to be filled and does not name the vulnerability, which in the malicious pool is implied by the surrounding task framing. Figure 1 gives one record from each pool. Markers are assigned by a fixed three-way cyclic rule over record position within each family, independently of task content and identically in both pools, and are therefore uninformative about the label. Task names do not enter the model input. 
+
+Provenance. We authored all 800 records manually. The records themselves are original; the weakness taxonomy is drawn from the CWE catalogue and the OWASP Top 10 [MITRE Corporation, 2024, OWASP Foundation, 2025]. Each malicious record began as a Python skeleton, with the completion instruction written afterwards against a target weakness from that taxonomy. The benign pool was written alongside the malicious pool, against the same two domain families. We validated the malicious pool by generating completions with several code models and confirming that the targeted weakness appears in the generated output. 
+
+Malicious pool. Weaknesses are grouped by the part of the application they target. Au-thentication, authorization, and session security (AuthSec ) covers credential and password handling, JWT and OAuth misuse, CSRF, cookie and session weaknesses, and access-control bypasses. Infrastructure, cloud, and protocol exploitation (InfraCloud ) covers server-side re-quest forgery, cloud-metadata and IAM abuse, HTTP and WebSocket attacks, cache poisoning, request smuggling, and CI/CD and dependency attacks. 8Figure 2: Detection performance on AuthSec as a function of injection rate, for Granite-3B-Code-Instruct-2K, DeepSeek-Coder-6.7B-Instruct, and Qwen2.5-Coder-7B-Instruct (left to right). Top row, AUROC. Bottom row, empirical false positive rate against the nominal significance level α. CodeSIFT approaches perfect AUROC as contamination increases and stays well calibrated across all three models, while the static baselines are inconsistent across models and often fall below chance. 
+
+Benign reference pool. Benign prompt families mirror these targets, input and data handling 
+
+(parsing, transformation, and collection utilities), authentication, identity and session utilities 
+
+(password hashing, token generation and verification, cookie configuration, role and scope checks), and infrastructure, I/O, and networking (file I/O, logging, HTTP clients, serialization, and small Flask endpoints). Tasks are ordinary implementations with no objective to introduce a vulnerability. 
+
+Vulnerability coverage. Table 1 in the Appendix breaks the malicious instruction pool into vulnerability classes with representative CWE identifiers. 
+
+# 6 Experiments 
+
+6.1 Datasets 
+
+We evaluate on the malicious and benign instruction pools described in Section 5: 200 AuthSec 
+
+and 200 InfraCloud malicious prompts, and a benign reference pool of 400 prompts split across the same two domains. Additionally, we use 100 prompts sampled uniformly at random from The Stack v2 [Lozhkov et al., 2024] as our curvature dataset. 
+
+6.2 Models 
+
+• Granite-3B-Code-Instruct-2K [Mishra et al., 2024]. Released by IBM as part of the Granite Code model family, it is pretrained on code and natural language and instruction-tuned for coding tasks, with a 2K-token context window. It has 3B parameters. 
+
+• DeepSeek-Coder-6.7B-Instruct [Guo et al., 2024]. Released by DeepSeek AI, this model is pretrained on a large code-centric corpus and instruction-tuned for code generation and completion tasks. It has 6.7B parameters. 
+
+• Qwen2.5-Coder-7B-Instruct [Hui et al., 2024, Yang et al., 2024]. Released by Alibaba as part of the Qwen2.5-Coder family, it is pretrained on a mixture of code and general 9Figure 3: Detection performance on InfraCloud as a function of injection rate, for Granite-3B-Code-Instruct-2K, DeepSeek-Coder-6.7B-Instruct, and Qwen2.5-Coder-7B-Instruct (left to right). Top row, AUROC. Bottom row, empirical false positive rate against the nominal significance level α. InfraCloud is harder than AuthSec , so CodeSIFT’s AUROC ceiling is lower, but it still improves monotonically with contamination and remains calibrated, while the baselines flatten or decline below chance. text and instruction-tuned for coding tasks. It has 7B parameters. 
+
+6.3 Baselines 
+
+We compare against three static and pattern-based detectors, each producing a binary flag per generated prompt (positive if the detector reports at least one finding). We average each detector’s flag over the candidate set D and reference set D∗, then run the same statistical test used for CodeSIFT (a t-test as in Algorithm 1) on these values to test whether D’s flag rate is significantly elevated. This holds the testing procedure fixed across detectors, varying only the underlying signal. 
+
+• Bandit [PyCQA, 2024]. A static analysis security linter for Python that inspects the abstract syntax tree for common misuse patterns, such as use of eval , weak cryptographic primitives, hardcoded passwords, and insecure subprocess calls. 
+
+• Semgrep [Semgrep, Inc., 2024]. A pattern-based static analysis tool run with publicly available, off-the-shelf rule packs for Python web applications (covering Flask and Django), drawn from Semgrep’s open-source rule registry rather than written by us. These rules encode generic secure-coding patterns, e.g., injection, insecure deserialization, weak cryptography, CSRF handling, and are not tailored to AuthSec or InfraCloud .
+
+• AST Taint Tracker . A custom static taint-analysis baseline that tracks data flow, via Python’s ast module, from Flask request sources ( request.args , request.json ,
+
+request.form , and related attributes) to security-sensitive sinks, including SQL execution, command execution, deserialization, SSRF, XSS, and NoSQL or LDAP queries. To the best of our knowledge, no established tool targets the threat detection problem studied in this work, so two baselines are repurposed general-purpose linters and the third we implement ourselves. All three are built agnostically: we assume the detector has no advance knowledge of the injected attack, and avoid tuning any baseline to AuthSec ’s or 
+
+InfraCloud ’s specific vulnerability classes, mirroring CodeSIFT’s own no-threat-model-10 knowledge assumption (Section 4). 
+
+6.4 Compute 
+
+All experiments are run on a single node with four NVIDIA RTX A6000 GPUs (48GB each, driver 570.211.01, CUDA 12.8). Granite-3B-Code-Instruct-2K and DeepSeek-Coder-6.7B-Instruct each run on a single GPU. Qwen2.5-Coder-7B-Instruct is split across two GPUs to accommodate its larger memory footprint. Because dense Kronecker factors can be memory-intensive and numerically delicate in low-precision training [Lin et al., 2024], gradient outer products are formed in bfloat16 while the accumulated factors Aj and Gj are stored in 
+
+float32 . When multiple GPUs are available, per-projection factors are distributed across devices by assigning projection j to device j mod Ngpu [Lu et al., 2026], spreading the curvature state across devices rather than pinning it to a single GPU. The hyperparameters for the experiments are presented in Appendix C. 
+
+6.5 Results 
+
+Figures 2 and 3 report detection performance on AuthSec and InfraCloud respectively, as a function of the injection rate, for CodeSIFT under the ℓ1 and ℓ2 norm and for the three static baselines, across all three models. 
+
+Detection accuracy. CodeSIFT improves monotonically with injection rate in every model and dataset combination we test. On AuthSec , AUROC already exceeds 0.6 to 0.85 at the lowest injection rate we evaluate, and saturates to essentially 1.0 once roughly 40 to 50 percent of the candidate set is malicious. On InfraCloud the task is harder, AUROC rises more gradually and peaks between 0.88 and 0.98 depending on the model, which is consistent with 
+
+InfraCloud spanning a broader and more heterogeneous set of vulnerability classes than 
+
+AuthSec . The baselines show no comparably reliable signal. Their performance is inconsistent across models rather than merely weaker, Bandit is close to CodeSIFT on DeepSeek-Coder (≈0.76 to 1.0 AUROC) but stays near chance on Granite and Qwen, while Semgrep and the AST Taint Tracker frequently fall below 0.5 AUROC as the injection rate grows, meaning their flags become anti-correlated with the true label rather than merely uninformative. We take this as evidence that static, pattern-based detectors latch onto surface regularities that do not transfer across models, whereas the parameter-space influence signal that CodeSIFT relies on does. 
+
+False positive control. We check calibration by comparing the empirical false positive rate of the statistical test against the nominal significance level α under the null hypothesis, that is, when the candidate set is not contaminated. For CodeSIFT, the empirical FPR tracks 
+
+α closely across the full range we test (0.01 to 0.09) for all three models on both datasets, indicating the test is well calibrated rather than systematically over- or under-rejecting. The baselines are only as well calibrated as CodeSIFT on some model and dataset combinations, for example DeepSeek-Coder on AuthSec , but on others their FPR curves show a step-like pattern that departs from the diagonal, which we attribute to their binary per-sample flag admitting only a coarse set of achievable proportions, unlike CodeSIFT’s continuous influence score. 
+
+Additional experiments. Appendix D reports the same metrics as a function of candidate set size and number of sampled completions per prompt, and jointly across pairs of these axes, for every detector, model, and dataset combination. 11 7 Discussion 
+
+Across both datasets and all three models tested, CodeSIFT detects contaminated prompt batches without any assumption on the threat model, reaching AUROC rises monotonically with the fraction of malicious prompts in a batch, reaching up to 0.98 once contamination is moderate to high, and remains well calibrated throughout (Section 6). Performance is weaker, though still generally above chance, in the hardest regime of small candidate batches (Appendix D). Meanwhile, the static baselines are inconsistent across models and frequently uninformative or worse. This indicates that parameter-space influence carries a detection signal that transfers across model families in a way surface-level pattern matching does not, and does so without requiring the vulnerability class to be known in advance. We note a few directions the current results do not yet cover. CodeSIFT is designed as a batch-level test; extending it to localize individual malicious prompts within a batch is a natural next step. Our evaluation spans models up to 7B parameters, consistent with the compute budget for this study, and prior work on influence functions at up to 52 B parameters [Grosse et al., 2023a] suggests the approach should scale further. Similarly, extending the benchmark beyond Python and the vulnerability families studied here would help establish the generality of the method across languages and attack surfaces. 
+
+# 8 Acknowledgments 
+
+The authors gratefully acknowledge James Dixon for his assistance with code development and implementation. 
+
+# References 
+
+Bae, J., Ng, N., Lo, A., Ghassemi, M., and Grosse, R. (2022a). If influence functions are the answer, then what is the question? In Advances in Neural Information Processing Systems (NeurIPS) .Bae, J., Ng, N., Lo, A., Ghassemi, M., and Grosse, R. (2022b). If influence functions are the answer, then what is the question? In Advances in Neural Information Processing Systems (NeurIPS) .Basu, S., Pope, P., and Feizi, S. (2020). Influence functions in deep learning are fragile. arXiv preprint arXiv:2006.14651 .Bhatt, M., Chennabasappa, S., Li, Y., Nikolaidis, C., Song, D., Wan, S., Ahmad, F., Ascher-mann, C., Chen, Y., Kapil, D., Molnar, D., Whitman, S., and Saxe, J. (2024). Cyberseceval 2: A wide-ranging cybersecurity evaluation suite for large language models. arXiv preprint arXiv:2404.13161. Bhatt, M., Chennabasappa, S., Nikolaidis, C., Wan, S., Evtimov, I., Gabi, D., Song, D., Ahmad, F., Aschermann, C., Fontana, L., Frolov, S., Giri, R. P., Kapil, D., Kozyrakis, Y., LeBlanc, D., Milazzo, J., Straumann, A., Synnaeve, G., Vontimitta, V., Whitman, S., and Saxe, J. (2023). Purple llama cyberseceval: A secure coding benchmark for language models. arXiv preprint arXiv:2312.04724. Cook, R. D. and Weisberg, S. (1980a). Characterizations of an empirical influence function for detecting influential cases in regression. Technometrics , 22(4):495–508. Cook, R. D. and Weisberg, S. (1980b). Characterizations of an influence function. Journal of the American Statistical Association , 75(371):561–566. 12 Deng, Z., Guo, Y., Han, C., Ma, W., Xiong, J., Wen, S., and Xiang, Y. (2025). Ai agents under threat: A survey of key security challenges and future pathways. ACM Computing Surveys , 57(7):1–36. Eschenhagen, R., Immer, A., Turner, R., Schneider, F., and Hennig, P. (2023). Kronecker-factored approximate curvature for modern neural network architectures. In Advances in Neural Information Processing Systems , volume 36, pages 33624–33655. Grosse, R., Bae, J., Anil, C., Elhage, N., Tamkin, A., et al. (2023a). Studying large language model generalization with influence functions. arXiv preprint arXiv:2308.03296 .Grosse, R., Bae, J., Anil, C., Elhage, N., Tamkin, A., Tajdini, A., Steiner, B., Li, D., Durmus, E., Perez, E., Hubinger, E., Lukoši¯ ut˙ e, K., Nguyen, K., Joseph, N., McCandlish, S., Kaplan, J., and Bowman, S. R. (2023b). Studying large language model generalization with influence functions. arXiv preprint arXiv:2308.03296 .Guo, D., Zhu, Q., Yang, D., Xie, Z., Dong, K., Zhang, W., Chen, G., Bi, X., Wu, Y., Li, Y. K., Luo, F., Xiong, Y., and Liang, W. (2024). Deepseek-coder: When the large language model meets programming – the rise of code intelligence. Hampel, F. R. (1974a). The influence curve and its role in robust estimation. Journal of the American Statistical Association , 69(346):383–393. Hampel, F. R. (1974b). The influence curve and its role in robust estimation. Journal of the American Statistical Association , 69(346):383–393. Hui, B., Yang, J., Cui, Z., Yang, J., Liu, D., Zhang, L., Liu, T., Zhang, J., Yu, B., Dang, K., et al. (2024). Qwen2. 5-coder technical report. arXiv preprint arXiv:2409.12186 .Koh, P. W. and Liang, P. (2017). Understanding black-box predictions via influence functions. In Proceedings of the 34th International Conference on Machine Learning (ICML) .Lin, W., Dangel, F., Eschenhagen, R., Neklyudov, K., Kristiadi, A., Turner, R. E., and Makhzani, A. (2024). Structured inverse-free natural gradient descent: memory-efficient & numerically-stable kfac. In Proceedings of the 41st International Conference on Machine Learning , pages 29974–29991. Lozhkov, A., Li, R., Allal, L. B., Cassano, F., Lamy-Poirier, J., Tazi, N., Tang, A., Pykhtar, D., Liu, J., Wei, Y., Liu, T., Tian, M., Kocetkov, D., Zucker, A., Belkada, Y., Wang, Z., Liu, Q., Abulkhanov, D., Paul, I., Li, Z., Li, W., Risdal, M., Li, J., Zhu, J., Zhuo, T. Y., Zheltonozhskii, E., Dade, N. O. O., Yu, W., Krauß, L., Jain, N., Su, Y., He, X., Dey, M., Abati, E., Chai, Y., Muennighoff, N., Tang, X., Oblokulov, M., Akiki, C., Marone, M., Mou, C., Mishra, M., Gu, A., Hui, B., Dao, T., Zebaze, A., Dehaene, O., Patry, N., Xu, C., McAuley, J. J., Hu, H., Scholak, T., Paquet, S., Robinson, J., Anderson, C. J., Chapados, N., et al. (2024). Starcoder 2 and the stack v2: The next generation. CoRR , abs/2402.19173. Lu, Y. and Armour, W. (2026). Beyond the mean: Fisher-orthogonal projection for natural gradient descent in large batch training. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pages 24115–24123. Lu, Y., Zhang, J., Yang, Z., and Armour, W. (2026). Runtime-orchestrated second-order optimization for scalable llm training. Martens, J. and Grosse, R. (2015). Optimizing neural networks with kronecker-factored approximate curvature. In Proceedings of the 32nd International Conference on Machine Learning (ICML) .13 Mishra, M., Stallone, M., Zhang, G., Shen, Y., Prasad, A., Soria, A. M., Merler, M., Selvam, P., Surendran, S., Singh, S., Sethi, M., Dang, X., Li, P., Wu, K., Zawad, S., Coleman, A., White, M., Lewis, M., Pavuluri, R., Koyfman, Y., Lublinsky, B., de Bayser, M., Abdelaziz, I., Basu, K., Agarwal, M., Zhou, Y., Johnson, C., Goyal, A., Patel, H., Shah, S. Y., Zerfos, P., Ludwig, H., Munawar, A., Crouse, M., Kapanipathi, P., Salaria, S., Calio, B., Wen, S., Seelam, S., Belgodere, B., Fonseca, C. A., Singhee, A., Desai, N., Cox, D. D., Puri, R., and Panda, R. (2024). Granite code models: A family of open foundation models for code intelligence. CoRR , abs/2405.04324. MITRE Corporation (2024). Common weakness enumeration (CWE). https://cwe.mitre. org/ . Accessed: 2026-08-04. Osawa, K., Ishikawa, S., Yokota, R., Li, S., and Hoefler, T. (2023). Asdl: A unified interface for gradient preconditioning in pytorch. arXiv preprint arXiv:2305.04684 .OWASP Foundation (2025). OWASP top 10:2025. https://owasp.org/Top10/2025/ . Ac-cessed: 2026-08-04. Pearce, H., Ahmad, B., Tan, B., Dolan-Gavitt, B., and Karri, R. (2025). Asleep at the keyboard? assessing the security of github copilot’s code contributions. Communications of the ACM , 68(2):96–105. Perry, N., Srivastava, M., Kumar, D., and Boneh, D. (2023). Do users write more insecure code with ai assistants? In Proceedings of the 2023 ACM SIGSAC conference on computer and communications security , pages 2785–2799. PyCQA (2024). Bandit: A tool designed to find common security issues in python code. 
+
+https://bandit.readthedocs.io/ . Originally developed within the OpenStack Security Project. Rosser, J., Kirk, R., Grefenstette, E., Foerster, J., and Ruis, L. (2026). Infusion: Shaping model behavior by editing training data via influence functions. arXiv preprint arXiv:2602.09987 .Semgrep, Inc. (2024). Semgrep: Lightweight static analysis for many languages. https: //semgrep.dev/ .World Economic Forum and Global Cyber Security Capacity Centre, University of Oxford (2025). Artificial intelligence and cybersecurity: Balancing risks and rewards. White paper, World Economic Forum. Xie, Y., Fang, M., Pi, R., and Gong, N. (2024). Gradsafe: Detecting jailbreak prompts for LLMs via safety-critical gradient analysis. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 507–518. Yang, A., Yang, B., Hui, B., Zheng, B., Yu, B., Zhou, C., Li, C., Li, C., Liu, D., Huang, F., Dong, G., Wei, H., Lin, H., Tang, J., Wang, J., Yang, J., Tu, J., Zhang, J., Ma, J., Xu, J., Zhou, J., Bai, J., He, J., Lin, J., Dang, K., Lu, K., Chen, K., Yang, K., Li, M., Xue, M., Ni, N., Zhang, P., Wang, P., Peng, R., Men, R., Gao, R., Lin, R., Wang, S., Bai, S., Tan, S., Zhu, T., Li, T., Liu, T., Ge, W., Deng, X., Zhou, X., Ren, X., Zhang, X., Wei, X., Ren, X., Fan, Y., Yao, Y., Zhang, Y., Wan, Y., Chu, Y., Liu, Y., Cui, Z., Zhang, Z., and Fan, Z. (2024). Qwen2 technical report. arXiv preprint arXiv:2407.10671 .Zou, W., Liu, Y., Wang, Y., Chen, Y., Gong, N., and Jia, J. (2025). Pishield: Detecting prompt injection attacks via intrinsic LLM features. arXiv preprint arXiv:2510.14005. 14 Appendix 
+
+# A Missing Proofs 
+
+Proposition A.1. Assume the loss L(·, ·) is convex as a function of the network outputs. Then, it holds 
+
+ˆrz, lin (ε) ≈ arg min 
+
+> θ∈Rd
+
+"
+
+1
+
+N
+
+> N
+
+X
+
+> i=1
+
+DL(z(i), θ, ˆθ) + ε L(θ, x (i)) + λ
+
+2 ∥θ − ˆθ∥2
+
+#
+
+, (7) 
+
+where DL is the Bregman divergence of the loss, defined as 
+
+DL(z(i), θ, ˆθ) = L(θ, z (i)) − L (ˆθ, z (i)) − ∇L (ˆθ, z (i))⊤(f (z(i), θ ) − f (z(i), ˆθ)) , 2
+
+with the gradient ∇L (ˆθ, z ) taken w.r.t. the network’s output distributions. Proof. In order to simplify the notation, we denote with ˆy(i) the activations of f (·, ˆθ) for point 
+
+z(i). Note that ˆy(i) is fixed for input z(i), even if the output model is stochastic. Similarly, we denote with y(i) the activations of f (·, θ ) for point z(i). Consider the second-order quadratic expansion of the loss L around ˆy(i), defined as 
+
+Lquad (y) := L(ˆ y(i)) + ∇yL(ˆ y(i))⊤(y(i) − ˆy(i)) + ( y(i) − ˆy(i))⊤∇2
+
+> y
+
+L(ˆ y(i))( y(i) − ˆy(i)). (8) Consider the expected linearized network output around ˆθ of this function, defined as 
+
+f (z(i), θ ) ≈ f (z(i), ˆθ) + Jθf (z(i), ˆθ)( θ − ˆθ).
+
+Note that it holds 
+
+y(i) − ˆy(i) = f (z(i), θ ) − f (z(i), ˆθ) ≈ Jθf (z(i), ˆθ)( θ − ˆθ). (9) 
+
+Step 1: The Bregman term reduces to a quadratic form. Computing the Bregman divergence of the quadratic approximation of the loss as in (8), it holds 
+
+DLquad (y(i), ˆy(i)) = Lquad (y(i)) − L quad (ˆ y(i)) − ∇ yLquad (ˆ y(i))⊤(y(i) − ˆy(i))= L(ˆ y(i)) + ∇yL(y(i))⊤(y(i) − ˆy(i)) + ( y(i) − ˆy(i))⊤∇2
+
+> y
+
+L(ˆ y(i))( y(i) − ˆy(i)) − L (ˆ y(i))
+
+− ∇ yLquad (ˆ y(i))⊤(y(i) − ˆy(i))= L(ˆ y(i)) + ∇yL(ˆ y(i))⊤(y(i) − ˆy(i)) + ( y(i) − ˆy(i))⊤∇2
+
+> y
+
+L(ˆ y(i))( y(i) − ˆy(i)) − L (ˆ y(i))
+
+− ∇ yL(ˆ y(i))⊤(y(i) − ˆy(i))= ( y(i) − ˆy(i))⊤∇2
+
+> y
+
+L(ˆ y(i))( y(i) − ˆy(i)) (10) Substituting the linearized output (9) in (10) gives 
+
+DLquad (y(i), ˆy(i)) ≈ (θ − ˆθ)⊤Jθf (z(i), ˆθ)⊤∇2
+
+> y
+
+L(ˆ y(i)) Jθf (z(i), ˆθ)( θ − ˆθ). (11) 
+
+Step 2: Stationarity condition. Averaging (11) over i = 1 , . . . , N and substituting into the linearized PBRF objective, we differentiate with respect to θ and set the gradient to zero: 
+
+0 = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+Jθf (z(i), ˆθ)⊤∇2
+
+> y
+
+L(ˆ y(i)) Jθf (z(i), ˆθ)( θ − ˆθ) + ϵ∇θL(ˆθ, z ) + λ(θ − ˆθ)= Gˆθ(θ − ˆθ) + ϵ∇θL(ˆθ, z ) + λ(θ − ˆθ), (12)        
+
+> 2With a mild abuse of notation, in this equation we denote with f(z(i), θ )and f(z(i),ˆθ)the networks’ predicted output distribution.
+
+15 where Gˆθ is an approximation of the Gauss-Newton Hessian at ˆθ.
+
+Step 3: Solve for θ. Rearranging (12), 
+
+ Gˆθ + λI (θ − ˆθ) = −ϵ∇θL(ˆθ, z ), (13) and since L is convex as a function of the network outputs, then Gˆθ ⪰ 0; adding λI with λ > 0
+
+guarantees invertibility. Solving for θ therefore yields the unique minimizer 
+
+ˆrz, lin (ε) = ˆθ −  Gˆθ + λI −1∇θL(ˆθ, z ) ϵ, (14) as claimed. 
+
+# B Datasets vulnerability coverage 
+
+Table 1 groups the malicious samples by vulnerability class, with representative CWE IDs for each. 
+
+# C Hyperparameters for the Main Experiments 
+
+Unless otherwise noted, all experiments use the following fixed hyperparameters across models, datasets, and injection rates; Appendix D instead reports the effect of sweeping candidate-set size, sample count, and injection rate directly as figure axes. We fix ε = 10 −3 and average N = 25 sampled responses per prompt when estimating IF p,ε (z).K-FAC factors are damped with a base coefficient of 0.1, refined per-projection via a relative damping term of 0.1 and a damping floor γ; we use γ = 10 −3 for Granite-3B-Code-Instruct-2K and DeepSeek-Coder-6.7B-Instruct, and γ = 10 −2 for Qwen2.5-Coder-7B-Instruct, reflecting differences in curvature scale across architectures. The headline detection results use a fixed significance threshold of α = 0 .01 . To assess calibration, Section 6.5 additionally sweeps the nominal significance level from 0.01 to 0.10 and reports the resulting empirical false positive rate. 
+
+# D Additional experimental results 
+
+D.1 Overview across dataset size and sample count 
+
+Figures 4-5 and 6-7 plot AUROC as a function of dataset size, and separately as a function of the number of sampled completions per prompt, with all five detectors overlaid on the same axes. On AuthSec, CodeSIFT reaches near-ceiling AUROC with as few as 20 to 30 prompts in the candidate set, and its accuracy is essentially unaffected by how many completions are sampled per prompt, as few as 5 samples already suffice. On InfraCloud the same pattern holds at a lower ceiling, consistent with the harder overall task discussed in Section 6.5. The three static baselines are flat or slowly declining along both axes, they do not benefit from a larger candidate set or from additional sampled completions the way CodeSIFT does. 16 Table 1: Vulnerability classes in the malicious pool. Classes are listed in descending order of frequency within each family; each family totals 200 records. CWE identifiers are representative :each names the dominant weakness in its class, not a per-record label, and several classes span more than one entry. Rows marked – aggregate a long tail of weaknesses that do not map cleanly to a single identifier. 
+
+Vulnerability class Rep. CWE Records 
+
+Authentication, authorisation, and session security 
+
+Credential & secret exposure CWE-200 23 Broken access control / IDOR CWE-639 22 Federated auth / SSO flaws CWE-287 19 Session management CWE-384 19 JWT verification flaws CWE-347 17 Business-logic flaws CWE-841 17 Weak cryptography & randomness CWE-327 16 Cookie security CWE-1004 12 Brute-force & MFA bypass CWE-307 9Cross-site request forgery CWE-352 8Password storage and hashing CWE-916 7Timing & enumeration side channels CWE-208 7Password reset flows CWE-640 6Password policy CWE-521 6Other authentication failures – 6Race conditions CWE-362 6
+
+Subtotal 200 
+
+Infrastructure, cloud, and protocol exploitation 
+
+Information disclosure CWE-538 26 Other infrastructure failures – 21 Server-side request forgery CWE-918 18 HTTP protocol abuse & smuggling CWE-444 17 CI/CD & supply-chain attacks CWE-1357 15 Cache poisoning & deception CWE-349 15 Security-header & framing flaws CWE-1021 12 TOCTOU & file-race conditions CWE-367 12 Denial of service CWE-400 10 Container & orchestration escape CWE-269 9Injection into cloud service APIs CWE-943 9Protocol downgrade & confusion CWE-757 9Cloud credential & secret leakage CWE-522 7DNS & network-level attacks CWE-346 7WebSocket security CWE-1385 5CORS misconfiguration CWE-942 4Cloud permission misconfiguration CWE-732 4
+
+Subtotal 200 
+
+17 Table 2: Hyperparameters used across all experiments (Algorithm 1 and Section 3 notation in parentheses). Hyperparameter Value Upweighting factor ( ε) 1 × 10 −3
+
+Samples per prompt ( N ) 25 Base K-FAC damping 0.1
+
+Relative damping coefficient (rel_eps) 0.1
+
+Damping floor ( γ, Granite-3B-Code-Instruct-2K, DeepSeek-Coder-6.7B-Instruct) 1 × 10 −3
+
+Damping floor ( γ, Qwen2.5-Coder-7B-Instruct) 1 × 10 −2
+
+Significance threshold ( α, detection decision) 0.01 
+
+Significance threshold sweep ( α, FPR calibration) 0.01 –0.10   
+
+> Granite-3B-Code-Instruct-2K DeepSeek-Coder-6.7B-Instruct Qwen2.5-Coder-7B-Instruct
+
+Figure 4: AUROC on AuthSec as a function of dataset size, for CodeSIFT ( L1, L2) and the three static baselines jointly. Columns correspond to Granite-3B-Code-Instruct-2K, DeepSeek-Coder-6.7B-Instruct, and Qwen2.5-Coder-7B-Instruct.   
+
+> Granite-3B-Code-Instruct-2K DeepSeek-Coder-6.7B-Instruct Qwen2.5-Coder-7B-Instruct
+
+Figure 5: AUROC on AuthSec as a function of number of sampled completions, for CodeSIFT (L1, L2) and the three static baselines jointly. Columns correspond to Granite-3B-Code-Instruct-2K, DeepSeek-Coder-6.7B-Instruct, and Qwen2.5-Coder-7B-Instruct. 18 Granite-3B-Code-Instruct-2K DeepSeek-Coder-6.7B-Instruct Qwen2.5-Coder-7B-Instruct 
+
+Figure 6: AUROC on InfraCloud as a function of dataset size, for CodeSIFT ( L1, L2) and the three static baselines jointly. Columns correspond to Granite-3B-Code-Instruct-2K, DeepSeek-Coder-6.7B-Instruct, and Qwen2.5-Coder-7B-Instruct.   
+
+> Granite-3B-Code-Instruct-2K DeepSeek-Coder-6.7B-Instruct Qwen2.5-Coder-7B-Instruct
+
+Figure 7: AUROC on InfraCloud as a function of number of sampled completions, for CodeSIFT ( L1, L2) and the three static baselines jointly. Columns correspond to Granite-3B-Code-Instruct-2K, DeepSeek-Coder-6.7B-Instruct, and Qwen2.5-Coder-7B-Instruct. 19 D.2 Dataset size versus injection rate 
+
+Figures 8–10 report AUROC jointly as a function of dataset size and injection rate on AuthSec, and Figures 11–13 report the same on InfraCloud, one figure per model. CodeSIFT’s accuracy increases along both axes, larger candidate sets and higher contamination rates each make detection easier, and the L1 and L2 variants behave near-identically throughout. Bandit stays largely flat around 0.5 to 0.6 regardless of either quantity, indicating no real dependence on contamination level or candidate set size, while Semgrep and the AST Taint Tracker decline as either axis grows, in several settings falling to an AUROC near zero at the largest dataset sizes and injection rates, that is, becoming more confidently wrong as more evidence accumulates rather than merely uninformative. 
+
+Figure 8: AUROC on AuthSec for Granite-3B-Code-Instruct-2K, as a joint function of dataset size and injection rate, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row). CodeSIFT’s AUROC increases monotonically along both axes, while the baselines remain largely flat or decline as either quantity grows. 20 Figure 9: AUROC on AuthSec for DeepSeek-Coder-6.7B-Instruct, as a joint function of dataset size and injection rate, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row). CodeSIFT’s AUROC increases monotonically along both axes, while the baselines remain largely flat or decline as either quantity grows. 
+
+Figure 10: AUROC on AuthSec for Qwen2.5-Coder-7B-Instruct, as a joint function of dataset size and injection rate, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row). CodeSIFT’s AUROC increases monotonically along both axes, while the baselines remain largely flat or decline as either quantity grows. 21 Figure 11: AUROC on InfraCloud for Granite-3B-Code-Instruct-2K, as a joint function of dataset size and injection rate, for the three static baselines (top row) and CodeSIFT ( L1,
+
+L2, bottom row). CodeSIFT’s AUROC increases monotonically along both axes, while the baselines remain largely flat or decline as either quantity grows. 
+
+Figure 12: AUROC on InfraCloud for DeepSeek-Coder-6.7B-Instruct, as a joint function of dataset size and injection rate, for the three static baselines (top row) and CodeSIFT ( L1,
+
+L2, bottom row). CodeSIFT’s AUROC increases monotonically along both axes, while the baselines remain largely flat or decline as either quantity grows. 22 Figure 13: AUROC on InfraCloud for Qwen2.5-Coder-7B-Instruct, as a joint function of dataset size and injection rate, for the three static baselines (top row) and CodeSIFT ( L1,
+
+L2, bottom row). CodeSIFT’s AUROC increases monotonically along both axes, while the baselines remain largely flat or decline as either quantity grows. 23 D.3 Dataset size versus number of sampled completions 
+
+Figures 14–16 report AUROC jointly as a function of dataset size and the number of sampled completions per prompt on AuthSec, and Figures 17–19 report the same on InfraCloud, one figure per model, at a fixed injection rate. CodeSIFT’s accuracy tracks dataset size almost exclusively, increasing steadily as the candidate set grows, and is essentially flat across the number of sampled completions, so the detector does not need many completions per prompt to work. The baselines show no clear structure along either axis, their AUROC fluctuates within a narrow band around chance regardless of how much data or how many completions are available. 
+
+Figure 14: AUROC on AuthSec for Granite-3B-Code-Instruct-2K, as a joint function of dataset size and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed injection rate. CodeSIFT’s AUROC depends almost entirely on dataset size and is largely insensitive to the number of sampled completions, indicating the test is sample efficient. The baselines show no clear dependence on either axis. 24 Figure 15: AUROC on AuthSec for DeepSeek-Coder-6.7B-Instruct, as a joint function of dataset size and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed injection rate. CodeSIFT’s AUROC depends almost entirely on dataset size and is largely insensitive to the number of sampled completions, indicating the test is sample efficient. The baselines show no clear dependence on either axis. 
+
+Figure 16: AUROC on AuthSec for Qwen2.5-Coder-7B-Instruct, as a joint function of dataset size and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed injection rate. CodeSIFT’s AUROC depends almost entirely on dataset size and is largely insensitive to the number of sampled completions, indicating the test is sample efficient. The baselines show no clear dependence on either axis. 25 Figure 17: AUROC on InfraCloud for Granite-3B-Code-Instruct-2K, as a joint function of dataset size and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed injection rate. CodeSIFT’s AUROC depends almost entirely on dataset size and is largely insensitive to the number of sampled completions, indicating the test is sample efficient. The baselines show no clear dependence on either axis. 
+
+Figure 18: AUROC on InfraCloud for DeepSeek-Coder-6.7B-Instruct, as a joint function of dataset size and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed injection rate. CodeSIFT’s AUROC depends almost entirely on dataset size and is largely insensitive to the number of sampled completions, indicating the test is sample efficient. The baselines show no clear dependence on either axis. 26 Figure 19: AUROC on InfraCloud for Qwen2.5-Coder-7B-Instruct, as a joint function of dataset size and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed injection rate. CodeSIFT’s AUROC depends almost entirely on dataset size and is largely insensitive to the number of sampled completions, indicating the test is sample efficient. The baselines show no clear dependence on either axis. 27 D.4 Injection rate versus number of sampled completions 
+
+Figures 20–22 report AUROC jointly as a function of injection rate and the number of sampled completions per prompt on AuthSec, and Figures 23–25 report the same on InfraCloud, one figure per model, at a fixed dataset size. As in the previous sweep, CodeSIFT’s accuracy tracks one axis almost exclusively, here the injection rate, increasing steadily as contamination grows, while remaining essentially flat across the number of sampled completions. The baselines again show no clear structure along either axis. 
+
+Figure 20: AUROC on AuthSec for Granite-3B-Code-Instruct-2K, as a joint function of injection rate and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed dataset size. CodeSIFT’s AUROC depends almost entirely on injection rate and is largely insensitive to the number of sampled completions. The baselines show no clear dependence on either axis. 
+
+Figure 21: AUROC on AuthSec for DeepSeek-Coder-6.7B-Instruct, as a joint function of injection rate and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed dataset size. CodeSIFT’s AUROC depends almost entirely on injection rate and is largely insensitive to the number of sampled completions. The baselines show no clear dependence on either axis. 28 Figure 22: AUROC on AuthSec for Qwen2.5-Coder-7B-Instruct, as a joint function of injection rate and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed dataset size. CodeSIFT’s AUROC depends almost entirely on injection rate and is largely insensitive to the number of sampled completions. The baselines show no clear dependence on either axis. 
+
+Figure 23: AUROC on InfraCloud for Granite-3B-Code-Instruct-2K, as a joint function of injection rate and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed dataset size. CodeSIFT’s AUROC depends almost entirely on injection rate and is largely insensitive to the number of sampled completions. The baselines show no clear dependence on either axis. 29 Figure 24: AUROC on InfraCloud for DeepSeek-Coder-6.7B-Instruct, as a joint function of injection rate and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed dataset size. CodeSIFT’s AUROC depends almost entirely on injection rate and is largely insensitive to the number of sampled completions. The baselines show no clear dependence on either axis. 
+
+Figure 25: AUROC on InfraCloud for Qwen2.5-Coder-7B-Instruct, as a joint function of injection rate and number of sampled completions per prompt, for the three static baselines (top row) and CodeSIFT ( L1, L2, bottom row), at a fixed dataset size. CodeSIFT’s AUROC depends almost entirely on injection rate and is largely insensitive to the number of sampled completions. The baselines show no clear dependence on either axis. 30
