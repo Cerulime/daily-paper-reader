@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-18</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-19</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 8 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-18 19:38:43 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-19 20:52:16 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,9 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日聚焦智能合约漏洞检测与Linux内核CVE触发分析，共完成5篇论文筛选。</p>
-<p>最值得关注的是精读的《SAEFUZZ》（9.0分），用静态引导进化模糊测试提升漏洞发现能力。</p>
-<p>建议优先精读SAEFUZZ，并速览Linux CVE触发配置研究以了解系统安全评估方法。</p>
+<p>今日共读8篇论文，重点聚焦漏洞验证与固件模糊测试两大方向。最值得关注的是《SNIPTEST》和《BullsEye》，前者用多级代码切片提升漏洞验证精度，后者实现定向固件模糊测试。建议优先精读这两篇，可快速掌握当前漏洞验证与固件测试的前沿思路。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -76,7 +74,7 @@
     <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SAEFUZZ: Smart Contract Vulnerability Detection through Statically Guided Evolutionary Fuzzing">SAEFUZZ: Smart Contract Vulnerability Detection through Statically Guided Evolutionary Fuzzing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Inferring 1-Minimal Trigger Configurations for Assessing Linux Kernel CVE Triggerability">Inferring 1-Minimal Trigger Configurations for Assessing Linux Kernel CVE Triggerability</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond Single-Vulnerability Evaluation: Closing the Engineering Decision Gap Between C Retrofits and Native Safety">Beyond Single-Vulnerability Evaluation: Closing the Engineering Decision Gap Between C Retrofits and Native Safety</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SNIPTEST: Fuzzing Multi-Level Code Slices for Validating Vulnerabilities">SNIPTEST: Fuzzing Multi-Level Code Slices for Validating Vulnerabilities</span></li><li><span class="dpr-home-dashboard-paper-title" title="BullsEye: Directed Firmware Fuzzing">BullsEye: Directed Firmware Fuzzing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Benchmarking Automated Security Patch Backporting: How Far Are We?">Benchmarking Automated Security Patch Backporting: How Far Are We?</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
@@ -86,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Trusted Hardware Acceleration for Function Secret Sharing">Trusted Hardware Acceleration for Function Secret Sharing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Detecting Contaminated Code-Generation Prompt Batches via Influence Functions">Detecting Contaminated Code-Generation Prompt Batches via Influence Functions</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Not Discrete Enough: On the Inherent Insecurity of dTPMs for Measured Boot">Not Discrete Enough: On the Inherent Insecurity of dTPMs for Measured Boot</span></li><li><span class="dpr-home-dashboard-paper-title" title="Remote-Timer-as-a-Service: Efficient Microarchitectural Leakage in the Cloud with Remote Timers">Remote-Timer-as-a-Service: Efficient Microarchitectural Leakage in the Cloud with Remote Timers</span></li><li><span class="dpr-home-dashboard-paper-title" title="Plaintext Recovery Against Post-Filtering Access Control">Plaintext Recovery Against Post-Filtering Access Control</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>
 </div>
 

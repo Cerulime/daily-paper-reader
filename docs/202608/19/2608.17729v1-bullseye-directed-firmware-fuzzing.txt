@@ -1,0 +1,1458 @@
+Title: BullsEye: Directed Firmware Fuzzing
+
+URL Source: https://arxiv.org/pdf/2608.17729v1
+
+Published Time: Wed, 19 Aug 2026 01:05:22 GMT
+
+Number of Pages: 34
+
+Markdown Content:
+# BullsEye: Directed Firmware Fuzzing 
+
+## Lorenzo Ralli a,b , Emilio Coppa b
+
+> a
+
+Sapienza University of Rome, Italy 
+
+> b
+
+LUISS University, Italy 
+
+A R T I C L E I N F O 
+
+Keywords :Firmware Fuzzing Embedded Linux Security Directed Fuzzing Software Security Vulnerability Detection 
+
+A B S T R A C T 
+
+The widespread adoption of Internet of Things (IoT) devices has expanded the digital attack surface, making firmware analysis critical for modern software security. A key security concern stems from the frequent reuse of third-party software components, a practice that often introduces known vulnerabilities into firmware images. Whether a given image actually exposes such a flaw is an open question, and public proof-of concept exploits make answering it urgent. Directed Greybox Fuzzing (DGF), a technique that enables targeted exploration of specific binary locations, offers a promising solution for detecting such vulnerabilities. However, DGF has reached firmware only at function granularity, too coarse to aim at the vulnerable block itself. This article presents B ULLSEYE , the first DGF framework to schedule closed-source Linux-based firmware fuzzing by basic-block-level distance to user-specified targets. Our methodology combines static and dynamic analysis to enable DGF in the constrained firmware domain, focusing on vulnerabilities in reused third-party components. We introduce novel DGF heuristics that address limitations of traditional approaches. We compare B ULLSEYE against four greybox-fuzzing baselines sharing its execution back-end, including reimplementations of AFLG O and W IND RANGER , and against G REENHOUSE , a state-of-the-art firmware re-hosting framework. On 40 vulnerability sites across 32 firmware images, B ULLSEYE reproduces every target within budget, against 35 for the strongest of the four baselines, and reduces Time-to-Exposure by a geometric mean of 9.5× to 72 .5× 
+
+over them; against G REENHOUSE , on the 18 targets its pipeline supports, B ULLSEYE is faster by a geometric mean of 9.8× .
+
+## 1. Introduction 
+
+The ever-increasing integration of embedded systems into everyday devices is expanding the digital attack surface at an unprecedented rate. Recent projections estimate that by 2034 the number of connected IoT devices will exceed 40 billion, up from 17 billion in 2024 (Arnott, 2025). These systems span IP cameras, home routers, and critical indus-trial controllers, and are routinely deployed with a weak security posture dictated by cost and time-to-market pres-sures. The 2024 State of IoT Security report recorded more than 900 million cyberattacks targeting IoT devices, a 114% increase over the previous year (Labs, 2025), driven in part by the absence of uniform security standards, which leads manufacturers to adopt ad hoc practices for each product domain (Cirne et al., 2022). A dominant source of firmware vulnerabilities is the reuse of third-party components (TPCs), which implement security-critical operations such as HTTP parsing, authenti-cation, cryptography, and file handling. Because TPCs are compiled once and shipped as part of the firmware binary, vendors rarely rebuild them against updated dependencies, leaving known vulnerabilities latent in deployed devices for years (Chen et al., 2024). When a public proof-of-concept exploit exists for a TPC vulnerability, the question is not whether the flaw is present but whether a specific firmware configuration exposes it. Answering this question efficiently requires focusing testing effort on the suspected vulnerabil-ity site rather than exploring the binary indiscriminately.  
+
+> lorenzo.ralli@uniroma1.it
+
+(L. Ralli); ecoppa@luiss.it (E. Coppa) 
+
+> ORCID
+
+(s): 0009-0005-5472-894X (L. Ralli); 0000-0002-8094-871X (E. Coppa) 
+
+Coverage-guided greybox fuzzing (Zalewski, 2013, Manès et al., 2019) addresses the broader problem of automated vulnerability discovery by combining lightweight edge-coverage instrumentation with a mutation-driven feedback loop: test cases that exercise previously unseen control-flow edges are retained in a queue and mutated further, progressively exploring the program’s input space without necessarily requiring source code or formal specifications. Directed greybox fuzzing (DGF) (Böhme et al., 2017) refines this paradigm for targeted analysis: instead of maximising coverage, the fuzzer assigns each test input an energy budget proportional to its estimated proximity to a set of user-specified target locations (typically the basic blocks associated with a known vulnerability), concentrating the campaign on execution paths likely to reproduce the flaw. DGF has demonstrated substantial reductions in time-to-exposure (TTE), the time to the first input triggering the vulnerability at the target, on source-available programs, motivating many successors (Wang et al., 2024b). Despite the evolution of DGF approaches, this method-ology has not yet been extensively applied to firmware analysis. One barrier and three heuristic limitations stand in the way (detailed in Section 3). The barrier is source avail-ability: existing DGF tools rely on compiler infrastructure (LLVM passes) to analyse the program and instrument it with distance information, so no directed campaign can start without a binary-level equivalent of that pipeline. The re-maining three are not firmware-specific, but firmware’s loop-structured code makes them acute. First, DGF concentrates effort on the conditional branches that guard access to the 
+
+Ralli et al.: Preprint submitted to Elsevier Page 1 of 34 arXiv:2608.17729v1 [cs.CR] 18 Aug 2026 BullsEye: Directed Firmware Fuzzing 
+
+target, but identifying which branches matter requires un-derstanding control-flow structure; most existing approaches use a flow-insensitive analysis that fails silently on the loop-structured protocol parsers ubiquitous in firmware, missing the very conditions the fuzzer must solve. Second, measur-ing how far a test input is from the target by counting hops in the control-flow graph cannot distinguish an input whose input bytes are one character away from satisfying a hard comparison from one semantically far from it. Third, DGF shifts the campaign from broad exploration toward focused exploitation on a single global clock, so a critical branch reached late inherits an already-exploitative schedule with no budget to explore the newly discovered region, while the same campaign-global view pools energy on the targets easiest to reach and starves the rest. We present B ULLSEYE , a novel directed greybox fuzzer for closed-source IoT firmware. B ULLSEYE is built on top of F IRM -AFL (Zheng et al., 2019), which internally uses QEMU for firmware emulation, and addresses all four prob-lems through a combination of binary-level static analysis, extended graph semantics, and a semantically richer distance metric, together with a set of mutation and bug-detection optimisations tailored to the emulation layer. 
+
+Contributions. In more detail, this article makes the fol-lowing specific contributions: • Binary-level DGF pipeline . We design and imple-ment a DGF pipeline that operates entirely on closed-source MIPS Linux-based firmware binaries. A static binary analysis pass extracts intra-procedural control-flow graphs, an inter-procedural call graph, and a call-site map without source code, and QEMU’s dynamic translation layer is extended to accumulate per-input distance and branch-direction information at runtime and to refine the graphs as indirect call edges are observed. • Extended critical-branch analysis . DGF must iden-tify which conditional branches lie on the critical path to the target, i.e., branches whose outcome determines whether execution can ever reach the vulnerability. Existing approaches miss two branch classes com-mon in firmware parsers: branches that guard loop iterations (where the loop must be re-entered to stay on the target path), and branches through which one successor must pass again to reach the target, while the other has a route around it. We refine the reach-ability condition with two further variants based on forward-only reachability, yielding a three-condition characterisation. • Satisfiability-adjusted distance . We introduce a
+
+satisfiability score that measures, for each critical branch, how close the current input is to satisfying that branch’s comparison, derived from the operand values observed during execution. The score scales the structural distance, with per-input distance aggregated as a reciprocal-sum, so an input one byte-flip from solving a hard comparison ranks above one that is merely close in control-flow hops. • Per-branch annealing and target fairness . We re-place the single global cooling schedule shared by AFLG O (Böhme et al., 2017) and W IND RANGER with an independent schedule per critical branch, starting when that branch is first reached. A branch discovered late thus receives a fresh exploration burst instead of inheriting an already-exploitative schedule. Inputs that bring the input closer to satisfying a hard compar-ison are also admitted to the corpus even without new coverage edges, and energy is weighted per target so that the targets easiest to reach do not starve the rest. • Optimisations. BULLSEYE integrates several optimisations: (i) a queue ordered by satisfiability-adjusted distance and per-target energy weight, so that each cycle begins from the most promising input; (ii) grammar-aware mutation using the Grammar Mutator (Hu, 2020) and an LLM-assisted grammar extraction pipeline, with the bytes already matched to a comparison operand protected from destructive mutation; (iii) a length-extension mutation that uses comparison-operand taint to clone copy-source bytes past the destination buffer bound; and (iv) two overflow oracles, one tracking global-variable bounds from the binary’s dynamic symbol table and one combining a heap chunk walk with allocation redzones and a copy-time bound check, both synthesising crash signals for silent corruptions that AFL’s default oracle would miss. • Evaluation. We evaluate B ULLSEYE on 40 vulnera-bility sites in widely reused third-party components, across 32 real-world IoT firmware images, against four greybox-fuzzing baselines sharing its execution back-end, including reimplementations of AFLG O
+
+and W IND RANGER , and against G REENHOUSE (Tay et al., 2023), a state-of-the-art firmware re-hosting framework. B ULLSEYE reproduces all 40 within bud-get, against 35 for the strongest of the four baselines, and is faster in time-to-exposure by a geometric mean of 9.5× to 72 .5× over them; against G REENHOUSE ,on the 18 targets its pipeline supports, B ULLSEYE is faster by a geometric mean of 9.8× .To encourage further research, we make 1 our contribu-tions available at https://github.com/BullsEyeDGF. 
+
+## 2. Background 
+
+This section introduces the technical concepts and prior frameworks that B ULLSEYE builds upon. Section 2.1 re-views coverage-guided greybox fuzzing, the CmpLog tech-nique for comparison-guided mutation, the RedQueen col-orization technique used in length-extension mutation, and   
+
+> 1We plan to release the code after acceptance.
+> Ralli et al.: Preprint submitted to Elsevier Page 2 of 34 BullsEye: Directed Firmware Fuzzing
+
+grammar-aware mutation techniques used for structurally constrained firmware inputs. Section 2.2 presents directed greybox fuzzing, covering AFLG O’s seed-target distance formulation and W IND RANGER ’s deviation basic-block re-finement. Section 2.3 surveys firmware fuzzing execution strategies and their limitations. Section 2.4 describes F IRM -AFL, the execution engine on which B ULLSEYE is built. 
+
+2.1. Coverage-Guided Greybox Fuzzing 
+
+Coverage-guided greybox fuzzing (CGF) automatically generates test cases by combining lightweight instrumenta-tion with a mutation-driven feedback loop (Zalewski, 2013, Manès et al., 2019). American Fuzzy Lop (AFL), its refer-ence implementation, maintains a queue of seeds, the test inputs it selects for mutation and execution; seeds that trigger previously unseen control-flow edges are retained for further mutation (Figure 1). Input Queue  Mutation Engine  Mutated Input  
+
+> Program Execution Coverage
+> Crash
+> Figure 1: Coverage-Guided greybox fuzzing loop.
+
+Edge coverage bitmap. AFL instruments the program under test by injecting a small snippet before each basic block. At runtime, every transition from a predecessor block 
+
+𝑝 to a successor block 𝑠 updates a shared 64-KB coverage bitmap at the index:  
+
+> idx
+
+= (( pc (𝑝 ) ≫ 1) ⊕ pc (𝑠 )) & ( MAP_SIZE − 1) ,
+
+where pc (⋅) denotes the program-counter value of the block. An execution is considered interesting if any bitmap cell changes value relative to the currently known coverage. Because this hashing scheme maps many distinct edges to the same cell, it is an approximation; however, its 𝑂 (1) per-edge cost and compact representation make it practical for high-throughput fuzzing (Zalewski, 2013). 
+
+Forkserver and power scheduling. To reduce process-initialisation cost, AFL uses a forkserver : the program under test is started once, initialised to a stable state, and then forked for each test case. The number of mutations applied to each seed is controlled by a power scheduler in the form of energy , the mutations it receives, assigning more to seeds that are faster to execute or that trigger unique coverage patterns. Culling further prioritises the queue by maintaining a minimal favoured subset whose coverage col-lectively spans all known edges, allowing redundant seeds to be deprioritised and reducing wasted fuzzing effort. 
+
+Mutation stages. Deterministic mutation stages (bit and byte flips, arithmetic increments, known-interesting values, dictionary tokens) precede non-deterministic 
+
+havoc mutations that apply random combinations of byte operations (Zalewski, 2013). The mutation pipeline concludes with trimming , which removes unnecessary bytes, and splicing , which combines portions of distinct seeds to generate new inputs. 
+
+QEMU-mode instrumentation. When source code is unavailable, AFL can instrument binaries at runtime via QEMU’s Tiny Code Generator (TCG) (Bellard, 2005). During each Translation Block (TB) translation, AFL inserts a call to the afl_maybe_log helper, which records the current TB’s contribution to the coverage bitmap. 
+
+Comparison-guided mutation: CmpLog. Many programs contain hard-coded string or numeric constants that guard deeper code paths. Random byte-level mutations have a negligible probability of satisfying a 4-byte magic-constant check by chance. CmpLog (AFLplusplus contributors, 2019), based on the RedQueen technique (Aschermann et al., 2019b), addresses this by instrumenting every comparison instruction and comparison function such as strcmp to log both operands 
+
+at runtime. When a logged operand appears in the current seed, the corresponding bytes are replaced with the complementary operand via a targeted Input-to-State (I2S) mutation. CmpLog is implemented in AFL++’s QEMU instrumentation layer (Fioraldi et al., 2020), for x86 and ARM binaries only, and greatly improves penetration of input-validation barriers (Aschermann et al., 2019b). BULLSEYE ports it to QEMU’s MIPS front end. 
+
+Colorization and taint-based byte attribution. A com-plementary step in RedQueen (Aschermann et al., 2019b) is colorization : before the I2S pass, the seed’s bytes are replaced with random values while preserving its execution path , one range at a time, splitting and retrying a range when-ever coverage changes. The resulting variant is executed alongside the original with comparison logging enabled: an operand whose logged value differs between the two runs is input-derived, and the bytes carrying that value, located by scanning the seed, form its taint region . Colorization thus yields byte-level attribution with no shadow-memory overhead. B ULLSEYE reuses this taint region in the length-extension mutation (Section 5.6) to grow the copied data past the destination buffer bound. 
+
+Grammar-Aware Mutation Firmware input interfaces impose structural constraints on the data they accept: HTTP requests must contain a valid request line and well-formed headers, while environment-variable inputs follow a rigid  
+
+> KEY=VALUE
+
+format. Unrestricted byte-level mutation routinely   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 3 of 34 BullsEye: Directed Firmware Fuzzing
+
+violates these constraints, causing inputs to be rejected by the parser before reaching any vulnerability-relevant processing logic. Grammar-aware mutation restricts the fuzzer’s output to structurally valid inputs, so executions survive the parser and reach deeper logic. The Grammar Mutator (Hu, 2020) is an AFL++ plugin that accepts a user-defined context-free grammar and gener-ates inputs by construction, guaranteeing syntactic validity. It plugs into AFL’s standard feedback loop: grammar-valid inputs that trigger new coverage enter the corpus for further grammar-constrained mutation. It maintains a parse tree for each queued input, and both generation and mutation op-erate on that tree; B ULLSEYE backports AFL++’s custom-mutator interface to F IRM -AFL’s AFL 2.52b base to host it. 
+
+2.2. Directed Greybox Fuzzing 
+
+Coverage-guided greybox fuzzing maximises the frac-tion of the program explored, but provides no mechanism to concentrate effort on a specific code region. Directed greybox fuzzing (DGF) addresses this gap by reformulating the fuzzing objective: instead of maximising coverage, the fuzzer minimises a seed-target distance metric that quan-tifies how close a given input’s execution trace is to a set of user-specified target locations (Böhme et al., 2017). DGF is particularly suited to scenarios in which the analyst already knows where a vulnerability may reside, such as crash reproduction, patch-regression testing, or verification of code paths involving third-party components with known CVEs. The remainder of this section describes the two DGF frameworks that most directly inform B ULLSEYE ’s design. 
+
+2.2.1. AFLG O: Seed-Target Distance 
+
+AFLG O (Böhme et al., 2017) is the first practical di-rected greybox fuzzer. It extends AFL with a compile-time static analysis phase and a distance-aware power scheduler to steer fuzzing toward a set of user-specified target locations. 
+
+Graph extraction. AFLG O instruments the program un-der test during compilation using an LLVM pass that con-structs per-function control-flow graphs (CFGs) and an inter-procedural call graph (CG). Basic blocks are identified by source-file-and-line-number coordinates. A Python postpro-cessor runs Dijkstra’s shortest-path algorithm first over the CG, assigning each function a distance 𝑑 𝑓 to the target functions, then over each function’s CFG, assigning each block a distance 𝑑 𝑏 , with call-site blocks weighted by the 
+
+𝑑 𝑓 of their callee; when several targets are given, per-target distances are combined by harmonic mean. 
+
+Seed-target distance. Let 𝑡 be a target location and let 
+
+(𝑞 ) denote the set of basic blocks executed by seed 𝑞 .AFLG O defines the basic-block-level distance of a block 𝑏 
+
+to 𝑡 as: 
+
+𝑑 𝑏 (𝑡 ) = 
+
+{
+
+0 if 𝑏 = 𝑡, 𝑑 (𝑏, 𝑡 ) otherwise, where 𝑑 (𝑏, 𝑡 ) is built from the call sites , the blocks that invoke a function from which 𝑡 is reachable. Each call site 𝑐         
+
+> entry, 𝑑 𝑏 =4
+> 𝑏 1,𝑑 𝑏 =3
+> 𝑏 2,𝑑 𝑏 =2 𝑏 3,𝑑 𝑏 =∞
+> 𝑏 4,𝑑 𝑏 =1
+> target, 𝑑 𝑏 =0
+> TF
+
+𝐷 AFLGo = 4 + 3 + 2 + 1 + 0 5 = 2                               
+
+> Figure 2: AFLG O’s seed-target distance. Each block is labelled with its shortest-path distance 𝑑 𝑏 to the target (shaded red). For aseed following the highlighted trace
+> ⟨entry , 𝑏 1, 𝑏 2, 𝑏 4,target ⟩,𝐷 AFLGo = 2 . Block 𝑏 3(grey) has no path to the target; any seed executing it would receive 𝑑 𝑏 = ∞ ,inflating its score.
+
+contributes the CFG distance from 𝑏 to 𝑐 , plus 𝑐 ’s own target distance, defined as 10 times the function-level distance of its callee; 𝑑 (𝑏, 𝑡 ) is the harmonic mean of these contributions. The seed-target distance is the arithmetic mean of 𝑑 𝑏 (𝑡 )
+
+over (𝑞 ):
+
+𝐷 AFLGo (𝑞 ) = 
+
+∑
+
+> 𝑏 ∈(𝑞 )
+
+𝑑 𝑏 (𝑡 )
+
+|(𝑞 )| .
+
+A lower value of 𝐷 AFLGo (𝑞 ) indicates that 𝑞 ’s execution trace passes through blocks that are, on average, closer to the target, as shown in Figure 2. 
+
+Simulated annealing power scheduler. AFLG O mod-ulates AFL’s power schedule with a simulated annealing 
+
+scheme. A global temperature 𝑇 g cools exponentially, 𝑇 g =20 −𝑡 ∕𝑡 𝑥 , entering exploitation at 𝑇 g ≤ 0.05 , where 𝑡 𝑥 is a user-specified time-to-exploitation budget. Writing ̃ 𝐷 (𝑞 ) ∈ [0 , 1] for the seed distance min-max normalised against the current corpus, AFLG O sets 
+
+𝑝 (𝑞 ) = (1 − ̃ 𝐷 (𝑞 )) (1 − 𝑇 g) + 12 𝑇 g,
+
+and scales the energy AFL would have assigned by a factor 
+
+210( 𝑝 (𝑞 )−1∕2) . At 𝑇 g = 1 every seed receives 𝑝 = 1∕2 
+
+and thus a factor of 1, leaving AFL’s schedule untouched (exploration phase ); as 𝑇 g → 0 the factor spreads over 
+
+[1∕32 , 32] according to proximity ( exploitation phase ). This scheduling strategy has been shown to outperform unguided fuzzing on crash-reproduction benchmarks (Böhme et al., 2017). 
+
+Limitations. Three limitations of AFLG O’s formulation are central to this work. First, the static analysis phase relies on LLVM IR, which is unavailable for closed-source binaries. Applying   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 4 of 34 BullsEye: Directed Firmware Fuzzing
+
+AFLG O to firmware therefore requires an alternative graph-extraction mechanism (Nguyen et al., 2020). Second, the arithmetic mean aggregation treats every executed basic block equally. Blocks that are far from the target and have no path toward it nonetheless inflate the distance score of seeds that traverse them, introducing noise. WIND RANGER (Du et al., 2022), presented in Section 2.2.2, showed that restricting the metric to deviation basic blocks 
+
+substantially reduces this noise. Third, the distance metric is purely structural. Two seeds that reach the same branch point are scored identically regardless of how closely their input bytes satisfy the branch-ing condition at that point. This prevents the scheduler from distinguishing a seed that is one byte-flip away from taking the correct branch from one that is semantically far from satisfying it. 
+
+2.2.2. WIND RANGER : Deviation Basic Blocks 
+
+WIND RANGER (Du et al., 2022) refines AFLG O’s dis-tance metric by observing that most executed basic blocks are irrelevant to directional progress: they lie on straight-line code between branch points and cannot influence whether execution eventually reaches the target. Including them in the arithmetic mean of block distances dilutes the signal from the blocks that actually matter. W IND RANGER ad-dresses this by restricting the distance computation to a subset of blocks it calls Deviation Basic Blocks (DBBs): branch points from which execution can either stay on a path toward the target or permanently deviate from it. 
+
+Formal definition. Let 𝐺 = ( 𝑉 , 𝐸 ) be the inter-procedural control-flow graph of the program, and let 𝑟𝑒𝑎𝑐ℎ (𝑢, 𝑣 ) hold when there exists a path from 𝑢 to 𝑣 in 𝐺 . W IND RANGER 
+
+defines a block 𝑏 as a DBB with respect to target 𝑡 if and only if it satisfies two conditions: (1) 𝑟𝑒𝑎𝑐ℎ (𝑏, 𝑡 ): the target is reachable from 𝑏 ; and (2) ∃𝑠 ∈ 𝑠𝑢𝑐𝑐 (𝑏 ) such that ¬𝑟𝑒𝑎𝑐ℎ (𝑠, 𝑡 ): at least one successor of 𝑏 cannot reach 𝑡 .In other words, a DBB is a block that lies on some path to 𝑡 while having a successor that leaves all such paths; W IND RANGER computes this statically using the SVF framework (Sui and Xue, 2015) over LLVM IR. This yields the potential DBBs of the program; for a seed, W IN -
+
+> D
+
+RANGER further retains only those blocks whose target-reaching successors are absent from its execution trace, so a block already traversed in the correct direction leaves the set. The resulting per-seed signal is binary: a block either still deviates, or drops out entirely. Figure 3 contrasts a block that satisfies the conditions with one that does not. 
+
+Distance metric. Given the set (𝑞 ) of DBBs of a seed 𝑞 ,WIND RANGER restricts the seed-target distance to DBBs. A seed’s distance is the arithmetic mean of the distances of the DBBs in (𝑞 ), each weighted by a difficulty factor Ψ:
+
+𝐷 WR (𝑞 ) = 1
+
+|(𝑞 )|∑
+
+> 𝑏 ∈(𝑞 )
+
+𝑑 𝑏 (𝑡 ) ⋅ Ψ( 𝑞, 𝑏 )
+
+where Ψ( 𝑞, 𝑏 ) grows with the number of input bytes that influence the predicate of 𝑏 . Seeds that do not hit any DBB receive a large default distance. Note that Ψ scores the diffi-culty of a predicate, not a seed’s progress towards satisfying it: two seeds reaching 𝑏 with the same effective-byte count are indistinguishable, however close their operand values are to matching. W IND RANGER thus inherits AFLG O’s third limitation, which B ULLSEYE addresses in Section 4.3. 
+
+Seed management and scheduling. To help seeds hit DBBs, W IND RANGER computes a cb_mask : a bitmask over seed positions identifying bytes whose mutation is likely to affect a DBB condition, obtained by probing each posi-tion and observing which branch variables change. Masked positions are mutated with higher probability, concentrat-ing effort where DBB predicates can be influenced. Seeds are prioritised per DBB: the closest seed covering each DBB is promoted to a favoured queue. Both behaviours are stage-dependent: W IND RANGER alternates between an exploration and an exploitation stage, switching once every DBB has been hit often enough relative to the least-hit block. The trigger is therefore hit frequency, and energy is still governed by AFLG O’s single global annealing clock. 
+
+Limitations in the firmware context. WIND RANGER ’s conditions for DBBs capture the prototypical divergence point but miss two classes of branch that are common in firmware binaries and that B ULLSEYE identifies as distinct DBB classes. The motivation and formal treatment of these extended classes are given in Sections 3.2 and 4.2 respec-tively. Furthermore, W IND RANGER ’s static analysis relies on LLVM IR and therefore cannot be applied to closed-source firmware without modification. 
+
+2.3. Firmware Fuzzing 
+
+Applying coverage-guided greybox fuzzing to firmware requires solving a fundamental execution problem: the binary to test is compiled for an embedded processor (commonly MIPS or ARM), depends on device-specific peripherals, and cannot run directly on the analyst’s host machine. Two broad strategies have been explored for Linux-based images (Wright et al., 2021). Full-system emulation approaches (e.g., TriforceAFL (Plc, 2017), Firmadyne (Chen et al., 2016)) boot the complete firmware image inside QEMU, preserving environmental fidelity at the cost of low throughput (a few executions per second) due to software-based memory management and device emulation overhead. Hybrid user-mode approaches (e.g., FIRM -AFL (Zheng et al., 2019), E QU AFL (Zheng et al., 2022)) migrate the process under test to a faster user-mode emulator once initialised, recovering AFL-comparable throughput while retaining the environment needed to boot real firmware images. Despite this progress, all existing frameworks treat the firmware binary as an opaque execution artifact: the fuzzer receives an edge-coverage bitmap and a crash signal, but no information about how close an input is to a specific vulnerability site, so the directed dimension is still largely                     
+
+> Ralli et al.: Preprint submitted to Elsevier Page 5 of 34 BullsEye: Directed Firmware Fuzzing
+> (a) if-else
+> entry
+> 𝐵
+> target dead-end
+> TF
+> ¬𝑟𝑒𝑎𝑐ℎ (⋅, 𝑡 )
+> ✓DBB
+> (b) loop-gating
+> entry
+> 𝐵
+> target loop head
+> TF
+> back edge
+> 𝑟𝑒𝑎𝑐ℎ (⋅, 𝑡 )
+> via back edge
+> ✗not a DBB
+> (no deviating successor)
+> Figure 3: WIND RANGER deviation basic block classification. (a) In a standard if-else, block 𝐵 (orange) has a false-branch successor with no path to the target, so it is a DBB. (b) In a loop-gating pattern, both successors of 𝐵 can reach the target, as the false branch loops back through the same block on the next iteration, hence 𝐵 has no deviating successor and is not classified as a DBB. Section 3.2 elaborates on the consequences of this choice.
+
+missing from the firmware fuzzing literature. B ULLSEYE 
+
+addresses this by building a directed greybox fuzzing layer on top of F IRM -AFL’s execution engine, using the binary-level analysis that the absence of source (Section 2.2.1) forces. 
+
+2.4. FIRM -AFL : Augmented Process Emulation 
+
+FIRM -AFL (Zheng et al., 2019) is one of the first high-throughput greybox fuzzers for IoT firmware. It targets Linux-based firmware images for embedded processors, whose services ship as stripped ELF binaries without source, extracted from device flash images and executed inside an emulated system. 
+
+Augmented Process Emulation. Prior firmware fuzzers relied on full-system QEMU emulation for all execution, which incurs high overhead from software-based memory management and device emulation. F IRM -AFL addresses this through Augmented Process Emulation : the firmware is booted inside Firmadyne (Chen et al., 2016), a full-system QEMU instance with a custom instrumented kernel. Once the binary under test is fully initialised, DECAF’s Virtual Machine Introspection (VMI) (Henderson et al., 2014) detects the fork point, and subsequent execution of the binary migrates to a user-mode QEMU instance. System calls and page faults are handled by selectively re-entering full-system mode. This hybrid approach achieves throughput comparable to AFL’s user-mode fuzzing while preserving the environmental fidelity needed to boot real firmware images (Zheng et al., 2019). 
+
+Input channels. FIRM -AFL delivers inputs to the firmware binary through two channels that reflect its two primary interfaces: • HTTP socket channel : the fuzzer intercepts the read 
+
+system call on the listening socket and replaces the received data with the current test case. This channel is used for firmware binaries that serve an HTTP-based management interface. • CGI environment-variable channel : many firmware web servers invoke the application logic as a CGI process. In this model, the HTTP server passes request parameters through POSIX environment variables (The Open Group, 2018) such as 
+
+> REQUEST_METHOD
+
+, QUERY_STRING , and HTTP_COOKIE .FIRM -AFL intercepts the process-environment setup and injects fuzz-controlled key-value pairs before execution begins. 
+
+Coverage and instrumentation. Coverage is collected via AFL’s QEMU-mode edge bitmap in the user-mode QEMU instance. Branch transitions within the binary under test are recorded by the standard afl_maybe_log helper, described in Section 2.1. Because the binary is not recompiled, all static analysis must be performed at the binary level. 
+
+## 3. Motivation 
+
+Firmware images deployed in IoT devices increasingly rely on third-party components to implement security-critical functionality such as HTTP parsing, authentication, and cryptographic operations. Because these components are compiled once and shipped as closed-source binaries, manufacturers rarely rebuild them against updated dependencies, leaving known vulnerabilities latent within deployed devices for extended periods (Wu et al., 2024, Chen et al., 2024). When a public proof-of-concept exploit exists for such a vulnerability, the question is not whether the flaw is present but whether a specific firmware configuration exposes it. Answering this question with general-purpose coverage-guided greybox fuzzing is inefficient: it explores the binary indiscriminately, spending the majority of its budget on execution paths far from the vulnerability site. Directed greybox fuzzing (Section 2.2) addresses this inefficiency. Rather than treating all edges as equally worth exploring, a DGF tool assigns each seed an energy budget proportional to its estimated proximity to a set of designated target locations, typically the basic blocks associated with a known vulnerability. Seeds closer to the target receive more mutation effort, concentrating the campaign on execution paths likely to reproduce or trigger the flaw. AFLG O (Böhme et al., 2017) demonstrated substantial reductions in time-to-exposure (TTE) on source-available programs, motivating   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 6 of 34 BullsEye: Directed Firmware Fuzzing
+
+follow-on work such as W IND RANGER (Du et al., 2022), Beacon (Huang et al., 2022), and SelectFuzz (Luo et al., 2023). Despite this progress, DGF has not been applied exten-sively to firmware analysis. The obstacles are of two different kinds. One is a genuine barrier to entry that has kept basic-block-level DGF out of firmware altogether (P1); the other three are limitations of DGF’s guidance heuristics that are not firmware-specific, but that firmware makes acute (P2– P4). 
+
+P1 Closed-source binary analysis. The DGF pipeline requires control-flow and call graphs together with compile-time-instrumented binaries, but IoT firmware is overwhelmingly distributed without source. 
+
+P2 DBB classifier incompleteness. The deviation basic block (DBB) classification proposed by WIND RANGER is blind to the loop-structured code that dominates firmware protocol parsers, systematically missing the branches that gate the sink, the unsafe operation the target marks. 
+
+P3 Structural-only distance. Existing DGF distance metrics count control-flow hops but carry no information about how close a concrete input is to satisfying the branch predicates along the way. 
+
+P4 Campaign-global energy allocation. A single tem-perature spanning the entire run penalises seeds that first reach a late-stage guard deep in the campaign, when exploitation pressure is already maximal and the local input space has not yet been explored. The same campaign-global view extends across targets: a single distance signal pools energy on the targets that are easiest to reach and starves the harder ones, a fairness problem that follows from aggregating every target into one score. The remainder of this section elaborates each problem with concrete examples drawn from representative firmware. 
+
+3.1. Closed-source Binary Analysis 
+
+DGF tools overwhelmingly assume source availability: AFLG O (Böhme et al., 2017), W IND RANGER (Du et al., 2022), Beacon (Huang et al., 2022), and SelectFuzz (Luo et al., 2023) each instrument the program under analysis at compile time to emit a coverage bitmap and to embed the precomputed distance values that steer energy scheduling. UAFuzz (Nguyen et al., 2020) is a notable exception: it performs binary-level directed fuzzing via QEMU instrumentation and IDA-assisted graph extraction, but it targets Use-After-Free vulnerabilities in general x86 binaries and is not designed for the embedded Linux firmware setting we address. IoT firmware violates the source-availability assumption in practice. Vendors ship stripped ARM or MIPS binaries, often packed or encrypted, with no accompanying build system. Binary rewriting can recover a control-flow graph, but it cannot      
+
+> pkt->opcode? write_data
+> (TARGET)
+> send_error
+> (dead-end)
+> CMD_WRITE default
+> Figure 4: Control-flow graph of the listing from the baseline pattern. The switch (orange) has a default arm with no path to TARGET, so the DBB condition is satisfied and WIND RANGER
+> identifies the critical branch.
+
+reliably insert the distance-accumulation hooks that DGF requires, and disassembly errors in position-independent or hand-optimised code propagate into incorrect distance values that silently mislead the fuzzer. A firmware-capable DGF pipeline must therefore perform graph extraction, target identification, and instrumentation entirely on the binary, and remain robust to the imprecision inherent in static binary analysis rather than propagating it into the distance metric. 
+
+3.2. DBB Classifier Incompleteness 
+
+Restricting distance computation and runtime tracking to deviation basic blocks (DBBs), as W IND RANGER does (Section 2.2.2), concentrates the distance metric on branches that decide whether the target is reached. Under such a scheme, the quality of the DBB classifier sets a ceiling on how accurately the directed fuzzer can measure progress. WIND RANGER ’s classifier tests only set membership: a block 𝑏 is a DBB if 𝑏 lies in the target’s backward-reachable set and at least one successor 𝑠 does not (Figure 3). This captures the prototypical fork-in-the-road pattern but cannot distinguish reaches the target via a direct forward path 
+
+from reaches the target by looping back through this branch again . The condition therefore produces false negatives on three loop-structured patterns common in firmware protocol parsers. DAFL (Kim et al., 2023) independently corrob-orates this limitation, observing that DBBs can be a bad representative when they are within a loop ; its own design forgoes DBBs entirely, replacing CFG-based distances with semantic relevance scores derived from source-level pro-gram slicing over a Def-Use Graph. This solution does not transfer to closed-source firmware binaries, where the inter-procedural data-flow analysis that program slicing requires loses precision without compiler IR. 
+
+Baseline: Switch on opcode, one arm dead-ends. WIN -
+
+> D
+
+RANGER ’s DBB condition is designed for branches where at least one successor cannot reach the target. A firmware command dispatcher is representative:                      
+
+> 1switch ( pkt -> opcode ) {
+> 2case CMD_WRITE :
+> 3write_data ( pkt -> buf , pkt -> len ); /* TARGET */
+> 4break ;
+> 5default :
+> 6send_error ( conn , ERR_UNKNOWN_CMD );
+> 7break ;
+> 8}
+> Ralli et al.: Preprint submitted to Elsevier Page 7 of 34
+
+BullsEye: Directed Firmware Fuzzing 
+
+> parse_next_header
+
+≠ NULL? 
+
+> hdr->type
+
+= AUTH_COOKIE? 
+
+> process_cookie
+
+(TARGET) loop exit 
+
+> TFTFloop back edge
+
+Figure 5: Control-flow graph of the listing from Pattern 1. The inner conditional ( hdr->type == AUTH_COOKIE , orange) has both successors able to reach the target: the true branch reaches the target directly, the false branch loops back and can reach it on the next iteration. WIND RANGER ’s condition therefore does not classify this block as a DBB. 
+
+The CMD_WRITE branch reaches the vulnerable write_data 
+
+sink; the default branch sends an error response and returns without touching the target. Because the default successor has no path to the target, the DBB condition is satisfied and the switch is correctly classified as a DBB by both WIND RANGER and B ULLSEYE (Figure 4). The three patterns below all share the same symptom: WIND RANGER does not mark a critical branch as a DBB. This follows from the strict definition of DBB, which does not account for the loop structures common in real-world firmware images. 
+
+Pattern 1: Protocol-header enumeration loop. Con-sider the following excerpt, representative of HTTP servers found in D-Link and Trendnet firmware images:                    
+
+> 1while (( hdr =parse_next_header ( buf , & pos ))) {
+> 2if ( hdr -> type == AUTH_COOKIE ) {
+> 3process_cookie ( hdr -> value ); /* TARGET */
+> 4break ;
+> 5}
+> 6}
+
+The inner conditional ( hdr->type == AUTH_COOKIE ) has two successors: the true branch reaches the target directly, and the false branch loops back to the outer while condition, which can reach the target on the next iteration. Because both successors can reach the target, W IND RANGER ’s DBB condition is not satisfied and the block is not classified as a DBB (Figure 5). Yet, this branch is the only gate on reaching the target: its operand is precisely what the fuzzer must learn to manipulate. The key issue is that the branch controls the iteration at which the target becomes reachable, rather than whether the target is reachable at all. W IND RANGER ’s DBB definition does not capture this iterative gating behavior. 
+
+Pattern 2: Bounded-retry authentication gate. Another common pattern arises in the login services of router and IP camera web interfaces, which permit a bounded number of authentication retries. The privileged handler is dispatched 
+
+> authenticated? launch_admin_handler
+
+(TARGET)  
+
+> c++ *c && *c != ’:’
+
+?
+
+> verify_credentials(cred) ++attempts < MAX
+
+∧ read_next_request? 
+
+loop exit 
+
+> TFTinner back edge FTretry back edge F
+
+Figure 6: Control-flow graph of the listing from Pattern 2. The target is dispatched at the loop top; the inner credential-scan latch ( *c != ’:’ , orange) sits below it. Both its successors reach the target only by traversing the outer retry back edge, never forward. WIND RANGER ’s condition therefore does not classify this block as a DBB. 
+
+at the top of the retry loop, guarded by a flag that the previous iteration’s credential check sets:                                        
+
+> 1int attempts =0, authenticated =0;
+> 2do {
+> 3if ( authenticated )
+> 4launch_admin_handler ( req ); /* TARGET */
+> 5char *c =cred ;
+> 6do {c ++; }while (* c && *c != ': ');
+> 7authenticated =verify_credentials ( cred );
+> 8}while (++ attempts <MAX_RETRIES &&
+> 9read_next_request ( req ));
+
+The inner scan latch ( *c && *c != ’:’ ), the block holding the inner loop’s back edge, has two successors: the continue-scan branch loops back to read more of the token, and the done branch falls through to verify_credentials .The handler, however, is dispatched at the top of the loop, reached only once a credential verifies and control loops back, so both successors reach it only by traversing the outer retry back edge. W IND RANGER ’s condition is therefore not satisfied and the latch is not classified as a DBB (Figure 6). Yet, this latch gates every route to the handler: reaching it means going back around the loop, and its operand is precisely what the fuzzer must learn to satisfy. 
+
+Pattern 3: Checksum-gated configuration copy. Con-figuration handlers in router web interfaces routinely mea-sure a field, verify its integrity, and only then copy it, placing the vulnerable copy after the measuring loop. The following 
+
+Ralli et al.: Preprint submitted to Elsevier Page 8 of 34 BullsEye: Directed Firmware Fuzzing 
+
+len++ buf[len] != ’\0’ ?
+
+crc16(buf,len) == expected ?
+
+apply_config 
+
+(TARGET) fail / exit  
+
+> Tscan back edge FTF
+
+Figure 7: Control-flow graph of the listing from Pattern 3. The sink lies after the scan loop; the scan latch ( buf[len] != ’\0’ ,orange) must terminate to reach it. Both its successors reach the target: the exit branch via the checksum test, the back-edge after one more iteration, so WIND RANGER ’s condition does not classify this block as a DBB. 
+
+Table 1 
+
+DBB classification for representative firmware code patterns (WR = WIND RANGER , BE = BULLSEYE ; brackets give the firing condition). Code pattern WR BE Explicit if-else, one branch dead-ends ✓ [2a] ✓ [2a] 
+
+Switch on opcode, one arm dead-ends ✓ [2a] ✓ [2a] 
+
+Protocol-header enumeration loop ✗ ✓ [2c] 
+
+Bounded-retry authentication gate ✗ ✓ [2b] 
+
+Checksum-gated configuration copy ✗ ✓ [2c] 
+
+is representative of the NVRAM settings-write paths in SOHO router firmware:                       
+
+> 1size_t len =0;
+> 2do {len ++; }while ( buf [ len ] != '\0 ');
+> 3if ( crc16 ( buf , len ) == expected )
+> 4apply_config ( buf , len ); /* TARGET */
+
+The scan latch ( buf[len] != ’\0’ ) has two successors: the continue-scan branch reads another byte, and the done branch leaves the loop for the checksum test that guards 
+
+apply_config . Both reach the target: the done branch through the checksum test, the continue branch after another scan iteration. W IND RANGER ’s DBB condition is therefore not satisfied and the block is not classified as a DBB (Figure 7). Yet this latch is the input-termination gate on the whole sink: the target stays unreachable until the field is null-terminated within bounds, and producing it is exactly what the fuzzer must learn. 
+
+Summary. Table 1 summarises all patterns and their clas-sification under W IND RANGER ’s single-condition definition (2a) versus the three-condition definition (2a, 2b, and 2c) used in this work (Section 4.2). 
+
+Seed 𝐴     
+
+> compare(in, HMAC)
+> 𝑑 𝑏 = 1
+> TARGET
+> T (needed) input ≠HMAC on all 32 bytes
+> Score: 𝟏 .𝟎
+> (favoured)
+
+Seed 𝐵      
+
+> len ≤0xFF?
+> 𝑑 𝑏 = 3
+> ⋯
+> TARGET
+> T (needed) input encodes len=0x102
+> 1-bit flip suffices
+> Score: 𝟑 .𝟎
+> (disfavoured)
+
+Figure 8: Seed 𝐴 is one hop from the target but must satisfy a 32-byte HMAC comparison, which is virtually impossible by random mutation. Seed 𝐵 is three hops away but requires only a 1-bit mutation. AFLG O and WIND RANGER assign seed 𝐴 
+
+higher energy than seed 𝐵 .
+
+3.3. Structural-Only Distance 
+
+Even with a correct set of DBBs, the distance metric determines how effectively those blocks guide the campaign. AFLG O computes the arithmetic mean of shortest-path dis-tances across all executed blocks. W IND RANGER restricts this average to DBBs and drops a DBB from a seed’s set once that seed navigates it correctly. Both distances nonetheless remain structural: W IND RANGER ’s Ψ term scales a DBB’s contribution by how many input bytes affect its predicate, but neither metric reflects how close a given seed’s operand values are to satisfying it. DAFL (Kim et al., 2023) takes a step beyond structural distance by replacing the control-flow graph with a Def-Use Graph (DUG) derived from inter-procedural data-flow analysis: seed distances are computed over data-dependency paths rather than control-flow hops, yielding a more semantically meaningful distance metric. The DUG is built by an LLVM pass over source-level intermediate representation, however, so it inherits the ap-plicability limit noted in Section 3.2. To see why relying solely on structural distance is a problem in the firmware context, consider two seeds stalled at different DBBs on the way to a vulnerable memcpy in a firmware CGI handler, as shown in Figure 8. Both take the wrong branch: • Seed 𝐴 is one structural hop from the target. The guard compares the input against a 32-byte HMAC token derived from a per-session secret; no byte of seed 𝐴 
+
+matches any byte of the required token. • Seed 𝐵 is three structural hops away. The guard checks content_length ≤ 0xFF ; seed 𝐵 ’s input encodes content_length = 0x102 , which differs from the satisfying range by a single bit. AFLG O and W IND RANGER assign seed 𝐴 higher energy because it is structurally closer. In practice, seed 𝐴 has a negligible probability of satisfying its guard through random mutation, whereas seed 𝐵 requires a single bit-flip. Figure 8 visualises this disparity: structural distance can be a poor proxy for expected mutation cost. 
+
+Ralli et al.: Preprint submitted to Elsevier Page 9 of 34 BullsEye: Directed Firmware Fuzzing 
+
+What is missing is a measure of satisfiability proximity: a continuous assessment of how close the current input’s run-time comparison operands are to the values that would sat-isfy the branch predicate. W IND RANGER ’s Ψ weight scores the predicate, not the seed: a seed matching 31 of the 32 required bytes and one matching none receive iden-tical treatment. This coarseness prevents the fuzzer from recognising incremental progress and from directing extra mutation effort toward seeds on the verge of satisfying a hard comparison. The absence of a satisfiability gradient also limits the splice operator: AFL selects splice partners uniformly at random, whereas a principled strategy would pair a seed that fails at a given DBB with the corpus seed that most closely satisfies that DBB’s predicate. Without a continuous satisfiability score, this pairing cannot be computed. 
+
+3.4. Campaign-Global Energy Allocation 
+
+AFLG O schedules fuzzing energy using simulated an-nealing: a global temperature 𝑇 (𝑡 ) that decreases monotoni-cally from 1 (uniform exploration) towards 0 (concentrated exploitation), crossing the exploitation threshold 0.05 at a configurable time 𝑡 𝑥 . W IND RANGER and later DGF tools re-tain this design. Hence, all DBBs share the same temperature regardless of when they were first individually reached. For targets protected by a sequential chain of guards, this global schedule creates a temporal inequality. Suppose a target requires satisfying two DBBs, 𝑑 1 and 𝑑 2, in order. In a 45-minute campaign with 𝑡 𝑥 set to its full length, where the fuzzer first reaches 𝑑 2 at minute 40, the remaining exploration budget for 𝑑 2 is five minutes, compared to the 40 minutes over which 𝑑 1 was explored. Yet 𝑑 2 has just been discovered: the fuzzer has had no opportunity to characterise the local input space around it. Subjecting it immediately to maximum exploitation pressure, when the temperature is near zero, is counterproductive. The inequality is particularly harmful for multi-stage authentication logic or deeply nested protocol state machines in firmware, where satisfying late-stage DBBs depends on having first solved earlier ones. The natural response to discovering a new DBB is a fresh burst of exploration energy: a per-DBB temperature that starts high and cools independently of the global campaign clock. A second, spatial inequality appears when a campaign specifies several targets at once. AFLG O supports multiple sinks by aggregating their per-target distances into a single score, but aggregation is silent on fairness. A single global distance signal pools energy on whichever targets are easiest to reach: seeds that arrive at a nearby, frequently hit sink crowd out those making slow progress toward a harder one, and the harder targets starve, receiving the least energy exactly when they most need directed exploration. Neither AFLG O’s aggregation nor the schedule W IND RANGER in-herits from it corrects this; energy follows the path of least resistance rather than the target most in need. 
+
+3.5. Discussion 
+
+Of the four problems analysed in this section, only the first is a barrier to entry. Because IoT vendors ship stripped binaries without source, the compile-time instrumentation that current source-level DGF tools depend on is unavail-able, and no directed campaign can even start (P1). The remaining three are of a different kind: they are not barriers but limitations of DGF’s guidance heuristics, present in source-available programs as well, that firmware’s iterative, loop-structured code makes acute. The DBB classifier that determines which branches the fuzzer treats as meaningful decision points is blind to the loop-structured idioms that dominate firmware protocol parsers, silently omitting the very branches that guard vulnerable sinks (P2). The distance metric compounds this: counting control-flow hops tells the fuzzer how many branches separate a seed from the target, but says nothing about how close a given seed is to satisfy-ing them (P3). And the campaign-global energy allocation means that a DBB discovered near the end of the campaign is immediately subjected to maximum exploitation pressure, with no time to explore the local input space around it, while in multi-target runs the same global accounting lets easily reached sinks monopolise energy and starves the harder ones (P4). In short: P1 explains why DGF has not reached firmware at basic-block granularity, while P2–P4 explain why porting an existing DGF tool onto a firmware image, even after P1 is cleared, would still produce poor results. 
+
+## 4. B ULLSEYE 
+
+BULLSEYE is a directed greybox fuzzing framework for firmware analysis that addresses the four problems identified in Section 3. Figure 9 gives an architectural overview. The framework operates in two phases. In the static analysis phase , a disassembler script extracts basic-block ranges and call-site information from the closed-source binary; a graph construction pass synthesises intra-procedural control-flow graphs and an inter-procedural call graph; and the distance computation pass classifies DBBs, computes per-block dis-tances, and serialises the result to a file loaded by the fuzzer at startup. In the dynamic fuzzing phase , QEMU-based in-strumentation hooks record distances and branch-direction bits in the shared-memory region consulted by the scheduler; the mutator applies pattern-aware and comparison-guided mutations (Section 5.4); and the scheduler combines struc-tural distance with runtime satisfiability scores to allocate energy. BULLSEYE tackles each problem through a dedicated contribution: • Binary-level DGF pipeline (P1, Section 4.1): extract control-flow and call graphs from closed-source bina-ries, instrument firmware emulation to track distance at runtime, and refine the graphs dynamically as indi-rect edges are observed during execution. • Extended DBB classification (P2, Section 4.2): identify loop-gating and mandatory re-entry   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 10 of 34
+
+BullsEye: Directed Firmware Fuzzing Static Analysis  AFL - Fuzzing  QEMU - Emulation         
+
+> Binary
+> Targets
+> LLM
+> Grammars Seeds
+> Distance Computation
+> CFGs + CG
+> Extraction DBB Scores
+> Queue
+> Queue
+> Ordering
+> Energy Scheduler
+> DBB Temperature
+> Fairness + Stagnation
+> Mutation Engine
+> Len Extend SPM CmpLog
+> Pattern Mutator Grammar Mutator
+> Mutated Seed
+> Execution Trace Analysis
+> Satisfiability Scoring Indirect Edges Update
+> Crashes
+> Execution
+> Instrumentation
+> CmpLog
+> BB Distances
+> Indirect Edges
+> Shared Memory
+> Edge Coverage Distance Infos
+> Satisfiability Infos Indirect Edges
+
+Figure 9: Architectural overview of BULLSEYE .
+
+branches that W IND RANGER ’s classification ignores, introducing two new conditions. • Satisfiability-adjusted distance (P3, Section 4.3): compute a continuous satisfiability measure from run-time comparison operands and fold it into the distance metric, allowing B ULLSEYE to rank seeds that nearly satisfy a predicate above structurally closer seeds that do not. • Power scheduling and multi-target fairness (P4, Section 4.4): give each newly discovered DBB its own independent exploration budget with a private cooling clock, decoupled from the global campaign temperature, and balance energy across targets so that easily reached ones do not starve the rest, reviving culled seeds when coverage stalls. The remainder of this section presents each contribution in more detail. The optimisations listed in Section 1, namely distance-aware queue ordering, grammar-aware and length-extension mutation, and the two overflow oracles, are bound to the emulation layer that realises them and are therefore presented in Section 5. 
+
+4.1. Binary-Level DGF Pipeline 
+
+Addressing P1 requires replacing compile-time instrumentation with a pipeline that operates entirely on the closed-source binary. B ULLSEYE structures this around three conceptual stages: static graph extraction, initial distance scores computation, and runtime graph refinement. 
+
+Static graph extraction. Given the binary under test, BULLSEYE reconstructs the inter-procedural control-flow graph (ICFG) by static disassembly. The extraction recovers basic-block boundaries and branch targets within each function to produce intra-procedural CFGs, and identifies call sites and their callees to build the inter-procedural call graph. Direct calls and statically determinable branches are resolved at this stage with high accuracy, as are the recurring MIPS PIC dispatch patterns whose callee the disassembler can recover. The remaining indirect transfers are left to the dynamic component, since even a partial edge set gives a useful initial estimate. 
+
+Initial distance scores computation. With the ICFG in hand, B ULLSEYE runs a shortest-path pass over the linked CFG-plus-call-graph to assign each basic block a distance score, taken as the harmonic mean of its weighted shortest-path distances to the target blocks. The DBB classification pass (Section 4.2) runs as a postprocessing step over the same graph, labeling loop-gating and chokepoint branches. Both the distance table and the DBB annotations are se-rialised to a compact binary file that the fuzzer loads into shared memory at startup, making the distance model avail-able to the power scheduler from the very first execution. 
+
+Runtime graph refinement. Indirect transfer points left unresolved by static analysis introduce blind spots: the initial distance computation may underestimate, or even miss en-tirely, paths that route through function pointers or computed jumps. To close these gaps, B ULLSEYE instruments every indirect branch and call in the QEMU translation layer. The first time an indirect transfer is observed to reach a new destination address, the enclosing (caller, callee) edge is added to a live call-graph replica maintained outside the em-ulation environment. An out-of-process watcher, signalled by the fuzzer, reruns the distance computation incorporating the new edges, and updates the shared-memory distance table used by the running fuzzer. Over a campaign the live graph accumulates the indirect edges the fuzzer exercises, progressively reducing the blind spots introduced by purely static analysis. These stages are conceptually straightforward but hide several crucial details; Section 5 covers the implementation aspects that matter most. 
+
+4.2. Three-Condition DBB Classification 
+
+WIND RANGER introduced DBBs as a noise-reduction mechanism for directed fuzzing: instead of averaging dis-tances over all executed basic blocks, the fuzzer restricts its distance computation to blocks where branch direction actually determines reachability to the target. WIND RANGER ’s classifier defines a DBB as a block 𝑏 
+
+such that (i) 𝑏 can reach the target, and (ii) at least one successor of 𝑏 cannot reach the target. In what follows, we refer to this second constraint as Condition 2a, following the labels of Table 1. As shown in Section 3.2, Condition 2a is formulated purely in terms of reachability over the full control-flow graph 𝐺 . For a block 𝑏 inside a loop with a back-edge successor 𝑏 back and a forward-edge successor 𝑏 fwd , both successors can eventually reach the target via some path in 𝐺 (either by looping around again, or by direct forward 
+
+Ralli et al.: Preprint submitted to Elsevier Page 11 of 34 BullsEye: Directed Firmware Fuzzing 
+
+Condition 2a: structural fork   
+
+> 𝐵
+> target dead-end
+> TF
+> ¬reach (⋅, 𝑡𝑎𝑟𝑔𝑒𝑡 )
+
+Condition 2b: loop-gating 
+
+> loop head target loop body
+> 𝐵
+> outer latch
+> TFback edge
+> ¬reach fwd fwd outer back edge
+
+Condition 2c: chokepoint   
+
+> 𝐵
+> body target loop body
+> fwd loop back edge
+> reach fwd (⋅, 𝑡𝑎𝑟𝑔𝑒𝑡 )
+> only via 𝐵
+
+Figure 10: The three DBB conditions in BULLSEYE . Block 𝐵 is always the candidate DBB (orange). Condition 2a : one successor has no path to target at all. Condition 2b : 𝐵 is a loop latch whose back-edge successor cannot reach the target in 𝐺 fwd ; the target sits at the loop top, so the forward successor reaches it only by traversing the outer back edge. Condition 2c : 𝐵 ’s successors split, so that one reaches the target forward while the other reaches it only by looping back and re-entering 𝐵 .
+
+progress). The condition ∃ 𝑠 ∈ succ( 𝑏 ) ∶ ¬ reach (𝑠, 𝑡 ) there-fore fails, and 𝑏 is not classified as a DBB. The underlying deficiency is that reachability over 𝐺 is path-insensitive with respect to back edges: it cannot encode the distinction between 𝑏 back reaching the target only by re-entering the loop and 𝑏 fwd reaching it by direct forward progress. 
+
+The three-condition definition. BULLSEYE ’s classifica-tion retains the two conditions from W IND RANGER but refines the second one by adding two new variants that reason about the acyclic graph 𝐺 fwd obtained by removing the back edges of a depth-first traversal of 𝐺 . Formally, the classification exploits two distinct reachability relations: • reach (𝑢, 𝑡 ): 𝑡 is reachable from 𝑢 in 𝐺 (including via back edges). • reach fwd (𝑢, 𝑡 ): 𝑡 is reachable from 𝑢 in 𝐺 fwd .
+
+Definition 1. A block 𝑏 with successors 𝑆 (𝑏 ) is a DBB with respect to target set 𝑇 if and only if 𝑏 has at least two successors, the set  = { 𝑡 ∈ 𝑇 ∶ reach (𝑏, 𝑡 ) ∧ ∃ 𝑠 ∈ 𝑆 (𝑏 ) ∶ 
+
+reach (𝑠, 𝑡 ) } of targets reachable through a successor (not just from 𝑏 directly) is non-empty, and, quantifying over  ,at least one of the following holds: 
+
+• Condition 2a (structural fork): ∃ 𝑠 ∈ 𝑆 (𝑏 ), 𝑡 ∈
+
+ ∶ ¬ reach (𝑠, 𝑡 ). One successor loses a target that 
+
+𝑏 can still reach; taking that branch is a definitive divergence. 
+
+• Condition 2b (loop-gating DBB): The successor set 
+
+𝑆 (𝑏 ) has a non-empty back-edge partition 𝐵 (𝑏 ) and a non-empty forward partition 𝐹 (𝑏 ); and ∀ 𝑏 ′ ∈
+
+𝐵 (𝑏 ), 𝑡 ∈  ∶ ¬ reach fwd (𝑏 ′, 𝑡 ). No back-edge succes-sor can reach any target in 𝐺 fwd : the only way to reach the target via the back edge is to loop around through 
+
+𝑏 again. Some forward-edge successor 𝑠 ∈ 𝐹 (𝑏 ) still reaches a target in 𝐺 (∃ 𝑡 ∈  ∶ reach (𝑠, 𝑡 )). 
+
+• Condition 2c (mandatory re-entry chokepoint): 𝑏 is not classified by Conditions 2a or 2b. For some target 
+
+𝑡 ∈  , one successor 𝑠 ∈ 𝑆 (𝑏 ) still reaches 𝑡 in 
+
+𝐺 fwd ⧵{𝑏 } while another successor 𝑠 ′ ∈ 𝑆 (𝑏 ) does not, so 𝑏 dominates 𝑡 on every forward path from 𝑠 ′. Thus 
+
+𝑠 makes forward progress around 𝑏 , while 𝑠 ′ reaches 
+
+𝑡 only by looping back and re-entering 𝑏 .
+
+Figure 10 illustrates the three conditions on minimal abstract CFGs, clarifying the structural patterns each one tar-gets. The three conditions are disjoint by construction: Con-dition 2a is evaluated first and short-circuits; Condition 2b fires on the forward branch when no back-edge successor reaches a target in 𝐺 fwd ; Condition 2c is then evaluated only on the blocks that 2a and 2b leave unclassified, testing whether deleting 𝑏 from 𝐺 fwd severs one successor’s route to a target while another successor still reaches it, so that 
+
+𝑏 is a forward articulation point. Conditions 2a and 2b cost 
+
+𝑂 (|𝑆 (𝑏 )| ⋅ | |) reachability queries, memoised on 𝐺 ; Condi-tion 2c additionally builds 𝐺 fwd ⧵{𝑏 } once per candidate and tests forward reachability from each successor on it, which is the dominant term of the classification pass. 
+
+Illustrating Condition 2b. Returning to the listing from Pattern 2 (bounded-retry authentication gate), the privileged handler launch_admin_handler (the target 𝑡 ) is dispatched at the top of the retry loop, guarded by the authenticated 
+
+flag. The candidate is the inner credential-scan latch 𝐵 
+
+(*c && *c != ’:’ ), which sits below the target inside the loop. Figure 11 traces the Condition 2b check. 𝐵 has one back-edge successor (the scan body c++ ) and one forward successor ( verify_credentials , continuing to the outer retry test). In 𝐺 fwd neither successor reaches the target, because the target sits at the loop top and every route to it must cross a back edge: the back-edge successor fails reach fwd (⋅, 𝑡𝑎𝑟𝑔𝑒𝑡 ),while the forward successor still reaches the target in the full graph 𝐺 by traversing the outer retry back edge. Condition 2b therefore fires and 𝐵 is classified as a DBB. W IND RANGER ’s 
+
+Ralli et al.: Preprint submitted to Elsevier Page 12 of 34 BullsEye: Directed Firmware Fuzzing 
+
+> authenticated? launch_admin_handler
+
+(TARGET)  
+
+> c++ *c && *c != ’:’
+
+? ( 𝐵 )
+
+> verify_credentials(cred) ++attempts < MAX
+
+∧ read_next_request? 
+
+loop exit                              
+
+> TFTinner back edge FTretry back edge F
+> Figure 11: Condition 2b on the CFG of the listing from Pattern 2. The target launch_admin_handler is dispatched at the loop top; the inner credential-scan latch 𝐵 (*c != ’:’ ,orange) sits below it. 𝐵 ’s back-edge successor cannot reach the target in 𝐺 fwd ,and its forward successor reaches the target only by traversing the outer retry back edge, never forward. Condition 2b therefore classifies 𝐵 as a DBB, which
+> WIND RANGER misses.
+
+structural check does not classify it, since both successors are reachable-to-target in 𝐺 , as demonstrated in Section 3.2. 
+
+Illustrating Condition 2c. In the listing from Pattern 3 (checksum-gated configuration copy), the scan latch 𝐵 
+
+(buf[len] != ’\0’ ) has a back-edge successor ( len++ , the scan body) and a forward successor (the checksum test 
+
+> crc16
+
+). Figure 12 traces the two-step Condition 2c test. In 
+
+𝐺 fwd the scan body still reaches the target, but only through 
+
+𝐵 (len++ → 𝐵 → crc16 → apply_config ), so Condition 2b does not fire. Removing 𝐵 from 𝐺 fwd severs that route: the scan body can no longer reach the target, while the forward successor still reaches it through the checksum test. Because deleting 𝐵 disconnects one successor from the target while another bypasses it, 𝐵 is a forward articulation point, and Condition 2c classifies it as a DBB. The same structure arises in the listing from Pattern 1 (protocol-header enumeration), where the branch block’s false edge re-enters the loop head, which reaches the target only by looping back through that branch block. Because the articulation-point test ranges over all successors of 𝑏 rather than only its back-edge successors, Condition 2c captures such a forward branch at a loop head and at a latch. 
+
+DBB explosion guards. The extended classification in-troduces more DBBs than W IND RANGER , raising a poten-tial concern about signal dilution. Two properties prevent over-classification: (i) Condition 2b requires all back-edge successors to fail the forward-reachability test; a node with even one independent forward path is not classified as a loop-gating DBB; (ii) Condition 2c requires a whole-graph reachability property in 𝐺 fwd , namely that deleting 𝑏 severs one successor’s route to the target, not just a local branch property. 
+
+4.3. Satisfiability-Adjusted Distance 
+
+A DBB identifies a block as a decision point; it does not quantify how far a given seed is from satisfying the block’s branch predicate. This quantification is provided in BULLSEYE by the branch satisfiability score .
+
+Definition 2. For a DBB 𝑖 traversed by seed 𝑞 , the satisfia-bility score 𝜎 𝑖 (𝑞 ) ∈ [0 , 1] measures the degree to which the comparison operands observed at 𝑖 during the execution of 
+
+𝑞 match the values that would direct execution toward the target. 
+
+BULLSEYE computes the satisfiability score from two sources of runtime information. 
+
+Branch-direction bits. QEMU’s MIPS front end materi-alises each conditional branch outcome in a TCG global (bcond ), set to 1 when the branch is taken. An instrumentation helper invoked during branch translation records that out-come alongside both successor addresses, which are checked against the preloaded distance table to determine which direction leads toward the target. This populates two shared-memory arrays: target_cond_bits[i] , the direction required to reach the target at DBB 𝑖 , and cond_bits[i] , the direction actually taken, or zero if DBB 𝑖 was not reached during the current execution. If cond_bits[i] == target_cond_bits[i] ,the seed already takes the correct branch at DBB 𝑖 and 𝜎 𝑖 (𝑞 )
+
+is set to 1.0 immediately. 
+
+Operand-level similarity. When the branch direction does not match the target, the satisfiability score is computed from the comparison operands logged by CmpLog instrumentation (AFLplusplus contributors, 2019). CmpLog intercepts comparison operations during TCG translation and records the operand pair (𝓁 , 𝑟 ) for each executed comparison. The score depends on the kind of comparison, which BULLSEYE reads from the CmpLog comparison attribute. For equality and inequality comparisons ( =, ≠) and for floating-point comparisons, the score is the fraction of bits that agree between the two operands: 
+
+𝜎 bit (𝓁 , 𝑟, 𝑤 ) = popcount (¬( 𝓁 ⊕ 𝑟 ) & 𝑚 𝑤 )
+
+𝑤 ,
+
+where 𝑤 ∈ {8 , 16 , 32 , 64} is the comparison width and 
+
+𝑚 𝑤 = 2𝑤 − 1 is the corresponding bit mask; an exact match short-circuits to 1.0. Floating-point operands use the   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 13 of 34
+
+BullsEye: Directed Firmware Fuzzing 
+
+(a) 𝐺 fwd (Cond. 2b test)     
+
+> len++ (scan body)
+> buf[len] != ’\0’ ? ( 𝐵 )
+> crc16(buf,len) == exp ?
+> apply_config
+> (TARGET) else / return
+> Tback edge FTFscan body reaches target through 𝐵 : Cond. 2b fails
+
+(b) 𝐺 fwd ⧵ {𝐵 } (Cond. 2c test)      
+
+> len++ (scan body)
+> buf[len] != ’\0’ ? ( 𝐵 )
+> crc16(buf,len) == exp ?
+> apply_config
+> (TARGET) else / return
+> TFscan body severed from target; checksum successor still reaches it. Cond. 2c fires: 𝐵 is DBB
+
+Figure 12: Two-step Condition 2c test on the CFG of the listing from Pattern 3 (checksum-gated configuration copy). (a) In 𝐺 fwd ,the scan latch 𝐵 ’s back-edge successor ( len++ ) reaches the target only through 𝐵 , while its forward successor ( crc16 ) reaches it without 𝐵 , so Condition 2b does not fire. (b) Removing 𝐵 from 𝐺 fwd (shown greyed) severs the back-edge successor from the target while the forward successor still reaches it, so 𝐵 is a forward articulation point and Condition 2c classifies it as a DBB. 
+
+same bitwise measure because their raw encodings cannot be differenced as integers. The score is sensitive to small perturbations: as 𝓁 approaches 𝑟 bit by bit, it increases toward 1.For ordered comparisons ( <, >, ≤, ≥), a bitwise measure is uninformative, since two numerically adjacent values may differ in many bits. B ULLSEYE instead scores these by numeric proximity to the satisfying side. If the predicate is already satisfied by the observed operands the score is 1.0;otherwise it is 
+
+𝜎 ord (𝓁 , 𝑟, 𝑤 ) = max 
+
+(
+
+0, 1 − log 2
+
+(|𝓁 − 𝑟 | + 2 )
+
+𝑤 
+
+)
+
+,
+
+where |𝓁 − 𝑟 | is the magnitude by which the predicate fails. This formulation makes the branch direction intrinsic: operands on the wrong side of a strict boundary never score 1.0, and the score grows as the operand moves toward the threshold. For string comparisons (intercepted via strcmp , strncmp ,
+
+memcmp , and their variants) the metric counts the fraction of byte positions that agree within the shorter operand: 
+
+𝜎 str (𝑎, 𝑏, 𝑛 ) = |{𝑖 < 𝑛 ∶ 𝑎 [𝑖 ] = 𝑏 [𝑖 ]} |
+
+𝑛 
+
+where 𝑛 = min( |𝑎 |, |𝑏 |). Normalising by the shorter length avoids penalising a seed whose string is a correct prefix but shorter than the expected operand. When a seed executes a DBB multiple times in one run (as in a loop), the satisfiability score is the maximum over all CmpLog hits, capturing the best-case progress at that DBB. Where no comparison is logged, 𝜎 𝑖 = 0 and 𝑑 ⋆𝑖 falls back to the structural distance. 
+
+From difficulty weighting to progress weighting. WIN -
+
+> D
+
+RANGER scales each DBB’s structural distance by Ψ𝑖 , a coarse estimate of how hard that DBB’s predicate is to penetrate, derived from the number of input bytes that affect it. The weight describes the predicate, not the seed: two seeds reaching the same DBB with different operand values are scored alike. B ULLSEYE replaces it with an adjustment driven by how close the seed itself came to satisfying the branch. 
+
+Definition 3. For DBB 𝑖 hit by seed 𝑞 , the satisfiability-adjusted per-DBB distance is: 
+
+𝑑 ⋆𝑖 (𝑞 ) = 𝑑 𝑖 
+
+1 + 99 ⋅ 𝜎 𝑖 (𝑞 )
+
+where 𝑑 𝑖 is the static distance of DBB 𝑖 from Section 4.1. 
+
+At 𝜎 = 0 the adjusted distance equals the raw structural distance; at 𝜎 = 1 it is reduced by a factor of 100. The factor 100 is chosen so that partial progress registers early, with 𝜎 = 0 .01 already halving the adjusted distance, while the remaining range compresses gradually so that satisfi-ability never overrides structural distance outright: a seed with a perfect satisfiability score at a distant DBB does not necessarily rank better than a seed with a moderate satisfiability score at a structurally proximate DBB. 
+
+Reciprocal-sum aggregation. A seed typically hits mul-tiple DBBs in a single execution. B ULLSEYE combines their satisfiability-adjusted per-DBB distances into a single per-seed distance as the reciprocal of the summed reciprocals: 
+
+𝐷 (𝑞 ) = 
+
+( ∑    
+
+> 𝑖 ∶DBB 𝑖 hit by 𝑞
+
+1
+
+𝑑 ⋆𝑖 (𝑞 )
+
+)−1 
+
+.
+
+Like the harmonic mean, this combiner is dominated by its smallest term: if a seed reaches any single DBB with high satisfiability score and low structural distance, the aggregate reflects that progress regardless of how far the other DBBs remain. By contrast, the arithmetic mean used in AFLG O
+
+and W IND RANGER is pulled up by the largest distance, making it insensitive to near-solutions at individual DBBs. 
+
+Ralli et al.: Preprint submitted to Elsevier Page 14 of 34 BullsEye: Directed Firmware Fuzzing 
+
+As a running example, a seed that hits three DBBs with satisfiability-adjusted distances {100 , 5, 200} receives an aggregate of ( 1100 + 15 + 1200 
+
+)−1 ≈ 4.65 , reflecting the near-target DBB, whereas the arithmetic mean would report 
+
+≈ 101 .7, i.e. a seed that appears far from the target. Seeds that reach a target basic block are assigned distance 0.0 and are always ranked first. 
+
+4.4. Power Scheduling and Multi-Target Fairness 
+
+BULLSEYE retains AFLG O’s simulated annealing framework: a global temperature 𝑇 (𝑡 ) ∈ [0 , 1] parameterised by 𝑝 = 𝑡 ∕𝑡 𝑥 (elapsed time divided by the annealing duration). Four cooling schedules are available (exponential, logarithmic, linear, quadratic); the logarithmic schedule cools fastest, the exponential 𝑇 = 1∕20 𝑝 is the default, and all four reach 𝑇 = 0 .05 at 𝑡 = 𝑡 𝑥 . At 𝑇 = 1 all seeds receive equal energy; at 𝑇 = 0 energy is concentrated on seeds closest to the target. The base performance score is adjusted by a distance-based power factor following the AFLG O formulation: 
+
+𝑝 𝑓 = 2 2 log 2(𝐹 max )⋅(𝑝 norm −0 .5) 
+
+𝑝 norm = (1 − ̂ 𝐷 )(1 − 𝑇 ) + 0 .5 𝑇 
+
+where ̂ 𝐷 ∈ [0 , 1] is the normalised distance of the seed relative to current corpus extremes and 𝐹 max = 32 is the maximum power factor, which bounds the energy a seed can gain or lose. 
+
+Per-DBB independent annealing. BULLSEYE ’s per-DBB annealing addresses the discovery-time inequality identified in Section 3.4. Each DBB 𝑖 maintains its own temperature 𝑇 𝑖 ∈ [0 , 1] governed by an independent cooling clock that starts at the moment DBB 𝑖 is first hit: 
+
+𝑇 𝑖 (𝑡 ) = 
+
+( 𝑡 − 𝑡 first 
+
+> 𝑖
+
+𝑡 𝑥 ⋅ 60000 
+
+)
+
+where 𝑡 first  
+
+> 𝑖
+
+is the timestamp (in milliseconds) at which DBB 𝑖 
+
+was first reached, the denominator is the annealing duration expressed in milliseconds, and (⋅) is the same cooling schedule selected for the global temperature (exponential by default, or one of the logarithmic, linear, and quadratic alternatives). The temperature is floored at 0.001 when ac-tive (preventing numerical underflow) and frozen at 0.0 once DBB 𝑖 has been solved (both branch directions observed at that DBB, so its outcome is no longer input-controlled from the fuzzer’s viewpoint). Per-DBB temperatures enter the power schedule via a geometric mean over all DBBs hit by a seed: 
+
+𝑐 per-DBB (𝑞 ) = 
+
+( 𝑛 ∏
+
+> 𝑖 =1
+
+𝑝 𝑓 ,𝑖 
+
+)1∕ 𝑛 
+
+𝑝 𝑓 ,𝑖 = 2 2 log 2(𝐹 max )⋅(𝑝 𝑖 −0 .5) 
+
+𝑝 𝑖 = (1 − ̂ 𝑑 𝑖 )(1 − 𝑇 𝑖 ) + 0 .5 𝑇 𝑖 ̂𝑑 𝑖 = max (̃ 𝑑 𝑖 , 1 − 𝜎 𝑖 
+
+)
+
+The geometric mean keeps the adjustment independent of how many DBBs a seed hits, so that one extreme DBB cannot dominate the others. Here ̃ 𝑑 𝑖 ∈ [0 , 1] is the per-DBB static distance rescaled to the static range of all DBB distances, and ̂ 𝑑 𝑖 is the worse of that structural distance and the unsatisfiability 1 − 𝜎 𝑖 : a DBB pulls energy only when it is both structurally close and nearly satisfied, mirroring the global factor’s use of 1 − ̂ 𝐷 .Global and per-DBB temperatures interact: while the global schedule drives the campaign from exploration to-ward exploitation, a DBB first hit late still opens with a high 
+
+𝑇 𝑖 , granting it a local exploration burst that counteracts the global exploitation trend. 
+
+Satisfiability-guided corpus management. Consistent with the satisfiability-adjusted distance, the corpus management mechanisms are extended to account for satisfiability progress. Standard AFL admits a new seed to the queue only if it exercises previously unseen edges. B ULLSEYE additionally admits a seed that improves the satisfiability score at any DBB relative to the current corpus best, even if no new edges are covered. This extended notion of interestingness 
+
+ensures that incremental progress toward satisfying a hard comparison predicate is preserved in the corpus rather than discarded. The culling routine is similarly extended. For each DBB, BULLSEYE maintains two favoured seeds: the one closest to the target under the satisfiability-adjusted distance 𝑑 𝑖 ∕(1 + 99 𝜎 𝑖 ), and the one achieving the highest satisfiability score at that DBB’s predicate. Both are protected from culling while the DBB is unsolved. Once the DBB is solved, the satisfiability leader is released, since satisfiability progress is irrelevant once the branch is flippable in both directions, whereas the distance leader is retained, since proximity to the target remains meaningful after the branch is passable. Seeds admitted solely for satisfiability improvement, con-tributing no new coverage, are then evicted, preventing the corpus from accumulating stale seeds that no longer serve a purpose. 
+
+Relative-saturation energy decay. BULLSEYE tracks, for each target 𝑖 , the number of executions that reach it, 𝑟𝑒𝑎𝑐ℎ 𝑖 ,and the wall-clock time of the most recent saved input reach-ing it. A target’s saturation combines a relative-frequency term with a stagnation valve: 
+
+𝑠 𝑖 = max 
+
+⎛⎜⎜⎜⎜⎜⎝
+
+𝑟𝑒𝑎𝑐ℎ 𝑖 
+
+max 𝑗 𝑟𝑒𝑎𝑐ℎ 𝑗 
+
+⏟⏞⏞⏞⏞⏞⏟⏞⏞⏞⏞⏞⏟ 
+
+> relative frequency
+
+, 𝑎 𝑖 
+
+𝑎 𝑖 + 𝜏 ⏟⏟⏟
+
+> stagnation valve
+
+⎞⎟⎟⎟⎟⎟⎠
+
+,
+
+where 𝑎 𝑖 is the time elapsed since the last saved input reaching target 𝑖 was last reached and 𝜏 is a stagnation window of 30 minutes; the relative-frequency term is active only when more than one target has been reached. Each target is assigned an energy weight 𝑤 𝑖 = 𝑓 + (1 − 𝑓 )(1 − 𝑠 𝑖 )  
+
+> Ralli et al.: Preprint submitted to Elsevier Page 15 of 34
+
+BullsEye: Directed Firmware Fuzzing 
+
+Table 2 
+
+Design comparison of AFLG O, WIND RANGER , and BULLSEYE across all four problem dimensions. Problem Dimension AFLG O WIND RANGER BULLSEYE                                                  
+
+> P1: Binary analysis Target type Source required Source required Closed-source binary Call-graph edges Static (LLVM) Static (LLVM) Static (IDA) + runtime refinement P2: DBB classification DBB concept None Reachability-based (2a) Loop-aware (2a+2b+2c) Loop patterns Not handled Not handled Handled via 2b and 2c P3: Distance metric Distance over All BBs DBBs only DBBs only Satisfiability signal None Predicate difficulty Ψ𝑖 Continuous 𝜎 𝑖 ∈ [0 ,1]
+> Signal semantics None Static per-predicate cost Per-seed progress toward the branch Adjustment formula None 𝑑 𝑖 ⋅Ψ𝑖 𝑑 𝑖 ∕(1 + 99 𝜎 𝑖 )
+> Aggregation Arithmetic mean Arithmetic mean Reciprocal-sum P4: Power scheduling Annealing Global only Global only Global + per-DBB Corpus admission Edge coverage Edge coverage Edge coverage + satisfiability progress Target fairness None None Saturation decay + fairness favouring Coverage Stall None None Corpus reheating
+
+that decays from 1 toward a floor 𝑓 = 0 .25 as the target saturates. The weight sets an upper bound on a seed’s energy: a seed’s havoc budget is capped at 𝑤 ⋅ 𝑐 max , never below the baseline score, so a seed already below the ceiling is left untouched and only over-energetic seeds tied to a saturated target are clipped. The weight acts through a second lever as well, raising the probability that a seed bound to a saturated target is skipped in a given cycle; both levers drain energy in the same direction. The governing weight is the largest among the targets the seed reaches (so a seed is judged by its most under-served target), or the global minimum weight if it reaches no target. A target that is either well-reached or long-stagnant therefore lowers the ceiling of the seeds bound to it, whereas an under-served or recently productive target keeps it high. The stagnation valve is what allows energy to drain away from a target that is reached but no longer productive, without a crash ever being observed there, distinguishing B ULLSEYE from saturation schemes that require a bug signal. 
+
+Target-fairness favouring. Complementary to the contin-uous decay, the corpus-favouring routine biases selection toward seeds that reach an under-reached target relative to the most-reached one. This is self-balancing and target-agnostic: as a starved target accumulates reaching seeds it stops being favoured, and energy shifts to whichever target is now the most neglected. 
+
+Coverage-stall reheating. Directed pressure can trap the campaign in a local optimum where no new coverage ap-pears for a long period. Once the time since the last new path exceeds a stall window of 10 minutes, B ULLSEYE tem-porarily reheats the corpus, reviving seeds previously culled as unproductive in case one unlocks a new edge toward a target. Reheating preserves the distance bias (seeds are still ordered by proximity) and clears automatically as soon as a new path is found. 
+
+4.5. Discussion 
+
+Table 2 puts B ULLSEYE ’s key contributions in perspec-tive against AFLG O and W IND RANGER across all design di-mensions. The four contributions are largely orthogonal, and the table makes explicit that AFLG O and W IND RANGER 
+
+share the same design for P1 (both require source code) and for P4 (both driven by a single global clock), while WIND RANGER improves on AFLG O for P2 and P3 but only partially, stopping at Condition 2a and at a seed-independent difficulty weight, respectively. B ULLSEYE extends both of these dimensions and additionally addresses P1 and P4. 
+
+## 5. Implementation 
+
+We realise BULLSEYE ’s design on top of FIRM -AFL (Zheng et al., 2019) and its MIPS-targeted QEMU builds. This section covers the techniques and optimisations required to apply DGF to closed-source firmware binaries and to operate effectively within the QEMU emulation layer. 
+
+5.1. Binary-Level Graph Extraction 
+
+The static analysis phase of DGF requires three represen-tations of the binary under test: intra-procedural control-flow graphs (CFGs), an inter-procedural call graph (CG), and a call-site map that links each call instruction to its callee. In source-available settings these are obtained from LLVM IR during compilation. For closed-source firmware, B ULLSEYE 
+
+extracts them from the disassembled binary using a scripted IDA Pro (Hex-Rays, 1991) pass. The script traverses every function in the binary and records, for each basic block, the block’s start and end addresses and the set of successor addresses derived from the block-terminator instruction. Every call site whose callee can be resolved is recorded in the call-site map with the absolute address of the call instruction and the address or symbol name of the callee. The inter-procedural CG is extracted separately via IDA’s built-in call-chart generator, 
+
+Ralli et al.: Preprint submitted to Elsevier Page 16 of 34 BullsEye: Directed Firmware Fuzzing 
+
+which emits the caller-callee relationships as a graph de-scription file. A parser stage ingests these raw records and synthesises the intra-procedural CFGs as directed graphs, adding explicit edges for fallthrough successors where IDA does not emit a branch instruction. The output graphs and index files match what the AFLG O distance-computation scripts (Böhme et al., 2017) expect, allowing B ULLSEYE to reuse that pipeline with minimal modification. 
+
+Address scheme. DGF frameworks that operate at the source level identify basic blocks by their file-and-line num-ber, which is stable across recompilations. B ULLSEYE iden-tifies blocks by their offset relative to the binary’s load base, which is invariant under address-space layout randomisation and across different loader configurations. At runtime, the offset is converted to an absolute address by adding the observed load base, which QEMU reports when mapping the binary into the emulated address space. 
+
+MIPS PIC handling. On MIPS, the position-independent calling convention reserves register $t9 for the callee address in dynamically linked calls. The canonical call sequence is:        
+
+> 1la $t9 , strcmp
+> 2jalr $t9 ;strcmp
+
+Because jalr $t9 is the standard call idiom on MIPS rather than an exceptional indirect dispatch, naively treating it as an unknown indirect call would flood the runtime discovery mechanism (Section 5.2) at nearly every function call, creating significant overhead. B ULLSEYE ’s IDA script therefore recognises the $t9 -load / jalr $t9 pattern in both its forms: an immediate symbol load ( la $t9, sym ) and a pointer load from the Global Offset Table (GOT) or a data slot ( lw $t9, . . . ) whose cross-reference resolves to a named target. Either form is recorded as a statically known call. This leaves Section 5.2’s dynamic mechanism to handle only dispatch sites whose callee cannot be resolved statically, such as function-pointer tables populated at runtime. 
+
+Distance score computation. Given the CFGs, CG, and call-site map, B ULLSEYE computes per-block distances us-ing the same shortest-path formulation as AFLG O (Böhme et al., 2017): for each basic block 𝑏 , the score is the harmonic mean of the shortest-path distances from 𝑏 to each target block, computed over the linked CFG-plus-CG graph. The DBB classifier (Section 4.2) is applied as part of this pass, and each output record includes a flag indicating whether the block is a DBB. AFLG O’s distance script resolves a block identifier to its graph node by scanning all CFG nodes linearly per query, yielding 𝑂 (|𝑉 |2) total cost for |𝑉 | blocks. B ULLSEYE 
+
+replaces this with a pre-built hash index: at startup, the range of each block is inserted into a hash table keyed by each component address. Subsequent lookups are 𝑂 (1) ,removing the quadratic term for firmware binaries with tens of thousands of blocks. 
+
+5.2. QEMU-Based Runtime Instrumentation 
+
+Distance-annotated basic blocks must be tracked at run-time to compute per-seed distances. Since recompilation is unavailable, B ULLSEYE extends QEMU’s TCG translation layer. 
+
+TCG hook for distance tracking. AFL’s QEMU from FIRM -AFL already instruments every Translation Block (TB) translation to invoke afl_maybe_log , which updates the shared edge-coverage bitmap. B ULLSEYE extends this hook: when the TB’s address matches an entry in the preloaded distance map, it increments a per-DBB hit counter and, at the end of each execution, combines the per-DBB distances into a single per-seed distance: each DBB’s static distance is first adjusted by its satisfiability score ( 𝑑 ⋆𝑖 = 𝑑 𝑖 ∕(1 + 99 𝜎 𝑖 )), and the adjusted values are combined by reciprocal-sum, as described in Section 4.3. This instrumentation is confined to the user-mode QEMU instance, where the binary’s basic blocks are actually translated and executed. FIRM -AFL’s system-mode instance serves only system calls and page-fault resolution against the full-system state; it never re-translates the binary’s control flow, so annotating it would record kernel blocks that carry no proximity-table entry and add overhead without signal. 
+
+Branch-direction instrumentation. A second TCG hook is inserted during conditional-branch translation. When QEMU processes a conditional branch, its TCG IR contains a bcond variable holding the boolean outcome of the condition. The hook fires only when the branching block is itself a classified DBB. It then compares the distances of the two successor addresses: the closer one identifies the path toward the target, and the required branch direction for DBB 𝑖 and the direction actually taken are each written into dedicated per-DBB slots in shared memory. These values are read by the fuzzer after each execution to update satisfiability scores via the algorithm described in Section 4.3. 
+
+Shared-memory layout. The shared-memory region ex-tends the standard AFL bitmap with two additional seg-ments: a distance-accumulator block (distance sum and hit count over the proximity-annotated blocks), and a hit-count block with one saturating byte per distance-table entry, bumped whenever the corresponding DBB or target block executes. The branch directions live in two further segments, indexed the same way. The trim check (see Section 5.5) hashes the entire extended region to preserve DBB progress across seed minimisation. 
+
+Indirect call discovery. Static analysis cannot resolve in-direct calls whose targets depend on runtime state. B ULLS - 
+
+> EYE
+
+addresses this gap via a hybrid strategy. The static component handles the dominant case on MIPS: the PIC convention pattern described in Section 5.1 is detected during the disassembler pass and incorporated into the statically known call graph.   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 17 of 34 BullsEye: Directed Firmware Fuzzing
+
+The dynamic component handles the remaining indirect transitions: the translator tags each TB ending in an indirect call or computed jump, and afl_maybe_log carries the tag to the next block, pairing the tagged predecessor with its successor. Each pair resolves to its enclosing functions and is kept unless intra-procedural, the reverse of a known edge, or already in the preloaded edge set. The new edge is recorded in a hash map and appended to a file in the working directory. Because new edges may alter shortest-path distances to the target, an external watcher process polls, at configurable intervals, a flag the fuzzer raises once a logged edge could actually shorten some function’s distance to a target; the other edges are still recorded and are folded into the next pass. The watcher then reruns the distance-computation pass and signals completion; the fuzzer loads the new table into the inactive half of a double-buffered region and swaps gen-erations at the next queue-entry boundary, without pausing. 
+
+5.3. Distance-Aware Queue Ordering 
+
+Standard coverage-guided greybox fuzzing stores seeds in a first-in-first-out queue, which is acceptable when all seeds contribute equally to coverage. In a directed campaign, seeds close to the target should be prioritised: each fuzzing cycle should begin from the most promising seed available. BULLSEYE maintains seeds in a sorted queue ordered by ascending 𝐷 (𝑞 )∕ 𝑤 𝑖 , where 𝑤 𝑖 is the weight of the seed’s most under-served target 𝑖 (Section 4.4), so that lower dis-tance and a more under-served target both mean higher priority. To prevent starvation of far-from-target seeds, each cycle re-sorts the queue and marks every entry unhandled, then fuzzes each entry exactly once regardless of its rank, while a newly inserted seed that outranks the current one preempts it. This hybrid policy maintains rapid progress on promising paths while ensuring all seeds eventually receive mutations. 
+
+Per-target reach tracking. The saturation and fairness mechanisms of Section 4.4 are driven by three per-target counters maintained on the fuzzer side: the cumulative num-ber of executions reaching each target, a per-cycle count of scheduling visits, and the wall-clock timestamp of the most recent saved input reaching it. They are consulted by the energy-weighting routine ( saturation_factor ) and the starvation-aware queue ordering. A per-target, per-cycle mutation cap bounds the energy any single target can absorb within one cycle, ensuring the schedule revisits neglected targets. 
+
+5.4. Mutation Optimisations 
+
+Satisfiability-guided splicing. AFL’s recombination op-erator selects a splice partner uniformly at random from seeds whose content differs from the current seed. B ULLS - 
+
+> EYE
+
+replaces this with a targeted strategy: for the first DBB 𝑖 
+
+at which the current seed has a zero satisfiability score, the splice partner is selected as the corpus seed with the highest satisfiability score at that specific DBB. The hybrid keeps the current seed’s overall structure while importing the bytes that drive the predicate it is stuck on. When no failed DBB has a distinct leader long enough to splice, the operator falls back to AFL’s random choice. 
+
+Satisfiability-Preserving Mask (SPM): preventing mutation regression. A characteristic failure mode of directed fuzzing occurs when mutation destroys acomparison constraint that a seed had previously satisfied. Suppose CmpLog-guided mutation has found that the cookie key must be exactly uid , producing a seed with  
+
+> HTTP_COOKIE=uid=<payload>
+
+and satisfiability score 1.0 at the corresponding DBB. In the subsequent havoc stage, any random mutation touching the bytes covering uid= may destroy this solved constraint, forcing the fuzzer to re-solve the comparison from scratch. Re-solving is expensive: it requires CmpLog-guided mutations to re-discover the correct string, competing against random mutations that may revert the solution at each round. WIND RANGER implements a superficially similar byte-sensitivity analysis, its cb_mask . Its semantics are exploratory: the mask identifies bytes whose mutation 
+
+triggers a DBB and biases mutation toward them, concentrating effort on positions that are relevant to reaching new DBBs. B ULLSEYE ’s mask is preservative: it identifies bytes whose mutation destroys an already-satisfied condition and biases mutation away from them. The two mechanisms are complementary. The SPM is computed once per seed at the start of the mutations routine via a lightweight single-flip sensitivity analysis, skipped for seeds above a length bound or reaching no DBB. The seed is executed once to establish a baseline, recording for each DBB 𝑖 whether it was hit and whether the correct branch direction was taken. Then, for each input byte 𝑗 , byte 𝑗 is flipped by XOR 0xFF, the modified input is executed, and byte 𝑗 is marked protected if any of the following holds: (a) A DBB that was hit in the baseline is no longer hit (the byte controls a structural entry condition to the DBB); (b) A condition that was satisfied in the baseline is no longer satisfied (the byte directly affects the compari-son operand). Case (a) captures structural bytes such as the HTTP method name or the cookie key prefix; case (b) captures semantic bytes such as the value portion of a known com-parison, which CmpLog-guided mutation may have already placed correctly. The total cost of the mask pass is |𝑞 | + 2 
+
+executions: one baseline, |𝑞 | flip-and-restore passes, one restore run. If more than half of the input bytes are marked protected, the mask is discarded to prevent the seed from being frozen. Protected positions are skipped in all deterministic mutation stages and excluded from the pool of candidate positions in havoc. 
+
+Input-aware mutation. BULLSEYE ’s HTTP socket and CGI environment-variable channels both carry structured input, subject to the constraints described in   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 18 of 34 BullsEye: Directed Firmware Fuzzing
+
+Section 2.1: RFC 7230 request syntax and the POSIX key-value convention (The Open Group, 2018) respectively. Unrestricted byte-level mutation frequently destroys these structures, causing inputs to be rejected before reaching any meaningful processing logic. For HTTP inputs, B ULLSEYE integrates the Grammar Mutator (Hu, 2020), an AFL++ custom mutator that en-forces adherence to user-defined grammars while retaining the feedback-driven mutation loop. Grammar-aware muta-tions produce structurally valid HTTP packets that exercise the payload-processing logic rather than being discarded by the request parser. For environment variable inputs, which follow akey-value format, B ULLSEYE takes a different approach, since the Grammar Mutator’s overhead and expressiveness are disproportionate to the limited structural complexity of these inputs. It leverages a lightweight LLM-assisted grammar extraction pipeline: a locally hosted Qwen2.5-14B model (Qwen Team, 2024) (via Ollama (Ollama Inc., 2024)) is given a curated list of uppercase, digit, and underscore strings extracted from the binary under test, which form candidate environment variable keys following POSIX conventions. The LLM is then asked, through a two-stage few-shot prompting workflow, to identify which strings are likely to represent environment variable keys. The identified keys are then used to produce PCRE2 regexs of the form 
+
+> KEY=VALUE
+
+, capturing the mutable region (the value) and the immutable region (the key prefix), to allow the fuzzer to confine mutations to the value while preserving the structural key. Each havoc stage draws an explore/exploit switch whose exploit probability grows as the seed’s distance shrinks, reaching certainty for seeds that already reach a target: in exploit mode, mutations are restricted to the value region identified by the regex; in explore mode both are waived, al-lowing unrestricted byte-level mutation to exercise the key-parsing logic. This switch ensures that structure-breaking mutations are not eliminated entirely, since malformed key-value pairs may exercise error-handling paths that valid inputs bypass. The satisfiability-preserving mask interacts directly with this mechanism, which we refer to as P ATTERN MUTATOR :the effective mutable position pool is the intersection of the pattern range (from the regex) and the safe positions (from the SPM). A position must be both inside the mutable region and free of a solved constraint to be eligible for mutation. In contrast, the Grammar Mutator regenerates the buffer, so positions cannot be preserved; to address this, B ULLSEYE 
+
+extracts the protected byte runs from the parent and re-inserts any that the generated input has dropped, anchored on the surrounding content. 
+
+5.5. AFL Enhancements 
+
+Two aspects of AFL’s standard infrastructure require adaptation to preserve the accuracy of B ULLSEYE ’s distance and satisfiability tracking. 
+
+Extended trim hash. AFL’s seed minimisation (trim) phase reduces seed size by removing bytes that do not change the coverage bitmap hash. The standard hash covers only the first MAP_SIZE bytes of the shared-memory region, which records edge coverage. In B ULLSEYE , a trim that removes bytes critical to reaching a DBB might not change the edge bitmap (if those bytes lie on a previously seen edge) yet would destroy the DBB-hit flags and condition bits that underpin satisfiability scoring. The result would be a trimmed seed that appears to have a high satisfiability score at DBBs it can no longer reach. BULLSEYE extends the trim hash to cover the whole instrumentation region, including the distance-accumulator block and the DBB-flag block. A byte removal is accepted only if the hash of that entire region is unchanged, so no DBB that the seed reached can be silently lost to minimisation. When a trim is accepted, the satisfiability-preseving mask (Section 5.4) is invalidated because byte removal shifts the positional interpretation of all subsequent mask entries. The mask is recomputed at the start of the next fuzzing cycle on the trimmed seed, at the cost of |𝑞 |+2 additional executions. 
+
+Hash collision mitigation. AFL’s standard coverage-bitmap hashing scheme compresses a TB address addr into a bitmap index via:  
+
+> loc
+
+= ((addr ≫ 4) ⊕ (addr ≪ 8) ) & ( MAP_SIZE − 1) .
+
+This scheme is optimised for speed but not collision resis-tance: multiple distinct TBs may map to the same bitmap slot. For edge coverage, collisions are acceptable approxi-mations; for satisfiability score tracking, a collision causes the satisfiability score of an unrelated block to be incorrectly attributed to a DBB, distorting prioritisation. BULLSEYE replaces the standard hashing scheme for every address-to-slot lookup with xxHash (Collet, 2024), a non-cryptographic hash function with near-uniform distri-bution and very high throughput. The performance overhead relative to the bit-shift scheme is negligible compared to the per-execution cost of CmpLog operand capture, and the change eliminates the systematic attribution errors that degrade satisfiability accuracy. 
+
+5.6. Bug Detection 
+
+AFL’s standard crash oracle relies on the guest process’s own fault mechanism: a crash is recorded only when the process dies on a signal. This creates a visibility gap for silent 
+
+overflows, where the corrupted bytes land in an already-mapped writable region and the process continues without triggering a fault. A write past a fixed-size global, such as a strcpy(&timestamp, attacker_input) overflowing into adjacent .bss or .data bytes, produces no observable signal: the request handler finishes normally and the forkserver records a clean exit. B ULLSEYE closes this gap with two complementary oracles. 
+
+Global-variable overflow oracle. The oracle intercepts a set of libc functions whose write is unbounded or whose   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 19 of 34 BullsEye: Directed Firmware Fuzzing
+
+bound is attacker-controlled: strcpy , strcat , sprintf ,
+
+> gets
+
+, strncpy , strncat , vsprintf , memcpy , and memmove .At function entry, the hook reads dst and src from the calling-convention argument registers, computes the effective write length per call family (strlen(src) for unbounded copies, strlen(dst)+strlen(src) for strcat , the explicit n for bounded variants), and signals a bug if that length exceeds the destination capacity. Capacity is resolved through three mechanisms, with the exact-size checks taking precedence. At fork-server startup, BULLSEYE walks the binary’s .dynamic /.dynsym tables (mapped directly into host memory inside the user-mode emulation layer) and records every object-type symbol as an (addr, size) pair. When dst resolves to a known object, the overflow condition is 𝑛𝑒𝑒𝑑𝑒𝑑 > 𝑜𝑏𝑗.𝑒𝑛𝑑 − 𝑑𝑠𝑡 ,where 𝑛𝑒𝑒𝑑𝑒𝑑 = 𝚜𝚝𝚛𝚕𝚎𝚗 (𝑠𝑟𝑐 ) + 1 for unbounded families. When dst instead falls inside a tracked heap chunk, the chunk’s exact remaining size is used. Static globals with neither a .dynsym entry nor a tracked chunk fall back to a configurable length threshold 𝑛𝑒𝑒𝑑𝑒𝑑 > 𝑁 , applied only to the unbounded families, since for bounded copies a large explicit length argument is normal and flagging it yields false positives. A twin pass over the C library’s own dynamic symbols resolves the function entry points used to intercept calls at runtime. When an overflow is detected, the child exits with a sentinel exit code, which AFL, running the binary under QEMU, classifies directly as a crash. This mechanism follows the same structure as Address-Sanitizer (Serebryany et al., 2012) libc interceptors, which wrap each string function and check the access range be-fore invoking the real implementation. The key difference is scope: B ULLSEYE ’s per-object bound is .dynsym -based, giving precise coverage for externally linked globals but nar-rower total coverage than ASan’s shadow-memory redzones. 
+
+Heap overflow oracle. Heap overflows share the same fault-visibility gap: recv(fd, buf, attacker_len, 0) 
+
+overflowing into the next chunk also lands inside an already-mapped writable region. There is an additional timing problem: the corruption is only detected when the next malloc /free reads the poisoned chunk header, which typically occurs in a later execution after the forkserver has moved on to the next input. BULLSEYE uses three detection strategies: 1. brk-anchored chunk walk. Walking the chunk chain (masking the three flag bits, advancing by size ) and checking for implausible values ( 𝑠𝑖𝑧𝑒 < 8, 𝑠𝑖𝑧𝑒 > 
+
+256 MB, or 𝑝𝑡𝑟 + 𝑠𝑖𝑧𝑒 > 𝑏𝑟𝑘 ) detects corruption that overwrites the next chunk’s size field. The arena bounds ( mm->start_brk , mm->brk ) are kernel-side fields; BULLSEYE derives their offsets from task_struct at snapshot time and emits a HEAP:start:brk record that the walker consumes. The walk runs after each I/O syscall that can deliver attacker data ( read , write , recv ,
+
+> recvfrom
+
+) and at normal process exit, adding approxi-mately 2–5 𝜇 s per invocation with no measurable AFL throughput loss. To guard against a format mismatch, the walker is calibrated once against a known-clean heap at startup (calibration result is tri-state: untrusted 
+
+/ disabled / trusted ): a failed calibration disables the oracle rather than producing spurious crashes. 2. malloc/free redzone. Using the same .dynsym resolver extended to malloc /free /calloc /realloc , B ULLSEYE 
+
+bumps every requested allocation size by 16 bytes, stamps the extra bytes with the sentinel value 0xA5 ,and verifies the trailer at each free or realloc , as well as sweeping the trailers of all live chunks at normal process exit. This strategy catches what the first strategy structurally cannot: overflows of the last 
+
+chunk in the arena (no successor header to corrupt) and short overflows that land in dlmalloc ’s internal padding rather than the next header. 3. copy-time chunk bound. When the destination of an intercepted copy falls inside a tracked chunk, the effective write length is compared against that chunk’s exact remaining size at the call site. This is the only strategy that reports a chunk that is smashed but never freed and whose corruption never reaches a successor header, a case that otherwise leaves the execution recorded as clean. None of these strategies detects use-after-free or double-free, and mmap -backed allocations larger than  
+
+> M_MMAP_THRESHOLD
+
+bypass the brk-arena walker entirely. 
+
+Length-extension mutation. A buffer overflow triggered by an attacker-controlled copy requires the fuzzer to produce inputs that are both structurally valid and long enough. Coverage-guided fuzzers do not naturally grow inputs to-ward an overflow: intermediate seeds that reach the target basic block with a near-overflowing copy length but no new coverage edge are discarded, so the queue never accumulates the length gradient needed to trigger the bug. BULLSEYE addresses this through length-extension mutation , which reuses the overflow oracle’s instrumentation. The libc-copy hooks already compute the   
+
+> (copy_len, capacity)
+
+pair at the point and time where it is most meaningful. This pair has the same shape as a CmpLog comparison entry: it expresses a quantitative relationship between an attacker-influenced value (copy_len ) and afixed bound ( capacity ). B ULLSEYE injects it as a synthetic 
+
+CmpLog record tagged with a reserved sentinel byte so that the consumer can distinguish it from a real instruction comparison. The AFL-side consumer extends RedQueen’s coloriza-tion stage with a branch that recognises this tag and, instead of substituting bytes to satisfy a value equality, clones the colorization taint region covering src enough times to push  
+
+> copy_len
+
+past capacity . Concretely, given 𝑐𝑜𝑝𝑦 _𝑙𝑒𝑛 = 𝐿 ,
+
+𝑐𝑎𝑝𝑎𝑐𝑖𝑡𝑦 = 𝐶 , and a cloned taint region of length 𝑅 ,the consumer computes 𝑐𝑜𝑝𝑖𝑒𝑠 = ⌈(𝐶 − 𝐿 + 9)∕ 𝑅 ⌉ and inserts 𝑐𝑜𝑝𝑖𝑒𝑠 repetitions of that region immediately after it, before re-executing the grown input. If the grown input   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 20 of 34
+
+BullsEye: Directed Firmware Fuzzing 
+
+now overflows the destination, the overflow oracle fires on the same execution. Two limitations apply. First, the technique requires that the relevant input bytes appear in the colorization taint set; if src ’s bytes were never traced, the extension probe is a no-op. Second, the synthetic comparison is 32-bit only, which is sufficient for all targets in the evaluation corpus. 
+
+## 6. Evaluation 
+
+We evaluate B ULLSEYE on a benchmark of 40 firmware vulnerability sites drawn from real-world IoT devices. Our evaluation is organised around five research questions: • RQ1 (Effectiveness). Does BULLSEYE , operating purely on stripped vendor binaries (P1), reproduce firmware vulnerabilities faster than state-of-the-art coverage-guided and directed greybox fuzzers, and than a state-of-the-art firmware re-hosting framework? • RQ2 (Directedness). Do B ULLSEYE ’s semantic re-finements, i.e., the three-condition DBB classification (P2) and the satisfiability-adjusted distance metric (P3), improve target-reaching effectiveness over the other baseline directed greybox fuzzers? • RQ3 (Energy allocation). Does B ULLSEYE ’s power scheduling (P4) allocate energy better than a single global annealing clock, spatially, across co-located targets, and temporally, across DBBs discovered late in a campaign? • RQ4 (Component contribution). How much does each component of B ULLSEYE contribute to its overall performance, and does removing it cost what the design predicts? • RQ5 (Case Studies). Three case studies examine up close how B ULLSEYE ’s mechanisms behave on indi-vidual targets. The remainder of this section describes the experimental setup (Section 6.1) and then addresses RQ1–RQ5 in turn, closing each with an explicit answer. 
+
+6.1. Experimental Setup 
+
+Infrastructure. All experiments run on a dual-socket In-tel Xeon E5-4610 v2 server (16 physical cores / 32 hard-ware threads at 2.30 GHz) with 256 GiB of RAM, under Ubuntu 24.04.1 LTS. Following common practice for fair fuzzer comparison (Klees et al., 2018), each fuzzing cam-paign runs in its own privileged Docker container pinned to a single physical core (both hardware threads, via cpuset )with AFL_NO_AFFINITY set, and up to 15 campaigns execute in parallel, leaving one core for orchestration and the host. 
+
+Table 3 
+
+Firmware images in the evaluation dataset.                                                                                                                                     
+
+> ID Vendor Model Version Arch
+> 1Netgear WNDR3700v2 1.0.0.8 mipseb 2Netgear XAVN2001 0.4.0.7 mipseb 3Netgear WNR1000v2 1.1.2.54 mipseb 4Netgear WNR2500v1 1.0.0.24 mipseb 5Netgear JWNR2000v2 1.0.0.11 mipseb 6Netgear WNCE4004v1 1.0.0.22 mipseb 7D-Link DIR-629 1.03.B01 mipseb 8D-Link DIR-815 1.01 mipsel 9D-Link DIR-817LW 1.00B05 mipseb 10 D-Link DAP-2330 1.01RC014 mipseb 11 D-Link DAP-2695 1.11.RC044 mipseb 12 D-Link DIR-850L 1.03 mipseb 13 D-Link DIR-825 (rev B) 2.02 mipseb 14 TRENDnet TEW-632BRPA1 1.10B31 mipseb 15 TRENDnet TEW-634GRU v1 1.01B14 mipseb 16 TRENDnet TEW-673GRU A1 1.00B40 mipseb 17 D-Link GO-RT-AC750 1.01B03 mipseb 18 D-Link DIR-645 1.03 mipsel 19 D-Link DIR-645 1.03 mipsel 20 TRENDnet TEW-752DRU 1.03B01 mipsel 21 D-Link DIR-823G 1.0.2B05 mipsel 22 D-Link DIR-860L (rev B) 2.03.B03 mipsel 23 D-Link DIR-806 (rev A1) 1.0 mipseb 24 Netgear JNR3300 v1 1.0.0.34 mipseb 25 D-Link DSP-W215 (rev A1) 1.14B04 mipseb 26 D-Link DAP-1330 1.13B01 mipseb 27 TP-Link TL-WR940N(US) V4 mipseb 28 TRENDnet TV-IP110WN 1.2.2.68 mipseb 29 TRENDnet TV-IP110WN 1.2.2.68 mipseb 30 TRENDnet TEW-632BRPA1 1.10B32 mipseb 31 TRENDnet TEW-632BRPA1 1.10B32 mipseb 32 TRENDnet TEW-632BRPA1 1.10B32 mipseb
+
+Dataset. We assemble a benchmark of 32 closed-source firmware images drawn from four vendors (D-Link, Netgear, TRENDnet, and TP-Link), listed in Table 3, and emulated through Firmadyne (Chen et al., 2016), spanning the little-and big-endian MIPS architectures ( MIPSEL and MIPSEB 
+
+respectively). From these images we derive 40 directed targets, each paired with the virtual address of a vulnerable sink and reached over one of three input channels: a TCP socket for HTTP services, an environment variable for CGI handlers, and a file stream for configuration parsers. F IRM -AFL exposes only the first two; B ULLSEYE adds three more: the file stream above, a UDP datagram, and the buffer returned by an ioctl on a device node. Each target address is obtained by manually locating the vulnerable sink in the binary disassembled with IDA (Hex-Rays, 1991), guided, where available, by the CVE advisory or a public proof-of-concept, and recording its relative load-base offset for the static pipeline (Section 5.1); this step is one-off and manual, consistent with the reachability assumptions discussed in Section 8. 
+
+Ralli et al.: Preprint submitted to Elsevier Page 21 of 34 BullsEye: Directed Firmware Fuzzing 
+
+The choice of which basic block to designate as the target is itself consequential (Weissberg et al., 2024): a target on a hot path shared by most inputs carries little discriminative signal, since nearly every seed reaches it and the distance metric can no longer separate promising inputs from the rest. We therefore designate as the target the most discriminative basic block that every triggering input must traverse. Where the vulnerable sink lies on a cold, guarded path this is the sink itself; where the sink sits on a hot path we instead select an upstream block, typically the condition gating entry to the vulnerable control flow (a header-name or request-path check), that isolates the input characteristic required to reach the sink, so that the seeds prioritised toward the target are exactly those still able to drive the corruption downstream. Table 4 enumerates the targets. Of the 40, 26 carry an assigned CVE and two an EDB-ID; the remaining 12 have no public identifier at the time of writing. Of these, five were reproduced from public crash reports (labelled housefuzz-1 to housefuzz-5 ) and seven newly identified in this work (labelled bullseye-1 to bullseye-7 ); we withhold all proof-of-concept inputs until each has been disclosed to the affected vendor, or to CERT/CC where the device is past end of life. 
+
+Seed corpus. The initial seed corpus for all targets is pro-duced with a local LLM, Qwen2.5-14B (Qwen Team, 2024), served through Ollama: valid HTTP packets for socket tar-gets, extracted environment-variable keys for CGI targets, and a single valid configuration file for the file-stream target. The same corpus is shared across all six configurations, so that any performance difference stems from the fuzzing strategy rather than the starting inputs. 
+
+Configurations. We compare BULLSEYE against five baselines at two levels. Four are controlled baselines that span the coverage-guided and directed greybox fuzzing spectrum and share B ULLSEYE ’s substrate: they run on top of the same F IRM -AFL (Zheng et al., 2019) dual-QEMU emulation back-end and differ only in their fuzzing strategy, isolating the effect of the directed-fuzzing logic. F IRM -AFL is the unmodified back-end, i.e., stock coverage-guided fuzzing. F IRM -AFL † additionally enables CmpLog comparison-guided mutation (AFLplusplus contributors, 2019) and grammar-aware mutation, but remains undirected. F IRM -AFL-G O implements AFLG O’s aggregate structural distance (Böhme et al., 2017), while FIRM -AFL-WR implements WIND RANGER ’s deviation-basic-block guidance (Du et al., 2022); both build on the FIRM -AFL † mutation stack so that any difference relative to BULLSEYE stems from directed fuzzing heuristics rather than the mutator, with all directed configurations being driven by the same target specification. Both follow the published algorithms rather than the original implementations: AFLG O and WIND RANGER derive their graphs from LLVM IR at compile time, whereas here both distances are computed over control-flow graphs and a call graph recovered statically from the stripped binary and applied through 
+
+Table 4 
+
+The 40 directed targets. IDs refer to Table 3.                                                                                                                                                                     
+
+> Reference ID Binary Channel Weakness
+> housefuzz-1 (2024c) 1uhttpd HTTP CWE-120 bullseye-1 2uhttpd HTTP CWE-120 bullseye-2 3uhttpd HTTP CWE-120 housefuzz-2 (2024e) 4uhttpd HTTP CWE-120 housefuzz-3 (2024d) 4uhttpd HTTP CWE-476 bullseye-3 5uhttpd HTTP CWE-120 housefuzz-4 (2024b) 6uhttpd HTTP CWE-120 CVE-2018-10996 7session.cgi ENV CWE-121 CVE-2025-6328 8hedwig.cgi ENV CWE-121 EDB-ID-38720 9hnap ENV CWE-121 CVE-2016-1558 10 httpd HTTP CWE-122 CVE-2016-1558 11 httpd HTTP CWE-122 CVE-2017-3193 12 hnap ENV CWE-121 EDB-ID-38718 13 httpd HTTP CWE-122 CVE-2019-11418 14 httpd HTTP CWE-122 CVE-2018-19242 15 httpd HTTP CWE-122 CVE-2018-19242 16 httpd HTTP CWE-122 CVE-2022-37055 17 hnap ENV CWE-121 CVE-2021-43722 18 hnap ENV CWE-121 CVE-2022-46475 19 gena.cgi ENV CWE-121 CVE-2024-42813 20 gena.cgi ENV CWE-121 CVE-2024-27655 21 goahead HTTP CWE-120 CVE-2024-27656 21 goahead HTTP CWE-120 CVE-2024-27657 21 goahead HTTP CWE-120 CVE-2024-42812 22 gena.cgi ENV CWE-121 CVE-2019-10892 23 hnap ENV CWE-121 housefuzz-5 (2024a) 24 uhttpd HTTP CWE-120 bullseye-4 24 uhttpd HTTP CWE-476 CVE-2025-34125 25 lighttpd HTTP CWE-121 bullseye-5 25 lighttpd HTTP CWE-120 bullseye-6 25 lighttpd HTTP CWE-121 CVE-2021-34828 26 lighttpd HTTP CWE-120 CVE-2021-34829 26 lighttpd HTTP CWE-120 CVE-2021-34830 26 lighttpd HTTP CWE-121 CVE-2022-24355 27 httpd HTTP CWE-121 CVE-2018-19241 28 video.cgi ENV CWE-121 CVE-2018-19240 29 network.cgi ENV CWE-121 CVE-2013-0230 30 miniupnpd HTTP CWE-121 CVE-2019-11418 31 httpd HTTP CWE-122 bullseye-7 32 hostapd FILE CWE-787
+
+the same QEMU instrumentation as B ULLSEYE . F IRM -AFL-WR selects DBBs by WIND RANGER ’s structural criterion (Section 2.2.2) and, lacking the source-level data-flow analysis behind WIND RANGER ’s Ψ weight, approximates it from the comparison operands that change between a seed and its colorized twin. Since four of the five FIRM -AFL-based configurations rely on CmpLog to resolve hard-coded comparisons automatically, we supply stock FIRM -AFL with a keyword dictionary of string tokens, injected during AFL’s dictionary mutation stage, so that it can solve the same comparisons: without it the baseline times out on most targets, yielding an uninformative comparison. This mirrors F IRM -AFL’s own distribution, which ships 10 sample targets each accompanied by such a dictionary; we generate the equivalent files for the new dataset entries by extracting the human-readable strings from each binary under test. 
+
+Ralli et al.: Preprint submitted to Elsevier Page 22 of 34 BullsEye: Directed Firmware Fuzzing 
+
+GREENHOUSE (Tay et al., 2023) is the fifth competi-tor in our evaluation, an end-to-end baseline rather than a controlled one: it re-hosts each firmware image with its own re-hosting pipeline rather than sharing F IRM -AFL’s back-end, and fuzzes undirected. Its input channel is also narrower: G REENHOUSE drives a re-hosted service over a TCP socket only, so we attempt re-hosting solely for the 27 HTTP targets. Comparing on the environment-variable and file targets would have measured B ULLSEYE ’s channel-specific injection against a pipeline that cannot deliver those inputs at all, which would understate G REENHOUSE rather than inform the comparison. Of the 27 attempted, 18 re-host successfully; the other 22 of the 40 targets carry no GREENHOUSE entry in Table 6 and are excluded from every GREENHOUSE comparison. Each (configuration, target) pair is run 10 times for 10 h, and the three directed configurations share AFLG O’s implementation default for the annealing cut-off, 𝑡 𝑥 = 10 minutes. 
+
+Metrics. The primary metric is the Time-to-Exposure 
+
+(TTE), measured as wall-clock time; a run that does not trigger the vulnerability within the 10-hour budget is assigned a TTE equal to the budget, following AFLG O (Böhme et al., 2017). Such runs are censored observations whose true TTE is unknown, which makes the Mann–Whitney U test inapplicable (Kim et al., 2024); we therefore report effect sizes and speed-up factors rather than 𝑝 -values. As is standard in directed greybox fuzzing work (Böhme et al., 2017, Du et al., 2022), for each (configuration, target) pair we report the mean TTE (𝜇 TTE) over the 10 runs, the speed-up factor relative to each baseline, and the Vargha–Delaney ̂ 𝐴 12 statistic. The speed-up factor is the ratio of the baseline 𝜇 TTE to the configuration’s 𝜇 TTE, so that values above 1.0
+
+indicate a faster configuration. The ̂ 𝐴 12 statistic is a non-parametric effect-size measure (Vargha and Delaney, 2000), the recommended standard for comparing randomised algorithms (Arcuri and Briand, 2014): over the TTE values from the baseline and a given configuration, it estimates the probability that the configuration produces a smaller TTE than the baseline, so values above 0.5 favour the configuration and values below it favour the baseline, with 
+
+0.5 indicating no difference and 0.71 the conventional threshold for a large effect. 
+
+Attribution and ablation logging. RQ2–RQ5 are evalu-ated on a 10-image subset of the benchmark (Table 5): eight images drawn at random from the full benchmark and two (images 25 and 26) chosen deliberately as multi-target test cases, so that the components whose behaviour only man-ifests under multiple co-located targets are exercised. Two instrumented run sets are collected on it, three runs of 10 h per configuration, kept separate from the RQ1 campaign so they never perturb its timing: The first is attribution logging :recording for every scheduling visit which stage produced each seed or crash, the scheduling state at that point, and the set of directed targets it lit. The second is ablation logging :                                            
+
+> Table 5
+> The 10-image RQ2–RQ5 subset. IDs refer to Table 3.
+> ID Vendor Model Binary Arch
+> 1Netgear WNDR3700v2 uhttpd mipseb 4Netgear WNR2500v1 uhttpd mipseb 8D-Link DIR-815 hedwig.cgi mipsel 11 D-Link DAP-2695 httpd mipseb 12 D-Link DIR-850L hnap mipseb 15 TRENDnet TEW-634GRU v1 httpd mipseb 25 D-Link DSP-W215 (rev A1) lighttpd mipseb 26 D-Link DAP-1330 lighttpd mipseb 27 TP-Link TL-WR940N(US) httpd mipseb 31 TRENDnet TEW-632BRPA1 httpd mipseb
+
+the six leave-one-out configurations of Section 6.5, together with the full system, are run to record, per queued seed and crash, the elapsed time and execution count needed to reach and to trigger each target. Both instrumented sets pay for this detail in throughput: the logging sits on the execution path, so their absolute times are systematically longer than those of the RQ1 campaign and are not comparable with it. 
+
+6.2. RQ1: Effectiveness 
+
+RQ1 asks whether B ULLSEYE , working only on stripped vendor binaries (P1), reproduces firmware vulnerabilities faster than state-of-the-art coverage-guided and directed greybox fuzzers, and than a state-of-the-art re-hosting framework. We run every (configuration, target) pair 10 times for 10 h and record the time-to-exposure (TTE). Table 6 reports, per target, the mean TTE ( 𝜇 TTE) of BULLSEYE , of the four F IRM -AFL-based baselines, and of GREENHOUSE (Tay et al., 2023), together with B ULLSEYE ’s speed-up factor and Vargha–Delaney ̂ 𝐴 12 against each of them; Table 7 summarises those comparisons per configuration: targets triggered, geometric-mean speed-up, and mean ̂ 𝐴 12 (𝜇̂𝐴 12 ). 
+
+Reproduction reach. The headline result is coverage of the target set. BULLSEYE triggers all 40 targets within budget, against 35 for FIRM -AFL-WR, 32 for FIRM -AFL-G O, 29 for FIRM -AFL †, and 17 for stock FIRM -AFL. Most telling, five targets spanning three vulnerabilities (CVE-2019-11418, CVE-2018-19242, and CVE-2022-24355) are reproduced by no FIRM -AFL-based baseline, coverage-guided and directed alike: all four exhaust the full 10 h on them across all 10 runs of this campaign. 
+
+Time to exposure. Where a target is reached at all, B ULLS - 
+
+> EYE
+
+is typically fastest by a wide margin: its median 𝜇 TTE over the 40 targets is under 10 minutes, an order of magni-tude or more below every F IRM -AFL-based baseline, whose medians run from under two hours to the full budget. Aggre-gated per baseline (Table 7), the geometric-mean speed-up ranges from 9.5× against F IRM -AFL-G O to 72 .5× against   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 23 of 34
+
+BullsEye: Directed Firmware Fuzzing 
+
+Table 6 
+
+Per-target 𝜇 TTE over 10 10-hour runs, with BULLSEYE ’s speed-up factor and ̂ 𝐴 12 against each configuration; bold marks the lowest 𝜇 TTE per target. 
+
+Target Firm-AFL Firm-AFL † Firm-AFL-Go Firm-AFL-WR Greenhouse BULLSEYE 
+
+𝜇 TTE Fac. ̂ 𝐴 12 𝜇 TTE Fac. ̂ 𝐴 12 𝜇 TTE Fac. ̂ 𝐴 12 𝜇 TTE Fac. ̂ 𝐴 12 𝜇 TTE Fac. ̂ 𝐴 12 𝜇 TTE housefuzz-1 4h08min 228.4 1.00 2h27min 135.0 0.94 17min04sec 15.6 0.64 11min26sec 10.5 0.69 20min59sec 19.2 1.00 01min05sec 
+
+bullseye-1 3h49min 24.9 0.70 7h31min 48.9 0.90 4h36min 30.0 0.99 3h40min 23.9 0.90 6h20min 41.2 1.00 09min13sec 
+
+bullseye-2 3h59min 310.5 1.00 43min52sec 56.9 0.80 05min53sec 7.6 0.72 12min05sec 15.7 1.00 47min26sec 61.5 1.00 46sec 
+
+housefuzz-2 9h32min 65.3 1.00 6h58min 47.8 1.00 5h49min 39.9 1.00 2h19min 16.0 0.78 1h06min 7.6 0.96 08min45sec 
+
+housefuzz-3 10h 15.8 1.00 10h 15.8 1.00 9h01min 14.3 0.90 6h54min 10.9 0.98 52min46sec 1.4 0.53 37min54sec 
+
+bullseye-3 3h54min 108.6 1.00 1h12min 33.8 1.00 57min31sec 26.7 1.00 10min01sec 4.6 0.60 31min58sec 14.8 1.00 02min09sec 
+
+housefuzz-4 4h30min 227.5 1.00 4h01min 203.1 1.00 2h25min 122.6 1.00 56min59sec 47.9 1.00 20min47sec 17.5 1.00 01min11sec 
+
+CVE-2018-10996 12min11sec 10.0 1.00 52sec 0.7 0.28 38sec 0.5 0.18 09min09sec 7.5 0.98 - - - 01min14sec CVE-2025-6328 1h17min 6.3 1.00 6h22min 30.9 1.00 54min20sec 4.4 0.95 1h53min 9.2 1.00 - - - 12min24sec 
+
+EDB-ID-38720 5h32min 135.3 1.00 1h42min 41.7 1.00 14min43sec 6.0 0.85 2h18min 56.4 1.00 - - - 02min27sec 
+
+CVE-2016-1558 8h58min 101.3 1.00 8h01min 90.5 1.00 1h31min 17.2 1.00 31min59sec 6.0 1.00 6h02min 68.1 1.00 05min19sec 
+
+CVE-2016-1558 5h27min 60.9 1.00 10h 111.6 1.00 8h41min 96.9 1.00 39min55sec 7.4 1.00 6h44min 75.3 1.00 05min23sec 
+
+CVE-2017-3193 7h38min 98.6 1.00 1h01min 13.1 0.95 06min52sec 1.5 0.70 4h09min 53.6 1.00 - - - 04min39sec 
+
+EDB-ID-38718 10h 26.5 1.00 10h 26.5 1.00 9h02min 23.9 1.00 9h32min 25.3 1.00 52min59sec 2.3 1.00 22min40sec 
+
+CVE-2019-11418 10h 19.8 1.00 10h 19.8 1.00 10h 19.8 1.00 10h 19.8 1.00 29min56sec 1.0 0.49 30min21sec CVE-2018-19242 10h 42.5 1.00 10h 42.5 1.00 10h 42.5 1.00 10h 42.5 1.00 33min15sec 2.4 0.93 14min08sec 
+
+CVE-2018-19242 10h 15.9 1.00 10h 15.9 1.00 10h 15.9 1.00 10h 15.9 1.00 54min20sec 1.4 0.76 37min47sec 
+
+CVE-2022-37055 10h 213.4 1.00 1h06min 23.5 1.00 14min34sec 5.2 0.89 4h49min 102.9 1.00 - - - 02min49sec 
+
+CVE-2021-43722 10h 1176.5 1.00 9h01min 1060.9 1.00 1h12min 142.6 0.94 1h19min 156.6 1.00 - - - 31sec 
+
+CVE-2022-46475 10h 2608.7 1.00 9h01min 2352.5 1.00 46sec 3.3 0.69 02min52sec 12.4 1.00 - - - 14sec 
+
+CVE-2024-42813 10h 2666.7 1.00 9h01min 2404.4 1.00 13sec 1.0 0.27 05min42sec 25.4 1.00 - - - 14sec CVE-2024-27655 9h00min 30.9 0.93 8h11min 28.1 0.97 2h17min 7.9 0.69 2h19min 8.0 0.78 - - - 17min28sec 
+
+CVE-2024-27656 9h00min 19.3 0.91 1h15min 2.7 0.90 3h54min 8.4 0.82 5h26min 11.7 0.79 - - - 27min59sec 
+
+CVE-2024-27657 7h15min 79.4 0.97 1h04min 11.7 0.96 1h02min 11.3 0.51 11min12sec 2.0 0.58 - - - 05min29sec 
+
+CVE-2024-42812 10h 6545.5 1.00 9h01min 5901.9 1.00 12sec 2.2 0.73 37sec 6.7 1.00 - - - 6sec 
+
+CVE-2019-10892 10h 92.0 1.00 4h00min 36.8 0.94 09min13sec 1.4 0.51 4h40min 43.0 1.00 - - - 06min31sec 
+
+housefuzz-5 10h 46.9 1.00 9h32min 44.7 1.00 10h 46.9 1.00 7h15min 34.0 1.00 29min27sec 2.3 0.86 12min48sec 
+
+bullseye-4 10h 74.1 1.00 10h 74.1 1.00 10h 74.1 1.00 8h30min 63.0 1.00 14min04sec 1.7 0.84 08min06sec 
+
+CVE-2025-34125 9h28min 15.4 1.00 53min18sec 1.4 0.67 1h19min 2.2 0.76 3h37min 5.9 0.84 10h 16.2 1.00 37min01sec 
+
+bullseye-5 10h 16.8 1.00 3h04min 5.2 0.71 3h01min 5.1 0.82 1h28min 2.5 0.83 9h12min 15.5 1.00 35min42sec 
+
+bullseye-6 10h 132.1 1.00 45min36sec 10.0 0.33 1h02min 13.9 0.48 06min12sec 1.4 0.57 10h 132.1 1.00 04min32sec 
+
+CVE-2021-34828 5h57min 834.5 1.00 32sec 1.3 0.98 28sec 1.1 0.70 26sec 1.0 0.51 - - - 26sec 
+
+CVE-2021-34829 10h 44.3 1.00 23min40sec 1.7 0.69 19min04sec 1.4 0.60 10min25sec 0.8 0.50 - - - 13min34sec CVE-2021-34830 10h 35.7 1.00 26min23sec 1.6 0.62 24min10sec 1.4 0.64 18min54sec 1.1 0.62 - - - 16min48sec 
+
+CVE-2022-24355 10h 12.8 1.00 10h 12.8 1.00 10h 12.8 1.00 10h 12.8 1.00 - - - 46min46sec 
+
+CVE-2018-19241 10h 5.9 0.95 10h 5.9 0.95 8h17min 4.9 0.93 9h07min 5.4 0.94 - - - 1h42min 
+
+CVE-2018-19240 10h 248.6 1.00 5h41min 141.4 1.00 27min06sec 11.2 1.00 3h19min 82.6 1.00 - - - 02min25sec 
+
+CVE-2013-0230 10h 160.8 1.00 10h 160.8 1.00 10h 160.8 1.00 05min04sec 1.4 0.64 - - - 03min44sec 
+
+CVE-2019-11418 10h 2.7 1.00 10h 2.7 1.00 10h 2.7 1.00 10h 2.7 1.00 - - - 3h44min 
+
+bullseye-7 10h 48.5 1.00 3h34min 17.3 0.85 2h07min 10.4 0.67 4h59min 24.3 0.80 - - - 12min22sec 
+
+Table 7 
+
+Targets triggered by each baseline, with BULLSEYE ’s speed-up and 𝜇̂𝐴 12 over it. 
+
+Configuration Triggered Speed-up 𝜇̂𝐴 12 
+
+BULLSEYE 40/40 – –
+
+Firm-AFL 17/40 72 .5× 0.99 
+
+Firm-AFL † 29/40 30 .2× 0.91 
+
+Firm-AFL-Go 32/40 9.5× 0.81 
+
+Firm-AFL-WR 35/40 11 .5× 0.88 
+
+Greenhouse 16/18 9.8× 0.91 
+
+stock F IRM -AFL, and the 𝜇̂𝐴 12 never falls below 0.81 , well above the 0.71 large-effect threshold; B ULLSEYE carries a favourable effect size ( ̂𝐴 12 > 0.5) on at least 37 of 40 targets against every F IRM -AFL-based baseline. Since non-triggering runs are charged the full budget rather than discarded, every factor is a lower bound. 
+
+Where directedness does not pay. Directedness recov-ers the search effort a target’s guarding conditions would otherwise waste, so where a target has no such conditions there is nothing to recover and the distance and schedul-ing bookkeeping is pure overhead. CVE-2018-10996 is the clearest case, a session.cgi environment-variable sink that almost any input drives, where B ULLSEYE averages 74 s against 38 s for F IRM -AFL-G O. Over the 40 targets a F IRM -AFL-based baseline holds the lowest mean TTE on three, never by more than a few minutes; the fourth target on which BULLSEYE does not lead is CVE-2019-11418 on ID 14, lost to G REENHOUSE by 25 s, a re-hosting effect discussed be-low rather than a directedness one. B ULLSEYE ’s advantage concentrates where it matters: on targets whose guarding conditions make undirected reproduction improbable within the budget. 
+
+The GREENHOUSE column. GREENHOUSE is not an isolated-variable comparison, and its column moves for a different reason than the rest of the table. Because it re-hosts each image to run directly on the host rather than through F IRM -AFL’s dual-QEMU scheme, it executes more test cases per second than any configuration sharing our back-end, its authors reporting a throughput 200% higher than E QU AFL (Zheng et al., 2022), itself a F IRM -AFL 
+
+Ralli et al.: Preprint submitted to Elsevier Page 24 of 34 BullsEye: Directed Firmware Fuzzing 10 −1 10 0 10 1
+
+campaign time (h, log scale) 036912 15 directed targets (mean of 3 runs) 
+
+> Bullseye, reached Bullseye, triggered Firm-AFL-Go, reached Firm-AFL-Go, triggered Firm-AFL-WR, reached Firm-AFL-WR, triggered
+
+Figure 13: Directed targets reached and triggered over 10 h, averaged over three runs, across the instrumented subset. 
+
+successor. That throughput substitutes for guidance: it solves 16 of the 18 targets its pipeline supports, and it triggers three of the five targets no FIRM -AFL-based baseline reaches at all. B ULLSEYE is still faster on 17 of those 18, by a geometric mean of 9.8× , though by under 3× 
+
+on six of them, and it loses CVE-2019-11418 on ID 14 by 
+
+25 s. The comparison therefore measures two things at once, a directedness advantage and an emulation-throughput disadvantage, and we read it as an end-to-end result rather than as evidence about directedness. 
+
+Answer to RQ1 
+
+BULLSEYE reproduces all 40 directed targets within budget, against 35 for the strongest F IRM -AFL-based baseline and 17 for stock F IRM -AFL, with five targets reached by no F IRM -AFL-based baseline. It is 9.5 to 72 .5× faster by geometric mean than every such baseline, at a Vargha–Delaney effect size of 0.81 or above. It also outpaces the end-to-end baseline G REENHOUSE on 17 of its 18 supported targets. 
+
+6.3. RQ2: Directedness 
+
+RQ2 asks whether B ULLSEYE ’s semantic refinements, the three-condition DBB classification (P2) and the satisfiability-adjusted distance (P3), improve target-reaching effectiveness over WIND RANGER ’s structural DBBs and AFLG O’s aggregate distance. We answer it on the instrumented subset of Table 5: 10 images carrying 15 directed targets (three of the images are multi-target), each fuzzed three times for 10 h per configuration with the per-visit event log enabled. 
+
+Target completeness. On this subset B ULLSEYE reaches and triggers all 15 targets while F IRM -AFL-WR triggers 
+
+Table 8 
+
+Deviation blocks BULLSEYE ’s (BE) classifier flags beyond 
+
+Firm-AFL-WR ’s (WR), how many of them a run exercises, and the share of seed pairs each distance leaves tied. 
+
+ID Seeds Added DBBs Tied seed pairs Flagged Exercised WR BE 
+
+1 819 5 1 0.3% 0.3% 4 604 9 2 42.4% 23.0% 8 492 0 0 52.7% 52.7% 11 1202 21 14 39.5% 4.6% 12 244 0 0 100.0% 100.0% 15 521 6 4 100.0% 8.5% 25 1536 38 26 44.6% 24.0% 26 1635 39 26 22.9% 4.5% 27 603 0 0 0.0% 0.0% 31 391 17 8 8.3% 0.0% 
+
+12 and F IRM -AFL-G O 10; Figure 13 traces run-averaged reach and trigger counts over campaign time: B ULLSEYE 
+
+starts behind both baselines, which reach the loosely guarded targets first and pay nothing for direction there (Section 6.2), and it is ahead of them from three minutes onward. Two of those targets, CVE-2018-19242 on ID 15 and CVE-2019-11418 on ID 31, are triggered only by B ULLSEYE : both baselines reach the target basic block in every single run and never convert that reach into a crash. 
+
+Deviation basic blocks (P2). WIND RANGER marks a ba-sic block as a DBB when some successor drops reachability to a target. B ULLSEYE adds two conditions: loop-gating latches, whose back edge only re-iterates, and mandatory re-entry chokepoints, which a successor must loop back through to reach the target. Statically B ULLSEYE flags 487 blocks across the 10 images, 135 of which W IND RANGER ’s 
+
+Ralli et al.: Preprint submitted to Elsevier Page 25 of 34 BullsEye: Directed Firmware Fuzzing                                                                                          
+
+> Table 9
+> Left, the distinct values the structural and the satisfiability-adjusted distance each take over the same queue, and the share of tied seed pairs the adjustment splits. Right, the inputs queued on satisfiability alone: their share of the queue, then the share of seeds descending from one, first among seeds that reached the target, then among all queued seeds.
+> ID Seeds Distance resolution Satisfiability-only saves Structural Adjusted Ratio Ties split Share of queue In target lineage In any lineage
+> 1819 661.0 ×0.2% 0.2% 53.6% 17.6% 4604 16 123 7.7 ×88.5% 7.5% 100.0% 59.9% 8492 341 13.7 ×61.7% 3.0% 43.2% 13.2% 11 1202 57 209 3.7 ×60.5% 2.7% 0.0% 2.7% 12 244 122.0 ×13.8% 0.0% 0.0% 0.0% 15 521 6143 23.8 ×59.5% 13.8% 72.6% 58.5% 25 1536 78 245 3.1 ×52.3% 7.6% 10.1% 8.7% 26 1635 205 353 1.7 ×53.4% 7.5% 9.0% 9.7% 27 603 410 2.5 ×58.1% 0.5% 0.0% 0.5% 31 391 38 138 3.6 ×56.5% 14.1% 60.3% 49.1%
+
+criterion does not flag, with up to 26 of them exercised per image. Neither size nor membership is the point. Because the directed distance aggregates over the critical blocks a seed hits, 𝐷 = 1∕ ∑𝑖 1∕ 𝑑 𝑖 , every block a classifier declines to mark is a block that cannot separate two seeds: if the blocks that distinguish a seed which approached the target from one that did not are left unmarked, both receive the same distance and the same energy, and the search has no reason to prefer the one that got closer. Table 8 measures that directly. Over the same queues we recompute the same structural distance twice, once over B ULLSEYE ’s DBBs and once over only those W IND RANGER ’s criterion also flags, with the satisfiability adjustment of P3 disabled in both arms so that the DBB set is the only variable. We then pair every seed that reached the target basic block with every seed that did not, and call a pair tied when the distance gives both the same value, since the two then draw the same energy and the schedule can never prefer the one that reached. Across the subset the median tied share falls from 41% to 6.6% ,and no image is worse, three of them unchanged because the extra conditions flag no new blocks there. The extreme is image 15, where without the added blocks the distance is constant over the whole queue and ties every pair, against 
+
+8.5% with them. 
+
+Satisfiability-adjusted distance (P3). Structural distance is a function of which blocks a seed reached, so two seeds covering the same blocks are tied by construction, however near one came to passing the guard that separates it from the target. The satisfiability discount, 
+
+𝑑 ⋆𝑖 = 𝑑 𝑖 ∕(1 + 99 𝜎 𝑖 ), makes the value depend on the seed’s own comparison operands, turning a path-determined metric into an input-determined one. Table 9 reports what that buys over the same queues. Its left half counts how many distinct values each metric takes, their ratio, and the share of seed pairs tied under the structural distance that the adjustment separates; its right half isolates the inputs BULLSEYE keeps for advancing satisfiability alone, with no new coverage, giving their share of the queue and how often seeds descend from one, first among the seeds that reached the target and then among all queued seeds. Distinct values are the blunt measure, since seeds sharing a value draw the same energy: on ID 15 the structural distance takes six values across 521 queued seeds while the adjusted one takes 143, a ratio of 23.8. On eight of the 10 images the adjustment separates more than half of the seed pairs the structural distance ties. On the three images where the classifier adds no block (IDs 8, 12, 27) the adjustment splits ties. Resolution is not the whole of it: the satisfiability-only inputs, which exist only because of the adjustment, are a median 5.3% of the queue, yet on six of the 10 images the seeds that reached the target descend from one more often than the queue as a whole does: 43.2% of target-reaching seeds against 13.2% of all queued seeds on ID 8, 53.6% against 17.6% on ID 1, and 60.3% against 49.1% on ID 31; on ID 4 every target-reaching seed descends from one. Both mechanisms are examined up close in the case studies of Section 6.6, where a single target shows which seed the finer distance promotes, and what it buys. 
+
+Answer to RQ2 
+
+BULLSEYE triggers all 15 targets of the instrumented subset, against 12 for F IRM -AFL-WR and 10 for FIRM -AFL-G O. Its refined DBBs cut the share of inputs the distance cannot tell apart from 41% to 
+
+6.6% , and the satisfiability adjustment splits more than half of what remains. Together they give the scheduler a usable gradient on inputs the structural distance scores identically. 
+
+6.4. RQ3: Energy Allocation 
+
+RQ3 asks whether B ULLSEYE ’s power scheduling (P4) allocates energy better than a single global annealing clock, temporally across deviation basic blocks discovered late in a campaign and spatially across co-located targets. We answer                                                                       
+
+> Ralli et al.: Preprint submitted to Elsevier Page 26 of 34 BullsEye: Directed Firmware Fuzzing
+> Table 10
+> Per image: share of DBBs first reached after the global clock cooled, with the median temperature their own clock holds, the share of scheduling decisions each override changes, and the ratio of executions to reach the target, scheduler disabled over enabled.
+> ID DBBs found late Scheduling decisions Execs to target Share Their temperature Saturation cap Target fairness Stall reheat ratio
+> 10% –21% 0% 17% 0.11×
+> 458% 0.301 14% 2% 18% 1.11×
+> 80% –11% 0% 49% 0.93×
+> 11 2% 0.599 76% 0% 8% 1.07×
+> 12 0% –35% 0% 55% 1.00×
+> 15 40% 0.324 64% 0% 37% 1.00×
+> 25 54% 0.267 97% 5% 24% 1.81×
+> 26 55% 0.219 96% 14% 12% 1.43×
+> 27 49% 0.224 16% 0% 8% 0.14×
+> 31 45% 0.276 73% 0% 40% 0.66×
+
+it from the per-visit scheduling state B ULLSEYE records in its own runs on the instrumented subset, together with the 
+
+no_energy ablation, which disables all four levers at once and falls back to the distance-only power of AFLG O and WIND RANGER . Since the ablation removes them together, three runs per arm cannot separate their outcome effects, so we report engagement and magnitude per lever and the outcome for the scheduler as a whole. 
+
+Metric. Table 10 reports, per image, what each of the four levers of Section 4.4 did, measuring the division of budget directly rather than inferring it from outcomes. The first two columns cover per-block annealing: the share of DBBs first reached only after the global clock had cooled, and the median temperature their own clock held over their first 𝑡 𝑥 .The next three give the share of scheduling decisions on which saturation decay, target fairness and stall reheating engaged. The last column divides the executions no_energy 
+
+needs to reach each target by those B ULLSEYE needs with the scheduler enabled, taking the median over runs and the geometric mean over an image’s targets, so a value above 
+
+1.00× favours the scheduler. It counts executions rather than wall-clock time, since a power schedule changes how many executions a seed is granted, not how fast an execution runs, and wall-clock measurements dilute that with emulation-speed noise varying by an order of magnitude across these images. 
+
+The global clock is cold for most of the campaign. With the cooling window at its default of 10 minutes, the global temperature is below 0.05 after minute 10 and effectively zero within the hour, so for 590 of a campaign’s 600 minutes a single clock has stopped discriminating at all. That is not a corner case on this subset: on seven of the 10 images deviation basic blocks are still being discovered after the clock has cooled, 40% to 58% of them on six of those seven. Those blocks hold a median temperature between 0.22 and 0.60 inside their own window, against at most 0.002 on the global clock that governs every other seed at that moment. This is precisely the exploration budget a single global clock withholds from a block discovered after the campaign has cooled. On IDs 1, 8, and 12 the temperature column is empty because every deviation basic block is found in the first minutes: the lever has no lateness to correct, and measures as doing nothing. 
+
+Where budget is contested, the scheduler wins. Eight of the 15 targets are co-located, sharing an image with at least one other target, and it is there that energy has to be divided at all. On the three images that carry them, IDs 4, 25 and 26, the full scheduler reaches their targets in 1.11 to 1.81× fewer executions than no_energy does, and up to 2.81× on an individual target. The engagement columns confirm that this is the mechanism and not an incidental difference: the target-fairness override, which favours seeds reaching an under-reached target relative to the most-reached one, engages on 
+
+14% of scheduling decisions on image 26, 5% on image 25 and 2% on image 4, and on exactly 0% everywhere else, as it must, since with a single target no target can be the under-served one. Saturation decay, which lowers the energy ceiling of seeds bound to a target that is already well-reached or has stopped yielding new inputs, is the second half of the same story, capping the budget on 96% and 97% of decisions on the two three-target images, higher than on any other image in the subset. The three co-located targets of CVE-2021-34828 to CVE-2021-34830 are the clearest case: the one the scheduler helps most is reached in 4,200 executions against 11,800 without it, and the image as a whole in 1.43× 
+
+fewer, which is the starvation the spatial machinery exists to prevent. 
+
+Scope of the effect. On the seven targets that are alone in their image the two arms are close, at a median of 0.93× , and the aggregate over all 15 is correspondingly modest. A redis-tribution mechanism can only pay where there is something to divide; on a single-target campaign the override never                                                             
+
+> Ralli et al.: Preprint submitted to Elsevier Page 27 of 34 BullsEye: Directed Firmware Fuzzing
+> Table 11
+> Per arm: targets triggered; best, geometric mean and worst ratio of executions with the component removed over the full arm; effect size, and the count of targets on which keeping the component wins against those on which removing it wins.
+> Arm Targets Execs to target ratio ̂𝐴 12 Win/loss Triggered In all runs Best target Geometric mean Worst target
+> BULLSEYE (full) 15/15 12/15 –––––no ordering 14/15 9/15 0.16 2.92 22.8 0.78 14/1 no SPM 15/15 11/15 0.15 1.20 14.7 0.67 11/4 no len-extend 14/15 11/15 0.09 1.19 28.7 0.67 10/5 no indirect 15/15 13/15 0.09 1.08 17.4 0.56 10/5 no satisfiability 14/15 13/15 0.12 1.00 10.6 0.56 9/6 no energy 14/15 11/15 0.07 0.73 2.5 0.44 7/8
+
+fires, the scheduler reduces to its annealing component, and no redistribution is available to measure. Averaging the two regimes into one ladder mixes campaigns where the mechanism is active with campaigns where it is inert by construction, which is why we report them separately. Four single-target images do cost the scheduler executions, IDs 1, 8, 27 and 31. All have a single target, so the fairness override never fires there and only the temporal levers act; at three runs per arm we read the shortfall as run-to-run variance. 
+
+Answer to RQ3 
+
+BULLSEYE ’s power schedule pays where budget is contested: on images holding several targets it reaches them in 1.11 to 1.81× fewer executions than a single global annealing clock, and the override that redirects budget away from an already-reached target fires only there. Up to 58% of deviation blocks are found only after that global clock has cooled. Where a campaign has one target there is nothing to redistribute and the two are comparable. 
+
+6.5. RQ4: Component Contribution 
+
+RQ4 quantifies how much each of B ULLSEYE ’s new components contributes to its overall performance. Whereas RQ2 and RQ3 examine two components in depth, RQ4 takes the complementary breadth view: a leave-one-out ablation study that disables each new component in turn and mea-sures what its removal costs in executions to trigger a target. 
+
+Ablation setup. The seven arms, six disabling exactly one component and one running the full system, are named in the first column of Table 11; their collection (three runs of 10 h each) is described in Section 6.1. The TARGETS 
+
+columns count how many of the 15 an arm triggers at all and in all three runs. The three middle columns are ratios of executions, the arm’s per-target median divided by the full configuration’s, so that 1.0 is parity and a value above it means the removal cost executions: the GEOMETRIC MEAN 
+
+over all 15 targets, with BEST and WORST TARGET the extremes of that same ratio, the target the removal hurt least and the one it hurt most. As in Section 6.4 we count executions rather than wall-clock time, since every ablated component is scheduling or mutation logic whose own cost is negligible beside an emulated execution, while emulation throughput varies by an order of magnitude between runs of the same configuration. ̂ 𝐴 12 is the median per-target effect size, oriented so that values above 0.5 mean the removed component was pulling weight, and W IN /LOSS counts the targets on which the effect size favours the full arm against those on which it favours the ablated one. Every ratio is formed target by target before it is aggregated, so each comparison holds the target fixed; taking one arm’s median target against another’s would compare two different targets. Those two extremes show how concentrated the effect is: a component can be decisive on one target and idle on another, which the geometric mean averages away. 
+
+Reading the ladder. Every arm reaches all 15 target basic blocks, so reachability separates nothing here and the table reports what each removal costs instead. One mechanism stands clear of the rest: disabling satisfiability-aware queue ordering costs a factor of 2.92 in executions, with the full arm favoured on 14 of the 15 targets against one, costs 22 .8× 
+
+on the target that depends on it most, and costs three targets their all-run reliability. This is consistent with the design: ordering acts on which seed is fuzzed next, and every other mechanism operates on the seed that choice produces, so it is the one removal the rest cannot route around. 
+
+Marginal cost is not the same as no contribution. The remaining five arms barely move the aggregate, and reading the table by the geometric mean alone would rank them as in-ert. The per-target columns say otherwise. Removing length extension costs a factor of 1.19 , yet the full configuration is faster on 10 of the 15 targets against five, and on the worst of them the removal costs 28 .7× ; removing the Satisfiability-Preserving Mask (SPM) protection costs 1.20 , with the full arm favoured on 11 targets against four, and costs 14 .7× at its worst. Both are the expected signature of a component with redundant substitutes, where removing it lets another mechanism cover the same ground more slowly: many small gains, one target that depends on it outright, and no shift in the middle of the distribution, which is exactly what a   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 28 of 34
+
+BullsEye: Directed Firmware Fuzzing 
+
+single aggregate scalar discards. The satisfiability-adjusted distance is the clearest case of this, at a factor of 1.00 and yet favoured on nine targets against six, with a worst target of 
+
+10 .6× . The energy arm reproduces the result of Section 6.4, where the scheduler’s benefit is concentrated on co-located targets and is invisible in an aggregate over campaigns that mostly have nothing to redistribute; it is also the only arm whose worst target costs under 3× .
+
+Answer to RQ4 
+
+Satisfiability-aware queue ordering is the component that matters most: removing it costs 2.92× more executions, and keeping it is favoured on 14 of the 15 targets. The other components shift the aggregate little, between 0.73 and 1.20× , yet each is decisive on at least one target, where its removal costs up to 
+
+28 .7× .
+
+6.6. RQ5: Case Studies 
+
+The aggregate results of RQ2 to RQ4 report how often each mechanism helps, not what it does. This section takes three targets from the instrumented subset and follows one mechanism through each: the DBB classifier (P2) on ID 31, the satisfiability-adjusted distance (P3) on ID 8, and the power schedule (P4) on ID 25. Each target is a distinct sink class, and in each case the decompiled code around the target explains why the aggregate moved. 
+
+A deviation block the structural criterion cannot see (ID 31). The heap overflow of CVE-2019-11418 sits inside the request loop of httpd_main (Figure 14). Both blocks that dominate the target are header tests whose failing branch is a continue : control returns to the loop head, which reaches the target on a later iteration. Neither successor loses reach-ability, so W IND RANGER ’s criterion classifies neither as a DBB. B ULLSEYE ’s re-entry condition does: with the block removed, the loop head can no longer reach the target at all, while the fall-through still can. Whether that distinction matters is visible in the corpus: on a replay of the 391 seeds the three campaigns queued on this image, the guarding  
+
+> strstr
+
+block is hit by all 121 that reach the target and by 15.2% of the rest. The 22 blocks W IND RANGER flags here fire on over 91% of the seeds, whether or not they reach the target, so none of them tells the two groups apart. Every WIND RANGER block is among the 39 that B ULLSEYE flags, and restricted to W IND RANGER ’s subset the metric leaves 8.3% of seed pairs tied where the full set leaves none. 
+
+Distance resolution when every seed hits the same blocks (ID 8). CVE-2025-6328 is reached through a four-state cookie parser driven by an environment variable (Fig-ure 15). The state machine is a single loop that every well-formed seed enters, so the blocks an execution covers barely depend on the input: replaying the 492 seeds the campaigns queued on this image, eight of the nine blocks they exercise are hit by 94% to 100% of them. Block coverage alone therefore cannot rank this queue, and the structural aggregate                                                 
+
+> 1while ( wfgets ( line , ...) ) {/* loop head */
+> 2if ( strncasecmp ( line , " SOAPAction :" , 11) )
+> 3continue ;/* DBB */
+> 4v=line +11;
+> 5v+= strspn (v , "\t");
+> 6if (! strstr (v , " HNAP1 "))
+> 7continue ;/* DBB */
+> 8p=malloc (1024) ; /* target */
+> 9memset (p , 0, 1024) ;
+> 10 memcpy (p , v , strlen (v));
+> 11 }
+
+Figure 14: Header parse loop of httpd_main (ID 31). 
+
+takes three distinct values across the corpus. CmpLog cannot supply the answer either: the comparison receives a string object, so the operand logged against uid is its header, not the name. What separates a seed here is not which blocks it covered but how far it advanced through the cookie name, which is what the satisfiability term measures. On the same seeds the adjusted distance takes 41 distinct values and splits 
+
+61 .7% of the pairs the structural metric leaves tied. Inputs saved only because their satisfiability improved are 3.0% of the corpus, yet ancestors of 43 .2% of the seeds that reach the target against 13 .2% of the corpus.                                                                   
+
+> 1cookie =getenv (" HTTP_COOKIE ");
+> 2for (p =cookie ; *p; p ++) {/* loop head */
+> 3switch ( state ) {
+> 4case 1:
+> 5if (* p == '= ') {state =2; continue ;}
+> 6sobj_add_char ( name , *p);
+> 7continue ;
+> 8case 2:
+> 9if (* p != '; ') {
+> 10 sobj_add_char ( val , *p);
+> 11 continue ;
+> 12 }
+> 13 state =3;
+> 14 case 3:
+> 15 s=sobj_get_string ( val );
+> 16 if ( sobj_strcmp ( name , " uid ") == 0)
+> 17 sobj_add_string ( sess , s); /* target */
+> 18 }
+> 19 }
+
+Figure 15: Cookie state machine of sess_get_uid (ID 8). 
+
+Dividing energy across three co-located sinks (ID 25). 
+
+The three targets of ID 25 are three unchecked copies in one http_request_parse dispatch chain (Figure 16), and they are not equally hard. The two header sinks are reached as soon as the header name is right, while the cookie sink needs both the header and the literal uid= inside its value, which costs two orders of magnitude more executions. This is the regime a single global annealing clock handles worst: it cools within the first 10 minutes, after which the two cheap 
+
+Ralli et al.: Preprint submitted to Elsevier Page 29 of 34 BullsEye: Directed Firmware Fuzzing 
+
+targets are already saturated and keep absorbing budget that the expensive one never receives. On this image the target-fairness override engages on 5% of scheduling decisions and saturation decay caps the budget on 97% of them, both of which are inert in AFLG O and W IND RANGER by construc-tion. Turning the scheduler off costs 2.2× , 1.1× and 2.5× the median executions on the three targets, and the cookie sink is then reached in only two of the three runs.                                                   
+
+> 1if (! strcasecmp ( hdr , " HNAP_AUTH ")) {
+> 2memset ( g_auth , 0, 64) ;
+> 3strcpy ( g_auth , val ); /* target */
+> 4}else if (! strcasecmp ( hdr , " SOAPAction ")) {
+> 5memset ( buf , 0, 256) ;
+> 6strcpy ( buf , val ); /* target */
+> 7}else if (! strcasecmp ( hdr , " Cookie ")) {
+> 8strcpy (ck , val );
+> 9if (( m =strstr (ck , " uid =")))
+> 10 strcpy (ck , m+4) ; /* target */
+> 11 }
+> Figure 16: Dispatch chain of http_request_parse (ID 25).
+
+Answer to RQ5 
+
+The case studies show each mechanism acting on a real target: a deviation block the structural cri-terion cannot see (P2), a distance separating seeds that cover identical blocks (P3), and energy divided across three co-located sinks (P4). Each is the be-haviour RQ2–RQ4 report in aggregate, observed on one target. 
+
+## 7. Related Work 
+
+Directed greybox fuzzing. Beyond AFLG O and W IN -
+
+> D
+
+RANGER (Section 2.2), subsequent work has sought to sharpen the distance metric and to reduce the cost of in-strumenting code that is irrelevant to the target. H AWK - 
+
+> EYE
+
+(Chen et al., 2018) sharpens AFLG O’s aggregation with a function-level similarity term and an adaptive mutation policy, but still allocates energy from one seed-level score pooled over all targets (P4). DAFL (Kim et al., 2023) ob-serves that structural proximity blends blocks that merely lie near the target with those that actually influence whether it is reached; it derives distance from data-dependency relations, selectively instrumenting only the functions that the target’s definition-use chains reach, thereby suppressing the noise that arithmetic-mean control-flow distance introduces. This semantics-aware notion of relevance is close in spirit to BULLSEYE ’s satisfiability distance, yet DAFL operates on source-level data-flow analysis and, like its predecessors, remains inapplicable to the closed-source binaries that dom-inate firmware. L IB AFLG O (Geretto et al., 2025) takes a complementary engineering approach by implementing di-rected fuzzing over the modern L IB AFL framework. Its aim is to demonstrate how far the DGF literature has drifted from the coverage-guided fuzzing community’s recent advances by continuing to build on AFLG O’s ageing codebase, a gap the authors argue has hindered the real-world adoption of DGF; they report that on such a stack no directed pol-icy outperforms undirected L IB AFL. B ULLSEYE shares this concern but acts on it along a different axis: rather than porting the search to a new framework, it first strengthens the input-generation stack of its baseline fuzzer, by porting CmpLog operand resolution and grammar-aware mutations (Section 5.4), before layering directed scheduling on top, and it does so for a domain L IB AFLG O does not address: emulated, closed-source firmware. Other efforts refine reachability and target relevance along independent axes: S ELECT FUZZ (Luo et al., 2023) instruments only the path-relevant blocks, defined as those on which the target is control or data dependent, so that coverage feedback is not diluted by blocks that cannot influ-ence whether the target is reached; B EACON (Huang et al., 2022) derives lightweight preconditions by backward inter-val analysis and injects them as assertions that abort a run early once its path is provably unable to reach the target; FISH FUZZ (Zheng et al., 2023) scales direction to thousands of targets by favouring the closest seed to each not yet ex-hausted sink rather than pooling every target into one score; TRANSFER FUZZ (Li et al., 2025) replays historical execution traces of a known vulnerability to steer testing toward the same code once it has been reused or propagated into down-stream software, and also abandons AFLG O’s single clock, annealing per function-level state along a trace recorded from the binary the CVE names; B ULLSEYE anneals per DBB, with no prior binary required (P4); and T RI FUZZ (Li et al., 2026) couples a loop-aware probabilistic distance met-ric with symbolic execution applied selectively at the hard branches the distance heuristic alone cannot solve, absorbing loop structure into the metric where B ULLSEYE instead cor-rects the DBB classifier (P2). All of these, however, assume source availability or compile-time instrumentation and are evaluated on conventional software rather than firmware. 
+
+Firmware fuzzing. Directed fuzzing has only recently begun to reach the firmware domain surveyed in Section 2.3, with the two closest efforts differing from BULLSEYE in what they steer toward and how precisely .REACH DF UZZ (Chen et al., 2025) brings a directed strategy to IoT firmware by using static analysis to flag dangerous library calls (for instance, a strcpy ) that external input can reach, then discarding inputs whose execution path can never arrive at one of them, reporting fewer wasted executions and better bug detection than F IRM -AFL (Zheng et al., 2019). Its notion of close to the target is binary: a block either can reach a target block or cannot, so every input that survives pruning looks equally good to the fuzzer. B ULLSEYE , by contrast, grades proximity by shortest-path distance, so it can tell two surviving inputs apart when only one is edging closer to the vulnerable statement, giving the search a gradient to follow. A second   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 30 of 34 BullsEye: Directed Firmware Fuzzing
+
+complementary line of work asks a different question: rather than steering toward a target the analyst has already chosen, Qin et al. (2025) focus on finding the targets in the first place. They fuzz power terminal firmware and use binary-code-similarity comparison, matching the firmware’s code against known-vulnerable code patterns, to locate candidate vulnerable sites automatically, even across different CPU architectures, without a human pointing them out. Their own scheduling then targets blocks at function granularity, so it stays complementary to, and could feed directly into, the basic-block distance B ULLSEYE contributes once a target is known. L ABRADOR (Liu et al., 2024) steers devices that resist emulation entirely, inferring both coverage and distance to a sink from network responses rather than from instrumentation; its feedback is response-level, and applies exactly where B ULLSEYE ’s emulation-based pipeline cannot run. Closest of all, F IRM AGENT (Ji et al., 2026) scores firmware blocks by shortest-path proximity to pattern-matched sink APIs, but to discover taint sources for an LLM agent rather than to reach an analyst-chosen target, reporting neither a comparison against directed baselines nor a time-to-exposure. To our knowledge, B ULLSEYE is the first framework to schedule closed-source firmware fuzzing by basic-block-level distance to user-specified targets. A parallel line of work tackles a different axis, focus-ing on the execution engine rather than direction: G REEN - 
+
+> HOUSE
+
+(Tay et al., 2023) automatically re-hosts firmware for high-throughput fuzzing, broadening the emulation cov-erage of the hybrid schemes on which B ULLSEYE builds, but it remains coverage-guided and offers no notion of a target. H OUSE FUZZ (Xiao et al., 2025) and E QU AFL (Zheng et al., 2022) likewise advance service-aware and emulation-efficient firmware fuzzing without a directed component. 
+
+Large language models for fuzzing. A recent line of work applies large language models (LLMs) to synthesise the structured inputs that random mutation struggles to pro-duce. C HAT AFL (Meng et al., 2024) interrogates an LLM for the machine-readable message grammar of a protocol, and uses it to construct per-message-type grammars, mu-tate messages, and predict the next message in a stateful sequence, substantially improving state and code coverage over unguided protocol fuzzers. C HAT HTTPF UZZ (Yang et al., 2025) applies the same idea to the IoT setting most relevant to B ULLSEYE , using an LLM to interpret firmware HTTP interfaces and generate well-formed requests that sur-vive early input validation. Both, however, employ the model to broaden coverage rather than to steer execution toward a specific target. Other work uses LLMs for input generation more generally: LLMIF (Wang et al., 2024a) augments a model with protocol specifications to fuzz IoT devices, and FUZZ 4A LL (Xia et al., 2024) generates inputs across many languages by autoprompting a single model. Most relevant to B ULLSEYE , ISC4DGF (Xu et al., 2025) applies an LLM to directed fuzzing, generating an optimised initial seed corpus that reaches target sites faster on source-available benchmarks. B ULLSEYE uses an LLM for the same purpose, seeding the campaign, but on closed-source firmware, and it additionally distills the LLM’s knowledge of the input format into a per-binary grammar that then drives structure-aware mutation throughout the run, rather than confining the model’s contribution to the initial corpus. 
+
+## 8. Limitations 
+
+Static binary analysis. BULLSEYE ’s distance metric is only as complete as the control-flow and call graphs recov-ered from the stripped binary. It relies on a commercial disas-sembler (Hex-Rays, 1991) to reconstruct these graphs, and binary-level graph recovery is inherently imprecise: disas-sembly of optimised, stripped, or obfuscated code frequently misidentifies instruction and function boundaries (Andriesse et al., 2016), an imprecision B ULLSEYE inherits, as do other binary-level directed fuzzers (Nguyen et al., 2020). The most consequential gap is the resolution of indirect transfers: calls through function pointers and computed jumps. The targets of such transfers cannot in general be recovered statically (van der Veen et al., 2016, Sui and Xue, 2015). As described in Section 4.1, B ULLSEYE attempts to resolve these dynamically by adding edges when a transfer is ob-served at runtime. A target reachable exclusively through an indirect edge that the fuzzer never exercises therefore remains at infinite distance and is never prioritised by the scheduler. Finally, selecting the target basic blocks is itself a manual step: for each new campaign an analyst must read the disassembly and pinpoint the exact block corresponding to the vulnerable sink, a process that is both time-consuming and error-prone, as a misread offset silently directs the fuzzer to the wrong location; automated target discovery (Qin et al., 2025) is complementary and could supply this input. This manual static-analysis effort, rather than any property of the search itself, is what bounds the scale at which new campaigns can be set up. 
+
+Emulation fidelity and coverage. BULLSEYE is built on FIRM -AFL’s augmented process emulation (Zheng et al., 2019) and consequently inherits the limitations of the Firmadyne rehosting pipeline (Chen et al., 2016) on which it depends. Firmadyne successfully boots only a fraction of real-world firmware images (Kim et al., 2020), so the set of targets B ULLSEYE can analyse is bounded by what the emulator can bring up rather than by the fuzzer itself. Furthermore, F IRM -AFL’s process-emulation throughput is no longer state of the art: more recent rehosting systems achieve broader device support and higher fidelity (Tay et al., 2023, Zheng et al., 2022, Xiao et al., 2025), and one of them executes faster than our back-end by a wide margin (Section 6.2). Three further constraints follow from the execution model. First, B ULLSEYE injects a single test case at one fork point, on whichever of its five input channels the target uses, so vulnerabilities that require a multi-message session, such as an authentication handshake followed by a stateful request sequence, are not modelled, as they are by stateful protocol fuzzers (Pham et al., 2020, Meng et al., 2024). Second, B ULLSEYE targets Linux-based   
+
+> Ralli et al.: Preprint submitted to Elsevier Page 31 of 34 BullsEye: Directed Firmware Fuzzing
+
+MIPS only, though F IRM -AFL also supports ARM, and not bare-metal or RTOS firmware, for which dedicated peripheral-modelling approaches exist (Feng et al., 2020, Scharnowski et al., 2022, Hernandez et al., 2022). Third, for a minority of targets the execution time is dominated by QEMU’s dynamic binary translation (Bellard, 2005) rather than by system-call handling, which caps the throughput gain that directed scheduling can deliver. 
+
+Experimental validity. Each (configuration, target) pair is repeated 10 times, matching the practice of recent directed fuzzers (Huang et al., 2022), but falling short of the more than 20 repetitions recommended by a dedicated study of directed-fuzzing evaluation (Kim et al., 2024), which shows that time-to-exposure estimates stay sensitive to randomness below that threshold; we instead used the budget for breadth, 40 targets over 32 images, rather than further repetitions, with RQ1 alone costing 20,000 CPU-hours across the five FIRM -AFL-based configurations. 
+
+Target reachability. Directed fuzzing presupposes that a feasible input path to the target exists, yet many firmware vulnerability sites are guarded by conditions that fuzz-controlled input cannot satisfy, including authentication checks, session tokens, or LAN subnet restrictions on the requesting client. Handling such gates is an open problem acknowledged by contemporary firmware fuzzers (Xiao et al., 2025), and path-pruning directed fuzzers (Huang et al., 2022, Luo et al., 2023) are equally unable to reach a target whose guard is not input-satisfiable. B ULLSEYE ’s comparison-guided mutation (AFLplusplus contributors, 2019, Aschermann et al., 2019b) resolves many such guards by matching logged operands, but it cannot bootstrap a match when the operand bytes fall outside the colorized taint region, nor when the guard is a checksum or an encoded transform of the input. When multiple targets are specified, the power schedule must divide energy among them, and closer or more easily reached targets can starve the remainder; B ULLSEYE ’s per-target scheduling mitigates but does not eliminate this effect, a difficulty also observed in many-target directed fuzzing (Zheng et al., 2023). 
+
+Grammar and LLM-assisted generation. BULLSEYE 
+
+uses a locally hosted large language model (Qwen Team, 2024, Ollama Inc., 2024) to derive per-binary input grammars and seeds, which introduces the well-documented reliability concerns of LLM-based tooling: outputs are non-deterministic and may be hallucinated, requiring validation before use (Wang et al., 2025). For soundness, the generated grammars are deliberately generic and structural rather than target-specific, and they cover only the environment variable and file stream input channels; other inputs fall back on general-purpose grammar mutation (Hu, 2020, Wang et al., 2019, Aschermann et al., 2019a) via the Grammar Mutator component, without model assistance. 
+
+Bug oracle. BULLSEYE detects memory-safety violations (heap and global-variable overflows) by hooking the libc copy routines and checking each write against a .dynsym 
+
+object bound, an allocation redzone, or the uClibc (uClibc developers, 2002) allocator’s chunk metadata (Section 5.6), because closed-source firmware binaries cannot readily be recompiled with the sanitisers (Serebryany et al., 2012, Song et al., 2019) that greybox fuzzers ordinarily rely on for bug detection. Detection is therefore bounded by what the binary declares: stack buffers and objects without a .dynsym 
+
+entry have no recoverable size and fall back to a length threshold, so smaller overflows of those go unreported, as do use-after-free, double-free, and mmap -backed allocations. Consequently, vulnerability classes that do not manifest as memory corruption, such as command injection, informa-tion disclosure, authentication bypass, and logic errors, are not surfaced as crashes and fall outside B ULLSEYE ’s current detection scope. 
+
+## 9. Conclusions 
+
+Firmware images routinely reuse third-party components with known vulnerabilities, and checking whether a given device actually exposes one of them means steering the search toward the suspected code rather than exploring the binary at large. Directed greybox fuzzing does exactly this, but has reached firmware only at function granularity, too coarse to aim at the vulnerable block itself: it assumes source code, which firmware does not provide, and even where it has been ported to binaries, its guidance breaks down on the loops, hard comparisons, and multiple co-located sinks that firmware protocol parsers make routine. BULLSEYE makes directed fuzzing work under these conditions. It recovers control-flow and call graphs directly from stripped MIPS binaries, refining them at runtime as indirect calls are observed, so no source code or com-piler support is needed. It classifies critical branches with a loop-aware criterion that catches guard conditions a purely reachability-based test misses. It replaces control-flow-hop counting with a satisfiability score computed from the com-parison operands a seed actually produces, so a seed one byte away from passing a hard check is prioritised over one that is merely closer on the graph. And it schedules energy per branch and per target rather than off a single global clock, so a branch discovered late in the campaign, or a target overshadowed by an easier one, still gets a fair share of exploration. Supporting mechanisms round out the system: grammar- and LLM-assisted mutation keeps gen-erated inputs structurally valid, the satisfiability-preserving mask protects comparisons a seed has already solved from being undone by later mutation, length-extension mutation grows inputs past buffer bounds to trigger overflows, and two oracles catch overflows that would otherwise leave no crash signal. On 40 vulnerability sites across 32 real IoT firmware images, B ULLSEYE reproduces every target within a 10 h budget, more than any baseline we compare against, and does so faster by a geometric mean of 9.5× to 72 .5× .  
+
+> Ralli et al.: Preprint submitted to Elsevier Page 32 of 34
+
+BullsEye: Directed Firmware Fuzzing 
+
+Instrumented runs confirm this is not an artefact of aggre-gation: the branch classifier resolves ties a reachability-only test cannot, the satisfiability score separates seeds a purely structural distance cannot tell apart, and the scheduler visibly redirects budget toward starved targets whenever a campaign has more than one. These results come with real limits, detailed in Section 8: distance is only as good as static disassembly and runtime call-graph discovery allow, target selection is still a manual step, and bug detection is limited to the memory-safety viola-tions the binary-level oracles can see. Extending B ULLSEYE 
+
+with automated target discovery, faster re-hosting back-ends, and support for stateful multi-message protocols is a natural next step. 
+
+## References 
+
+AFLplusplus contributors, 2019. Cmplog | aflplusplus. https: //github.com/AFLplusplus/AFLplusplus/blob/stable/instrumentation/ README.cmplog.md. Andriesse, D., Chen, X., van der Veen, V., Slowinska, A., Bos, H., 2016. An in-depth analysis of disassembly on full-scale x86/x64 binaries, in: 25th USENIX Security Symposium (USENIX Security 16), pp. 583–600. Arcuri, A., Briand, L., 2014. A hitchhiker’s guide to statistical tests for assessing randomized algorithms in software engineering. Software Testing, Verification and Reliability 24, 219–250. doi: 10.1002/stvr. 1486 .Arnott, M., 2025. Global iot connections forecast to rise above 40 billion in 2034. https://transformainsights.com/news/ global-iot-connections-forecast-above-40-billion-2034. Aschermann, C., Frassetto, T., Holz, T., Jauernig, P., Sadeghi, A.R., Teuchert, D., 2019a. Nautilus: Fishing for deep bugs with grammars. Proceedings 2019 Network and Distributed System Security Symposium doi: https://doi.org/10.14722/ndss.2019.23412 .Aschermann, C., Schumilo, S., Blazytko, T., Gawlik, R., Holz, T., 2019b. Redqueen: Fuzzing with input-to-state correspondence. Proceedings 2019 Network and Distributed System Security Symposium . Bellard, F., 2005. Qemu, a fast and portable dynamic translator, in: Proceedings of the Annual Conference on USENIX Annual Technical Conference, USENIX Association, USA. p. 41. Böhme, M., Pham, V.T., Nguyen, M.D., Roychoudhury, A., 2017. Directed greybox fuzzing, in: Proceedings of the 2017 ACM SIGSAC Conference on Computer and Communications Security. doi: 10.1145/3133956. 3134020 .Chen, D.D., Woo, M., Brumley, D., Egele, M., 2016. Towards automated dynamic analysis for linux-based embedded firmware, in: Network and Distributed System Security Symposium. Chen, H., Xue, Y., Li, Y., Chen, B., Xie, X., Wu, X., Liu, Y., 2018. Hawkeye: Towards a desired directed grey-box fuzzer, in: Proceedings of the 2018 ACM SIGSAC Conference on Computer and Communications Security. doi: 10.1145/3243734.3243849 .Chen, K., Zhao, Y., Guo, J., Gu, Z., Han, L., 2025. Accelerating firmware vulnerability detection through directed reaching definition analysis. ICT Express 11, 951–956. doi: 10.1016/j.icte.2025.05.008 .Chen, Y., Ma, F., Zhang, Y., He, Y., Wang, H., Li, Q., 2024. Autofirm: Automatically identifying reused libraries inside iot firmware at large-scale. arXiv preprint arXiv:2406.12947 doi: https://doi.org/10.48550/ arXiv.2406.12947 .Cirne, A., Sousa, P.R., Resende, J.S., Antunes, L., 2022. Iot security certifications: Challenges and potential approaches. Computers & Security doi: https://doi.org/10.1016/j.cose.2022.102669 .Collet, Y., 2024. xxHash – extremely fast non-cryptographic hash algo-rithm. https://xxhash.com/. Version 0.8.x. Du, Z., Li, Y., Liu, Y., Mao, B., 2022. Windranger: a directed greybox fuzzer driven by deviation basic blocks, in: Proceedings of the 44th In-ternational Conference on Software Engineering. doi: 10.1145/3510003. 3510197 .Feng, B., Mera, A., Lu, L., 2020. P2IM: Scalable and hardware-independent firmware testing via automatic peripheral interface modeling, in: Pro-ceedings of the 29th USENIX Security Symposium. URL: https://www. usenix.org/conference/usenixsecurity20/presentation/feng. Fioraldi, A., Maier, D., Eißfeldt, H., Heuse, M., 2020. {AFL++ }: Combin-ing incremental steps of fuzzing research, in: 14th USENIX workshop on offensive technologies (WOOT 20). doi: 10.5555/3488877.3488887 .Geretto, E., Jemmett, A., Giuffrida, C., Bos, H., 2025. Libaflgo: Evaluating and advancing directed greybox fuzzing, in: 2025 IEEE 10th European Symposium on Security and Privacy (EuroS&P), pp. 355–373. doi: 10. 1109/EuroSP63326.2025.00029 .Henderson, A., Prakash, A., Yan, L.K., Hu, X., Wang, X., Zhou, R., Yin, H., 2014. Make it work, make it right, make it fast: building a platform-neutral whole-system dynamic binary analysis platform, in: Proceedings of the 2014 International Symposium on Software Testing and Analysis. doi: 10.1145/2610384.2610407 .Hernandez, G., Muench, M., Maier, D., Milburn, A., Park, S., Scharnowski, T., Tucker, T., Traynor, P., Butler, K., 2022. Firmwire: Transparent dynamic analysis for cellular baseband firmware, in: Proceedings of the 29th Annual Network and Distributed System Security Symposium. Hex-Rays, 1991. Ida pro: Interactive disassembler: Disassembler, decom-piler & debugger. https://hex-rays.com/ida-pro. HouseFuzz, 2024a. NETGEAR jnr3300 1.0.0.34 - Report 1. https://github. com/HouseFuzz/reports/blob/main/netgear/jnr3300-1.0.0.34/6. HouseFuzz, 2024b. NETGEAR wnce4004 1.0.0.22 - Report 1. https://github.com/HouseFuzz/reports/tree/main/netgear/wnce4004-1. 0.0.22/4. HouseFuzz, 2024c. NETGEAR WNDR3700v2 1.0.0.8 - Report 3. https://github.com/HouseFuzz/reports/tree/main/netgear/ wndr3700v2-1.0.0.8/3. HouseFuzz, 2024d. NETGEAR wnr2500 1.0.0.24 - Report 1. https:// github.com/HouseFuzz/reports/tree/main/netgear/wnr2500-1.0.0.24/1. HouseFuzz, 2024e. NETGEAR wnr2500 1.0.0.24 - Report 4. https://github. com/HouseFuzz/reports/tree/main/netgear/wnr2500-1.0.0.24/4. Hu, S., 2020. Grammar mutator | aflplusplus. https://github.com/ AFLplusplus/Grammar-Mutator. Huang, H., Guo, Y., Shi, Q., Yao, P., Wu, R., Zhang, C., 2022. Beacon: Directed grey-box fuzzing with provable path pruning, in: 2022 IEEE Symposium on Security and Privacy (SP). doi: 10.1109/SP46214.2022. 9833751 .Ji, J., Zhang, C., Gan, S., Jian, L., Liu, H., Liu, T., Zheng, L., Jia, Z., 2026. FirmAgent: Leveraging fuzzing to assist LLM agents with IoT firmware vulnerability discovery, in: Network and Distributed System Security Symposium (NDSS 2026). doi: 10.14722/ndss.2026.231943 .Kim, M., Kim, D., Kim, E., Kim, S., Jang, Y., Kim, Y., 2020. Firmae: Towards large-scale emulation of iot firmware for dynamic analysis, in: Proceedings of the 36th Annual Computer Security Applications Conference. doi: https://doi.org/10.1145/3427228.3427294 .Kim, T.E., Choi, J., Heo, K., Cha, S.K., 2023. DAFL: Directed grey-box fuzzing guided by data dependency, in: 32nd USENIX Security Symposium (USENIX Security 23), pp. 4931–4948. URL: https://www. usenix.org/conference/usenixsecurity23/presentation/kim-tae-eun. Kim, T.E., Choi, J., Im, S., Heo, K., Cha, S.K., 2024. Evaluating directed fuzzers: Are we heading in the right direction? Proceedings of the ACM on Software Engineering 1. doi: 10.1145/3643741 .Klees, G., Ruef, A., Cooper, B., Wei, S., Hicks, M., 2018. Evaluating fuzz testing, in: Proceedings of the 2018 ACM SIGSAC Conference on Computer and Communications Security, pp. 2123–2138. doi: 10.1145/ 3243734.3243804 .Labs, F.R.V., 2025. Our 2024 threat report: Attack volume up 114%. https://www.forescout.com/blog/ our-2024-threat-report-attack-volume-up-114/. Li, S., Li, Y., Chen, Z., Dong, C., Wang, Y., Li, H., Chen, Y., Zhu, H., 2025. TransferFuzz: Fuzzing with historical trace for verifying propagated vulnerability code, in: 2025 IEEE/ACM 47th International Conference on Software Engineering (ICSE). doi: 10.1109/ICSE55347.2025.00061 .
+
+Ralli et al.: Preprint submitted to Elsevier Page 33 of 34 BullsEye: Directed Firmware Fuzzing 
+
+Li, Y., Wang, Y., Feng, R., Li, J., Qin, W., 2026. TriFuzz: Probabilistic distance-guided hybrid directed fuzzing with selective symbolic instru-mentation. Electronics 15, 2049. doi: 10.3390/electronics15102049 .Liu, H., Gan, S., Zhang, C., Gao, Z., Zhang, H., Wang, X., Gao, G., 2024. Labrador: Response guided directed fuzzing for black-box iot devices, in: 2024 IEEE Symposium on Security and Privacy (SP). doi: 10.1109/ SP54263.2024.00127 .Luo, C., Meng, W., Li, P., 2023. SelectFuzz: Efficient directed fuzzing with selective path exploration, in: 2023 IEEE Symposium on Security and Privacy (SP), pp. 2693–2707. doi: 10.1109/SP46215.2023.10179296 .Manès, V.J., Han, H., Han, C., Cha, S.K., Egele, M., Schwartz, E.J., Woo, M., 2019. The art, science, and engineering of fuzzing: A survey. IEEE Transactions on Software Engineering doi: 10.1109/TSE.2019.2946563 .Meng, R., Mirchev, M., Böhme, M., Roychoudhury, A., 2024. Large language model guided protocol fuzzing, in: Proceedings of the 31st Annual Network and Distributed System Security Symposium (NDSS). doi: 10.14722/ndss.2024.24556 .Nguyen, M.D., Bardin, S., Bonichon, R., Groz, R., Lemerre, M., 2020. Binary-level directed fuzzing for Use-After-Free vulnerabilities, in: 23rd International Symposium on Research in Attacks, Intrusions and De-fenses (RAID 2020). Ollama Inc., 2024. Ollama – run large language models locally. https: //ollama.com/. Pham, V.T., Böhme, M., Roychoudhury, A., 2020. AFLNet: A greybox fuzzer for network protocols, in: 2020 IEEE 13th International Confer-ence on Software Testing, Validation and Verification (ICST), pp. 460– 465. doi: 10.1109/ICST46399.2020.00062 .Plc, N.G., 2017. Triforceafl. https://github.com/nccgroup/TriforceAFL. [Online; accessed 17-Sep-2025]. Qin, Z., Chen, J., Sun, X., Song, Y., Dai, H., Chen, W., Lv, B., Wang, K., 2025. Directed greybox fuzzy testing for power terminal device firmware with intermediate representation similarity comparison. Journal of Information Security and Applications 90, 104038. doi: 10.1016/j.jisa. 2025.104038 .Qwen Team, 2024. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115 doi: 10.48550/arXiv.2412.15115 .Scharnowski, T., Bars, N., Schloegel, M., Gustafson, E., Muench, M., Vigna, G., Kruegel, C., Holz, T., Abbasi, A., 2022. Fuzzware: Using precise MMIO modeling for effective firmware fuzzing, in: Proceedings of the 31st USENIX Security Symposium. URL: https://www.usenix. org/conference/usenixsecurity22/presentation/scharnowski. Serebryany, K., Bruening, D., Potapenko, A., Vyukov, D., 2012. Address-Sanitizer: A fast address sanity checker, in: USENIX Annual Technical Conference (ATC), pp. 309–318. Song, D., Lettner, J., Rajasekaran, P., Na, Y., Volckaert, S., Larsen, P., Franz, M., 2019. SoK: Sanitizing for security, in: 2019 IEEE Symposium on Security and Privacy (SP), pp. 1275–1295. doi: 10.1109/SP.2019.00010 .Sui, Y., Xue, J., 2015. Svf: Static value-flow analysis framework for source code. https://svf-tools.github.io/SVF/. Tay, H.J., Zeng, K., Vadayath, J.M., Raj, A.S., Dutcher, A., Reddy, T., Gibbs, W., Basque, Z.L., Dong, F., Smith, Z., Doupé, A., Bao, T., Shoshitaishvili, Y., Wang, R., 2023. Greenhouse: Single-Service re-hosting of Linux-Based firmware binaries in User-Space emulation, in: Proceedings of the 32nd USENIX Security Symposium. URL: https: //www.usenix.org/conference/usenixsecurity23/presentation/tay. The Open Group, 2018. Base Definitions: Chapter 8 — Issue 7, 2018 Edi-tion. https://pubs.opengroup.org/onlinepubs/9699919799.2018edition/ basedefs/V1_chap08.html. uClibc developers, 2002. uClibc: A c library for embedded Linux. https: //uclibc.org/. Vargha, A., Delaney, H.D., 2000. A critique and improvement of the CL common language effect size statistics of McGraw and Wong. Journal of Educational and Behavioral Statistics 25, 101–132. doi: 10.3102/ 10769986025002101 .van der Veen, V., Göktaş, E., Contag, M., Pawlowski, A., Chen, X., Rawat, S., Bos, H., Holz, T., Athanasopoulos, E., Giuffrida, C., 2016. A tough call: Mitigating advanced code-reuse attacks at the binary level, in: 2016 IEEE Symposium on Security and Privacy (SP). doi: 10.1109/SP.2016.60 .Wang, J., Chen, B., Wei, L., Liu, Y., 2019. Superion: Grammar-aware greybox fuzzing, in: 2019 IEEE/ACM 41st International Conference on Software Engineering (ICSE). doi: 10.1109/ICSE.2019.00081 .Wang, J., Ni, T., Lee, W.B., Zhao, Q., 2025. A contemporary survey of large language model assisted program analysis. doi: https://doi.org/ 10.48550/arXiv.2502.18474 .Wang, J., Yu, L., Luo, X., 2024a. LLMIF: Augmented large language model for fuzzing iot devices, in: 2024 IEEE Symposium on Security and Privacy (SP). doi: 10.1109/SP54263.2024.00211 .Wang, P., Zhou, X., Yue, T., Lin, P., Liu, Y., Lu, K., 2024b. The progress, challenges, and perspectives of directed greybox fuzzing. Software Testing, Verification and Reliability doi: https://doi.org/10.1002/stvr. 1869 .Weissberg, F., Möller, J., Ganz, T., Imgrund, E., Pirch, L., Seidel, L., Schloegel, M., Eisenhofer, T., Rieck, K., 2024. SoK: Where to fuzz? assessing target selection methods in directed fuzzing, in: Proceedings of the 19th ACM Asia Conference on Computer and Communications Security (ASIA CCS). doi: 10.1145/3634737.3661141 .Wright, C., Moeglein, W.A., Bagchi, S., Kulkarni, M., Clements, A.A., 2021. Challenges in firmware re-hosting, emulation, and analysis. ACM Computing Surveys (CSUR) doi: https://doi.org/10.1145/3423167 .Wu, Y., Wang, J., Wang, Y., Zhai, S., Li, Z., He, Y., Sun, K., Li, Q., Zhang, N., 2024. Your firmware has arrived: A study of firmware update vulnerabilities, in: 33rd USENIX Security Symposium (USENIX Security 24). doi: 10.5555/3698900.3699215 .Xia, C.S., Paltenghi, M., Tian, J.L., Pradel, M., Zhang, L., 2024. Fuzz4All: Universal fuzzing with large language models, in: Proceedings of the IEEE/ACM 46th International Conference on Software Engineering (ICSE). doi: 10.1145/3597503.3639121 .Xiao, H., Wei, Z., Dai, J., Li, B., Zhang, Y., Yang, M., 2025. Housefuzz: Service-aware grey-box fuzzing for vulnerability detection in linux-based firmware, in: Proceedings of the 46th IEEE Symposium on Se-curity and Privacy. doi: 10.1109/SP61157.2025.00213 .Xu, Y., Jia, H., Chen, L., Wang, X., Zeng, Z., Wang, Y., Gao, Q., Wang, J., Ye, W., Zhang, S., Wu, Z., 2025. ISC4DGF: Enhancing directed grey-box fuzzing with initial seed corpus generation driven by large language models. Journal of Computer Science and Technology 40, 1662–1677. doi: 10.1007/s11390-025-4745-0 .Yang, Z., Peng, H., Jiang, Y., Li, X., Du, H., Wang, S., Liu, J., 2025. ChatHTTPFuzz: Large language model-assisted IoT HTTP fuzzing. International Journal of Machine Learning and Cybernetics 16, 4577– 4598. doi: 10.1007/s13042-024-02527-3 .Zalewski, M., 2013. Afl (american fuzzy lop). https://afl-1.readthedocs.io/ en/latest/. Zheng, H., Zhang, J., Huang, Y., Ren, Z., Wang, H., Cao, C., Zhang, Y., Toffalini, F., Payer, M., 2023. FISHFUZZ: Catch deeper bugs by throwing larger nets, in: 32nd USENIX Security Symposium (USENIX Security 23), pp. 1343–1360. URL: https://www.usenix.org/conference/ usenixsecurity23/presentation/zheng. Zheng, Y., Davanian, A., Yin, H., Song, C., Zhu, H., Sun, L., 2019. FIRM-AFL: High-Throughput greybox fuzzing of IoT firmware via augmented process emulation, in: 28th USENIX Security Symposium (USENIX Security 19). doi: 10.5555/3361338.3361415 .Zheng, Y., Li, Y., Zhang, C., Zhu, H., Liu, Y., Sun, L., 2022. Efficient greybox fuzzing of applications in linux-based iot devices via enhanced user-mode emulation, in: Proceedings of the 31st ACM SIGSOFT International Symposium on Software Testing and Analysis. doi: 10. 1145/3533767.3534414 .
+
+Ralli et al.: Preprint submitted to Elsevier Page 34 of 34

@@ -1,0 +1,1107 @@
+Title: Plaintext Recovery Against Post-Filtering Access Control
+
+URL Source: https://arxiv.org/pdf/2608.11730v1
+
+Published Time: Thu, 13 Aug 2026 00:34:55 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# Plaintext Recovery Against Post-Filtering Access Control 
+
+## Zachary Espiritu 
+
+## MongoDB Research 
+
+## David Cash 
+
+## University of Chicago 
+
+Multi-tenant databases store user data in shared physical structures and post-filter 
+
+data with a policy P to provide isolation. 1Queries interact with non-visible data before P is applied, resulting in side-channels. 2
+
+Rich queries amplify this to rich recovery in two cases: 3
+
+§3: Row-level security (PostgreSQL) Due to query optimizer behavior, RTT timing changes reveal if queries match unseen rows.   
+
+> full record reconstruction via ranges and conjunctions TIME TEST (Q)=⇒leaks that a record matches Q.
+
+§4: Document-level security (Elastic & OpenSearch) Corpus-wide statistics and prefix-expansion behavior reveal terms from index.    
+
+> approx. text recovery via term & n-gram extraction
+> sctrl stest
+> =⇒leaks that a term with prefix exists.
+
+Adversary  
+
+> (authorized user) Shared table T
+
+Policy P
+
+> (removes records)
+
+Q(T)
+
+Q′(T)
+
+Results      
+
+> (visible only) visible hidden query Q
+> query Q′
+> Timing / scoring behavior of
+> Qand Q′leads to side-channel.
+
+Figure 1: Overview of this paper. 
+
+## Abstract 
+
+Fine-grained access control (FGAC) mechanisms such as 
+
+row-level security (RLS) and document-level security (DLS) are widely deployed in databases to restrict access to data stored in physical indexing structures shared by multiple users (e.g., in multi-tenant databases, or in the implementation of least-privilege within an organization). FGAC implementa-tions often use post-filtering where untrusted queries run over all data and private results are redacted afterwards. Prior work shows this approach can lead to side-channels that enable attackers to test if a chosen value exists in unseen data. While damaging, prior attacks do not enable the efficient recovery of rich, high-entropy data like full records or text documents. We show these side-channels are more damaging than pre-viously thought. Using rich query interfaces (e.g., range, pre-fix, and conjunctive predicates), we amplify existence leakage into reconstruction attacks. We do this in two settings: • PostgreSQL (RLS timing). We exploit a timing side-channel and expressive SQL queries (e.g., ranges, conjunc-tions) to enumerate unknown attribute values and, in turn, full records via binary search over large domains. • Elasticsearch/OpenSearch (DLS scoring). We exploit scoring and prefix-expansion side-channels to recover in-dexed terms from documents. In some cases, we can ex-tract n-grams in the corpus to recover approximate text. Our results show that FGAC side-channels must be evaluated in the presence of rich predicates, which can turn membership tests into scalable reconstruction of high-entropy records. This work was originally published by the USENIX As-sociation in the Proceedings of the 35th USENIX Security Symposium as [14]. This full version contains expanded versions of Table 1 and Figure 5 and the row-level security variable-length string recovery extension in Appendix A. 
+
+## 1 Introduction 
+
+Fine-grained access control (FGAC) mechanisms such as row-level security (RLS) [49] in relational database management systems (DBMS) and document-level security (DLS) [13, 43] in text-search DBMSes are widely deployed to enforce iso-lation for users that are only permitted to access a subset of the data. In such multi-tenant DBMSes, data is co-located in shared physical database indexing structures, but the FGAC access control system restricts users to view or edit only a arXiv:2608.11730v1 [cs.CR] 12 Aug 2026 subset of the data satisfying a specific policy predicate. Multi-tenancy is attractive for database administrators as it can standardize and consolidate what would otherwise be distinct databases. This reduces administrative and monetary overhead, but introduces additional risk with having multi-ple tenants’ data mingled within the same system. FGAC mitigates this risk by centralizing enforcement within the DBMS itself. This reduces the risk of application-level bugs and enables expressive query interfaces for authorized tenants. Because of these benefits, FGAC is used extensively in many industry applications [6, 8, 21, 28, 38, 46, 47, 51, 55]. The intended goal of FGAC is isolation : users should not learn anything about the database beyond what they are per-mitted to view. Towards this goal, FGAC systems typically are implemented by post-filtering : queries are run over all of the data, and then the system redacts private data from the output before returning. Prior works showed isolation does not fully hold in post-filtering FGAC systems by exploiting side-channels to construct existence oracles that allow an at-tacker to test if a chosen value appears in the private data. This was done in two previous lines of work, but their commonality has not been explicitly noted before this work. For RLS, Dar, Hershcovitch, and Morrison [9] and Rasin, Herbick, Lenard, Scope, and Wagner [52] demonstrated that the execution time of SQL queries can reveal whether a RLS-protected column contains an attacker-chosen value in some hidden row. For DLS, Büttcher and Clarke [7] and Wang, Grubbs, Lu, Bindschaedler, Cash, and Ristenpart [61] ex-ploited full-text search systems that produce ranked lists of results for queries. They showed that corpus-level statistics used to rank documents can reveal whether attacker-chosen keywords appear in the private, DLS-protected corpus. Initially, such leaks may appear limited in scope. Testing for existence does not immediately lead to the extraction of entire records. We could naively probe candidate values one by one, but for large or high-entropy domains (e.g., SSNs, documents), linear probing is impractical. Possibly for these reasons, prior responses have largely dismissed these side-channels. For ex-ample, there is no evidence that GitHub patched their system in response to the attack of Wang et al. [61], some RLS docu-mentation only notes the presence of a timing side channel and dismisses the idea of fine-grained inference [23, 50] 1, and a popular DLS system notes possible scoring side-channels, but still states that DLS “prevents users from viewing re-stricted documents” [12]. Dar et al. [9] speculated that timing side-channels could be exploited to learn further information, but did not show how to do so systematically or efficiently. 
+
+Contributions. We give new attacks that go beyond presence detection and show FGAC mechanisms can completely fail to keep data confidential. Modern DBMSes allow users to issue range predicates, prefix queries, conjunctions, and other  
+
+> 1The latter document [50] notes that “A malicious attacker might be able to infer something about the amount of unseen data, or even gain some information about the data distribution or most common values ...”
+
+expressive filters over indexed data, and we show that an attacker can adaptively issue these rich queries to observe various side-channel signals about private data. By stringing several of these queries together, our attacks reconstruct entire hidden rows or the approximate contents of hidden documents and show that such side-channels are actually quite leaky in light of the rich query interfaces that FGAC databases support. We study the security of post-filtering FGAC systems that support rich queries in two different contexts: relational databases and full-text search systems. While based on a common conceptual issue, the mechanisms underlying the at-tacks are completely different (e.g., timing versus scoring side-channels, exploiting different rich query types). Our case stud-ies include some of the most widely used software in both do-mains, namely PostgreSQL, Elasticsearch, and OpenSearch. Our first case-study concerns RLS timing side-channels in PostgreSQL. We show that the timing side-channel iden-tified in prior work can be efficiently leveraged far beyond presence testing. By issuing range queries, an attacker can binary search over large domains and recover exact attribute values. Then, by using conjunctions, the attacker can associate recovered values across columns to reconstruct full rows. Our attacks apply to common SQL data types, work with standard indexing configurations, and require no auxiliary knowledge about the data distribution other than the schema. This im-proves prior work by demonstrating the side-channel can be efficiently exploited for full record recovery. Our second case-study examines DLS scoring side-chan-nels in Elasticsearch and OpenSearch. We show scoring-based leakage in full-text search systems can be similarly am-plified, though via completely different means. We identify a new prefix-expansion side-channel in text completion queries whose scores depend on corpus-wide statistics and construct oracles for prefix and n-gram membership (depending on the specific indexing scheme). Given this, one can apply stan-dard techniques that use n-grams to infer text fragments from DLS-protected corpora. This improves prior attacks which could only test for exact tokens and could not recover tokens letter-by-letter or detect tokens co-occurring in a document. While we suggest mitigations that can partially address these attacks by eliminating or reducing the side-channel, our combined results suggest that post-filtering is a fundamentally flawed approach to implementing FGAC when rich queries are supported. Rich queries depend on the underlying data in complex ways (compared to simpler equality predicates). As we show, this empowers an attacker who can abuse these post-filtering side-channels to exfiltrate significant information. 
+
+Organization. We describe the common threat model for all of our attacks in Section 2. In Sections 3 and 4, we give self-contained case studies for RLS and DLS attacks. We discuss related work in Section 5 and conclude in Section 6. 2 Abstract FGAC and Common Threat Model 
+
+We first describe an abstract architecture that models all of the systems we consider, and then describe the common threat model for our attacks. We then discuss some motivation sce-narios where this threat model is appropriate. 
+
+Abstract post-filtering FGAC . The DBMS holds some data that we denote D, and supports the processing of queries Q
+
+against D. We denote the result of a query Q by Q(D). Each user has an associated policy predicate P that determines what data they should be able to access. When the user supplies a query 
+
+Q, the DBMS computes Q(D) and then post-filters this result by computing and returning P(Q(D)) . Users may also be allowed to write and delete data to D, subject to some policy (e.g., only to records associated with their account). The crucial feature of this architecture is that Q(D), the pre-filtered results, may contain data that the adversary is not authorized to access, but system behavior may depend on Q(D) in an exploitable way. 
+
+Threat model. The adversary is a legitimate user whose ac-cess is mediated by the FGAC system holding D with some policy P. The adversary aims to circumvent this mediation and recover as much unauthorized data from D as possible. The adversary can issue queries Q of its choosing from some allowed set and observe the post-filtered results, i.e. P(Q(D)) .The adversary might also be allowed to inject records into 
+
+D under the allowed policy. We assume the adversary has general knowledge of the type of data it is attacking (e.g., the schema, or a subset of it, and general upper and lower bounds of attribute domains), but does not have distributional knowl-edge about the contents. Except for the side-channels we analyze, we assume the FGAC system functions correctly— the attacker cannot bypass policy enforcement or access raw storage, and also cannot modify the records of other users. Adversaries will abuse two types of side-channels: in Sec-tion 3, they measure the time needed to process and filter the query; in Section 4, they will examine the response itself. 
+
+Motivating use-case: Direct access. Many of the citations from the introduction discuss giving an untrusted principal direct access to a database where an organization stores data from several sources and attempts to restrict internal analysts to only access subsets of the data. For example, these could be data scientists working with health data partitioned by project, and they could be allowed arbitrary SQL queries or text searches. An alternative version of this threat model arises when FGAC is used for defense-in-depth. Here, several internal applications access a database. To limit the impact of a com-promised application, least-privilege is implemented using FGAC. When an application is compromised, the adversary obtains query access similar to that of a trusted insider. 
+
+Motivating use-case: App-mediated access. In the second use-case, a backend DBMS is only accessed by an interme-diate app, such as a webpage, which we assume is trusted. Users may be customers who register accounts or employees of an organization. Data is restricted according to a policy that will typically isolate users’ data from other users. Users enter queries through the app interface which trans-lates them into DBMS queries on behalf of the user. For example, the GitHub deployment of Elasticsearch from [61] allowed users (even unauthenticated) to issue queries via an API and view the resulting documents. Another example may include a hospital that allows non-technical users like doctors to query data through a GUI; this system would restrict the doctors to only viewing the data of their own patients. Such a system would allow the attacker to abuse only the queries triggered by the app rather than arbitrary queries. In the case of a relational DBMS, the reach of our attacks will correspond to which columns can be queried and the allowed query types (e.g., range, equality). For full-text search, we assume the app permits the needed type of query (e.g., exact-match or phrase prefix queries, as defined in Section 4). 
+
+## 3 RLS Timing Side-Channels 
+
+We present our first case study of FGAC security: tim-ing attacks against row-level security (RLS) in relational databases, specifically PostgreSQL. We first cover necessary background, explain why PostgreSQL’s RLS implementation enables construction of a timing-based existence oracle, and then show how expressive predicates can amplify this oracle into end-to-end row reconstruction. 
+
+## 3.1 Background and Prior Work 
+
+Instantiating the abstract FGAC model. We target a Post-greSQL table with several columns and rows. The table will be protected by RLS with a policy that restricts the adversary to only SELECT authorized rows. The adversary aims to learn as much about unauthorized rows as possible. The adversary can issue SELECT queries from an expressive subset of SQL, which are then run against the table and then post-filtered according to the policy. The adversary can observe the time elapsed between sending its query and receiving the response (over a network). Figure 1 diagrams this architecture and basic mechanism for the side-channel we exploit and extend [9]. 
+
+DBMS background. RLS is implemented within Post-greSQL’s query engine. While post-filtering is not an explicit goal in PostgreSQL’s RLS design, it arises naturally as a con-sequence of several other design goals. Modern DBMSes (like PostgreSQL) have query optimiz-ers that determine how to efficiently execute queries. Rather than directly executing a query as written, the optimizer enu-merates candidate physical query plans (ideally leveraging precomputed physical indexes), estimates each plan’s cost (e.g., based on the number of rows that are evaluated by each plan step), and then executes the least costly plan. In theory, the optimizer can choose to run the RLS filter before or after the rest of the query. However, the execution order of the filter leads to some known folklore side-channels against RLS [41]—for instance, private values may determine whether or not a query throws a division-by-zero error that is visible to the adversary. To prevent this, PostgreSQL’s op-timizer provides the security_barrier feature which pre-vents evaluation of user-supplied portions of RLS-protected queries against records before the policy has been evaluated on the record, effectively forcing pre -filtering rather than post -filtering. This ensures that the user-defined query portion only runs on RLS-allowed rows, but incurs significant performance penalties as it restricts the optimizer’s ability to reorder and combine query predicates. Forcing the policy to evaluate first often prohibits index usage, resulting in a sequential scan of the entire table for every RLS-based query. To mitigate this, PostgreSQL added a notion of LEAKPROOF 
+
+operators that do not have any explicitly observable side-effects, and allows for post-filtering on queries composed of only LEAKPROOF operators. Such operators include equality (=) and comparison ( <, >, etc.). If a predicate is entirely com-posed of LEAKPROOF operators, the optimizer is allowed to re-order the evaluation of the predicate with respect to the policy, so that the predicate is evaluated first. This allows LEAKPROOF 
+
+predicates to be pushed down into index access plans by the query optimizer so that they may be evaluated before the RLS policy P is evaluated. This improves query performance, but simultaneously introduces a timing side-channel. 
+
+The timing side-channel. Dar et al. (DHM) [9] identified a timing side-channel which arises from PostgreSQL’s afore-mentioned LEAKPROOF semantics. For a query Q issued against a table T, let time (Q, T) denote the wall-clock execution time of evaluating Q on T, and write Q(T) for the resulting output. Then, let T be a table protected by RLS with policy predicate 
+
+P; we will denote this by TP. Semantically, the user should observe the result Q(TP) = Q(P(T)) or P(Q(T)) . If the query optimizer chooses the latter—that is, it evaluates a predicate 
+
+Q before the policy P, which can happen if Q is composed entirely of LEAKPROOF operators and if Q can be serviced by an index—then the time to evaluate Q(TP) will be 
+
+time (Q, TP) ≈ time (Q, T) + time (P, Q(T)) . (1) The key observation is that time (P, Q(T)) (the time to apply P
+
+to Q(T)) depends on |Q(T)|, the size of the intermediate result 
+
+before the RLS policy P has been applied . Then, suppose the adversary knows a query predicate Q0 that returns zero rows. If the query optimizer evaluates Q0 before the RLS filter, then time (Q0, TP) is determined by Equation (1). But because Q0(T) = /0, it will typically hold that time (P, Q0(T)) = 
+
+time (P, /0) ≈ 0, so time (Q0, TP) ≈ time (Q0, T).Now, let Q be another query for which the adversary would like to learn |Q(T)|. The time (Q, TP) is again determined by 
+
+Algorithm 1: TIME TEST                                                                                 
+
+> Input :A query Qand calibration queries (Q0,Q1)where
+> |Q0(T)|=0 and |Q1(T)|=1; the number of trials k
+> Output :True iff |Q(T)|>0
+> 1t0←min ({time (Q0,TP):i∈[k]});// Run each query ktimes,
+> 2t1←min ({time (Q1,TP):i∈[k]});// then take the min of k
+> 3t′←min ({time (Q,TP):i∈[k]});
+> 4if t′>(t1+t0)/2then Return True ;
+> 5else Return False ;0100 200 300 400 500
+> Client-observed RTT ( μs) Density
+> Class Min (μs) Mean (μs) Std (μs)
+> nonexist 119 122 6
+> auth 474 544 17
+> unauth 509 547 16
+
+Figure 2: Equality query timing distributions from 1k trials in each class under a join-based RLS policy (see Section 3.3) based on client observed RTT. Takeaway: Auth and unauth 
+
+queries are reliably longer than nonexist under join policies. Equation (1). In this case, putting everything together gives 
+
+time (Q, TP) − time (Q0, TP)
+
+≈ (time (Q, T) + time (P, Q(T))) − time (Q0, T)= ( time (Q, T) − time (Q0, T)) + time (P, Q(T)) .
+
+In practice, (time (Q, T) − time (Q0, T)) tends to be very small, even when Q and Q0 return a different number of rows. As such, the main contributor to timing differences is 
+
+time (P, Q(T)) which itself grows with |Q(T)|—what the adver-sary wants to learn. Algorithm 1 shows how DHM exploited this via a calibrated threshold test. Given a probe Q and calibra-tion queries Q0, Q1 with known cardinality 0 and 1, it measures and takes the minimum runtime of each over k trials (DHM set k = 10) and returns True iff the measured time t′ for Q
+
+exceeds the midpoint (t0 + t1)/2. In Figure 2, we illustrate the timing side-channel on Post-greSQL; we defer experimental details to Section 3.3. The 
+
+nonexistent distribution corresponds to a probe predicate Q
+
+that matches no rows in the underlying table (e.g., |Q(T)| = 0). The authorized distribution corresponds to a probe that matches a row the attacker is permitted to see, so the row is re-turned and the policy evaluation occurs on a non-empty inter-mediate result. The unauthorized distribution corresponds to a probe that matches a row prior to policy enforcement but is fully filtered by RLS; that is, |Q(T)| > 0 while Q(TP) = /0. The gap between the nonexistent and unauthorized distributions is the signal exploited by our existence oracle: an increase in runtime indicates the predicate matched hidden rows. Existence oracle limitations. DHM focused on equality-based queries where values are tested by the adversary one at a time by selecting rows with a given attribute in a column. For example, by querying T IME TEST with all possible ages, the attacker can learn which ages are present in the table. How-ever, this limits an attacker interested in rich data exfiltration. First, the attack does not give a way to associate values across columns or reconstruct full rows. Second, it requires the at-tacker to know candidate values in advance. For high-entropy attributes with large domains, the space of possibilities is too large to test one by one. Furthermore, DHM do not elaborate on their choice of k = 10, and it is unclear if lower values of 
+
+k (which increases efficiency) provide acceptable accuracy. The work of DHM briefly mentioned that the side-channel worked for range queries, but did not explore whether the side-channel exists for more complicated queries that combine sev-eral conjunctions and range predicates, or how to efficiently compose such queries for an attack. It is not a priori clear that the channel exists for arbitrarily complex queries, since query planner effects and the structure of the underlying indexes could affect the stability of timing-based oracles. Line 1 of Algorithm 1 hints at this, since the constructed query Q0 must be similar enough to Q in order to capture meaningful timing deltas. Moreover, errors due to timing noise may compound, and it is not clear if it is possible or how expensive it will be to handle this. In this work, we address these and other technical issues to extend the side-channel impact to full row recovery. 
+
+## 3.2 Our Timing-Based Attack 
+
+We now describe an end-to-end reconstruction attack which combines the timing existence oracle with expressive queries 
+
+to efficiently reconstruct the entire set of records in a RLS-protected table. Our techniques generalize to all indexable PostgreSQL data types; here, we focus on integers and strings. We demonstrate how a binary search with SQL range queries (BETWEEN ) and set inclusion queries ( IN ) allows efficient re-covery of indexed attributes. Then, we demonstrate how to use conjunctions to reconstruct entire records. The attack has two phases: (i) enumerating the set of values present in each attribute, and (ii) assembling full tuples using conjunctions. 
+
+Notation. Let T be a table with attributes (atr 1, . . . , atr m).For each attribute atr i, let Di denote its (known) domain and 
+
+Si ⊆ Di be the unknown values that actually appear in T. We will call Si the support of atr i.
+
+3.2.1 Phase I: Attribute Enumeration 
+
+We first enumerate the support Si for each attribute indepen-dently. To reduce the number of oracle queries needed to recover sensitive values, we use binary search over ordered attribute domains. Instead of probing each candidate value linearly, we issue range queries that test whether any matching records exist on one side of a split point. Since the B +-tree        
+
+> 0250 500 750 1000 1250 1500 1750
+
+Client-observed RTT ( μs) Density                
+
+> Class Min (μs) Mean (μs) Std (μs)
+> nonexist 128 134 7
+> auth 519 1174 469
+> unauth 1691 1810 51
+
+Figure 3: Range query timing distributions from 1k trials in each class under a join-based policy. On auth queries, the cardinality of Q(T) ranges from 1–4; the distinct peaks arise from different query cardinalities (which in turn check the policy different numbers of times). Takeaway: The timing side-channel is preserved under expressive queries. 
+
+Algorithm 2: ENUMERATE ATTRIBUTE                                                       
+
+> Input: Attribute atr with ordered domain [L,R)
+> Output: Set Satr ⊆[L,R)
+> 1Satr ←∅;
+> 2Q←“atr ∈[L,R)”;
+> 3if not TIME TEST (Q)then return ∅;
+> 4if L=R−1then return {L};
+> 5M← ⌊ (L+R)/2⌋;
+> 6Satr ←Satr ∪ENUMERATE ATTRIBUTE (atr ,[L,M)) ;
+> 7Satr ←Satr ∪ENUMERATE ATTRIBUTE (atr ,[M,R)) ;
+> 8return Satr
+
+indexes used in PostgreSQL can efficiently support range queries, the timing oracle still works provided that the shape 
+
+of the calibration queries is identical, allowing us to halve the remaining search space per query. We validated that the timing oracle still works with expressive query types indepen-dently; microbenchmarks demonstrating this are in Figure 3. 2
+
+Binary search subroutine. Given an attribute atr with or-dered domain D, we recursively partition the domain and query the oracle to test whether any values appear in a given interval. This procedure is formally outlined in Algorithm 2. It uses T IME TEST with a query Q of the form            
+
+> SELECT 1FROM TWHERE atr >= LAND atr <R;
+
+If T IME TEST indicates no record satisfies Q, then Algorithm 2 stops and can conclude that there are no records with at-tribute values in the range [L, R); that is, [L, R) ∩ Satr = ∅. If TIME TEST indicates there is at least one record in the range 
+
+[L, R), then the algorithm recursively checks [L, M) and [M, R)
+
+where M = ⌊(L + R)/2⌋. This continues until it reaches a unit interval ( L = R − 1) where we can conclude L ∈ Satr .
+
+Correctness. Algorithm 2 explores an interval if and only if 
+
+> 2Range queries can also be used to perform prefix queries to enumerate one character of a hidden string at a time, allowing us to recover strings of unknown length. (This works because strings are totally ordered on the B+-tree indexes lexicographically under a deterministic collation that the attacker can order against.) We discuss this in more detail in Section A.
+
+Algorithm 3: BIN SRCH NEXT VALS                                                                                                 
+
+> Input: Partial tuple vpartial , and set Vof possible values for next atr i
+> Output: Tuples of the form vpartial with a value from Vappended
+> 1(v1, . . . , vi−1)←vpartial ;
+> 2if |V|=1then
+> 3{v} ← V;
+> 4Q←“ Vi−1
+> j=1(atr j=vj)∧(atr i=v)”;
+> 5if TIME TEST (Q)then return {(v1, . . . , vi−1,v)};
+> 6else return /0;
+> 7else
+> 8Partition Vinto two equal-sized sets V0,V1;
+> 9Q0←“ Vi−1
+> j=1(atr j=vj)∧(atr i∈V0)”;
+> 10 Q1←“ Vi−1
+> j=1(atr j=vj)∧(atr i∈V1)”;
+> 11 C←/0;
+> 12 if TIME TEST (Q0)then C←C∪BIN SRCH NEXT VALS (vpartial ,V0);
+> 13 if TIME TEST (Q1)then C←C∪BIN SRCH NEXT VALS (vpartial ,V1);
+> 14 return C
+
+it contains at least one value from Satr . Assuming a sound oracle for non-emptiness, every value in Satr is eventually isolated at a unit interval and returned. Of course, the noise introduced by the oracle introduces one additional challenge: we need to ensure that the poten-tial error introduced at each oracle test does not cause us to introduce false negatives and incorrectly eliminate significant portions of the domain higher in the traversal process. We mitigate false negatives by calibrating against a baseline pred-icate of known cardinality one, and by exploiting the fact that larger ranges result in typically larger post-filtering costs. In Section 3.3, we show that this calibration strategy yields negligible false-negative rates in practice. 
+
+Complexity. Let |D| be the size of the attribute domain and 
+
+|S| the number of values present. The recursion visits at most 
+
+O(|S| log (|D|)) intervals, yielding the same number of oracle queries. This improves over linear probing when |S| ≪ | D|,which is typical for high-entropy domains (e.g., SSNs). 
+
+3.2.2 Phase II: Tuple Assembly via Conjunctions 
+
+After recovering the approximate support Si of each atr i,we determine which combinations of values in S1 × · · · × Sn
+
+make up the records of the table. We do this by incrementally constructing candidate tuples and using the timing oracle with 
+
+conjunctions to perform cross-attribute existence checks. The algorithm initializes one partial tuple per value in S1, then extends these tuples attribute-by-attribute by testing which values in Si co-occur with each surviving prefix. A simple way to do this is to brute-force every possible combination, but we do this more efficiently using binary search. Our strategy is given in Algorithms 3 and 4, and we describe it here. To recover values of attribute atr 2 that appear with already-fixed attribute atr 1, we start by partitioning S2 into two sets 
+
+V0,V1. We then determine if either of these sets contains a value that co-occurs with atr 1 by running T IME TEST (Q)
+
+with queries Q of the form 
+
+Algorithm 4: EXTEND TUPLES                                                
+
+> Input: Recovered supports S1, . . . , Sm
+> Output: Set of reconstructed rows C
+> 1C← { (v):v∈S1};
+> 2for i←2to mdo
+> 3C′←/0;
+> 4for ⟨v1, . . . , vi−1⟩ ∈ Cdo
+> 5C′←C′∪BIN SRCH NEXT VALS (⟨v1, . . . , vi−1⟩,Si)
+> 6C←C′;
+> 7return C
+> SELECT 1FROM TWHERE atr_1 = v_1 AND atr_2 IN V_b ;
+
+for b = 0, 1. When either of these queries returns true, we re-cursively search the set Vb. Once we recover pairs of attributes 
+
+(atr 1, atr 2), we proceed to recover the third attribute. There are some practical subtleties in this phase as to how the ordering of attributes S1, . . . , Sm in Algorithm 4 affects the reconstruction quality and performance. We defer discussion of those details until our evaluation (Section 3.3). 
+
+Correctness. By construction, a partial tuple (v1, . . . , vi) is retained when at least one row in T matches the conjunction Vij=1(atr j = v j). Assuming perfect accuracy, if every row satisfies this predicate for its own values, all rows are even-tually reconstructed. If earlier stages of the reconstruction process have false positives, partial tuples are discarded if the conjunction becomes unsatisfiable. 
+
+Complexity. Let n be the number of rows in T. The total number of calls to T IME TEST is bounded by 
+
+O
+
+ m
+
+# ∑
+
+> i=2
+
+|Ci−1| log |Si|
+
+
+
+= O
+
+
+
+n
+
+> m
+
+# ∑
+
+> i=2
+
+log |Si|
+
+
+
+where |Ci−1| is the number of partial tuples found by depth 
+
+i − 1 (and |C1| = |S1|). When there are many tuples that share common prefixes, the latter formula will be an overestimate. Combining Algorithms 2 and 4 yields a complete recon-struction attack. The total number of oracle queries is 
+
+O
+
+ m
+
+# ∑
+
+> i=1
+
+|Si| log |Di| + n
+
+> m
+
+# ∑
+
+> i=2
+
+log |Si|
+
+
+
+,
+
+which is sublinear in the domain sizes and linear in the output size. In Section 3.3, we show that the timing oracle is strong enough for these bounds to translate into efficient attacks. 
+
+3.2.3 Optimizing T IME TEST 
+
+We finally identify an improved optimization for T IME TEST 
+
+which leverages the fact that the information we learn from one T IME TEST call should help us in future oracle calls. The first time we call T IME TEST , we calculate a threshold ∆ =(t1 − t0) at the beginning of the attack. Then, on subsequent calls, we make a single calibration query for Q0. We then decide membership based on if 
+
+time (Q, TP) − time (Q0, TP) > ∆/2Table 1: Accuracy over 100k trials under CPU load generated by concurrent reads from other tenants. CPU load controlled to 
+
+±2% of the target load. Wilson 99% CIs [62] in small text. Takeaway: For join , k = {1, 2, 3, 4} suffices for > 99 .9% accuracy at CPU ≤ 95%. inline is significantly noisier. When load decreases, fewer queries suffice. 
+
+CPU Load Join Policy Inline Policy 
+
+k (Queries Per Probe Type) k @ ≥
+
+99.9% acc Within CI 
+
+k (Queries Per Probe Type) 
+
+1 2 3 4 5 6 7 8 9 10 1 2 4 8
+
+Base 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 1 72.74 ±.36 81.44 ±.32 89.27 ±.25 95.63 ±.17 
+
+5% 99.99 ±.01 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 1 69.21 ±.38 78.79 ±.33 88.33 ±.26 95.15 ±.17 
+
+10% 99.98 ±.01 99.99 ±.01 99.99 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 1 65.87 ±.39 74.16 ±.36 84.87 ±.29 93.44 ±.20 
+
+15% 99.91 ±.02 99.97 ±.01 99.99 ±.01 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 99.99 ±.00 99.99 ±.00 1 63.32 ±.39 70.93 ±.37 81.75 ±.31 90.57 ±.24 
+
+20% 99.85 ±.03 99.94 ±.02 99.99 ±.01 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 2 61.10 ±.40 67.49 ±.38 79.05 ±.33 89.44 ±.25 
+
+25% 99.76 ±.04 99.92 ±.02 99.98 ±.01 99.99 ±.01 99.99 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 2 59.92 ±.40 65.30 ±.39 76.55 ±.35 86.63 ±.28 
+
+30% 99.76 ±.04 99.92 ±.02 99.99 ±.01 99.99 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 2 57.63 ±.40 61.41 ±.40 70.74 ±.37 80.97 ±.32 
+
+35% 99.78 ±.04 99.93 ±.02 99.99 ±.01 99.99 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 2 58.30 ±.40 62.08 ±.40 70.87 ±.37 83.77 ±.30 
+
+40% 99.55 ±.05 99.89 ±.03 99.98 ±.01 99.99 ±.01 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 2 57.54 ±.40 60.38 ±.40 68.06 ±.38 79.83 ±.33 
+
+45% 99.50 ±.06 99.86 ±.03 99.97 ±.01 99.99 ±.01 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 3 57.36 ±.40 59.46 ±.40 65.32 ±.39 75.29 ±.35 
+
+50% 99.51 ±.06 99.86 ±.03 99.96 ±.02 99.99 ±.01 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 3 57.07 ±.40 58.82 ±.40 63.03 ±.39 71.88 ±.37 
+
+55% 99.43 ±.06 99.84 ±.03 99.96 ±.01 99.99 ±.01 99.99 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 3 56.44 ±.40 58.75 ±.40 61.44 ±.40 68.51 ±.38 
+
+60% 99.18 ±.07 99.78 ±.04 99.97 ±.01 99.99 ±.01 99.99 ±.00 99.99 ±.00 99.99 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 3 55.87 ±.40 58.68 ±.40 61.36 ±.40 67.44 ±.38 
+
+65% 98.75 ±.09 99.61 ±.05 99.88 ±.03 99.97 ±.01 99.99 ±.01 99.99 ±.01 99.99 ±.00 99.99 ±.00 99.99 ±.00 100.0 ±.00 3 55.38 ±.40 58.87 ±.40 60.90 ±.40 65.54 ±.39 
+
+70% 98.54 ±.10 99.54 ±.05 99.89 ±.03 99.96 ±.01 99.99 ±.01 99.99 ±.01 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 3 53.30 ±.41 56.21 ±.40 59.87 ±.40 64.30 ±.39 
+
+75% 98.30 ±.11 99.40 ±.06 99.80 ±.04 99.94 ±.02 99.98 ±.01 99.99 ±.01 99.99 ±.00 99.99 ±.00 99.99 ±.00 99.99 ±.00 4 52.27 ±.41 55.08 ±.41 58.72 ±.40 62.24 ±.39 
+
+80% 98.36 ±.10 99.42 ±.06 99.84 ±.03 99.95 ±.02 99.98 ±.01 99.99 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 4 51.91 ±.41 54.59 ±.41 59.12 ±.40 62.97 ±.39 
+
+85% 97.52 ±.13 99.08 ±.08 99.69 ±.04 99.89 ±.03 99.97 ±.01 99.98 ±.01 99.99 ±.01 99.99 ±.01 99.99 ±.01 99.99 ±.01 4 51.17 ±.41 53.87 ±.41 58.91 ±.40 63.94 ±.39 
+
+90% 97.13 ±.14 99.01 ±.08 99.69 ±.04 99.90 ±.03 99.96 ±.01 99.99 ±.01 99.99 ±.01 99.99 ±.00 99.99 ±.00 99.99 ±.00 4 50.90 ±.41 52.90 ±.41 57.26 ±.40 63.10 ±.39 
+
+95% 96.39 ±.15 98.82 ±.09 99.66 ±.05 99.88 ±.03 99.96 ±.02 99.98 ±.01 99.99 ±.01 99.99 ±.01 99.99 ±.01 99.99 ±.01 4 50.48 ±.41 51.05 ±.41 54.10 ±.41 60.17 ±.40 
+
+Table 2: Accuracy over 10k trials when attacker ( us-west3 )and DB ( us-east1 ) are in separate regions ( ≈ 3000 km dis-tance) on the join policy. Takeaway: Cross-region latency impacts accuracy but can be mitigated by increasing k.
+
+k (Queries Per Probe Type) CPU Load Zone 1 2 4 8
+
+Base 50% same zone 100.0 ±.00 100.0 ±.00 100.0 ±.00 100.0 ±.00 
+
+us-west3 ↔ us-east1 99.76 ±.13 99.78 ±.13 99.77 ±.13 99.78 ±.13 
+
+∆ −0.24 ±.13 −0.22 ±.13 −0.23 ±.13 −0.22 ±.13 
+
+same zone 99.52 ±.06 99.86 ±.03 99.99 ±.01 100.0 ±.00 
+
+us-west3 ↔ us-east1 95.45 ±.54 98.90 ±.27 99.40 ±.20 99.74 ±.14 
+
+∆ −4.07 ±.54 −0.96 ±.27 −0.59 ±.20 −0.26 ±.14 
+
+The intuition is that policy evaluation cost ∆ should be roughly constant, so there is no need to recompute ∆ after we have computed it the first time (assuming there was no unusual noise the first time). This reduces the number of queries per TIME TEST from 3 to 2, which in turn improves the robustness of the oracle since there are fewer opportunities for additional noise to be introduced. 
+
+## 3.3 End-to-End Evaluation 
+
+We now evaluate the rich-query-based timing attack. 
+
+Schema and data. We replicate the example from Dar et al. [9] for the use of FGAC in hospital electronic medi-cal record (EMR) systems. We implement a hospital EMR schema containing a patients table with 1M rows (contain-ing id_number , name , age , site_id , zip_code , ssn ) and a doctors table with 10k rows (mapping user_name to 
+
+site_id ); each patient attribute has its own B +-tree index. Each doctor has their own clinic site (e.g., 10,000 sites total). The full patients and doctors database occupies 185 MB on disk (79 MB heap, 37 MB ssn index, 11 MB 
+
+zip_code index, 7 MB age index, 51 MB other indexes), as determined by querying PostgreSQL’s statistics after load-ing the dataset. With PostgreSQL’s default shared buffer size of 128 MB and the operating system page cache, the data is resident in memory after it is queried the first time. 3 This is a favorable condition for the attacker—workloads exceed-ing memory would add I/O variance that we do not evaluate, though the adversary can partially mitigate this by issuing each query an additional time to pull the necessary pages into the cache before actually making timing measurements. 
+
+Policy. Often, a single EMR system is shared by multiple clinics who are subsidiaries of a parent organization. However, regulations require that doctors are only able to view patients who belong to their clinic. This problem can be addressed by using a join -based PostgreSQL RLS policy which enforces that the current_user can only see patients in the patients 
+
+table who belong to the current_user ’s site. 
+
+CREATE OR REPLACE FUNCTION site_policy_join ( row_site BIGINT , curr_user TEXT ) 
+
+3We confirm this using the EXPLAIN BUFFERS command on the SELECT 
+
+queries against the database in our microbenchmarks. RETURNS BOOLEAN AS $$ BEGIN RETURN ( SELECT site_id FROM doctors WHERE user_name = curr_user ) = row_site ; END ; $$ LANGUAGE plpgsql ; CREATE POLICY doctor_read ON patients FOR SELECT USING site_policy_join ( site_id , current_user ); 
+
+We also tested an inline -based policy which replaces 
+
+site_policy_join with a function that accesses a ses-sion context variable current_setting( 'app.site_id ',true) in lieu of a join. Both are representative of real-world, deployed RLS policies [6, 8, 21, 28, 38, 46, 47, 51, 55]. 
+
+Setup. We ran our experiments in Google Compute En-gine (GCE). The server runs PostgreSQL 18.1 on Debian 12 on a c4-standard-16 host with 16 vCPUs (dedicated cores), 60 GB RAM, and a 200 GB local SSD with all of PostgreSQL’s default settings. The attacker is located on a separate c4-highmem-16 VM with 16 vCPUs and 128 GB RAM. The attacker remotely connects to the DBMS as a DBMS user (corresponding to a doctor) with the abil-ity to issue arbitrary SELECT queries on the patients table; their goal is to infer information about patients in a different site. Latency is measured as client-side RTT with Python’s 
+
+perf_counter_ns . Unless otherwise stated, all VMs are lo-cated in the us-central1 (Iowa, United States) region. 
+
+3.3.1 Oracle Strength and Calibration 
+
+An important detail not explored in prior work [9, 52] is the number of queries necessary to perform the attack. This im-pacts the attack’s efficiency and correctness. To determine the number of repetitions k per query type needed to instantiate the existence oracle in Algorithm 1, we compare the execu-tion time of a candidate predicate against a baseline predicate of identical syntactic shape that is known to match zero rows. We also evaluated how this changes based on noise intro-duced by other tenant reads on the table using a separate noise VM ( c4-standard-96 on GCE) that runs up to 96 concur-rent doctor clients that issue a random mix of authorized/u-nauthorized/nonexistent SELECT queries to the database. We target a specific CPU load by adjusting the noise VM’s query rate depending on the DBMS’s CPU load, as monitored via 
+
+vmstat [1]. Table 1 shows increased CPU load degrades at-tack quality but can be overcome by issuing more queries. We emphasize the # of queries required for 99.9% accu-racy as the adaptiveness of our attacks from Section 3.2 gain efficiency in exchange for the possibility of compounding or-acle errors over time. For example, binary searching over the 
+
+ssn attribute with |D| = 10 9 requires log (10 9) ≈ 30 success-ful oracle calls to reach an attribute. Roughly speaking, with 99 .9% oracle accuracy, we expect 0 .999 30 ≈ 97% accuracy for SSN traversal. With 99 .0% oracle accuracy, we expect 0.99 30 ≈ 74% accuracy for a given SSN. 4
+
+> 4As a remark, this assumes that the accuracy of oracle calls is independent, which is not strictly true due to cache effects.
+
+Physical distance. We also evaluated how physical distance from the target database affects the attack in Table 2 by plac-ing the attacker in us-west3 (Salt Lake City, USA) and the database in us-east1 (South Carolina, USA). As shown, this results in a small loss of accuracy, but one that can be over-come simply by issuing more queries. Repeating the CPU load experiment in this setting shows that additional CPU load introduced by other tenants 5 similarly degrades accuracy. We remark our measurements use direct client-to-server connec-tions; intermediaries such as load balancers could introduce additional variance we do not model. 
+
+Transparent data encryption. We remark that transparent data encryption (TDE) is frequently used in a DBMS to en-crypt files before writing them to disk. PostgreSQL does not have native TDE but suggests LUKS [17] for index encryption on Linux hosts. TDE does not change the timing differences we exploit; after a page is decrypted and loaded into memory, queries do not incur any I/O overhead and thus LUKS adds no noise to measurements. We validated this by reproducing the microbenchmarks from Figure 2 and Figure 3 on a database with LUKS2 enabled on the database directories. Since the results are essentially identical, we omit the figures. 
+
+3.3.2 Record Enumeration 
+
+We now evaluate the attribute enumeration procedure from Al-gorithm 2 with the optimized T IME TEST from Section 3.2.3 with k = 1 repetitions per query type. We report on the num-ber of queries required to recover each attribute; this metric reflects the stealth of the attack (fewer queries are harder to detect), wall clock time, and the recall (TP / (TP + FN)) and 
+
+precision (TP / (TP + FP)) for each attribute. We also com-pare against the linear probing technique from DHM, but for fairness we also implement it with the optimized T IME TEST 
+
+from Section 3.2.3 and also set k = 1. Table 3 shows our results. Binary search recovers most values with minimal additional error; in contrast, linear prob-ing [9] requires orders of magnitude more queries and is in-feasible for high-entropy domains. We remark that the DHM work specified k = 10 trials per query type, so their origi-nal attack would require 10 × more queries. Their original TIME TEST would also require an additional query per oracle call, which would require 1 .5× more queries on top of that. 
+
+Parallelism. We also parallelize the enumeration procedures in Section 3.2. In theory, as our oracles are read-only, parallel execution does not require coordination beyond distributing intervals/partial tuples and aggregating oracle outcomes. In Algorithm 2 and Algorithm 3, each oracle probe is a read-only query and we can concurrently execute recursion on disjoint intervals. Concretely, we assign each worker a distinct 
+
+> 5In cross-zone experiments, we place the noise VM in the same region as the database—placing it in the farther region prevents the noise VM from reaching the required CPU load on the database due to the increased RTT.
+
+Table 3: Attribute reconstruction with k = 1 for oracle calls. Results averaged over 10 repetitions with Student-t 95% CI in small text. Linear † ssn capped at 10 5 probes; results are extrapolated to the full 10 9 domain. We omit parallelism experiments from 
+
+age for space; trends are similar to zip_code . Takeaway: When |D| ≫ | S| (e.g., ssn ), binary search yields large speedups over linear probing. When |D| ≈ | S| (e.g., zip_code , age ), linear probing is already practical and binary search slows the attack. Parallelism speeds up the attack, but too many threads decreases performance due to increased (self-imposed) DB load. 
+
+Attribute |Datr | |Satr | Type Strategy Workers Time (m) Queries Recall Precision Speedup 
+
+ssn 10 9 10 6 VARCHAR 
+
+Linear † 1 4187.6 ± 1138.9 2,000,000,006 ± 0 100.00 ± .00 100.00 ± .00 1.0 ×
+
+Binary 1 150.4 ± 13.7 40,427,756 ± 2,537 99.99 ± .01 99.99 ± .00 27.8 ×
+
+Binary 2 82.2 ± 8.2 40,428,226 ± 1,812 99.99 ± .01 99.99 ± .00 50.9 ×
+
+Binary 4 42.0 ± 3.2 40,333,805 ± 79,723 99.49 ± .41 99.93 ± .07 99.8 ×
+
+Binary 8 25.4 ± 3.0 28,753,796 ± 3,296,512 51.85 ± 9.50 93.20 ± 1.70 165.1 ×
+
+Binary 16 11.3 ± .9 11,647,270 ± 1,162,906 7.77 ± 1.24 71.17 ± 2.83 371.1 ×
+
+zip_code 10 5 99,995 VARCHAR 
+
+Linear 1 3.3 ± .1 200,006 ± 0 100.00 ± .00 100.00 ± .00 1.0 ×
+
+Binary 1 7.0 ± .2 400,004 ± 1 99.99 ± .00 100.00 ± .00 0.5 ×
+
+Binary 2 3.5 ± .1 400,000 ± 2 99.99 ± .00 100.00 ± .00 0.9 ×
+
+Binary 4 1.8 ± .1 394,991 ± 7,540 98.74 ± 1.26 100.00 ± .00 1.8 ×
+
+Binary 8 0.9 ± .0 396,983 ± 2,951 99.20 ± .74 100.00 ± .00 3.6 ×
+
+Binary 16 0.7 ± .0 391,276 ± 3,600 97.59 ± .90 100.00 ± .00 4.8 ×
+
+age 120 120 INTEGER Linear 1 <0.1 246 ± 0 100.00 ± .00 100.00 ± .00 1.0 ×
+
+Binary 1 <0.1 484 ± 0 100.00 ± .00 100.00 ± .00 0.5 ×
+
+child interval one level below the root, which lets W workers explore W disjoint subtrees independently. As shown in Table 3, moving from 1 to W worker threads results in close to a W × reduction in runtime—though past 
+
+W > 4, the accuracy degrades as workers contend for the same database-side resources like the page cache and bandwidth. 
+
+Tuple recovery. We evaluate full row reconstruction using conjunctions as described in Section 3.2.2. We sample 100k rows from the dataset and use the support of the attributes across the sampled rows as the input to Algorithm 4. A sub-tlety in this phase is that conjunctive predicates’ interaction with the DBMS’s indexes can introduce additional variance. When multiple single-column indexes are available, Post-greSQL commonly evaluates a conjunction by performing separate index scans and then intersecting their result sets (via 
+
+bitmap index scans ). Such plans’ execution time depends not only on the cardinality of the final result, but also on the sizes of intermediate index results. Even when the final conjunction is empty, a probe where one conjunct matches many rows and another matches none can be noticeably slower than a probe where both conjuncts match none, because the engine still performs work to scan and combine intermediate bitmaps. As a result, the timing oracle is most stable when con-junctions are constructed by starting from the most selective predicates. Starting from a selective attribute (e.g., a unique or near-unique identifier) ensures that all subsequent conjunc-tions operate over small intermediate result sets, strengthening the timing signal and limiting extraneous intermediate tuple checks. 6 This ordering is therefore essential both to control 
+
+> 6
+
+Starting from highly selective attributes also lets us recover unindexed 
+
+columns: as long as the unindexed column’s predicate is LEAKPROOF , Post-greSQL evaluates it in the final filter and short-circuits as soon as an earlier 
+
+Table 4: Single-threaded tuple reconstruction on a 100k row target set. Student-t 95% CI over 3 repetitions in small text. 
+
+Takeaway: Attack performs better when starting with most selective attributes first. The low selectivity of age and zip 
+
+introduces timing variance which results in loss of accuracy. 
+
+Ordering Queries (×10 6) Recall Precision Time (h) 
+
+ssn → zip → age 14.3 ± .0 100.0 ± .0 100.0 ± .0 1.3 ± .3 
+
+ssn → age → zip 14.3 ± .0 100.0 ± .0 100.0 ± .0 1.2 ± .1 
+
+zip → ssn → age 54.8 ± .0 100.0 ± .0 100.0 ± .0 5.0 ± .9 
+
+zip → age → ssn 41.2 ± 13.5 45.6 ± 17.9 100.0 ± .0 4.5 ± 1.5 
+
+age → ssn → zip 30.1 ± .1 100.0 ± .0 100.0 ± .0 2.8 ± .2 
+
+age → zip → ssn 65.4 ± 7.9 71.4 ± 10.9 100.0 ± .0 7.7 ± .3 
+
+the number of oracle queries and to maintain a reliable distinc-tion between empty and non-empty predicates. Accordingly, we build tuples by adding attributes in order of decreasing se-lectivity (i.e., from highest to lowest cardinality support): we iterate over attributes S1, . . . , Sm such that |S1| > · · · > |Sm|.The results are in Table 4. 7 As expected, total query counts scale with the number of rows reconstructed and remain within a small constant factor of the bound derived in Sec-tion 3.2.2. The results also confirm our intuition, which is that the most efficient order is in decreasing selectivity. 
+
+conjunct fails. When the RLS policy is evaluated last, this short-circuiting keeps the additional work (and thus the timing variance) concentrated in the policy evaluation, so the adversary can still capture the necessary signal. 
+
+> 7
+
+Tuple assembly is also parallelizable in principle as candidate extensions for a prefix are logically independent. Due to space restrictions and to reduce implementation complexity, we leave tuple-assembly results single-threaded. 3.4 Potential Mitigations 
+
+Prior work. The standard approach for handling timing side-channels is to change data-dependent execution paths into ones that use data-independent or constant-time evaluation (e.g., [3, 42]). Alternatively, a less robust approach is to care-fully add noise or delays [31, 64]. Both likely come at signif-icant performance costs for databases (which have variable workloads) and require estimation of worst-case query times. Dar et al. [9] propose a mitigation for unique keys , or keys with at most cardinality 1, which aims to equalize the runtime of all indexed point queries (regardless of whether the queried key exists) by forcing RLS policy evaluation even on nonex-istent queries. This is done by forcing such queries to output a dummy record on index accesses and executing the policy filter on the dummy. As all queries result in policy evalua-tion, this eliminates the timing gap. However, the mitigation applies only to unique keys: generalizing it to non-unique attributes would require slowing all queries to the worst case cardinality. Furthermore, even for unique keys, performance degrades when workloads contain a high fraction of nonexis-tent queries (which are slowed by design). 
+
+Using composite indexes and subqueries. The timing side-channel arises when PostgreSQL can push down an attacker-chosen, LEAKPROOF predicate Q into an index scan, evaluate it over the full table T, and only then apply the RLS policy P
+
+as a late-stage filter. While we can apply P first, it means that we cannot leverage any indexes on the queried columns of Q.Recall that the RLS policy from Section 3.3 enforces that the current_user can only see patients with the same 
+
+site_id . Our approach is to bind the predicate into the same index access as the attacker’s predicate so the scan is confined to the querying tenant’s rows and atr = v is never evalu-ated against another tenant’s data. This requires us to make two changes. First, we change the index on each atr to a 
+
+composite index of the form (site_id , atr ):     
+
+> CREATE INDEX ... ON patients ( site_id , atr )
+
+This index is sorted lexicographically by (site_id , atr ). For queries that involve both site_id and atr , this structure means that index scans on atr are scoped to a contiguous region of site_id s and the equality check on site_id is discharged as part of the index access. Second, we require that the policy’s site_id predicate is visible to the query optimizer so it knows it can use the index. The lookup in the join policy is wrapped in a function body that the planner cannot inspect, so we replace the function wrapper with the subquery in the policy schema directly:                
+
+> CREATE POLICY doctor_read ON patients FOR SELECT USING site_id =( SELECT site_id FROM doctors WHERE user_name =current_user );
+
+As it depends only on the current user (a constant value), the optimizer can evaluate this subquery once per query that re-quires the index. We verified that this eliminates the structural side-channel by using EXPLAIN to determine the query plan. Table 5: Our mitigation on the Table 1 benchmark. Takeaway: 
+
+The subquery + composite index approach closes the side-channel for our scenario; the oracle can only make random guesses. Adding just a composite index or only changing the policy to a subquery is not sufficient to mitigate the attack.                                      
+
+> Config k(Queries Per Probe Type)
+> 1248
+> join + composite 100.0 ±.0 100.0 ±.0 100.0 ±.0 100.0 ±.0
+> subquery only 100.0 ±.0 100.0 ±.0 100.0 ±.0 100.0 ±.0
+> subquery + composite 49.9 ±2.8 51.5 ±2.8 52.5 ±2.8 49.0 ±2.8
+
+Microbenchmark. We ran our attack benchmarks from Sec-tion 3.3.1 on our composite-index-based mitigation. The ex-perimental setup is identical. In Table 5, we see that with the composite index enabled, the timing differences are indistin-guishable (as shown by the CI), as the query’s use of com-posite indexes structurally forces the evaluation of site_id 
+
+before the queried atr . We also see that both changes are necessary—only changing the index format or the policy (but not the other) still is vulnerable to the attack. 
+
+Limitations. Composite tenant-leading indexes (with the pol-icy rewrite) eliminate the timing side-channel for this kind of policy, but they are not a general replacement for RLS. They do not address policies that cannot be expressed as leading-index constraints. Policies depending on complex per-row logic may not allow for a simple policy. Also, composite indexes may be impractical for tables with many indexed at-tributes. In such cases, operators must choose which attributes warrant composite indexing or accept higher query costs. It also slows down queries for operators who are not subject to RLS, since atr is no longer contiguous. 
+
+## 3.5 Discussion 
+
+We showed that, with a feasible number of queries, attackers can bypass RLS and recover entire rows with high fidelity. Our experiments show that the complications arising from com-plex queries and network noise can be overcome. In practice, it may not be easy to exploit this side-channel when system activity obscures the timings or queries are rate-limited. For the latter issue, we stress that a fairly small number of queries is required to extract a single row, and this can be targeted (e.g., if the adversary is targeting a person with a specific SSN). We conclude that a careful evaluation of this channel is critical to secure RLS-protected databases. 
+
+## 4 DLS Scoring-Based Attacks 
+
+We now present our second case study: attacks on document-level security (DLS) mechanisms in full-text search systems, specifically Elasticsearch/OpenSearch (ES/OS). (Since both systems are built on a common foundation [2] and OS is a fork of ES, they work essentially identically for our purposes.) We start with the relevant background, describe how relevant query types work, and then describe and evaluate our attack which exploits a new prefix-expansion side-channel in ES/OS. 
+
+## 4.1 Background and Prior Work 
+
+Notation. A document d contains text fields , each of which contain an (ordered) sequence of terms . (For ease of exposi-tion, we assume each d contains a single text field.) A docu-ment corpus D is a set of documents. The set of terms in a document is determined by applying a text analyzer algorithm 
+
+analyze at indexing time, which normalizes the text (e.g., lowercase, stemming, stopword removal) and segments raw text into indexable terms. Our attacks target the analyzed view of a document, so depending on the analyzer, some compo-nents of the original text may be unrecoverable—for example, the default lowercase analyzer removes capitalization. We denote the space character by and concatenation by ∥.
+
+Instantiating the abstract FGAC model. ES/OS hold a docu-ment corpus that is protected by post-filtering DLS that limits an adversary to only viewing documents that it owns. The adversary can create new documents that will show up as results in future queries. The adversary can issue text search queries from an expressive set supported by the software. We assume the adversary knows the set of characters that may appear in the data (e.g., ASCII characters). We do not assume the adversary knows anything further about the distribution or composition of the corpus. For ease of exposition, we assume that the adversary knows deployment-specific configurations (e.g., the indexes and schema) though, in all cases, an adver-sary can discover these settings through simple probing. The architecture and basic idea of the side-channel are described in Figure 1. The response to a query includes a list of documents along with relevance scores that can be used to rank them (below we discuss how these scores are computed). The list and scores are produced by a system that does not take access permissions into account. Instead, a filter is configured with a predicate P that encodes access privileges, so only documents satisfying P are returned. The predicate P may depend on per-document fields and even other system information (for example, P may enforce that users can only access documents tagged with their name, or documents containing a keyword in a text field). 
+
+BM25 scoring. Ranking documents via scoring is a standard feature of full-text search systems. We recall the relevant details of scoring in ES/OS, where several query types use a variation of BM25 scoring [54] as implemented in Lucene [2]. BM25 depends on configurable constants k1, b, and boost . We omit boost as it has no effect when boost = 1 (the default). Given a document d, query q = t1 t2 . . . consisting of one or more terms, and a corpus D, we denote the score by score (d, q, D). This score depends on the term frequency (TF) 
+
+of each term t ∈ { t1,t2, . . . } with respect to d, denoted tf (t, d),which is the number of times t appears in d. It also depends on the document frequency (DF) of t with respect to the entire corpus D, or the number of documents containing t:df (t, D) = |{ d ∈ D : t ∈ d}| .
+
+With these values, the score score (d, q, D) is computed as score (d, q, D) = ∑
+
+> t∈q
+
+idf (t, D) · tfNorm (t, d, D). (2) The tfNorm values in this sum are computed as tfNorm (t, d, D) = tf (t, d)
+
+tf (t, d) + k1
+
+
+
+1 − b + b · dl (d)
+
+> avgdl (D)
+
+
+
+where dl (d) is the length of d, avgdl (D) is the average length of documents in the corpus. The other values are the inverse document frequencies idf (t, D), which are computed via idf (t, D) = log 
+
+
+
+1 + N − df (t, D) + 0.5df (t, D) + 0.5
+
+
+
+, (3) where N is the number of documents in D. The intuition is that higher tf values will boost the per-term scores, while higher df values will lower them. 
+
+The DF side-channel. In principle, a timing side-channel against post-filtering DLS may exist, but we were unable to capture as reliable of a timing delta in preliminary experi-ments (compared to PostgreSQL). Thus, we use a completely different mechanism for attacking DLS: we exploit the fact that scores on attacker-visible documents depend on private documents . In particular, given a term t, scores depend on the DF of t which itself depends on corpus-wide documents. This DF side-channel is exploitable in DLS systems where an attacker can issue queries and insert documents. In this setting, Büttcher and Clarke [7] gave the following attack. If an attacker wants to test if a particular term t is present in a private document, the attacker injects two documents: dctrl ,which consists of a random term rctrl that is assumed to not appear in the index, and dtest containing the term of interest t.They then search for rctrl , which returns dctrl along with a score 
+
+sctrl . Next, they search for t, which returns dtest with score stest .If sctrl ≈ stest , they guess that t is not present in any private documents. If sctrl ≫ stest , they guess that t is present. This works because if t is not present, then both t and rctrl will have DFs equal to 1 as they are only present in the attacker-created documents. Conversely, if t is present in a private document, then its higher DF results in a lower score stest .Büttcher and Clarke [7] observed that this attack applied to systems such as Apple Spotlight. Wang et al. [61] showed it was practically relevant to several cloud-hosted systems, notably GitHub, and enumerated several challenges related to system noise and unknown system configurations. 
+
+Prior limitations. Much like the RLS attacks in Section 3.1, the DF side-channel in [7, 61] only tests whether an exact indexed term exists. This requires the attacker to know candi-date terms in advance and cannot recover high-entropy terms such as keys, passwords, or long, arbitrary strings in general. Nevertheless, we will show these limits disappear once we account for ES/OS’s expressive query interfaces. 
+
+4.1.1 ES/OS Features and Queries 
+
+We now describe several query types in ES/OS that we exploit. 
+
+match queries. Basic full-text search is supported via match 
+
+queries. A match (q) query transforms the input string q into an unordered set of terms {ti | ti ∈ analyze (q)}, and out-puts documents that contain at least one of {t1, . . . , tr}. BM25 scores are used to rank the results. 
+
+match_phrase_prefix (mpp ) queries. ES/OS support autocomplete functionality via match_phrase_prefix (ab-breviated as mpp ) queries. A mpp (q) query transforms q into an ordered sequence of terms t1 . . . tr ← analyze (q). The first r − 1 terms are treated as a phrase phr = t1 . . . tr−1,and the final term tr is treated as the prefix ; below we denote such a query by q = ( phr ,tr). mpp only returns documents that contain phr in order followed by a term starting with tr.8
+
+BM25 scores for mpp queries are computed in one of two ways depending on whether or not the schema specifies that the text field has a prefix index , which speeds up prefix queries in exchange for additional storage. (Normal text fields do not have a prefix index by default.) When there is no prefix index, scores are computed as fol-lows. Given a query q = ( phr ,tr) and a document d, let pf (q, d)
+
+be the phrase frequency of q, or the number of appearances in 
+
+d of the complete, ordered set of terms in q (phr followed by 
+
+tr) ; also, let exp (tr, D) be the set of expansions of tr, which are indexed terms starting with tr (including tr itself, if it is present). The maximum number of expansions in the sum is capped by a max_expansions parameter (by default, to 50). Specifically, the set exp (tr, D) is the first max_expansions 
+
+expansions in alphabetical order. The score is computed as pf (q, d) ·
+
+
+
+# ∑
+
+> t∈phr
+
+idf (t, D) + ∑ 
+
+> t′∈exp (tr,D)
+
+idf (t′, D)
+
+
+
+. (4) When there is a prefix index, the score is computed as in Equa-tion (4), except that the second idf summation is replaced with a single alternative value, idf prefix (tr, D). idf prefix is computed as in Equation (3), except that df (·) is replaced with df prefix (tr, D) = |{ d ∈ D : d contains a term with prefix tr}| .
+
+The score is now computed as pf (q, d) ·
+
+
+
+# ∑
+
+> t∈phr
+
+idf (t, D) + idf prefix (tr, D)
+
+
+
+. (5) 
+
+The prefix-expansion (PE) side-channel. With or without a prefix index, we observe that this type of scoring creates       
+
+> 8For example, mpp (“cat dog f ”)will match documents containing “cat dog f ”, “ cat dog fox ”, or “ cat dog ferret ”, but not a document containing “ dog cat ferret ” or “ cat dog rand ferret ”.
+
+Algorithm 5: ExactOracle                            
+
+> Input: Term t, index name index
+> Output: True iff tis an indexed term in index
+> 1rctrl ←FRESHTERM ;
+> 2WRITE (dtest ,t);
+> 3WRITE (dctrl ,rctrl );
+> 4(_,stest )←match (index ,t);
+> 5(_,sctrl )←match (index ,rctrl );
+> 6return sctrl >stest ;
+
+a new prefix-expansion (PE) side-channel . Consider when there is no prefix index: the second summation in (4) is over the set exp (tr, D), which depends on private documents. The contributions of the terms are still affected as in the DF side-channel, but we will crucially exploit the number of terms in the sum (for the first time). In particular, our attacker will detect when this set is empty or not. With prefix indexing, the effect is similar, except curiously the effect on the scoring is reversed—prefix existence causes the score to decrease, not increase. This is because in (5), idf prefix (tr, D) decreases as the number of expansions increases. In either case, prefix information is not present in the original DF side channel, and it is what enables our stronger attack. 
+
+## 4.2 Bag-of-Terms Extraction 
+
+We now show how to exploit the DF and PE side-channels to recover high-entropy, unknown index terms, which was not possible in prior work. To do this, we will construct two oracles that determine if (1) a chosen term t appears in a given 
+
+index and (2) a term in index begins with a chosen prefix p.
+
+Membership oracle. The first oracle is a generalization of the prior existence oracles [7, 61] and is given in Algorithm 5. It checks if t appears as an indexed term in the corpus D. It starts by sampling an exact-fresh term rctrl . By exact-fresh ,we mean that rctrl does not exist in D, which we can do by using characters outside of D9 and ensuring we never reuse a term. Then, it writes rctrl to dctrl and writes t to dtest . It then issues two match queries for t and rctrl , and retrieves their respective documents’ scores stest and sctrl (it ignores the actual results). If sctrl > stest , it concludes that t was in the index. This works because df (rctrl , D) = 1 (by the freshness of rctrl ), and df (t, D) ≥ 1 (since it is in dtest ); if t already exists in the index, then df (t, D) > 1, and then stest < sctrl .
+
+Prefix oracle. Algorithm 6 defines PrefixOracle . It consumes a prefix p and determines if any term in D begins with p. It inserts two documents dtest and dctrl , where dtest contains an exact-fresh context term rctx followed by p ∥ σ, where σ is a character that is outside the attack alphabet, and dctrl contains the same context term rctx followed by a prefix-fresh control 
+
+> 9The characters for fresh terms must be characters that are stable under text analysis (e.g., not removed). For example, in our experiments (Sec-tion 4.5) against the Enron corpus (an English dataset), we generate fresh terms from the set of Cyrillic characters.
+
+Algorithm 6: PrefixOracle                                                      
+
+> Input: Prefix p, index name index
+> Output: True iff pis a prefix of a term in index
+> 1rctx ←FRESHTERM ;
+> 2rctrl ←PREFIXFRESHTERM (|p|);// |p|=|rctrl |
+> 3σ←character outside attack alphabet;
+> 4WRITE (dtest ,rctx p∥σ);
+> 5WRITE (dctrl ,rctx rctrl );
+> 6(_,stest )←mpp (index ,rctx p);
+> 7(_,sctrl )←mpp (index ,rctx rctrl );
+> 8if mpp is using a prefix index then return stest <sctrl ;
+> 9else return stest >sctrl ;
+
+term rctrl . By prefix-fresh , we mean that exp (rctrl , D) = ∅ be-fore rctrl is injected. (Once again, we can do this by construct-ing rctrl from characters outside the corpus with slightly more complicated bookkeeping to ensure that we are not reusing prefixes.) Then, it issues mpp queries for rctx p and rctx rctrl 
+
+and compares the scores stest and sctrl . Then, if mpp is not 
+
+using a prefix index, it returns True if and only if stest > sctrl .If mpp is using a prefix index, the direction of the conditional 
+
+reverses —it returns True if and only if stest < sctrl .As a technical remark, even if the field has a prefix index on it, each prefix index in ES/OS has a maximum prefix length 
+
+max prefix (maximum is 20). Given a prefix query p on a field that has a prefix index, if |p| > max prefix , then mpp cannot use the prefix index and it will default to the normal scoring path. If the field has a prefix index, we can easily handle this in the oracle if we know max prefix —by requiring that |p| = |rctrl |,both mpp queries use identical scoring paths and we just need to flip the direction of our score check when |p| > max prefix .10 
+
+Correctness (without prefix index). Suppose mpp is not 
+
+using a prefix index. Since p ∥ σ and rctrl are fresh terms, df (p ∥ σ, D) = df (rctrl , D) = 1. Then, consider the case when 
+
+p is not a prefix of any existing term in D. After dtest and 
+
+dctrl are injected, then exp (p, D) = {p∥σ} and exp (rctrl , D) = 
+
+{rctrl }. Then the following hold: df (p ∥ σ, D) = df (rctrl , D),
+
+idf (p ∥ σ, D) = idf (rctrl , D),
+
+idf (rctx , D) + idf (p ∥ σ, D) = idf (rctx , D) + idf (rctrl , D),
+
+idf mpp (rctx p, D) = idf mpp (rctx rctrl , D).
+
+As the rest of Equation (2) is constant, we have sctrl = stest 
+
+and so it returns False in this case. Now, suppose p is a prefix of some indexed term p′ (possi-bly p = p′). Then, exp (p, D) ⊇ { p∥σ, p′} and exp (rctrl , D) = 
+
+{rctrl }. Then the following hold: df (p ∥ σ, D) = df (rctrl , D),
+
+idf (p ∥ σ, D) = idf (rctrl , D),
+
+idf (rctx , D) + idf (p ∥ σ, D) = idf (rctx , D) + idf (rctrl , D), 
+
+> 10 If the adversary does not know max prefix a priori , they can easily learn it by observing the behavior of scores on attacker-injected documents.
+
+Algorithm 7: EnumerateTerms                                                   
+
+> Input: Set of allowed characters CHARS , index name index , initial queue prefixes Qinit
+> Output: ˆW, the indexed terms in index
+> 1ˆW← {} ;
+> 2Initialize queue Q← { g∥c:g∈Qinit ,c∈CHARS };
+> 3while Q is not empty do
+> 4p←Q.POP () ;
+> 5if PrefixOracle (index ,p)then
+> 6for c∈CHARS do Q.PUSH (p∥c);
+> 7if ExactOracle (index ,p)then ˆW←ˆW∪ { p};
+> 8return ˆW
+
+idf (rctx , D) + idf (p ∥ σ, D) + idf (p′, D)
+
+> idf (rctx , D) + idf (rctrl , D),
+
+idf mpp (rctx p, D) > idf mpp (rctx rctrl , D),
+
+These imply stest > sctrl , so it returns True in this case. 
+
+Correctness (with prefix index). Suppose mpp is using a prefix index. By construction, df prefix (rctrl , D) = 1. Consider the case when p is not a prefix of any existing term in D. This means df prefix (p, D) = 1, so df prefix (p, D) = df prefix (rctrl , D).This implies idf prefix (p, D) = idf prefix (rctrl , D), and as the rest of Equation (2) is constant, it follows that the mpp 
+
+scores sctrl = stest and so it returns False in this case. Now, suppose p is a prefix of some indexed term. Then, df prefix (p, D) > 1 and df prefix (p, D) > df prefix (rctrl , D). This implies idf prefix (p, D) < idf prefix (rctrl , D), which itself means 
+
+stest < sctrl , so it returns True in this case. 
+
+Complexity. Both ExactOracle and PrefixOracle require in-jecting two documents and issuing two queries. In theory, one can reuse a fixed control document dctrl across probes and only rewrite the candidate document dtest , reducing doc-ument writes by a constant factor. (We do not do this for ease of implementation and exposition.) We discuss further optimizations later in the section. 
+
+Combining the oracles. By combining ExactOracle and 
+
+PrefixOracle , we enumerate all of the terms in Algorithm 7. It consumes a set of characters that are allowed to appear in terms CHARS , the index to reconstruct, and an initial queue state (for now, assume that Qinit = {"" } is the empty string— we leave this parameterized as we use this oracle as a subrou-tine for further extraction in Section 4.3). At a high level, it performs a breadth-first search over the trie of terms starting from the empty string. It continues traversing if adding a char-acter from CHARS produces another valid prefix, and uses the 
+
+ExactOracle to determine if prefixes are complete terms. 
+
+Correctness. EnumerateTerms performs a trie traversal over the space of candidate terms. Each oracle query either finds that a prefix cannot extend to any hidden terms or confirms that the prefix occurs. Thus, the algorithm exactly enumerates the set of hidden terms. 
+
+Complexity. Let V denote the number of trie nodes (candidate prefixes) of the set of terms. The enumeration performs O(V )
+
+oracle calls (one membership test per visited node, plus a prefix test to decide whether to descend), so the total cost is linear in the size of the explored portion of the prefix trie. Since each oracle call issues two scored queries and writes two attacker-controlled documents and each trie node has two oracle calls ( PrefixOracle and ExactOracle ), enumeration uses 4 V scored queries and 4 V document injections. 
+
+## 4.3 n-Gram Extraction 
+
+Our attack so far extracts the unordered set of terms from any indexed text field. In this section we assume the system uses some commonly-enabled special indexes that are designed to further optimize autocomplete workloads (like mpp queries). By abusing these indexes, we can extract richer structure that allows us to recover approximate document text. 
+
+Search-as-you-type. ES/OS provide a specialized index type called search_as_you_type (SAYT) designed to support interactive “search-as-you-type” workloads. This field type is widely recommended for applications such as email search and enterprise knowledge bases, where users expect partial queries to return relevant results as they type. A search_as_you_type index augments a standard full-text field with additional inverted indexes over contiguous 
+
+n-grams. Specifically, given a SAYT index on the field field ,for a term sequence (t1,t2, . . . , tm) ← analyze (·), the system indexes all contiguous n-grams (ti, . . . , ti+n−1) in the subfield 
+
+field._ ngram (for fixed values of n). ES/OS support SAYT indexes with n-grams up to a configurable n ∈ { 2, 3, 4}. Each 
+
+n-gram is treated as an independent term with its own term frequency and document frequency statistics. For example, the 3-grams of the document “ dog cat cow fox ” are (1) “dog cat cow ” and (2) “ cat cow fox ”. In the _3gram in-dex, these 3-grams will be treated as independent terms. Any given 3-gram g will have a DF with respect to the corpus, and a TF with respect to an individual document. These n-gram indexes are used transparently by higher-level query types—most notably, prefix-expanding queries such as match_phrase_prefix . From the perspective of scoring, n-grams behave identically to ordinary terms: their document frequencies contribute to BM25-style relevance scores, and are computed over the entire corpus. 
+
+Extracting n-grams. As the _ngram indexes can be queried independently like normal fields, the attack insights from Sec-tion 4.2 still apply to those fields—just over n-grams instead of individual terms. For example, when issuing an mpp query on _ngram with input q = t1 . . . tr, the IDF is computed by first listing all n-grams via a sliding window of n terms across the query. All n-grams contribute to the IDF idf mpp as in the first sum in Equation (4). The final n-gram is also treated as a prefix of n-grams, and expanded similarly to the second sum in Equation (4). Finally, the score is computed similarly to 
+
+Algorithm 8: nGramExactOracle                           
+
+> Input: n-gram t, SAYT index name index
+> Output: True iff tis an indexed n-gram in index
+> 1r1
+> ctrl ,· · · ,rn
+> ctrl ←FRESHTERM ;
+> 2rctrl ←r1
+> ctrl · · · rn
+> ctrl ;
+> 3index ←index ._ngram ;
+> 4. . . ;// Continues from Line 2 of Algorithm 5
+
+Algorithm 9: nGramPrefixOracle                            
+
+> Input: n-gram prefix p, SAYT index name index
+> Output: True iff pis a prefix of an n-gram in index
+> 1r1
+> ctx ,· · · ,rn−1
+> ctx ←FRESHTERM ;
+> 2rctx ←r1
+> ctx · · · rn−1
+> ctx ;
+> 3index ←index ._ngram ;
+> 4. . . ;// Continues from Line 2 of Algorithm 6
+
+basic mpp using these values. Because of this, we can extract n-grams by applying our at-tack from Algorithm 7 directly on the SAYT field._ngram 
+
+indexes with a small modification to our oracles. Instead of sampling a single fresh term, we must construct fresh (n − 1)-grams, as illustrated in Algorithm 8 and Algorithm 9. Then, we can directly query against the _ngram SAYT indexes in-stead of the main index .However, SAYT imposes one additional challenge—while 
+
+mpp queries work as normal against the _ngram SAYT in-dexes, our PrefixOracle does not work out of the box when trying to recover unigrams. Recall that a normal text field with a prefix index builds the index on prefixes of single terms, which is what allows us to isolate the scoring contributions from a given prefix p in Algorithm 6 (provided we use the correct score direction), as score (d, q, D) = idf (rctx , D) · tfNorm (rctx , d, D) + 
+
+idf prefix (p, D) · tfNorm (p, d, D).
+
+Conversely, SAYT builds a prefix index over n-grams, so the indexed prefix includes the preceding terms, resulting in score (d, q, D) = idf prefix (rctx p, D) · tfNorm (rctx p, d, D).
+
+Note the contrast—in the normal-field case the prefix p
+
+is scored as its own summand, so its IDF is isolable, but under SAYT the prefix index fuses rctx with p into a sin-gle n-gram, so p’s contribution cannot be separated. Since 
+
+rctx is random and private documents do not contain it, after injection df prefix (rctx p, D) = 1, even if hidden doc-uments contain terms beginning with p. By construction, df prefix (rctx rctrl , D) = 1, so stest = sctrl always. Furthermore, 
+
+mpp requires two terms to perform any prefix expansion, so we cannot simply omit rctx . This breaks the original oracle for extracting 1-grams. Nevertheless, there are a few ways of solving this problem; we give one such formulation here. We can write a semanti-cally equivalent query to normal mpp queries that allows us to control the scoring calculation using span queries. Whereas Algorithm 10: 1GramPrefixOracle                         
+
+> Input: Prefix t, SAYT index name index
+> Output: True iff tis an indexed 1-gram in index
+> 5. . . ;// Continues after Line 5 of Algorithm 6
+> 6(_,stest )←span_near (span_term (rctx ),span_multi (prefix (p))) ;
+> 7(_,sctrl )←span_near (span_term (rctx ),span_multi (prefix (rctrl ))) ;
+> 8. . . ;// Continues from Line 8 of Algorithm 6
+
+Algorithm 11: EnumerateNGrams                                     
+
+> Input: Set of allowed characters CHARS , SAYT index name index ,integer n, initial queue prefixes Qinit
+> Output: ˆW, the indexed n-grams in index
+> 4. . . ;// Continues after Line 4 of Algorithm 7
+> 5if nGramPrefixOracle (index ,p)then
+> 6for c∈CHARS do Q.PUSH (p∥c);
+> 7if nGramExactOracle (index ,p)then ˆW←ˆW∪ { p};
+> 8. . . ;// Continues from Line 8 of Algorithm 7
+
+mpp has flexibility as to how it calculates the score, a span 
+
+query is a low-level positional query that lets us explicitly control the expansion behavior. Our modified algorithm is in Algorithm 10 and works identically to Algorithm 6 but, instead of issuing mpp queries, we issue the query 
+
+span_near (span_term (rctx ), span_multi (prefix (p))) 
+
+The span_term (rctx ) clause requires the exact term rctx ; the 
+
+span_multi (prefix (p)) clause requires a term that is pre-fixed by p; the span_near parameters specify the order in which these conditions must be satisfied. This is the same semantics as mpp , but works around the SAYT scoring issue as the scoring function is not delegated to the SAYT indexes. With this formulation, the score is computed as described in Section 4.2, which allows our oracle to enumerate the uni-grams in the SAYT field. With this, we define Algorithm 11, which works iden-tically to Algorithm 7 but we replace PrefixOracle 
+
+with nGramPrefixOracle (and 1GramPrefixOracle ) and 
+
+ExactOracle with nGramExactOracle . The correctness and complexity arguments follow directly from the corresponding arguments for Algorithm 7 so we omit them here. 
+
+## 4.4 The Attack 
+
+We now compose our scoring oracles into an end-to-end re-construction attack against DLS-protected document text. At a high level, the attack proceeds in two stages: (i) enumerat-ing the set of n-grams present in the hidden corpus, and (ii) reconstructing approximate document text from the recovered 
+
+n-grams. An overview of our attack is in Figure 4. 
+
+Enumerating n-grams. We enumerate all of the n-grams in a corpus using Algorithm 12, which itself is composed of EnumerateNGrams . It uses EnumerateNGrams to recover the set of all 1-grams, then uses the set of recovered 1-grams ˆW1 to seed the starting search state of the next call 
+
+Algorithm 12: EnumerateAllGrams         
+
+> Input: Set of allowed characters CHARS , SAYT index name index , the length of n-grams to enumerate n
+> Output: ˆWn, the n-grams in
+
+D                              
+
+> 1ˆW1←EnumerateNGrams (CHARS ,index ,1,{"" });
+> 2for j∈ { 2, . . . , n}do
+> 3Qj
+> init ← { g∥:g∈ˆWj−1};
+> 4ˆWj←EnumerateNGrams (CHARS ,index ,j,Qj
+> init );
+> 5return  ˆW1, . . . , ˆWn
+> ;
+
+to EnumerateNGrams to recover the set of 2-grams. In other words, it uses the discovered ( j − 1)-grams at each stage as prefixes to search for j-grams. This repeats until all j-grams have been discovered for 1 ≤ j ≤ n.Correctness follows directly from the corresponding argu-ment for Algorithm 7; we omit a full analysis for brevity. For complexity, let Vn be the number of candidate prefixes of the set of n-grams. The enumeration performs O(Vn) oracle calls (linear in the size of the prefix trie) and requires 4 Vn scored queries and 4 Vn document injections. Once again, this follows directly from the complexity analysis for Algorithm 7. 
+
+Towards approximate document reconstruction. Once we recover the set of indexed n-grams, we can construct a 
+
+de Bruijn graph [10, 22] over (n − 1)-grams: each n-gram 
+
+(t1, . . . , tn) defines a directed edge from the (n − 1)-gram pre-fix (t1, . . . , tn−1) to the suffix (t2, . . . , tn). Paths in this graph correspond to sequences of overlapping n-grams and thus to candidate document substrings. When the graph is unambigu-ous, paths directly recover contiguous sections of the original plaintext. At branch points, multiple reconstructions are con-sistent with the same n-gram set; we opt for a greedy approach which identifies longer, plausible (though possibly incorrect) reconstructions [20, 29, 45]. We expand on this in Section 4.5. 
+
+4.4.1 Additional Optimizations 
+
+The algorithms above describe the attack in its simplest form, where each trie node is tested independently. Here, we identify several optimizations that reduce the adversarial overhead without changing the logical oracle being evaluated. 
+
+Packing and batching. For a set of candidate prefixes 
+
+p1, . . . , pm, instead of writing one candidate document and one control document per prefix, we write one packed can-didate document containing all candidate probe phrases and one packed control document containing the matched control phrases. 11 As long as we stay within ES/OS’s maximum doc-ument size, one injection can prepare many oracle evaluations. This substantially reduces the number of injected documents. We further reduce the number of network round-trips with ES/OS’s bulk insert and multi-search APIs. This does not   
+
+> 11 For the SAYT n-gram enumeration, we additionally insert exact-fresh terms between probe phrases so that the packed document does not acciden-tally create additional n-grams spanning two adjacent probes.
+
+(a) search_as_you_type indexes contigu-ous n-grams in original text strings. please review the attached draft    
+
+> Indexed 3-grams
+> g1= ( please, review, the )
+> g2= ( review, the, attached )
+> g3= ( the, attached, draft )
+> Stored in 3-gram index
+
+(b) Post-filtered scores enable membership and prefix tests over n-grams. 
+
+Oracle 1: nGramExactOracle    
+
+> score shift ⇒goccurs in hidden corpus
+
+Oracle 2: nGramPrefixOracle     
+
+> score shift ⇒ ∃ gwith prefix p
+
+Recovered set bWn (indexed n-grams) 
+
+(c) Recovered n-grams define a de Bruijn graph [10, 22] over (n−1)-grams. please review review the the attached attached draft  
+
+> g1g2
+> g3
+
+the meeting 
+
+> g4
+
+Path ⇒ reconstructed text 
+
+> “please review the attached draft”
+
+Figure 4: Overview of extracting reconstructable structure from DLS-protected search_as_you_type indexes. change the number of logical queries: each oracle call still has a candidate and control query. It only reduces the number of requests needed to execute those logical queries. 
+
+Leaf inference. In term enumeration, we can reduce the num-ber of ExactOracle (and nGramExactOracle ) calls by learning from previous PrefixOracle (·, p) calls. If PrefixOracle (·, p) = 
+
+False , then no indexed term can equal p, so we can skip 
+
+ExactOracle (·, p). If PrefixOracle (·, p) = True , we can defer 
+
+the exact check on p and instead check the children of p in the trie. If all children result in negative PrefixOracle calls, then we can conclude p is a leaf without an ExactOracle call. In other words, exact checks are only needed for internal trie nodes; that is, terms that are also prefixes of longer terms. 
+
+n-gram trie. For n-gram recovery we use the already recov-ered lower-order grams to restrict the search space. After recovering unigrams, the 2-grams search only explores pre-fixes of recovered unigrams as possible second terms. Then, the j-gram stage uses recovered ( j −1)-grams as contexts and the recovered unigram trie as the search space. This avoids traversing strings that cannot be valid next terms. 
+
+## 4.5 End-to-End Evaluation 
+
+We now evaluate the practicality of our scoring-based attacks against ES/OS. Our evaluation aims to validate the reliabil-ity of the scoring-based oracles we construct, analyze how efficiently these oracles can be amplified to recover n-grams, and to what extent recovered n-grams suffice to reconstruct documents. We ran our attacks on OS 3.6.0 and ES 9.3.3. 
+
+Setup. We deploy ES/OS with DLS enabled and default BM25 scoring as a single-shard index to avoid confound-ing effects from cross-shard score normalization, though we remark there are known techniques to handle this [61]. We run the DBMS on a c4-standard-16 GCE host with 16 vCPUs (dedicated cores), 60 GB RAM, and a 200 GB local SSD. The attacker is running on a c4-standard-16 host in the same zone and connects to the database as a DBMS user that can issue DLS-protected read queries on the collection. Our attack is implemented as a single-threaded program in Python 3.10 and includes the optimizations from Section 4.4.1. We explic-Table 6: Attack cost separated by n-gram stages. The # of injected documents is 2 × query batches. The # of trie nodes 
+
+is 0 .5× logical queries. Times are averaged over 3 repetitions. 
+
+Takeaway: The attacks recover the indexed n-gram set ex-actly across all tested corpus sizes. Injections and queries scale linearly with the # of trie nodes.                                                                                  
+
+> #Docs Stage Indexed Terms Logical Queries Inject/Query Batches Time (min)
+> 11-gram 21 24,658 27 0.1 2-gram 21 804 95 <0.13-gram 20 798 94 <0.14-gram 19 764 92 <0.1
+> Total 27,024 308 0.2 10 1-gram 410 390,910 114 1.2 2-gram 659 42,802 2,371 0.6 3-gram 708 61,706 3,568 1.0 4-gram 721 65,466 3,733 1.1
+> Total 560,884 9,786 3.9 100 1-gram 2,875 2,587,220 660 9.5 2-gram 9,506 580,564 22,428 7.0 3-gram 12,204 1,276,596 63,432 18.8 4-gram 13,098 1,531,738 79,596 24.3
+> Total 5,976,118 166,116 59.6 1000 1-gram 10,179 8,972,494 2,293 39.4 2-gram 46,843 3,355,842 91,987 36.8 3-gram 68,364 8,508,622 355,953 114.3 4-gram 76,809 10,983,702 498,256 170.5
+> Total 31,820,660 948,489 361.0
+> Across all corpus sizes and runs, each stage recovers the indexed
+> n-gram set exactly (100% recall and precision).
+
+itly refresh the index after each injection, though the attack still works without refreshes if the adversary can wait [61]. 
+
+Schema and data. The corpus consists of a variable number of emails drawn from the Enron dataset [35], a widely used, real-world dataset containing naturally occurring English text with heterogeneous structure. Documents are indexed with the default lowercase analyzer in a search_as_you_type 
+
+field with 4-grams enabled. 
+
+Policy. We use a simple DLS configuration with a role whose index access is restricted by an intentionally simple DLS gas price terms phillip as discussed during our phone conversation in a parallon 75 microturbine power generation deal for a national accounts customer i am developing a proposal to sell power to customer at fixed or collar floor price to do so i need a corresponding term gas price for same microturbine is an onsite generation product developed by honeywell to generate electricity on customer site degen using natural gas in doing so i need your best fixed price forward gas price deal for 1 3 5 7 and 10 years for annual seasonal supply to microturbines to generate fixed kwh for customer we have the opportunity to sell customer kwh s using microturbine or sell them turbines themselves kwh deal must have limited no risk forward gas price to make deal work therein comes sempra energy gas trading truly you we are proposing installing 180 240 units across a large number of stores 60 100 in san diego store number varies because of installation hurdles face at small percent for 6 8 hours a day microturbine run time gas requirement for 180 microturbines 227 302 mmcf per year gas requirement for 240 microturbines 302 403 mmcf per year phillip.allen enron.com to greg.piper enron.com subject re body traveling to have a business meeting takes the fun out of the trip especially if you have to prepare a presentation i would suggest holding the business plan meetings here then take a trip without any formal business meetings i think it would be more productive to try and stimulate discussions across the different groups about what is working and what is not too often the presenter speaks and the others are quiet just waiting for their turn the meetings might be better if held in a round table discussion format my suggestion for where to go is austin play golf and rent a ski boat and jet ski’s flying somewhere takes too much time phillip.allen enron.com to joyce.teixeira enron.com subject re high speed internet access body 1 login pallen pw ke9davis i don’t think these are required by the isp 2 static ip address ip 64.216.90.105 sub 255.255.255.248 gate 64.216.90.110 dns 151.164.1.8 3 company 0413 rc 105891 per year gas will likely be consumed from may through september during peak electric period gas price required burnertip price behind ldc san diego gas electric need detail breakout of commodity and transport cost firm or interruptible should you have additional questions give me a call let me assure you this is real deal buck buckner p.e mba manager business development and planning big box retail sales honeywell power systems inc 8725 pan american frwy albuquerque nm 87113 505 798 6424 505 798 6050x 505 220 4129 888 501 3145 phillip.allen enron.com to tim.belden enron.com subject body randy can you send me a schedule of the salary and level of everyone in the scheduling group plus your thoughts on any changes that need to be made patti s for example phillip 
+
+Figure 5: Example 4-gram reconstructions from |D| = 10 En-ron subset using a greedy de Bruijn traversal [45]. Takeaway: 
+
+While text is not complete, the overall meaning is preserved. policy that enforces a public/private split: 
+
+dls : {"term" : {"public" : true }} .
+
+This policy allows the adversary to issue queries against the index and observe results and scores, but only documents with the attribute public=true are returned; documents with 
+
+public=false are filtered out by DLS. The adversary can also inject documents with public=true into the index. 
+
+Evaluation. Our results are shown in Table 6. We achieve 100% accuracy, which confirms our scoring oracles consis-tently distinguish indexed and non-indexed n-grams. As ex-pected, the traversal cost of each stage scales linearly with the number of trie nodes. We reiterate that this reflects favorable conditions (e.g., single-shard index, a corpus that is static for the attack’s duration) and should be read as a best case. 
+
+Document reconstruction. We do a preliminary evaluation of reconstructing documents from the recovered n-grams by building the resulting de Bruijn graph and then traversing the graph to recover approximate document sequences. Document boundaries cannot be uniquely determined, but we can still extract long substrings of the original plaintext. Figure 5 shows example outputs of the de Bruijn graph traversal on the 4-gram graph extracted from ES/OS with the default analyzer on a dataset containing |D| = 10 emails. While text is not complete, the meaning is preserved. Techniques from other works on n-gram reconstruction (e.g., [20, 29]) may further improve recovery. 12 We leave this for future work. 
+
+## 4.6 Potential Mitigations 
+
+Prior work. Mitigations for BM25’s DF side-channel have been proposed in several works [7, 40, 44, 59, 61, 63]. Ad-dressing the side-channel is relatively simple—we just need to ensure scores do not have a logical dependence on pri-vate data. The most straightforward approach is to maintain per-user indexes, but this comes with a severe performance overhead and reduces the effectiveness of the scoring func-tions. Most of the works cited above suggest approaches that compute relevance scores using only statistics computed from user-visible documents, but Zerr et al. [63] propose adding noise to scores. Wang et al. [61] suggest either training DFs on an auxiliary public corpus or computing initial DFs on the actual corpus, then post-filtering non-public documents from the DFs. Those countermeasures address the DF side-channel in match queries and still apply to our exact oracles. Mitigations for mpp queries have not been considered in prior work and require additional steps. Even if one uses DFs unrelated to the corpus, the effect of expanding a term and summing the DFs will still introduce a dependence on private documents—the contribution of a term t from the expansion set will signal that such a term exists in the private corpus, even if the DF of t is not computed on private data. 
+
+Mitigations. A simple mitigation is to modify the computa-tion of df mpp to only expand terms that are visible to a user. This can be checked quickly, once per search. More drasti-cally, one could simply omit the computation of idf mpp from 
+
+mpp scores. When issuing a standalone mpp query, the IDFs do not affect the ordering of the results as the IDF is the same for every result. The IDFs only affect the scores when multi-ple mpp queries are being combined into a single query, with scores added. Here, IDFs help promote “more relevant” mpp 
+
+queries. We are not aware of this use of mpp , so we think many applications would not be affected by this IDF redaction. 
+
+> 12
+
+A natural approach is to use a large language model (LLM) to generate more fluent reconstructions (e.g., choosing among ambiguous de Bruijn paths). We do not attempt LLM-based reconstruction as we believe we cannot do so fairly: the Enron corpus is a public benchmark and may appear in the LLM’s training data, which confounds attempts to determine whether actual recovery is occurring or if the LLM has “memorized” the dataset. 4.7 Discussion 
+
+We showed that ES/OS’s rich queries allow for efficient ex-traction of arbitrary, unknown keywords. This is a significant improvement over previous work [7, 61], which could only test for existence of exact terms (and not a prefix). Moreover, depending on the indexing configuration, 2, 3, or 4-grams are recoverable with similar complexity, which in turn can allow for approximate text reconstruction using standard de Bruijn reconstruction techniques (depending on D’s composition). This work does not explore the practical exploitation of this side-channel on live systems. For example, our experiments assume corpus document frequencies are stable for the dura-tion of the attack, but on a live index with concurrent writes, a term’s DF (or its expansions) can change between queries and flip the oracle’s decision. Over long enumerations, our adaptive strategies are more exposed to this drift. Wang et al. [61] circumvented several practical challenges to attack live systems (e.g., GitHub). In principle, their insights should transfer directly to our setting to handle these challenges. 
+
+## 5 Related Work 
+
+We already discussed prior work that studies FGAC side-channels for RLS [9, 52] and DLS [7, 61]. Outside FGAC, there are many side-channel attacks specific to databases (e.g., the storage layer attacks from [5, 15, 19, 25, 30]). Other works have exploited timing side-channels in DBMS components orthogonal to FGAC. Some works demonstrate timing side-channels from data-dependent execution in in-dexing algorithms like B +-trees [18] and LSM trees [33], memory deduplication [57], and compression [56]. These techniques are slow and recover only a few bits of values per minute. Other timing attacks exploit shared microarchi-tectural caches [58] and filesystem synchronization [26, 32] in databases. These works differ from ours in both threat model and objective as they typically assume low-level ad-versarial compromise of shared hardware resources, whereas our attacks are purely remote and require only query access. Finally, a set of work explores timing attacks against query-based anonymization systems [4] and differentially private databases [27, 53]. Such privacy mechanisms are orthogonal to FGAC, which completely removes records from the result. The principle that query expressiveness leads to more leakage appears in otherwise orthogonal settings such as en-crypted search (e.g., [16, 24, 34, 37, 39]) and statistical pri-vacy [11]. Our work adds post-filtering FGAC to this list. 
+
+## 6 Conclusion 
+
+We showed that two FGAC case studies—each with com-pletely different technical issues—reach similar conclusions: post-filtering FGAC systems with rich queries can fail to deliver the isolation they promise. While we propose some mitigations, we conclude that this architecture is inherently brittle. We expect that rich queries will interact badly with post-filtered FGAC in other contexts. Of course, physically separating indexes into per-tenant distinct structures closes the channel entirely. However, this comes with extra overhead of managing multiple database or index instances, which is the whole motivation for FGAC in the first place. Our attacks are strongest in the direct access setting, where the adversary submits arbitrary queries to the database. While this model is realistic in some settings, as discussed in Sec-tion 2, some multi-tenant systems expose only app-mediated access, where a trusted application exposes only a fixed set of query templates, and an adversary can only attack via that nar-row interface. Evaluating whether reconstruction is possible under such constraints is a valuable direction for future work. 
+
+## Acknowledgments 
+
+We thank Archita Agarwal, Marilyn George, Seny Kamara, Tarik Moataz, and Ian Ward for helpful discussions early in this work. Generative AI tools (ChatGPT and Claude) were used to write experiment code and to review the text of this pa-per. This research received no specific grant from any funding agency in the public, commercial, or not-for-profit sectors. 
+
+## Ethical Considerations 
+
+We conducted a stakeholder-based ethics analysis guided by the Menlo Report [60] and Kohno et al. [36]. For each stake-holder, we consider the benefits and harms of this research. 
+
+End users/tenants whose data is protected by FGAC. The main risk is unauthorized inference about protected rows or documents if their service deploys a vulnerable post-filtering design. The benefit is that operators receive clearer guidance for reducing this risk. We mitigated risks by experimenting in controlled testbeds and not on third-party deployments. 
+
+Developers and organizations using FGAC systems. The risk is privacy, compliance, and financial harm if confiden-tiality boundaries fail, as well as operational cost to reassess query interfaces, RLS/DLS configurations, indexing strate-gies, logging, and monitoring. The benefit is improved abil-ity to assess whether their deployments expose the relevant query features that make them vulnerable to the attack. To help operators assess applicability, we explicitly state attack prerequisites (e.g., required query features, score visibility, in-jection capability, indexing choices), though we acknowledge that some mitigations may impose significant tradeoffs. 
+
+Database maintainers. The risk is triage burden and possible reputation impact. The benefit is a more precise understand-ing of the leakage of expressive query interfaces. To mitigate risks, we disclosed our work on January 25, 2026 to Post-greSQL, Elastic, and OpenSearch, and proposed a 90-day window. We had received acknowledgments from all parties by February 9. Elastic indicated they consider the vulnerabili-ties as low priority at this time. OpenSearch and PostgreSQL sent a basic acknowledgment. At camera-ready time, we were not aware of any patch release dependency that conflicted with the publication timeline, so we proceeded with publication. 
+
+The research community and authors. The security re-search community benefits from a clearer understanding of the security of FGAC mechanisms. At the same time, attack-ers benefit from publication by learning how to implement more effective attacks. We reduced this risk by notifying af-fected parties before publication, emphasizing mitigations and limitations, and avoiding live testing. The research authors are also stakeholders, but we do not believe that a research team can unbiasedly assess the harms and benefits of their own research on themselves, so we abstain from this analysis. 
+
+Decision to research and to publish. Our approach to this work was based on a structured comparison between the risks and benefits of public disclosure. We considered (1) not pub-lishing, (2) private, vendor-only disclosure, or (3) disclosing and publishing publicly. We concluded that vendor-only dis-closure would be insufficient, as we believe effective mitiga-tion requires case-by-case configuration changes, restrictions on query interfaces, and risk assessment—choices made by application developers rather than by database vendors. We then considered the risk that publication could help ad-versaries. We mitigated this risk in several ways: we evaluated only systems under our administrative control, did not test against production services or private user data, and disclosed to the evaluated affected parties before public release. Finally, we considered broader ethical standards. From a 
+
+Beneficence perspective, publication provides better under-standing of when FGAC threat models fail under expressive query interfaces. This enables more secure engineering guid-ance and makes the limits of FGAC clearer. From a Justice 
+
+perspective, publication shifts the burden of discovering sub-tle side-channels away from individual customers and users, whose data might be protected by such systems. From a Re-spect for Persons perspective, it advances users’ privacy inter-ests by motivating deployment of mitigations. From a Respect for Law and Public Interest perspective, we avoided attacking live systems and engaged in coordinated disclosure. On balance, we concluded that disclosure and publication best serve the public interest. The practical severity of compos-ing side-channel mechanisms with expressive query interfaces was not previously understood, and the design pattern is not implementation-specific and thus may recur in other systems. This chain of reasoning led us to publish this paper. 
+
+## Open Science 
+
+Our attack and experiment setup scripts are available at https: //doi.org/10.5281/zenodo.20370280. 
+
+## References 
+
+[1] vmstat(8) Linux User’s Manual , 2024. [2] Apache Lucene, 2026. URL: https://lucene.apache.org/. [3] J. B. Almeida, M. Barbosa, G. Barthe, F. Dupressoir, and M. Emmi. Verifying Constant-Time Implementations. In USENIX Sec. , 2016. [4] F. Boenisch, R. Munz, M. Tiepelt, S. Hanisch, C. Kuhn, and P. Francis. Side-channel attacks on query-based data anonymization. In ACM CCS , 2021. [5] B. Bourassa, Y. Michalevsky, and S. Eskandarian. G-DBREACH attacks: Algorithmic techniques for faster and stronger compression side channels. In ACNS , 2025. [6] J. Brown. Row Level Security: Defense in Depth, 2025. URL: https://svix.com/blog/row-level-security-defen se-in-depth/. [7] S. Büttcher and C. L. A. Clarke. A security model for full-text file system search in multi-user environments. In USENIX FAST , 2005. [8] A. Chaudhary. Protecting Our Own Tenant in a Multi-Tenant SaaS, 2025. URL: https://ashwch.com/protectin g-our-own-tenant-in-a-multi-tenant-saas. [9] C. Dar, M. Hershcovitch, and A. Morrison. RLS Side Channels: Investigating Leakage of Row-Level Security Protected Data Through Query Execution Time. PACM-MOD , 1(1), 2023. [10] N. de Bruijn. A combinatorial problem. Proc. Sect. Sci. Kon. Akad. Wetensch. Ams. , 49(7), 1946. [11] I. Dinur and K. Nissim. Revealing information while preserving privacy. In PODS , 2003. [12] Elastic. Security limitations. URL: https://elastic.co/d ocs/deploy-manage/security/limitations. [13] Elastic. Controlling access at the document and field level, 2026. URL: https://elastic.co/docs/deploy-man age/users-roles/cluster-or-deployment-auth/controllin g-access-at-document-field-level. [14] Z. Espiritu and D. Cash. Plaintext recovery against post-filtering access control. In USENIX Sec. , 2026. [15] Z. Espiritu, S. Kamara, T. Moataz, and V. Ogier. Leaf-blower: a Leakage Attack Against TEE-Based En-crypted Databases. In IEEE S&P , 2026. [16] F. Falzon, E. A. Markatou, Akshima, D. Cash, A. Rivkin, J. Stern, and R. Tamassia. Full database reconstruction in two dimensions. In ACM CCS , 2020. [17] C. Fruhwirth. New methods in hard disk encryption. Master’s thesis, Vienna University of Technology, 2005. [18] A. Futoransky, D. Saura, and A. Waissbein. The ND2DB attack: database content extraction using timing attacks on the indexing algorithms. In WOOT , 2007. [19] A. Fábrega, C. O. Pérez, A. Namavari, B. Nassi, R. Agar-wal, and T. Ristenpart. Injection Attacks Against End-to-End Encrypted Applications. In IEEE S&P , 2024. [20] M. Gallé and M. Tealdi. Reconstructing Textual Docu-ments from n-grams. In SIGKDD , 2015. [21] V. L. Goff. Ensuring Tenant Scoping in Kong Konnect Using Row-Level Security, 2025. URL: https://konghq .com/blog/engineering/ensuring-tenant-scoping-row-l evel-security. [22] I. J. Good. Normal Recurring Decimals. J. Lond. Math. Soc. , S1-21(3), 1946. [23] Google Cloud. Best practices for row-level security in BigQuery. URL: https://docs.cloud.google.com/bigque ry/docs/best-practices-row-level-security. [24] P. Grubbs, M.-S. Lacharité, B. Minaud, and K. G. Pater-son. Pump up the Volume: Practical Database Recon-struction from Volume Leakage on Range Queries. In 
+
+ACM CCS , 2018. [25] P. Grubbs, T. Ristenpart, and V. Shmatikov. Why Your Encrypted Database Is Not Secure. In HotOS , 2017. [26] C. Gu, Y. Zhang, and N. Abu-Ghazaleh. I know What You Sync: Covert and Side Channel Attacks on File Systems via syncfs. In IEEE S&P , 2025. [27] A. Haeberlen, B. C. Pierce, and A. Narayan. Differential privacy under fire. In USENIX Sec. , 2011. [28] I. Harris-Holt. A Friendly Introduction to RLS Policies in Postgres, 2024. URL: https://cord.com/techhub/archi tecture/articles/a-friendly-introduction-to-rls-policie s-in-postgre. [29] J. Hessel and A. Schofield. How effective is BERT without word ordering? Implications for language un-derstanding and data privacy. In ACL , 2021. [30] M. Hogan, Y. Michalevsky, and S. Eskandarian. DBREACH: Stealing from Databases Using Compres-sion Side Channels. In IEEE S&P , 2023. [31] W.-M. Hu. Reducing Timing Channels with Fuzzy Time. 
+
+J. Comp. Sec. , 1(3-4), Oct. 1992. [32] Q. Jiang and C. Wang. Sync+Sync: A Covert Channel Built on fsync with Storage. In USENIX Sec. , 2024. [33] A. Kaufman, M. Hershcovitch, and A. Morrison. Pre-fix Siphoning: Exploiting LSM-Tree Range Filters For Information Disclosure. In USENIX ATC , 2023. [34] G. Kellaris, G. Kollios, K. Nissim, and A. O’Neill. Generic Attacks on Secure Outsourced Databases. In 
+
+ACM CCS , 2016. [35] B. Klimt and Y. Yang. Introducing the Enron Corpus. In CEAS , 2004. [36] T. Kohno, Y. Acar, and W. Loh. Ethical Frameworks and Computer Security Trolley Problems: Foundations for Conversations. In USENIX Sec. , 2023. [37] M.-S. Lacharité, B. Minaud, and K. G. Paterson. Im-proved Reconstruction Attacks on Encrypted Data Us-ing Range Query Leakage. In IEEE S&P , 2018. [38] C. Manouvrier. Using PostgreSQL Row-Level Security in a high-growth startup for tenant isolation, 2022. URL: https://medium.com/p/f56db94da926. [39] E. A. Markatou, F. Falzon, Z. Espiritu, and R. Tamassia. Attacks on Encrypted Response-Hiding Range Search Schemes in Multiple Dimensions. PETS , 2023(4), 2023. [40] E. C. Micheli, G. Margaritis, and S. V. Anastasiadis. Efficient multi-user indexing for secure keyword search. In PAIS , 2014. [41] Microsoft. Row-level security, 2026. URL: https://lear n.microsoft.com/en-us/sql/relational-databases/securit y/row-level-security. [42] D. Molnar, M. Piotrowski, D. Schultz, and D. Wagner. The Program Counter Security Model: Automatic Detec-tion and Removal of Control-Flow Side Channel Attacks. In ICISC , 2005. [43] OpenSearch. Document-level security, 2026. URL: https://docs.opensearch.org/latest/security/access-con trol/document-level-security/. [44] A. Parker-Wood, C. Strong, E. L. Miller, and D. D. Long. Security aware partitioning for efficient file sys-tem search. In MSST , 2010. [45] P. A. Pevzner, H. Tang, and M. S. Waterman. An eu-lerian path approach to dna fragment assembly. PNAS ,98(17), 2001. [46] L. Peña. Django friends with Postgres Row-level Secu-rity, 2024. URL: https://alasco.tech/2024/03/28/djang o-and-row-level-security/. [47] M. Pokryvailo. Shipping multi-tenant SaaS using Post-gres Row-Level Security, 2022. URL: https://thenile.de v/blog/multi-tenant-rls. [48] PostgreSQL. Collation support, 2026. URL: https: //postgresql.org/docs/18/collation.html. [49] PostgreSQL. Row security policies, 2026. URL: https: //postgresql.org/docs/18/ddl-rowsecurity.html. [50] PostgreSQL. Rules and privileges, 2026. URL: https: //postgresql.org/docs/18/rules-privileges.html. [51] S. Prakash. Enhancing Data Security at Rocketlane: Adopting Row-Level security, 2025. URL: https://rock etlane.com/blogs/enhancing-data-security. [52] A. Rasin, J. Herbick, B. Lenard, N. Scope, and J. Wag-ner. On Vulnerability of Access Control Restrictions to Timing Attacks in a Database Management System. In 
+
+SSDBM , 2024. [53] Z. Ratliff, N. Berrios, and J. Mickens. Timing attacks on differential privacy are practical. In ACM CCS , 2025. [54] S. Robertson and H. Zaragoza. The Probabilistic Rele-vance Framework: BM25 and Beyond. Found. Trends Inf. Retr. , 3(4), 2009. [55] C. Rousey. Using PostgreSQL RLS with Hibernate Reactive, 2023. URL: https://datacater.io/blog/2023-0 4-05/using-postgresql-rls-with-hibernate-reactive. [56] M. Schwarzl, P. Borrello, G. Saileshwar, H. Müller, M. Schwarz, and D. Gruss. Practical timing side-channel attacks on memory compression. In IEEE S&P , 2023. [57] M. Schwarzl, E. Kraft, M. Lipp, and D. Gruss. Remote Memory-Deduplication Attacks. In NDSS , 2022. [58] A. Shahverdi, M. Shirinov, and D. Dachman-Soled. Database Reconstruction from Noisy Volumes: A Cache Side-Channel Attack on SQLite. In USENIX Sec. , 2021. [59] A. Singh, M. Srivatsa, and L. Liu. Search-as-a-service: Outsourced search over outsourced storage. ACM TWEB , 3(4), 2009. [60] U.S. Dept. of Homeland Security. The Menlo Report. Technical report, 2012. [61] L. Wang, P. Grubbs, J. Lu, V. Bindschaedler, D. Cash, and T. Ristenpart. Side-Channel Attacks on Shared Search Indexes. In IEEE S&P , 2017. [62] E. B. Wilson. Probable inference, the law of succession, and statistical inference. J. Am. Sta. As. , 22(158), 1927. [63] S. Zerr, D. Olmedilla, W. Nejdl, and W. Siberski. Zer-ber+ r: Top-k retrieval from a confidential index. In 
+
+EDBT , 2009. [64] D. Zhang, A. Askarov, and A. C. Myers. Predictive mitigation of timing channels in interactive systems. In 
+
+ACM CCS , 2011. 
+
+## A RLS Prefix Queries 
+
+For string attributes, we implement prefix tests using range predicates rather than PostgreSQL’s pattern-matching opera-tors. Although PostgreSQL provides dedicated prefix opera-tors (e.g., LIKE and ILIKE ), these are not marked LEAKPROOF 
+
+in general (e.g., they can raise errors under certain collation-s/encodings), and therefore cannot be reliably pushed down past the RLS security barrier. In contrast, standard compari-son operators on text ( >= , <) are LEAKPROOF and can be used to express the same prefix test in a way that the optimizer can apply using a B +-tree index on the string attribute. 
+
+Collation and ordering. In PostgreSQL, comparisons on 
+
+text /varchar are performed under the column’s colla-tion [48], which defines the total order used by B +-tree index scans. Our range-based prefix formulation assumes a fixed, known collation for the target column, and that the adversary can compute the successor bound pnext with respect to that same order (e.g., by treating values as byte strings under the C
+
+collation). If a locale-dependent collation is used, computing 
+
+pnext may require access to the same collation rules; in such deployments, the attacker can instead target columns with binary/bytewise order (or normalize text into a deterministic byte representation). 
+
+Attack formulation. Fix a string attribute attr and a prefix 
+
+p. Let pnext denote the smallest string strictly greater than p
+
+such that every string beginning with prefix p lies in the half-open interval [p, pnext ) under lexicographic order. 13 Then the predicate “ attr begins with p” is equivalent to: 
+
+p ≤ attr < pnext .
+
+Accordingly, we issue oracle probes of the form:              
+
+> 1SELECT 1FROM patients WHERE attr >= pAND attr <p_next LIMIT 1;
+
+Then, to enumerate unknown strings, the adversary starts from the empty prefix and extends it character-by-character. Given a current prefix p, for each character c in an assumed alphabet Σ the adversary tests the extended prefix p∥c using the range probe above. Any extension that yields a positive oracle response is retained and further extended. The process terminates for a prefix when no extension is positive, indicat-ing that no longer string in the table begins with that prefix. In practice, the number of probes depends on the number of distinct strings present (and their shared prefixes), rather than on the size of the overall string universe.
