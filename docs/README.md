@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-19</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-20</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 8 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 2 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>1</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-19 20:52:16 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-20 21:00:00 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共读8篇论文，重点聚焦漏洞验证与固件模糊测试两大方向。最值得关注的是《SNIPTEST》和《BullsEye》，前者用多级代码切片提升漏洞验证精度，后者实现定向固件模糊测试。建议优先精读这两篇，可快速掌握当前漏洞验证与固件测试的前沿思路。</p>
+<p>今日精读1篇、速读1篇，重点聚焦AI安全与隐私计算领域。</p>
+<p>最值得关注的是《CauSec》提出的因果驱动分析框架，为静态漏洞挖掘性能优化提供了新思路；《FESC》则探索了加密状态空间模型的长上下文隐私推理。</p>
+<p>建议普通读者优先精读《CauSec》，并结合自身漏洞检测场景验证其因果归因方法的实用性。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +73,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SNIPTEST: Fuzzing Multi-Level Code Slices for Validating Vulnerabilities">SNIPTEST: Fuzzing Multi-Level Code Slices for Validating Vulnerabilities</span></li><li><span class="dpr-home-dashboard-paper-title" title="BullsEye: Directed Firmware Fuzzing">BullsEye: Directed Firmware Fuzzing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Benchmarking Automated Security Patch Backporting: How Far Are We?">Benchmarking Automated Security Patch Backporting: How Far Are We?</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CauSec: Unboxing the Causal Drivers of Static Vulnerability Analysis Performance">CauSec: Unboxing the Causal Drivers of Static Vulnerability Analysis Performance</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +86,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">5 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Not Discrete Enough: On the Inherent Insecurity of dTPMs for Measured Boot">Not Discrete Enough: On the Inherent Insecurity of dTPMs for Measured Boot</span></li><li><span class="dpr-home-dashboard-paper-title" title="Remote-Timer-as-a-Service: Efficient Microarchitectural Leakage in the Cloud with Remote Timers">Remote-Timer-as-a-Service: Efficient Microarchitectural Leakage in the Cloud with Remote Timers</span></li><li><span class="dpr-home-dashboard-paper-title" title="Plaintext Recovery Against Post-Filtering Access Control">Plaintext Recovery Against Post-Filtering Access Control</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="FESC: Remodeling Long-Context Private Inference with Encrypted State-Space Models">FESC: Remodeling Long-Context Private Inference with Encrypted State-Space Models</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 </div>
 
