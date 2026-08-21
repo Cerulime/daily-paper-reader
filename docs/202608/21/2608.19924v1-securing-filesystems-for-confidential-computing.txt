@@ -1,0 +1,493 @@
+Title: Securing Filesystems for Confidential Computing
+
+URL Source: https://arxiv.org/pdf/2608.19924v1
+
+Published Time: Fri, 21 Aug 2026 00:47:10 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# Securing Filesystems for Confidential Computing 
+
+Dimitra Giantsidi ∗, Antoine Delignat-Lavaud ∗, C´ edric Fournet ∗, Jinnan Guo †, Heidi Howard ∗,Tianjiao Huang ‡, Kapil Vaswani § and Stavros Volos ∗∗Azure Research, Microsoft, Cambridge, UK 
+
+> †
+
+Imperial College London, UK 
+
+> ‡
+
+University of California, Irvine, USA 
+
+> §
+
+SPARC, Indian Institute of Science, India 
+
+Abstract —Confidential computing protects applications inside Trusted Execution Environments (TEEs), but it leaves storage vulnerable. Even with disk encryption, a malicious cloud provider can roll back, replay, fork, or tamper with disk state, breaking the integrity and freshness guarantees required by stateful applications. Existing solutions either assume trusted storage, incur high overheads, or push integrity logic into applications. We present S HIELD FS, a POSIX-compliant filesystem that provides end-to-end integrity and freshness for persistent stor-age in the confidential-computing threat model without re-quiring application changes. S HIELD FS represents permissible filesystem states using succinct cryptographic commitments, maintained inside TEEs and replicated in a lightweight trusted registry. On-disk data structures, including a write-ahead log and a storage pool, are authenticated using hash chains and an embedded Merkle tree. SHIELD FS utilizes transactions and copy-on-write to update persistent filesystem state and commitments atomically. The commitments are verified during reads, ensuring that rollback, replay, and equivocation attacks are detected even when the entire I/O stack is untrusted. We implement the design by extending ZFS, yielding SHIELD ZFS. Evaluation with standard filesystem benchmarks and real-world workloads shows that S HIELD ZFS provides strong integrity and freshness guarantees with performance comparable to state-of-the-art filesystems. 
+
+## 1. Introduction 
+
+Cloud computing has become the default substrate for modern applications because it provides persistence, avail-ability, and elasticity at scale. At the same time, regu-latory and geopolitical pressures have elevated trust and data sovereignty to first-class concerns: organizations must ensure their data remains protected against external attackers and the cloud provider. To address these concerns, technologies such as con-fidential computing have emerged. Confidential computing provides hardware-enforced isolation and remote attesta-tion for computation and in-memory data processing using Trusted Execution Environments (TEEs), enabling applica-tions to run securely even in the presence of compromised privileged attackers such as cloud administrators and service providers. TEEs protect data during computation in memory, but not in stable storage (e.g., virtual or physical disks, or remote cloud storage). Even if confidential applications encrypt their state (using, e.g., dm-crypt or BitLocker with TEE-protected keys), an attacker that controls their storage system can still replay, roll back, delete, or fork data without being detected, and thus break their intended security. For example, a database running inside a TEE may read stale or tampered data from storage, leading to data corruption or loss of consistency. Similarly, TEEs relying on untrusted storage cannot ensure the freshness of their files, enabling an attacker to roll back critical changes. Designing practical storage systems with strong integrity and freshness in this threat model is surprisingly hard. Prior work has approached this problem by embedding integrity checks into application-level protocols [1], but such designs sacrifice programmability, forcing developers to re-implement storage abstractions on a case-by-case basis, in-stead of just trusting standard APIs such as POSIX. Lower-layer integrity-preserving block devices exist [2], but they incur substantial resource overheads or require specialized hardware and a redesign of the cloud storage backend [3]. Integrity-preserving filesystems have also been proposed [4], [5], but either assume benign storage or fail to prevent rollbacks. In short, existing approaches either do not scale, or do not survive the attacker model relevant to modern clouds. This leads to the question: How can we build POSIX-compliant filesystems that ensure integrity and freshness under the confidential computing threat model while main-taining performance, scalability, and convenience? 
+
+Our key principle is to organize the filesystem’s per-sistent state as authenticated data structures [6], and to incrementally maintain their cryptographic commitments within protected TEE memory. These commitments serve as succinct, verifiable representations of the filesystem cur-rent state, enabling the TEE to detect any deviation as it reads data from untrusted storage. To ensure commitments are persisted atomically, we leverage mechanisms such as transactions and copy-on-write deployed in several existing filesystems. To ensure filesystems can survive TEE crashes and reboots, we register commitments at synchronization arXiv:2608.19924v1 [cs.CR] 20 Aug 2026 points with a trusted, fault-tolerant service also hosted in TEEs, and we consult this registry to bootstrap recovery from the filesystem’s latest commitments. We implement this design by extending ZFS, a widely used open-source filesystem that already supports crash-consistency and integrity protection against benign data corruption. The resulting S HIELD ZFS runs inside TEEs—in our case SEV-SNP-protected VMs—and exposes a standard POSIX API to the applications running in that TEE. Our extensions involve minimal changes to ZFS on-disk layout and core logic, making them applicable in principle to similar filesystems. We also implement a commitment registry by adapting CCF [7], a framework for securely replicating a key-value store across TEEs, so that it can serve a large number of filesystems with minimal resource overheads. We optimize it to achieve low-latency updates (0.68 ms), which is critical for synchronous workloads. Prior rollback-protection mechanisms incur higher latencies: 2 ms for ROTE [8], 2.5 ms for Nimble [9], and ≈100 ms when using SGX hardware counters [8], [10]. We evaluate S HIELD ZFS along two dimensions. First, we perform a security analysis based on precise models for the filesystem and the attacker, showing that it detects tam-pering, rollback, replay, and equivocation attacks even when the cloud provider is fully malicious. Second, we conduct a performance evaluation using filesystem and real-world workloads, showing that, compared to ZFS, S HIELD ZFS achieves low overheads ( <10%) for most workloads. The commitment registry can be shared by as many as 25 write-heavy filesystems while sustaining low registration latency. In summary, we make the following contributions:  
+
+> •
+
+We present S HIELD FS, a generic filesystem architec-ture to ensure integrity and freshness on top of un-trusted storage backends, while remaining agnostic to (most of) the underlying filesystem implementation.  
+
+> •
+
+We specify durability, crash-consistency, integrity, and freshness for POSIX filesystems.  
+
+> •
+
+We design and implement SHIELD ZFS, a POSIX-compliant filesystem that builds on ZFS and enforces end-to-end integrity.  
+
+> •
+
+We design and implement C ORE, a secure, lightweight, low-latency registration service that builds on CCF.  
+
+> •
+
+We provide a security analysis of S HIELD ZFS and CORE in the confidential computing attacker model.  
+
+> •
+
+We evaluate S HIELD ZFS and C ORE as drop-in re-placements for existing production filesystems, show-ing that they achieve integrity and freshness with low overheads and full compatibility with existing applica-tions. 
+
+## 2. Background 
+
+Confidential Computing. Confidential computing enables the execution of code and data within trusted execution environments (TEEs) that protect them against unauthorized access or modification, even from privileged software such as operating systems or hypervisors. In addition to isolation, confidential computing also supports remote attestation, which allows a remote party to verify the integrity of a TEE before provisioning it with sensitive data or code. TEEs can ask the hardware to sign a message together with a digest of its initial configuration (code and data) with a key only accessible to the hardware. The signature is backed by a platform certificate issued by the hardware provider. Through remote attestation, a client can verify a TEE’s trusted computing base (TCB) and hardware platform. Modern CPUs from Intel, AMD, and Arm provide con-fidential computing capabilities. AMD Secure Encrypted Virtualization (SEV-SNP) [11], Intel Trusted Domain Exten-sions [12], and Arm Confidential Compute Architecture [13] provide VM-based TEEs that isolate full-fledged virtual machines. Accelerators such as NVIDIA GPUs [14] also support confidential computing capabilities. 
+
+POSIX Filesystems. The POSIX filesystem API [15] is a standard interface for applications to interact with persistent storage through operations such as open , read , write ,
+
+fsync , rename , and unlink . POSIX specifies the effects of these operations and their durability. In particular, it requires that reads account for preceding writes within a process, and that synchronization operations such as fsync ,
+
+sync , and syncfs ensure that preceding writes have been persisted to stable storage. However, POSIX does not specify how filesystems should implement crash recovery, nor how they should behave when data is corrupted. It assumes a benign stor-age system in which data is persisted correctly or fails in detectable ways. 
+
+Crash-Consistent Filesystems. Most filesystems implement some form of crash-consistency using logging or journaling techniques. Updates are first applied to in-memory data structures and then persisted to disk. To ensure that the filesystem can recover after a crash, updates are typically recorded in a write-ahead log (WAL) or journal before being applied to their final locations. During recovery, the filesystem replays the log to reconstruct a consistent in-memory state. Many filesystems, including ZFS [16] and btrfs [17], ad-ditionally employ copy-on-write (CoW) semantics. Instead of modifying blocks in place, updates create new versions of blocks at fresh locations. Metadata is updated to point to the new versions, and older versions remain intact until they are garbage-collected. This approach enables atomic updates and simplifies recovery, since the filesystem can switch between consistent versions by updating a small set of root pointers. 
+
+Integrity Protection. Modern storage systems employ var-ious integrity mechanisms to protect against data corruption caused by hardware faults or software bugs. At the block level, data is often protected using checksums or cyclic redundancy checks (CRCs), which are stored alongside the data and verified on reads. Some filesystems, such as ZFS, extend this idea by organizing blocks into Merkle-tree-like structures, where each block includes a checksum of its children. This allows early detection of a large class of corruptions. At the block-device layer, dm-integrity [18] in Linux provides cryptographic integrity for storage devices by maintaining an authentication tag for each block. These mechanisms protect against benign faults such as bit rot, misdirected writes, or transient hardware errors, but they are not designed to protect against active adversaries that control the storage layer. Dm-verity [19] provides in-tegrity verification for whole immutable disk images using Merkle trees, but it does not support updates (which would incur substantial write amplification). 
+
+## 3. Threat Model 
+
+We adopt the usual threat model for confidential comput-ing [1], [20], [21], [22]: the Trusted Computing Base (TCB), including all code and data in memory for the operating system and application running inside the TEE, cannot be observed or tampered with. Hence, side-channel attacks and DRAM-based attacks (e.g., Rowhammer, or physical memory interposer) and their mitigations are out of scope. Code running inside TEEs is trusted to correctly imple-ment S HIELD FS and its applications, as well as the registry service. As usual, their TCBs can be validated through remote attestation, and independently reviewed and audited. This excludes, for example, supply chain attacks where an attacker injects malicious code into the TEE software stack, or roll it back to some vulnerable code version. Conversely, we assume a powerful adversary that con-trols and tampers with the entire software system stack in the cloud, including operating systems, drivers, and hypervisors, as well as all hardware components excluding the TEEs [10], [23], [24], [25]. This represents attackers capable of execut-ing storage and network attacks, meaning they can access, corrupt, swap, drop, record, inject, or replay any data across their interfaces. Rollback and forking attacks are possible by crashing TEEs and restarting them from stale snapshots of their persisted state, or executing multiple TEEs. In this threat model, commodity filesystems running within TEEs are vulnerable to a broad range of attacks. We distinguish between online and offline attacks. Online attacks are performed while the system is up and running. In practice, such attacks are easier to detect. For example, the filesystem can store integrity metadata in protected memory and validate data fetched from disk against this metadata. Offline attacks are performed while the TEE is not running. Such attacks are harder to detect, since the adversary can rewrite the TEE’s persistent state before the next execution. Next, we illustrate offline attacks through concrete examples. 
+
+(1) Rollback attacks. Consider a block device with dm-integrity enabled. An adversary controlling the storage back-end can record a valid disk state, and later replace the whole disk with this snapshot. Since both data and authentication tags are consistent, the rollback goes undetected. Appli-cations may observe stale but well-formed data, breaking durability guarantees of operations such as fsync .
+
+(2) WAL rewriting. An adversary can tamper with the WAL between executions by replaying older log entries, reordering existing ones, or selectively dropping records. As long as the tampering preserves internal consistency to avoid detection, recovery will succeed, and the filesystem will reconstruct a state that reflects an arbitrary prefix or permutation of previously committed operations, allowing an attacker to silently erase, revert, or reorder durable up-dates. 
+
+(3) Forking attacks. An adversary can present different views of the persistent state to different instances of the TEE, and direct different clients to instances that will in-dependently apply updates to their forked states, leading to inconsistencies and violations of application invariants. 
+
+## 4. S HIELD FS Overview 
+
+Filesystem Assumptions. Our design builds on any filesys-tem with built-in mechanisms against benign data corrup-tion. Specifically, we assume that the underlying filesys-tem provides: (1) Rooted persistent state. The filesys-tem organizes persistent data and metadata as acyclic data structures rooted at a small set of blocks. (2) Copy-on-write updates. The filesystem uses copy-on-write semantics to update persistent data and metadata, ensuring that any modification results in a new version of the data structure. 
+
+(3) Deterministic recovery from WAL. The filesystem uses a write-ahead log (WAL) to record all updates (data and metadata) before they are applied, and recovery proceeds by replaying committed WAL entries to restore a consistent state after a crash. Such mechanisms are common in modern filesystems, e.g., ZFS [16], Btrfs [17], and ReFS [26]. 
+
+Key idea. The key idea behind S HIELD FS is to turn both the filesystem stable storage and WAL into authenticated data structures, and to represent the permissible persistent states of these data structures using cryptographic commitments . A commitment is a succinct record that collects cryptographic hashes or MACs to authenticate a particular state of the whole filesystem. In our case, a commitment consists of authenticators that represent the state of the WAL and the root of stable storage. The WAL head and tail authenticators capture all updates that have been durably recorded but not yet propagated to the main storage, while the storage root authenticator summarizes the fully persisted filesystem state. In combination, they uniquely authenticate the complete logical state of the filesystem at a given point in time, and thus suffice to verify its integrity and freshness. 
+
+System overview. Figure 1 illustrates the high-level archi-tecture of our system. Green boxes denote trusted compo-nents, such as TEEs and authenticated network links; all other elements are considered untrusted. Our system comprises three main components. A confi-dential VM runs the application within a TEE and mounts SHIELD FS to manage its persistent state, with the pro-grammability, consistency, and durability of any POSIX filesystem. Applications interact with S HIELD FS through standard system calls (e.g., read , write , fsync ), as modeled in §5. S HIELD FS is configured to persist data in cloud storage (local or remote) using standard lower-level block I/O interfaces; this storage is untrusted from a security Application     
+
+> QUIC
+> VM-based TEE
+> Cloud
+> storage
+> FS cache
+> Commitment
+> Registry (CoRe)
+> UB v
+> Storage pool
+> WAL
+> Block
+> Authenticator
+> Block
+> Locator
+> hihi-1
+> WB i-1 WB iWB j-1
+> hiWAL Block (WB i)
+> Authenticator
+> POSIX syscalls
+> in-memory WAL and UB
+> ShieldFS
+> ShieldFS persistent state
+> Virtual Disk
+> Host
+> hj-1
+> WB j
+> Registered FS State
+> hi-1 hj-1 hv
+> (FS id, v, i, j)
+> TEE Figure 1. System overview
+
+viewpoint, but still critical for availability. S HIELD FS also communicates with a commitments registry over a mutually attested secure channel to store and retrieve its commit-ments. SHIELD FS verifies all reads from persistent storage us-ing cryptographic authenticators stored alongside the data, and updates these authenticators on writes. When an applica-tion performs a synchronous update , for example by writing data and invoking fsync to request durability, S HIELD FS persists the update in the WAL, then computes and registers a new commitment for the updated WAL. Once the registry acknowledges the update, S HIELD FS completes the fsync 
+
+and returns control to the application. In the background, SHIELD FS also persists asynchronous updates and flushes the WAL to stable storage, which also involves registering new commitments. Upon recovery or remount, S HIELD FS authenticates to the registry service (using its TEE attestation), and then fetches the registered commitments representing its last known good state. It then verifies that the persistent state on disk matches the expected state authenticated by the commitment. If verification succeeds, S HIELD FS recovers to the corresponding state; otherwise, it detects an integrity or freshness violation and aborts recovery, preventing the application from observing corrupted or stale state. (The ap-plication owner might then decide to recover from a backup, similarly authenticated by a commitment, and accept the risk of losing recent updates.) Compared with secure device mappers, which operate at the block layer and must persist authenticators for every block write, our design limits the need for trusted persistent state to the succinct commitments held by the registry—a few hundred bytes per filesystem, and requires significantly fewer synchronizations. All other intermediate authentica-tors coexist with data in untrusted storage. As shown in our evaluation (§8), this yields strong integrity and freshness guarantees with low performance overheads. 
+
+## 5. Modeling Integrity and Freshness 
+
+We model a filesystem by its interaction with an appli-cation. The application program consists of multiple threads that access the filesystem using a POSIX API [15]. We keep the program implicit, and model its system calls and their results as events that reflect what we would experimentally observe in a system-call trace. All events are atomic, but some operations may be split into multiple events, e.g., reading a large file may yield a series of read events, each returning a chunk of the file. 
+
+Definition 1 (Events) . Events are atomic interactions be-tween an application and the filesystem, ranging over  
+
+> •
+
+Reads r that return information about the filesystem state;  
+
+> •
+
+Updates u (write, extend, rename) that modify this state;  
+
+> •
+
+Synchronization events s (fsync, sync, syncfs) that commit updates from this state to stable storage. 
+
+For example, the event read (inode, addr, data ) states that reading at a given address returned some data; it may instead return an error, e.g., when reading after the end of file. Similarly, write (inode, addr, data ) updates the state of an open file in memory; and fsync (inode ) confirms that all pending updates on a given inode have been persisted to stable storage. A session captures all events between mounting and unmounting (or crashing) the filesystem, and the set of update events that have persisted. 
+
+Definition 2 (Session) . A session S = ( ⃗ t,⃗ u) consists of a 
+
+live sequence (⃗t) of all events in the session and a commit sequence (⃗u) that collects, for every inode, a prefix of the updates for this inode in ⃗ t, including at least every update followed by a synchronization for this inode in ⃗ t.
+
+Hence, reflecting POSIX semantics, the commit se-quence ⃗u coincides with the live sequence ⃗ t at least up to the last synchronization event of every inode, but it may include more recent updates. On the other hand, the interleavings of updates between different inodes may differ. The commit sequence ⃗u indicates the updates that have been persisted before the system crashes (including the WAL). Cleanly unmounting the filesystem is the special case where all updates in ⃗ t have been persisted. On the other hand, to model recovery, the live and commit sequences of a session may start with the commit sequence recovered from a prior session. Next, we relate reads to the filesystem state after apply-ing a sequence of updates. 
+
+Definition 3. The filesystem state σ is defined by  
+
+> •
+
+∅: its initial empty state (with no files or directories);  
+
+> •
+
+Update (σ, u ), a function that computes the new state after executing the update event u; and  
+
+> •
+
+Read (σ, r ): a predicate that states the read event r reflects the current state. 
+
+For example, σ may be a map from inodes to lists of blocks, and Read (σ, read (1 , 3, σ [1 , 3])) may state that a read returns one of these blocks to the application. We write Update (σ,⃗ u) for the state after applying a sequence of updates ⃗u. We say that a read event r follows from these updates when Read (Update (∅,⃗ u), r ).We can reason about properties that hold for all possible sessions that may be observed when interacting with the filesystem. For example, the definition below captures our intuition that POSIX serializes all live events: 
+
+Definition 4. A session is POSIX-compliant when every read event in ⃗ t follows from the preceding update events in ⃗ t.
+
+The details of individual system calls are out of scope for this work. SibylFS [27] defines a formal model of POSIX compliance that covers all allowed behaviors arising from any sequence of 21 system calls in a session. However, persistence across crashes is not covered. While mainstream filesystems ensure each session is POSIX-compliant (Definition 4), they differ in their crash-consistency semantics, i.e., in the commit sequences that may be used for recovery (Definition 2). The POSIX stan-dard underspecifies the contents and ordering of updates in persistent storage and, for example, ext4 supports aweaker form of consistency [28] whereas log-structured and journaled filesystems often provide stronger guarantees (allowing fewer potential commit sequences). In this work, our focus is not on crash-consistency per se (that is, what the commit sequences may be for a given filesystem), but rather on its secure implementation in the confidential computing threat model (that is, ensuring the integrity and freshness of the commit sequence used for recovery). In the absence of corruption, POSIX implies strong in-tegrity and freshness guarantees. For example, an application that completes an fsync after writing to a given file is guaranteed that, if the filesystem later crashes and recovers, the recovered file contents will include its update. To reflect events that can corrupt filesystem state, we introduce havocs 
+
+as a special kind of update events recorded in sessions. 
+
+Definition 5. Havoc events range over  
+
+> •
+
+Data corruptions Corrupt(inode, addr) , causing read events to return errors, e.g., after failing to verify a checksum.  
+
+> •
+
+Data forgeries Forge(inode, addr, data) , causing read events to return this updated data, e.g. after corrupting the data and adjusting its checksum, or replaying stale data. 
+
+Crashes are not considered havocs, since our model already captures crashes at any point in a session, followed by a recovery from a commit sequence that may cause some uncommitted updates to be discarded. In the confidential computing threat model, attackers can introduce arbitrary havocs at any time, including between a crash and a subse-quent recovery, modeled as havoc events at the start of the recovery session. 
+
+Definition 6 (Integrity) . A filesystem provides integrity when every read follows from preceding updates in ⃗ t, including initial updates from the commit sequence of a prior session and data corruptions, but excluding data-forgeries. 
+
+Definition 7 (Freshness) . A filesystem provides freshness when every read follows from all preceding updates in ⃗t, including initial updates from the commit sequence of the last session and data corruptions, but excluding data-forgeries. 
+
+This second property is stronger and more precise, as it directly matches Definition 2 within every session, up to the fail-safe detection of any data corruption or forgeries, and also guarantees the correct chaining of every committed update across sessions. It is our target for S HIELD FS. 
+
+## 6. Shielding ZFS 
+
+We now describe the architecture of SHIELD FS for achieving integrity and freshness (§5) in our threat model (§3). We first review selected features of ZFS that SHIELD FS depends on, and then describe our extensions to realize the ShieldFS design, yielding S HIELD ZFS. Although ZFS is a convenient baseline, ShieldFS also applies to other modern transactional filesystems such as btrfs and ReFS, which similarly combine write-ahead logging, copy-on-write updates, and recovery from a small set of root blocks. 
+
+6.1. Volatile State vs Persistent State 
+
+In ZFS, the filesystem state consists of blocks in stable storage together with volatile state in memory. At the behest of the application, reads are served first from an in-memory cache [29], if possible, and otherwise by reading blocks from disk. Similarly, updates are first applied in-memory, then eventually persisted by writing dirty blocks to disk, either as a result of cache eviction or to complete synchronization requests. Hence, volatile state is usually ahead of persistent state. From a security viewpoint, volatile state and its op-erations are hardware-protected by the TEE, so we can ignore their details (e.g., their in-memory synchronization mechanisms, and their adaptive cache data structures and policies) and focus on authentication as data is read back from persistent storage: by induction, as long as all these reads are correct, ZFS always holds in memory the latest, correct state of the filesystem and will issue correct writes to persistent storage. To reduce the latency of synchronous writes, and to increase locality, ZFS first persists all updates in a Write-Ahead-Log (WAL) 1 before eventually applying them to the main storage pool, and it reads back the WAL only for recovery after a crash, in order to reconstruct a volatile state that accounts for all committed updates. As detailed below, S HIELD ZFS separately authenticates these two forms of storage. 
+
+6.2. Storage Pool 
+
+Blocks are the basic logical unit of storage. ZFS employs different types of blocks for storing data, metadata, WAL                                                       
+
+> 1. In ZFS, the WAL is referred to as the ZFS Intent Log (ZIL) BuBlock in storage pool
+> UB i,v Uberblock version vwith head index i
+> WB kWAL block k= 0 ,1, . . . , i, . . . , j i≤jWAL block head and tail indexes
+> ℓu, ℓ k, ℓ vPhysical locators
+> H(·)Collision-resistant hash function
+> hu=H(Bu)Authenticator of a block in storage pool
+> hi,v =H(UB i,v )Authenticator of an uberblock version
+> hk=H(hk−1|| WB k)Authenticator of the WAL (WB u)u≤k
+> FS id Unique identifier of a filesystem
+> head i,v =Commitment to the storage pool
+> i, v, h i,v , h i−1after applying all updates (WB u)u<i
+> tail j=j, h j−1Commitment to all updates (WB u)u<j
+> FS id 7→policy ,Registered state of a filesystem
+> head i0,v ,head i1,v +1 ,
+> tail j
+> Figure 2. Main notations in §6
+
+updates, etc. In addition to its payload, each block has a header that includes its type, identifier, and size. For our purpose, we need to understand how ZFS organizes and locates blocks in persistent storage, i.e., what constitutes a block pointer , how they are persisted, and how they are dereferenced. Each block is persisted in a storage pool assigned to the filesystem. Accordingly, a block locator provides relevant information to fetch a block from the pool, including the physical page locations on disk, or a virtual device identifier and an offset, or sub-locations in case the block is frag-mented and/or replicated. Locators also include information for resource management, such as reference counting. In addition to locators, block pointers feature metadata about the target, notably a version number and checksum. The storage pool forms a graph, with blocks as nodes and block pointers as edges. Some of these nodes serve as entry points (or roots), each representing a different filesystem version, snapshot, or clone in stable storage. In particular, to mount a filesystem, ZFS first fetches a special type of block that summarizes its whole state, called an 
+
+uberblock , then recursively dereferences its block pointers to resume from this state in memory. For consistency, ZFS supports atomic updates using copy-on-write semantics: the new version of a block is first written to a free location in the pool. This returns an updated in-memory block pointer with a new locator. This pointer can in turn be persisted by transitively updating parent blocks, so that they point to the updated version, without invalidating existing pointers to prior versions. Hence, updating the only pointer to a sub-graph atomically switches between consistent versions of this sub-graph. In particular, ZFS regularly persists new versions of the uberblock (keeping a few recent versions at fixed locations), each recursively pointing to the blocks that represent the latest consistent state of the whole storage pool. Assuming (for now) that uberblock updates are themselves atomic, this ensures that recovery can proceed from the consistent state reachable from the uberblock with the latest version number. 
+
+Shielding the Storage Pool requires authenticating ev-ery block read. To this end, ZFS already embeds in every block pointer an authenticator that stores a checksum of the block it points to. S HIELD ZFS replaces this checksum with a cryptographic hash, such as SHA-256, that serves as a strong authenticator of the block content. Using a collision-resistant hash function ensures that any contents read will match the contents written at the time the block pointer was updated. And using a cycle-resistant hash function (another common cryptographic security assumption) ensures that the storage pool forms an acyclic graph—intuitively, the authenticator of a block that includes pointers to other blocks is computed by hashing their previously-computed authenticators as part of its contents, and the resulting hash cannot be predicted in advance (at least in the random-oracle model). To verify the integrity of the storage pool, S HIELD ZFS performs the following checks: (1) When loading a block given a block pointer, compute the hash of its retrieved contents, and compare it with the authenticator stored in the pointer. If they match, add the block to the cache (or any other in-memory structure); otherwise, discard the block and return a ‘corrupted data’ error. As before in ZFS, the authenticator can also be used for error correction when retrieving a block replicated at multiple locations, as long as at least one copy is intact. (2) When evicting a dirty block, compute the hash of its stored contents and, once the write completes, return an updated block pointer that includes both its new locator and its new authenticator. This pointer can then be used (as before) to update parent blocks. Authenticators ensure basic atomicity of block updates, inasmuch as a partial write will cause an error when read-ing back the block, rather than return a partially-updated block. In particular, (3) when saving a new version v of the uberblock, written UB i,v , any dirty blocks it points to must have been already persisted, and its updated au-thenticators form a commitment to the whole storage pool state. SHIELD ZFS computes an uberblock authenticator 
+
+hi,v = H(UB i,v ) that succinctly represents this commit-ment, and registers it as the next stable state of the filesystem (see §6.6). Once registration completes, S HIELD ZFS writes 
+
+UB i,v to the next available uberblock location on disk using ZFS’s two-phase update. 
+
+6.3. Write-Ahead Log 
+
+The WAL (also known as the ZFS Intent Log or ZIL) is an append-only crash-consistency log [17], [30], [31]. It aims to minimize write amplification when the application requires persistence of recent updates. Instead of waiting for the filesystem to write and possibly re-organize many locations in the storage pool (including metadata updates, disk-page allocations, etc), these updates are written in bulk into WAL blocks, so that they can be replayed after a crash. Asynchronously, ZFS integrates these updates to the main storage pool and recycles their WAL blocks. The WAL logs the full sequence of filesystem updates, grouped in successive blocks (WB k)k≥0. By convention, we denote by i the block sequence number at the head of the WAL (that is, the first block to be replayed) and by j the block sequence number at its tail (that is, the next block to be appended to the WAL). The WAL logs sufficient information to replay updates during recovery: a type (e.g. create, write, truncate), the identifier of the updated object, the range of data involved (offset and length) and the data being written, if any. WAL block headers also include the pre-allocated locator of the next block, enabling its traversal given the locator ℓi of its head block, as well as a checksum of the block contents. 
+
+Shielding the WAL. To ensure integrity and freshness of the WAL at recovery time, we equip it with authenticators, essentially building a hash chain over its blocks: 
+
+h0 = H(0 || WB 0) hk = H(hk−1|| WB k) for k > 0
+
+(1) Hence, hk is a cryptographic commitment to the whole sequence of updates recorded in WB 0, WB 1, . . . , WB k.ZFS already keeps track of the block indexes i and j
+
+at the head and tail of the WAL, and of all intermediate locators ℓi, ℓ i+1 , . . . , ℓ j−1. S HIELD ZFS additionally keeps in memory all intermediate authenticators hi−1, . . . , h j−1
+
+so that we can both verify the integrity of the WAL starting from its head and extend the hash chain with new blocks appended at its tail. Operations on the WAL are refined as follows. 
+
+(1) Appending at the tail. To fulfill synchronization requests, ZFS persists updates as the contents of a new in-memory WAL block WB j . It pre-allocates a physical location on disk for the next block, which yields the next locator ℓj+1 . It writes this locator in the header field re-served for it in WB j . In addition, S HIELD ZFS computes the authenticator hj from hj−1 and the contents of WB j
+
+using (1). It persists WB j at its pre-allocated location ℓj . It registers the new tail authenticator tail j+1 = ( j +1 , h j ) (see §6.6). Finally, it updates its in-memory state with the new tail index j + 1 , authenticator hj , and locator ℓj+1 , and it signals completion of all synchronization requests pending on the updates in WB j .
+
+(2) Propagating updates to the main pool. This is done incrementally and asynchronously using in-memory repre-sentations of the updates committed to the WAL, without any change to ZFS. Once every update in the head block 
+
+WB i has been persisted in the storage pool by writing back new copies of the corresponding blocks, we increment the head index. Later, when writing a new version of the uberblock 
+
+UB i,v that commits all these updates to stable storage, we will use the latest in-memory head block index i to include the WAL head locator ℓi in this uberblock, and to register it together with the prior WAL head authenticator hi−1
+
+(see §6.6). Finally, blocks in the WAL that are no longer reachable from the locators of any uberblock can be marked for garbage collection. 
+
+6.4. Recovery 
+
+We explain how S HIELD ZFS mounts a filesystem, pos-sibly following a crash. Anticipating the protocols in §6.6, we assume we are given a commitment (head i,v , tail j ) that represents the current state of the filesystem, and we use it to bootstrap the verification of the storage pool and the WAL. We write UB i,v for version v of the uberblock, which includes the locator ℓi of the head of the WAL, and 
+
+hi,v = H(UB i,v ) for its authenticator. We use head i,v =
+
+i, v, h i,v , h i−1 to record the logical head of the WAL, in-cluding the indexes i and v, hUB i,v , and the authenticator of the preceding block WB i−1 in the WAL (used to continue the hash chain computation given its head block WB i). We use tail j = j, h j−1 to record the tail of the WAL, including the authenticator of the last block appended to the WAL 
+
+WB j−1. In combination, head i,v and tail j record the full persisted state of S HIELD ZFS. (See Figure 2 for a summary of notations.) Recovery starts by reading candidate uberblocks from fixed locations on disk, which yields (at most) the two uberblocks UB i0,v and UB i1,v +1 with the highest persisted versions v and v + 1 , respectively. With plain ZFS, recov-ery would either use UB i1,v +1 after checking it is well-formed, or use UB i0,v , and one of the two would suc-ceed in the absence of data corruption. With S HIELD ZFS, we first recompute their uberblock authenticators hi0,v and 
+
+hi1,v +1 by hashing their contents, and we select the one that matches the trusted authenticator in head i,v (otherwise returning a ‘corrupted uberblock’ error). We can now use the authenticated uberblock to reload any other block in the storage pool, following block pointers and verifying their authenticators, as explained above. Next, we need to authenticate and replay the WAL. This step is skipped if the WAL is empty, i.e., i ≥ j, which is the case when remounting after a clean unmount. If i < j ,starting from the WAL head block locator ℓi in the uberblock and from index k = i and authenticator hi−1 in head i,v ,we iterate on the WAL blocks: while k < j , we read back 
+
+WB k, recompute hk from hk−1 and WB k, and increment k.Once we have reached the tail, we verify that the computed authenticator hk−1 matches hj−1 recorded in tail j , and otherwise we report a ‘corrupted WAL’ error. Once authenticated, the WAL is replayed in memory (as in ZFS) which restores the volatile state ahead of the recov-ered storage pool authenticated by the trusted commitment, and we are ready to resume normal filesystem operations. 
+
+6.5. Extensions to other filesystems 
+
+Our S HIELD FS approach can be applied with minimal changes to other filesystems. btrfs uses a copy-on-write update model with a root pointer (the superblock) and a WAL (the log tree). We can modify extent pointers to include authenticators (which already support CRC32 based checksums), and we would register the authenticator of the superblock along with the head and tail authenticators of the log tree. Similarly, ReFS uses a copy-on-write B+ tree structure with a root pointer (the superblock) and a WAL (the log file). We can extend ReFS’s block pointers to include authenticators, and register the authenticator of the superblock along with the head and tail authenticators of the log file. Extensions to distributed filesystems such as CephFS would require additional mechanisms to ensure integrity across multiple nodes, but the core principles of authenticating block pointers and registering root and log authenticators remain applicable. 
+
+6.6. Commitments Registry (C ORE)
+
+The registry service securely keeps track of the current state of S HIELD ZFS filesystems. It maintains a persistent map from unique filesystem identifiers F S id to their last two head commitments head i0,v −1, head i1,v and their last tail commitment tail j . It supports the following API. All requests are synchronous: they return only after completion. 
+
+(1) Session Establishment. A TEE mounting a filesys-tem first calls registerSession (FS id , TEE id , credentials ) to open a secure, mutually-authenticated channel to its desig-nated C ORE server. In addition to FS id (e.g. a long random bitstring constant across sessions), the client provides an identifier TEE id for the TEE instance mounting the disk, authenticated with credentials . In practice, TEE id can be derived from an attestation report over a fresh key pair and 
+
+FS id , while credentials include a fresh proof of possession of the private key. C ORE uses these materials to authenticate the client and verify its attestation against the authorization policy to mount an existing filesystem (if FS id is already registered) or to create a new filesystem (if FS id is not yet registered). C ORE accepts only one active session at a time for each filesystem instance. Hence, accepting a new session-establishment request from a client will terminate any session with another client. This supports recovery by a new TEE after a crash, and ensures only one TEE at a time can modify the registered ZFS state, thereby preventing forking attacks. 
+
+(2) State Recovery. When remounting an existing filesys-tem, the TEE then calls authorizeRecovery (v, h i,v ) where 
+
+v is the highest version number of its uberblock and hi,v 
+
+is its authenticator. C ORE compares them with the last two registered head commitments head i0,v , head i1,v +1 . If it matches the first, it returns head i0,v , tail j . If it matches the second, it returns head i1,v +1 , tail j and discards the first. (The head commitment in the response indicates the WAL head index and authenticator to use for recovery, as they may not be included in the uberblock.) Otherwise, it returns an error message indicating that the uberblock is stale. 
+
+(3) State Update. The TEE then calls 
+
+headUpdate (head i2,v 2 ) and tailUpdate (tail ′ 
+
+> j
+
+) when writing a new version of the uberblock and appending new WAL blocks, respectively. C ORE keeps the last two head commitments head i0,v and head i1,v +1 , and verifies that the head index is non-decreasing ( i0 ≤ i1 ≤ i2) and the version number is incremented ( v2 = v + 1 ) before accepting head updates. Similarly, it keeps the latest tail commitment tail j
+
+and verifies that the tail index is increasing ( j < j ′) before accepting tail updates. 
+
+6.7. Security Analysis 
+
+We argue that S HIELD ZFS ensures integrity and fresh-ness properties as defined in §5 in a modular manner: building on crash-consistency, we show how the addition of cryptographic authentication and commitment management eliminates undetected data forgeries, rollback, and replay attacks, even when the storage backend is fully malicious. 
+
+Integrity and Freshness. Although motivated by crash-safety, the baseline design of journaled filesystems imple-mented by ZFS is a great match for S HIELD ZFS. The systematic use of strong authenticators when storing and loading data excludes undetected forgeries. In our model, this means that data-forgery events that may break ZFS in-tegrity or freshness are replaced by fail-safe data corruption event. The WAL is a direct implementation of the commit sequence in our model. Each block appended to its tail corre-sponds to the atomic extension of the commit sequence with the sequence of updates recorded in this block. ZFS waits for completion of the WAL block write before acknowledg-ing any pending synchronization event, as expected from a POSIX filesystem, and SHIELD ZFS further waits for registration of the WAL tail commitment. Assuming the WAL replay logic of ZFS is correctly implemented, this ensures S HIELD ZFS will remount the filesystem in the state obtained by applying all updates recorded in WAL blocks (WB k)i≤k<j since the creation of the filesystem. Any attempt to remount the filesystem from an outdated persisted state will be detected and replaced by a fail-safe data corruption error. Besides these mechanisms, the ZFS logic responsi-ble for concurrency control, fine-grained synchronization, and POSIX compliance is entirely implemented in TEE-protected main memory, which ensures integrity, confiden-tiality, and freshness within each session. While this goes beyond the scope of this work, this argument could be formalized as a simulation of S HIELD FS session runs (with havoc events, possibly ending by a crash) by a matching ZFS session run, with identical in-memory states, live event sequence, and commit sequence, except for the replacement of every adversarial event Forge(inode, addr, data) with a benign data corruption event Cor-rupt(inode, addr) , both leading to matching errors in ZFS and S HIELD ZFS, respectively. Such an argument would also confirm that, from the application viewpoint, shielding does not trigger any other error or new behavior. 
+
+Recoverability. We also build on the existing (informal) crash-consistency argument of ZFS to ensure that, in the absence of data corruption, S HIELD ZFS can recover from the same persisted state as ZFS. 1) Tail updates follow a persist-then-register discipline, ensuring that recovery based on a registered tail authen-ticator will always find the corresponding WAL blocks persisted on disk. Conversely, persisted unregistered WAL tail blocks will safely be ignored at recovery time. 2) Head updates follow a register-then-persist discipline, ensuring that S HIELD ZFS can always recover from the same highest uberblock version as ZFS, relying on the same persisted blocks in the storage pool. This comes at the cost of keeping the last two head commitments, so that we always persist version v of the uberblock before registering version v + 1 . In case of a crash between registration and persistence of version v + 1 ,recovery will safely proceed from version v, ignoring the registered head for version v + 1 .
+
+Deadlock-Freedom and Liveness. SHIELD ZFS manages and persists a small amount of additional metadata for integrity and freshness, but it does not otherwise affect the operations of the filesystem. It additionally registers the logical state of the whole filesystem at every synchronization point triggered by the application, using a protocol that may incur additional latency but is itself deadlock-free as long as CORE is live. Since this additional synchronization occurs either immediately before or immediately after a point where ZFS was already waiting for the lower-layer completion on a block write, this does not introduce new deadlocks (although it may affect potential existing race conditions present in ZFS). 
+
+CORE fault model. If C ORE is unavailable (e.g., dur-ing disaster recovery), synchronous updates and ownership transfers are blocked, i.e., a filesystem cannot be mounted from another VM, including recovery after a crash. Asyn-chronous operations within an already established session continue with no impact on performance or security. Thus, CORE unavailability affects liveness, but not safety. 
+
+Authorization Policies. In our threat model, S HIELD ZFS guarantees that the current state of a given filesystem is the outcome of executing authorized application code in TEEs. While C ORE enforces policies before authorizing a client to mount a filesystem, end-to-end security still critically depends on associating meaningful attestation-based policies to filesystem instances, based for instance on a combination of code reviews, code signing, and transparency services. As a positive example, the application can be pro-grammed in such a way that, after mounting its filesystem, it always logs its own attestation report and configuration in an append-only access-controlled file stored in the filesystem it-self (and fsyncs its update) before starting normal operation. As long as this programming discipline is enforced by any application code that passes the attestation policy associated with a filesystem identifier, the integrity and completeness of the resulting audit log is guaranteed for the lifetime of the filesystem. 
+
+Confidentiality. While S HIELD ZFS focuses on integrity and freshness, it can also achieve confidentiality by standard means already available in TEEs and ZFS. The TEE protects any data in memory, and this protection can be extended by encrypting all blocks at rest (using, e.g., AES-XTS) with a symmetric key released to the TEE after verifying its attestation against a suitable policy. 
+
+## 7. Implementation 
+
+SHIELD FS. We base our implementation on ZFS 2.3-release [16]. We add 2.5K lines of code, implementing the security refinements described in §6 without affecting its core invariants for POSIX compliance, consistency and, recoverability. We do not need to modify the ZFS persistent data layout and I/O pipelines. We adapt the ZIL logging flows, which rely on a single thread for ordering the blocks to be persisted at the ZIL tail. We extend the local state of the ZFS I/O handles that write these blocks (running on other threads) to incrementally compute and store their authenticators in their headers, without the need for shared in-memory data structures. For recovery, ZFS replays ZIL blocks sequentially, so we verify their authenticators incre-mentally as part of that flow. To register commitments from existing ZFS threads, we implement kernel-to-user IPC using netlink sockets [32] and auxiliary user-space threads that relay their messages to CORE over QUIC, as explained next. 
+
+CORE. We implement the commitment registry by adapt-ing the CCF distributed ledger [7]. CCF provides a TEE-protected transactional key-value store in the confiden-tial computing threat model. It achieves consistency and fault-tolerance using a consensus protocol between repli-cas hosted on multiple SEV-SNP nodes, where each node maintains its own copy of the KV store in memory and its own copy of the ledger on disk (logging all transactions for auditing purposes). In contrast with prior works that either rely on single-instance fallible TEEs or TPMs [33], or simply assume a reliable trusted third party, CCF meets our availability and fault-tolerance requirements through tunable replication. As long as a majority of replicas are functioning, it tolerates up to f independent failures at a time when configured to run on 2f + 1 nodes. (New nodes can be added to replace failed nodes without affecting safety or liveness.) Compared with classical Byzantine fault-tolerant protocols such as Practical Byzantine Fault Tolerance (PBFT) [34], which would require 3f +1 nodes, CCF uses simpler, lower-latency protocols leveraging our assumption that each of its attested TEEs is fail-safe. We adapt CCF to reduce latency in two ways: (1) since SHIELD FS already provides stable storage, we keep com-mitments in the KV store, but we do not persist their history in the ledger. (2) We replace the network layer of CCF to use Linux sockets and HMAC-SHA-256 for authenticated communication between replicas, and we build a client-server library based on the ngtcp2 [35] implementation of the QUIC protocol for authenticated sessions between SHIELD FS and C ORE.CORE can keep track of the current commitments for many instances of S HIELD FS, since their C ORE state is minimal: 216 B per filesystem, assuming 32 B SHA-256 authenticators and 8 B identifiers. Hence, a C ORE instance whose nodes each have 1 GiB available for commitment state can hold commitments for at least 5 million S HIELD FS clients. 
+
+Block-tampering framework. To evaluate S HIELD FS’s se-curity, we implement a framework capable of simulating ad-versarial edits to persistent storage to check if the filesystem detects the attack. Unlike other tools that introduce random errors, the tool takes as user-provided input both the type of attack (e.g., rollback, replay, or equivocation) and the target. The framework is a user-space application on top of the filesystem-specific driver. Recall that the in-memory state is protected by the TEE; therefore, only persistent state is vulnerable to tampering. Our framework operates on unmounted disks by rebuilding the in-memory state, modifying the target WAL blocks in-memory, and writing the altered blocks back to disk. Our implementation focuses on ZFS, using libzfs on the POSIX block device interface of the target disk to find the ZIL head, parse the ZIL to locate the target block to edit, and write back the tampered blocks. As ZFS implements checksums for its data and metadata blocks, arbitrary modifications to block payloads are likely to be detected. While prior work [36] shows that ZFS can detect random corruption in its Merkle tree-based storage pool and ZIL, our tool shows that ZFS is unable to detect more advanced attacks that also correct block checksums. In contrast, the cryptographic hashes used for authentica-tors in S HIELD FS are effective at preventing such attacks. 
+
+§8.5 presents the supported types of attacks and resulting findings. 
+
+## 8. Evaluation 
+
+We evaluate S HIELD ZFS across three dimensions: per-formance (§8.2, §8.3), scalability (§8.4), and security (§8.5). 
+
+8.1. Experimental Setup and Methodology 
+
+Hardware. We deploy S HIELD ZFS and C ORE in AMD Gen3 CPU-based VMs (Azure Dadsv5) and Confidential VMs (CVMs) (DCadsv5). S HIELD ZFS runs on VMs (or CVMs) with 32 vCPUs and 128 GB of RAM while C ORE
+
+runs on VMs (or CVMs) with 8 vCPUs and 32 GB of RAM. The round-trip network latency between VMs is 0.1ms (p99) and between CVMs is 0.3ms (p90) and 0.6ms (p99). The higher network latency in CVMs is due to the lack of support for accelerated networking. We expect cloud providers will soon support SR-IOV-based passthrough of confidential-computing-enabled NICs (such as Azure Boost [37] and NVIDIA Bluefield [38] DPUs) to CVMs. We run the exper-iments on both VMs and CVMs to evaluate the performance of S HIELD ZFS with and without SEV-SNP. VMs and CVMs hosting S HIELD ZFS are each assigned three locally redundant (LRS) Azure Premium SSD Man-aged Disks, each with 40 GB capacity, 7500 IOPs, and 250 MBps throughput, for a single filesystem with no replication. This reflects a realistic high-performance cloud setup where the storage is remote and untrusted. 
+
+Baseline Systems. We compare S HIELD ZFS against: (1) 
+
+ext4 , detecting data corruption (bit rot, misdirected writes) using plain checksums (i.e., CRC-32); (2) ext4 with dm-integrity [18], using a RAID-0 device and the dm-integrity device-mapper to provide block-level authentication using cryptographic checksums (SHA-256); (3) ZFS , detecting data corruption using checksums (i.e., Fletcher-4); and (4) 
+
+SHIELD ZFS without C ORE, providing session integrity and freshness given trusted initial commitments. 
+
+Baseline Applications. We evaluate their performance us-ing fio [39] as well as real-world applications: (1) adatabase workload: a PostgreSQL database over TPC-C workload [40] with two configurations of 10 and 100 Warehouses; (2) filebench [41], [42] with varmail and fileserver workloads; and (3) a key-value store workload: RocksDB [43]. 
+
+Evaluation Highlights. Our evaluation shows that S HIELD -ZFS provides integrity and freshness with performance sim-ilar to baseline ZFS across almost all real-world workloads. It is 1.7× slower in the worst case, an fsync-intensive workload (e.g., filebench varmail), while it incurs negligible overheads ( < 10% ) for the rest (TPC-C, RocksDB). Overall, ext4 achieves higher throughput than ZFS and S HIELD ZFS across most workloads, largely due to its simpler metadata structures and lower write amplification for asynchronous updates. In contrast, ZFS trades some performance for significantly stronger integrity and consistency guarantees, such as end-to-end checksumming and logging all updates through a write-ahead log. Importantly, for fsync-intensive workloads that emphasize durability, S HIELD ZFS outper-forms ext4 and ext4 with dm-integrity by up to 1.6×.
+
+8.2. Performance 
+
+Methodology. fio: we evaluate S HIELD ZFS read and write performance in configurations with varying parameters: (i) read or write, (ii) sequential or random, (iii) direct or buffered writes (in direct reads the page cache is disabled, isolating the disk access time), (iv) durability: synchronous or asynchronous, (v) block size: small (4 KB) or large (1 MB). We set iodepth to 1 for synchronous operations and 32 for asynchronous operations. We run each configuration for 30 seconds (ramp-up time) and then take measurements for 120 seconds. TPC-C: we benchmark TPC-C using a dockerized version of PostgreSQL [40]. The client process runs on a separate VM. The clients and the database server are not CPU-bound (10% and up to 80% usage respectively). We run 60 clients for 10 Warehouses (10W) and 90 clients for 100 Warehouses (100W); these configurations yield database sizes around 1GB and 10GB, respectively. We measure the throughput (transactions per second) and average latency (ms) of trans-actions. The experiments comprise a loading phase, a 2-minute ramp-up phase, and a 6-minute measurement phase. Filebench [41], [42]: we benchmark varmail, a mail server workload that creates many small files and performs fre-quent fsyncs (every 4 syscalls); it stresses metadata opera-tions and synchronous writes, making it a good benchmark to evaluate the cost of fsync. We also benchmark fileserver with a mixed I/O pattern and moderate file sizes. We use their default configurations, and measure both throughput (IOPS) and average latency (ms) of their operations. RocksDB: we use the integrated benchmarking tool [44] with the default configuration. All workloads execute asyn-chronous writes and reads. Periodically, RocksDB performs sync rand sync seq async rand async seq 10 1       
+
+> 10 2
+> 10 3
+> MB/s
+> buffered write (block size=4K)
+> sync rand sync seq async rand async seq 10 1
+> 10 2
+> 10 3
+> MB/s
+> direct write (block size=4K)
+> sync rand sync seq async rand async seq 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> MB/s
+> buffered read (block size=4K)
+> sync rand sync seq async rand async seq 10 1
+> 10 2
+> 10 3
+> MB/s
+> direct read (block size=4K)
+> ext4 ext4 (dm-integrity) ZFS ShieldZFS (w/o CoRe) ShieldZFS ZFS (CVMs) ShieldZFS (w/o CoRe, CVMs) ShieldZFS (CVMs) sync seq async seq 10 1
+> 10 2
+> 10 3
+> 10 4
+> MB/s
+> buffered write (block size=1MB)
+> sync seq async seq 10 1
+> 10 2
+> 10 3
+> 10 4
+> MB/s
+> direct write (block size=1M)
+> async rand async seq 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> MB/s
+> buffered read (block size=1M)
+> async rand async seq 10 1
+> 10 2
+> 10 3
+> 10 4
+> MB/s
+> direct read (block size=1M)
+
+Figure 3. fio read and write throughput with 4 KB and 1 MB blocks. 
+
+background compactions to merge and flush the SST files to persistent storage. RocksDB LSM size is 9 GB. We measure the throughput (ops/s) for six workloads: (1) bulk-load: loads the database with KV pairs in random order, 
+
+(2) readrandom: randomly reads existing keys, (3) over-write: randomly overwrites keys into the database, (4) read-whilewriting: spawns one writer and multiple reader threads, 
+
+(5) fillseq wal enabled: sequentially fills the database with RocksDB-WAL, (6) fillseq wal disabled: sequentially fills the database with no RocksDB-WAL. 
+
+Results. fio (Figure 3). We first discuss 4K blocks, which stress metadata management, then more briefly 1M blocks and the deployment in CVMs. Compared to ZFS, S HIELD ZFS performs similarly for asynchronous writes, and incurs negligible overheads for reads. This is expected, since writes are buffered in ZFS cache and flushed to disk without blocking the application, whereas reads rely on metadata cached in protected memory and amortize their authentication costs. On the other hand, SHIELD ZFS is slower up to 1.7× and 2.3× for buffered and direct synchronous writes respectively, highlighting the cost of producing and registering tail commitments. (S HIELD ZFS without C ORE is slower up to 1.09 × and 
+
+1.6× for buffered and direct synchronous writes respectively compared to ZFS, isolating the cost of tail commitment computations.) Registration is a bottleneck also for latency: fio reports average synchronous-write latencies of 1ms for ZFS, 1.13 ms for S HIELD ZFS without C ORE, and 1.8ms 
+
+for S HIELD ZFS, which is consistent with average registra-tion latencies of 0.7ms for a single instance in §8.4. We also compare S HIELD ZFS to dm-integrity. With dm-integrity, ext4 has 1.5 − 5× slower write throughput and 
+
+1.7× slower throughput for random reads, which reflects the cost of cryptographic operations (SHA-256) and stor-ing/fetching integrity metadata from disk. (The overhead is much lower for sequential reads since they amortize integrity metadata reads.) On the one hand, S HIELD ZFS is 1.14 − 1.65 × faster than ext4 with dm-integrity for all synchronous write workloads and even 1.17 × faster than plain ext4 synchronous buffered writes. On the other hand, SHIELD ZFS is almost 4.5× slower for direct reads, possibly reflecting ZFS more complex metadata structures. Buffered reads reflect filesystems’ cache fill and readahead approach, with S HIELD ZFS performing similarly to ZFS and outper-forming, in some cases, ext4 with dm-integrity by up to 
+
+10 ×.With 1 MB blocks, the performance of all filesystems converges: they fully saturate disk bandwidth and device utilization (91–99%) for both reads and writes. fio reports average latencies of 42 –44 ms for synchronous writes for all systems with the exception of ext4 with dm-integrity (96 ms ). This shows that registration costs become negligi-ble. However, ext4 with dm-integrity is still 2.3× slower than plain ext4 for writes and saturates disk bandwidth only for reads. Execution of ZFS and S HIELD ZFS in CVMs incurs negligible overheads for the reads and asynchronous writes, except for the case of sequential reads where CVMs-based execution is up to 3× slower than VMs-based execution. For synchronous writes, CVMs slow down the performance of SHIELD ZFS by up to 2 − 2.5× w.r.t. VMs-based execution. TPC-C (Figure 4, left). Compared to ZFS, S HIELD ZFS has 
+
+1.05 × slower throughput for both 10W and 100W, which we attribute to registration costs: without C ORE, S HIELD ZFS performs almost as ZFS, with a 0.3 % throughput overhead for both workloads, suggesting the cryptographic overhead of commitments is negligible. Compared to ext4, ZFS is 1.2× and 2× slower (in throughput) for 10W and 100W, respectively. This is ex-pected since TPC-C is a write-heavy latency-sensitive work-load with small transactions and frequent commits, making ext4 a better choice for pure performance. With dm-integrity, ext4 incurs 1.2× and 1.9× slower throughput (and higher latency) for 10W and 100W, respectively, much closer to baseline ZFS performance. The impact of CVMs is negligible for TPC-C with 100W, possibly due to the larger database size and more frequent I/O, whereas for 10W, S HIELD ZFS is 1.5× slower than VMs-based execution, due to the higher commitment registration latency. Filebench (Figure 4, middle and right). For varmail, SHIELD ZFS is slower than ZFS by 1.7×; this overhead is TPC-C 10W TPC-C 100W 01000 2000 3000 Throughput (Tx/s) TPC-C 10W TPC-C 100W 025 50 75 100 125 Latency (ms) varmail 020 40 60 80 Throughput (Kops/s) varmail 0.0 0.2 0.4 0.6 Latency (ms) fileserver 0100 200 300 400 Throughput (Kops/s) fileserver 0.00 0.05 0.10 0.15 Latency (ms) ext4 ext4 (dm-integrity) ZFS ShieldZFS (w/o CoRe) ShieldZFS ZFS (CVMs) ShieldZFS (w/o CoRe, CVMs) ShieldZFS (CVMs) Figure 4. Throughput/latency graphs for TPC-C (left panels), varmail (middle panels), and fileserver (right panels). bulkload readrandom overwrite readwhile writing fillseq wal_enabled fillseq wal_disabled 10 3       
+
+> 10 4
+> 10 5
+> 10 6
+> 10 7
+> Throughput (ops/sec) 907K 3.0M 14K 2.3M 314K 1.1M 815K 2.9M 18K 2.3M 313K 648K 936K 660K 37K 513K 103K 1.2M 931K 650K 36K 514K 105K 1.2M 961K 661K 22K 546K 104K 1.1M 893K 598K 32K 474K 107K 1.2M 881K 597K 32K 475K 106K 1.1M 888K 631K 14K 541K 106K 1.2M ext4 ext4 (dm-integrity) ZFS ShieldZFS (w/o CoRe) ShieldZFS ZFS (CVMs) ShieldZFS (w/o CoRe, CVMs) ShieldZFS (CVMs)
+
+Figure 5. RocksDB throughput across various workloads. 
+
+attributed to the fsync-intensive nature of varmail. Without CORE, this overhead drops to 2.5%, confirming registration is the main bottleneck. S HIELD ZFS still outperforms ext4 and ext4 with dm-integrity by 1.6×. Execution in CVMs incurs up to 2× overheads in S HIELD ZFS due to the higher commitment registration latency. For fileserver, a read-heavy workload with large se-quential asynchronous reads/writes, S HIELD ZFS performs similar to ZFS, while ext4 outperforms both by 1.5×. CVMs have negligible impact on performance for this workload. RocksDB (Figure 5). S HIELD ZFS performs as well as ZFS on most workloads, which mostly perform bulk sequential I/Os and are thus unaffected by commitment costs, whereas it is 1.68 × slower on the overwrite workload, which ex-ercises random persisted key writes. All variants of ZFS are consistently slower than ext4 (with faster asynchronous operations). ext4 with dm-integrity introduces modest over-heads, ≈ 13% over ext4. ext4 with dm-integrity performs worse in the fillseq wal disabled workload, where entire tables (64MB) are compacted and written sequentially, but performs equally well in workloads that are read-dominant, such as readwhilewriting and readrandom. CVMs have neg-ligible impact on performance. 
+
+Recovery. We measure the impact of S HIELD ZFS on the time to remount a filesystem. After a clean unmount, the WAL is empty, and the additional costs for S HIELD ZFS are negligible (a roundtrip to C ORE and a single hash computation). After a crash, however, many WAL blocks may need to be replayed, along with their hash computations and verifications. We evaluated S HIELD ZFS for a WAL with 500 and 2500 blocks. S HIELD ZFS incurs 1.3 × overhead compared to original ZFS (0.66s compared to 0.52s for 500 blocks and 1.80s compared to 1.41s for 2500 blocks). 
+
+DB dir Log Get/Put Durable Put 
+
+ext4 ext4 1.788 M ops/s 0.442 K ops/s zfs zfs 0.368 M ops/s 1.093 K ops/s ShieldZFS ShieldZFS 0.367 M ops/s 0.724 K ops/s ext4 zfs 1.727 M ops/s 1.087 K ops/s ext4 ShieldZFS 1.715 M ops/s 0.715 K ops/s 
+
+Figure 6. Throughput for different configurations of RocksDB. 
+
+8.3. Hybrid Design for Integrity and Performance 
+
+Some modern data stores [1], [10], [21] are designed to provide integrity at the application level. For instance, variants of RocksDB [10], [21] maintain a succinct Log of authenticators for all their SSTables (DB directory), and this Log suffices to provide crash-consistency and dura-bility guarantees after (synchronous) Put operations. For best performance, we can leverage these mechanisms, use SHIELD ZFS specifically to protect the Log, and use, e.g,. ext4 to store the rest of the DB. We use RocksDB to show this approach empirically below. 
+
+Methodology. We mount RocksDB’s DB directory on ext4 to optimize for asynchronous Get and Put operations, and the Log on S HIELD ZFS for durability and freshness. 
+
+Results (Figure 6). The all-ext4 configuration achieves the highest Get/Put throughput (1.788M ops/s) but suffers from poor Durable Put performance (0.442K ops/s). Conversely, all-ZFS and all-S HIELD ZFS provide strong integrity guar-antees and achieve much higher Durable Put throughput (1.093K and 0.724K ops/s), but sacrifice asynchronous per-formance (0.368M and 0.367M ops/s). The hybrid approach (ext4 DB + S HIELD ZFS Log) is the optimal. 
+
+8.4. Scalability 
+
+We evaluate the scalability of C ORE, i.e., its ability to support concurrent active filesystems. (Recall that C ORE
+
+can hold commitments for many inactive filesystems.) 2000 4000 6000 8000 10000 Throughput (commitments/s) 01234520 Latency (ms)  p50 p75 p90 Figure 7. C ORE latency and throughput. 
+
+Methodology. We spawn a varying number of user-space clients that register commitments continuously for 3 minutes stress-testing the C ORE.
+
+Results (Figure 7). C ORE p90 registration latency is ≤
+
+0.7ms for up to 5K commitments/s, supporting 25–500 con-current S HIELD ZFS instances under RocksDB workloads (which generate 10–200 commitments/s). We also measured latency for the crash-safe replication protocol within C ORE which varies from 0.25 ms to 0.5ms 
+
+for regular VMs and from 0.5ms to 0.9ms for CVMs. 
+
+8.5. Security 
+
+Methodology. We consider two classes of attacks, single-block attacks that tamper with a single ZIL block, and multi-block attacks that tamper with multiple ZIL blocks. Single-block attacks include the following variations: (i) payload-modification attacks, (ii) block-header modification attacks (e.g., tampering with locators, identifiers, and checksums or authenticators), (iii) append-new-block attacks, and (iv) empty-block attacks. Multi-block attacks include: (i) re-ordering existing blocks and (ii) removing existing blocks. With our block-tampering framework we combine these attacks and parameters to synthesize more complex attack scenarios. For example, we performed forking attacks in the SHIELD ZFS, that is, when an attacker creates two different versions of the ZIL trying to make a system accept as valid either of the two. We executed a combination of these attacks and variations resulting in a total of 63 attack scenarios for S HIELD ZFS and 42 for ZFS. 
+
+Results. ZFS fails to detect corruptions when block check-sums are tampered together with data so that the new check-sum corresponds to the updated identifier fields, including scenarios in which ZIL blocks are reordered, dropped, or appended. In contrast, S HIELD ZFS detects all such attacks. Interestingly, our tool uncovered a subtle flaw in an early prototype: while S HIELD ZFS correctly authenticated the ZIL using tail j , it failed to detect an attack where the contents of the first block (head of the ZIL) were rewritten, due to our (flawed) assumption that accessing this block from the uberblock would suffice to authenticate its contents. 
+
+## 9. Related Work 
+
+Prior work has explored storage integrity and freshness protection in the confidential computing threat model. 
+
+Integrity-preserving block storage. Several systems reduce the cost of integrity checking by deferring or batching veri-fication. PAC [33] performs integrity checks asynchronously in the background; sNVMe-oF [3] applies Merkle tree up-dates asynchronously in smart, trusted storage devices; and DMT [45] amortizes verification across distributed nodes. Compared to S HIELD FS, these systems offer weaker guar-antees since reads can (temporarily) see corrupt or stale data. Rollbaccine [46] is a device-mapper that provides integrity by intercepting all block I/Os and replicating metadata across a set of replica TEEs on synchronous writes. Replicas rely on TEE memory to protect metadata, and on high-throughput disks for recovery. Compared to SHIELD FS, Rollbaccine is operationally more complex, as each VM needs to be coupled with additional replica VMs, and requires significantly higher compute/storage resources. DiskShield [47] provides integrity and freshness for disk storage by interposing block I/O in trusted SSD firmware, maintaining cryptographic metadata (e.g., Merkle tree) to detect block-level tampering, rollback, and replay attacks. This approach is tightly coupled with the storage hardware layer. In contrast, S HIELD FS operates at the filesystem layer and does not require any changes to storage hardware. 
+
+Integrity-preserving filesystems. Intel Protected File Sys-tem (IPFS) [4] uses per-file Merkle trees for confidentiality and integrity. While IPFS detects tampering of file contents, it lacks a global authenticated structure across files and it is prone to rollback attacks when attackers replay older, valid versions of files together with their authentication metadata. Nexus [5] ensures file-level confidentiality and integrity with high overheads ( 2× for many operations), while re-maining susceptible to freshness and forking attacks. Se-cureFS [48] is a bespoke filesystem that provides specific protection against freshness attacks by maintaining versions at the block (slab) level and propagating versioning through pointers. On the contrary, S HIELD FS enhances state-of-the-art POSIX-compliant filesystems to be resilient against all integrity and freshness attacks ( §8.5). SUNDR [49], Plutus [50], jVPFS [51], SiRiUS [52], SNAD [53], Maat [54], and PCFS [55] provide secure storage in terms of confidentiality, integrity, and authoriza-tion. However, they leave rollback attacks out of scope. StrongBox [56] targets rollback protection but relies on an expensive in-memory Merkle tree and hardware persistent secure counters, which need to be updated on every write. 
+
+Integrity protection at the application-level. CCF [7] builds a key-value store and a distributed ledger in the confidential computing threat model. We adapt its consensus and replication protocol to implement C ORE.Nimble [9] offers a lightweight ledger service managed by TEE replicas for availability. It incurs an average up-date latency of 2.5ms , while requiring significant effort to identify the state that needs protection and failure recovery. SPEICHER [10], EnclaveDB [1], Treaty [24], and TWEEZER [21] are database and key-value stores that use authenticated persistent data structures and append-only logs for storage-level integrity and freshness, similarly to S HIELD FS’s WAL. In contrast with workloads running on top of SHIELD FS, these systems require substantial application-level modifications. 10. Conclusion 
+
+We presented S HIELD FS, a POSIX-compliant filesys-tem that provides end-to-end integrity and freshness for persistent storage. SHIELD FS turns filesystem structures that hold persistent state into authenticated data structures, and represents their permissible states using cryptographic commitments that are replicated in a lightweight trusted registry. Our analysis confirmed that S HIELD FS fulfills the intended security guarantees under tampering, reordering, and replay attacks while maintaining practical performance levels. 
+
+Software Artifact. Our artifact is publicly available: https: //github.com/dgiantsidi/ShieldFS. 
+
+## Acknowledgments 
+
+This work would not be possible without support from Eddy Ashton, Amaury Chamayou, Natacha Crooks, Adrien Ghosn, Chris Jensen, Oleksii Oleksenko and the contributors of OpenZFS. 
+
+## References 
+
+[1] C. Priebe, K. Vaswani, and M. Costa, “EnclaveDB: A Secure Database Using SGX,” in 2018 IEEE Symposium on Security and Privacy (SP) , 2018, pp. 264–278. [2] D. Chu, A. Balasubramanian, D. Bao, N. Crooks, H. Howard, L. E. Katahanas, and S. Ponnapalli, “Rollbaccine : Herd immunity against storage rollback attacks in tees [technical report],” 2025. [Online]. Available: https://arxiv.org/abs/2505.04014 [3] M. Chrapek, M. Orenbach, A. Atamli, M. Copik, F. Alder, and T. Hoefler, “snvme-of: Secure and efficient disaggregated storage,” 2025. [Online]. Available: https://arxiv.org/abs/2510.18756 [4] “Intel IPFS,” https://www.intel.com/content/www/us/en/ developer/tools/ips/ intel-ipfs.html, 2025, [Online; accessed 14-01-2026]. [5] J. B. Djoko, J. Lange, and A. J. Lee, “Nexus: Practical and secure access control on untrusted storage platforms using client-side sgx,” in 2019 49th Annual IEEE/IFIP International Conference on Depend-able Systems and Networks (DSN) , 2019, pp. 401–413. [6] A. Miller, M. Hicks, J. Katz, and E. Shi, “Authenticated data structures, generically,” in Proceedings of the 41st ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages , ser. POPL ’14. New York, NY, USA: Association for Computing Machinery, 2014, p. 411–423. [Online]. Available: https://doi.org/10.1145/2535838.2535851 [7] H. Howard, F. Alder, E. Ashton, A. Chamayou, S. Clebsch, M. Costa, A. Delignat-Lavaud, C. Fournet, A. Jeffery, M. Kerner, F. Kounelis, M. A. Kuppe, J. Maffre, M. Russinovich, and C. M. Wintersteiger, “Confidential consortium framework: Secure multiparty applications with confidentiality, integrity, and high availability,” Proc. VLDB Endow. , vol. 17, no. 2, p. 225–240, Oct. 2023. [Online]. Available: https://doi.org/10.14778/3626292.3626304 [8] S. Matetic, M. Ahmed, K. Kostiainen, A. Dhar, D. Sommer, A. Gervais, A. Juels, and S. Capkun, “ROTE: Rollback protection for trusted execution,” in 26th USENIX Security Symposium (USENIX Security 17) . Vancouver, BC: USENIX Association, Aug. 2017, pp. 1289–1306. [Online]. Available: https://www.usenix.org/conference/ usenixsecurity17/technical-sessions/presentation/matetic [9] S. Angel, A. Basu, W. Cui, T. Jaeger, S. Lau, S. Setty, and S. Singanamalla, “Nimble: Rollback protection for confidential cloud services,” in 17th USENIX Symposium on Operating Systems Design and Implementation . USENIX, July 2023. [Online]. Available: https://www.microsoft.com/en-us/research/publication/ nimble-rollback-protection-for-confidential-cloud-services/ [10] M. Bailleu, J. Thalheim, P. Bhatotia, C. Fetzer, M. Honda, and K. Vaswani, “SPEICHER: Securing LSM-based Key-Value stores using shielded execution,” in 17th USENIX Conference on File and Storage Technologies (FAST 19) . Boston, MA: USENIX Association, Feb. 2019, pp. 173–190. [Online]. Available: https://www.usenix.org/conference/fast19/presentation/bailleu [11] D. Kaplan, “Hardware vm isolation in the cloud,” Communications of the ACM , vol. 67, no. 1, pp. 54–59, Dec. 2023. [12] “Intel Trust Domain Extensions (Intel TDX),” https://www.intel. com/content/www/us/en/developer/tools/trust-domain-extensions/ overview.html, 2025, [Online; accessed 09-04-2025]. [13] “ARM Confidential Compute Architecture (CCA),” https://www.arm. com/technologies/confidential-compute-architecture, 2025, [Online; accessed 09-04-2025]. [14] G. Dhanuskodi, S. Guha, V. Krishnan, A. Manjunatha, R. Nertney, M. O’Connor, and P. Rogers, “Creating the first confidential GPUs,” 
+
+Communications of the ACM , vol. 67, no. 1, pp. 60–67, Dec. 2023. [15] “The Open Group Base Specifications Issue 8,” https://pubs. opengroup.org/onlinepubs/9799919799/, 2025, [Online; accessed 28-03-2025]. [16] “OpenZFS,” https://github.com/openzfs/zfs, 2026, [Online; accessed 23-01-2026]. [17] “Btrfs trees documentation,” https://github.com/btrfs/btrfs-dev-docs/ blob/6f2133f4cae3b53202ef58f6db727e42380f704e/trees.txt, [Online; accessed 14-01-2026]. [18] M. Patocka, “linux/drivers/md/dm-integrity.c,” Sep. 2024, [Online; accessed 27-01-2026]. [Online]. Available: https://github.com/ torvalds/linux/blob/master/drivers/md/dm-integrity.c [19] “dm-verity: Transparent Integrity Checking of Block Devices,” https://www.kernel.org/doc/html/latest/admin-guide/device-mapper/ verity.html, [Online; accessed 14-01-2026]. [20] A. Baumann, M. Peinado, and G. Hunt, “Shielding applications from an untrusted cloud with haven,” ACM Trans. Comput. Syst. , vol. 33, no. 3, Aug. 2015. [Online]. Available: https: //doi.org/10.1145/2799647 [21] I. Kim, J. H. Kim, M. Chung, H. Moon, and S. H. Noh, “A Log-Structured merge tree-aware message authentication scheme for persistent Key-Value stores,” in 20th USENIX Conference on File and Storage Technologies (FAST 22) . Santa Clara, CA: USENIX Association, Feb. 2022, pp. 363–380. [Online]. Available: https://www.usenix.org/conference/fast22/presentation/kim-igjae [22] H. Tian, X. Yu, S. Song, Q. Chen, Z. Zhang, S. Wang, W. Liu, E. Xu, S. Yan, and Y. Zhang, “AtomicDisk: A Secure Virtual Disk for TEEs against Eviction Attacks,” in 23rd USENIX Conference on File and Storage Technologies (FAST 25) . Santa Clara, CA: USENIX Association, Feb. 2025, pp. 449–459. [Online]. Available: https://www.usenix.org/conference/fast25/presentation/tian-hongliang [23] D. Stavrakakis, D. Giantsidi, M. Bailleu, P. S¨ andig, S. Issa, and P. Bhatotia, “Anchor: A Library for Building Secure Persistent Memory Systems,” Proc. ACM Manag. Data , vol. 1, no. 4, Dec. 2023. [Online]. Available: https://doi.org/10.1145/3626718 [24] D. Giantsidi, M. Bailleu, N. Crooks, and P. Bhatotia, “Treaty: Secure Distributed Transactions,” in 2022 52nd Annual IEEE/IFIP Interna-tional Conference on Dependable Systems and Networks (DSN) , 2022, pp. 14–27. [25] A. Shamis, P. Pietzuch, B. Canakci, M. Castro, C. Fournet, E. Ashton, A. Chamayou, S. Clebsch, A. Delignat-Lavaud, M. Kerner, J. Maffre, O. Vrousgou, C. M. Wintersteiger, M. Costa, and M. Russinovich, “IA-CCF: Individual Accountability for Permissioned Ledgers,” in 19th USENIX Symposium on Networked Systems Design and Implementation (NSDI 22) . Renton, WA: USENIX Association, Apr. 2022, pp. 467–491. [Online]. Available: https://www.usenix.org/conference/nsdi22/presentation/shamis [26] “Resilient File System (ReFS),” https://learn.microsoft.com/en-us/ windows-server/storage/refs/refs-overview, 2026, [Online; accessed 28-01-2026]. [27] T. Ridge, D. Sheets, T. Tuerk, A. Giugliano, A. Madhavapeddy, and P. Sewell, “SibylFS: Formal specification and oracle-based testing for POSIX and real-world file systems,” in 25th ACM Symposium on Operating Systems Principles (SOSP) , 2015. [28] J. Bornholt, A. Kaufmann, J. Li, A. Krishnamurthy, E. Torlak, and X. Wang, “Specifying and Checking File System Crash-Consistency Models,” in Proceedings of the Twenty-First International Conference on Architectural Support for Programming Languages and Operating Systems , ser. ASPLOS ’16. New York, NY, USA: Association for Computing Machinery, 2016, p. 83–98. [Online]. Available: https://doi.org/10.1145/2872362.2872406 [29] B. Gregg, “Activity of the zfs arc,” Jan. 2012, [Online; accessed 14-01-2026]. [Online]. Available: https://www.brendangregg.com/ blog/2012-01-09/activity-of-the-zfs-arc.html [30] “ext4 data structures and algorithms: Journal (jbd2),” https://www. kernel.org/doc/html/latest/filesystems/ext4/journal.html, [Online; ac-cessed 14-01-2026]. [31] Sun Microsystems, Inc., “Zfs on-disk specification,” Santa Clara, CA, draft. [Online; accessed 14-01-2026]. [Online]. Available: https://www.giis.co.in/Zfs ondiskformat.pdf [32] “Netlink Sockets,” https://www.kernel.org/doc/html/latest/ userspace-api/netlink/netlink.html, 2025, [Online; accessed 14-01-2026]. [33] Q. Burke, R. Sheatsley, Y. Beugin, E. Pauley, O. Hines, M. Swift, and P. McDaniel, “Efficient storage integrity in adversarial settings,” in 2025 IEEE Symposium on Security and Privacy (SP) , 2025, pp. 3145–3160. [34] M. Castro and B. Liskov, “Practical Byzantine Fault Tolerance,” in 
+
+Proceedings of the Third Symposium on Operating Systems Design and Implementation , ser. OSDI ’99. New Orleans, Louisiana, USA: USENIX Association, 1999, pp. 173–186. [35] “ngtcp2,” https://github.com/ngtcp2/ngtcp2, 2025. [Online]. Avail-able: https://github.com/ngtcp2/ngtcp2 [36] A. Kadav and A. Rajimwale, “Reliability analysis of zfs,” 2007. [Online]. Available: https://api.semanticscholar.org/CorpusID:802224 [37] “Azure Boost DPU,” https://azure.microsoft.com/en-us/services/ azure-boost/, 2025, [Online; accessed 09-04-2025]. [38] “NVIDIA BlueField Data Processing Units (DPUs),” https: //www.nvidia.com/en-us/networking/products/data-processing-unit/, 2025, [Online; accessed 09-04-2025]. [39] J. Axboe, “fio - Flexible I/O Tester,” https://github.com/axboe/fio, 2026, [Online; accessed 27-01-2026]. [40] “CloudSuite: Data Serving Relational Benchmark,” https://github.com/parsa-epfl/cloudsuite/blob/main/docs/benchmarks/ data-serving-relational.md, 2026, [Online; accessed 26-01-2026]. [41] V. Tarasov, E. Zadok, and S. Shepler, “Filebench: A Flexible Frame-work for File System Benchmarking,” in ;login: The USENIX Mag-azine , vol. 41, no. 1. USENIX Association, 2016, pp. 6–12. [42] “Filebench: A File System and Storage Benchmark,” https://github. com/filebench/filebench, 2026, [Online; accessed 26-01-2026]. [43] “RocksDB: A Persistent Key-Value Store for Fast Storage Environ-ments,” https://github.com/facebook/rocksdb, 2026, [Online; accessed 26-01-2026]. [44] “RocksDB Performance Benchmarks,” https://github.com/facebook/ rocksdb/wiki/performance-benchmarks, 2026, [Online; accessed 27-01-2026]. [45] Q. Burke, R. Sheatsley, R. King, O. Hines, M. Swift, and P. Mc-Daniel, “On scalable integrity checking for secure cloud disks,” in 
+
+Proceedings of the 23rd USENIX Conference on File and Storage Technologies , ser. FAST ’25. USA: USENIX Association, 2025. [46] D. C. Y. Chu, A. Balasubramanian, D. Bao, N. Crooks, H. Howard, L. Katahanas, and S. Ponnapalli, “Rollbaccine: Herd immunity against storage rollback attacks in tees,” Proc. ACM Manag. Data , vol. 4, no. 1, Apr. 2026. [Online]. Available: https://doi.org/10.1145/3786693 [47] J. Ahn, J. Lee, Y. Ko, D. Min, J. Park, S. Park, and Y. Kim, “Diskshield: A data tamper-resistant storage for intel sgx,” in 
+
+Proceedings of the 15th ACM Asia Conference on Computer and Communications Security , ser. ASIA CCS ’20. New York, NY, USA: Association for Computing Machinery, 2020, pp. 799–812. [Online]. Available: https://doi.org/10.1145/3320269.3384717 [48] S. Kumar and S. R. Sarangi, “Securefs: A secure file system for intel sgx,” in Proceedings of the 24th International Symposium on Research in Attacks, Intrusions and Defenses , ser. RAID ’21. New York, NY, USA: Association for Computing Machinery, 2021, pp. 91– 102. [Online]. Available: https://doi.org/10.1145/3471621.3471840 [49] J. Li, M. Krohn, D. Mazi` eres, and D. Shasha, “Secure untrusted data repository (sundr),” in Proceedings of the 6th Conference on Symposium on Operating Systems Design & Implementation - Volume 6, ser. OSDI’04. USA: USENIX Association, 2004, p. 9. [50] M. Kallahalla, E. Riedel, R. Swaminathan, Q. Wang, and K. Fu, “Plu-tus: Scalable secure file sharing on untrusted storage,” in Proceedings of the 2nd USENIX Conference on File and Storage Technologies , ser. FAST ’03. USA: USENIX Association, 2003, pp. 29–42. [51] C. Weinhold and H. H¨ artig, “jvpfs: adding robustness to a secure stacked file system with untrusted local storage components,” in 
+
+Proceedings of the 2011 USENIX Conference on USENIX Annual Technical Conference , ser. USENIXATC’11. USA: USENIX Asso-ciation, 2011, p. 32. [52] E.-J. Goh, H. Shacham, N. Modadugu, and D. Boneh, “Sirius: Se-curing remote untrusted storage,” 01 2003. [53] E. Miller and D. Long, “Strong security for Network-Attached storage,” in Conference on File and Storage Technologies (FAST 02) . Monterey, CA: USENIX Association, Jan. 2002. [Online]. Available: https://www.usenix.org/conference/ fast-02/strong-security-network-attached-storage [54] A. W. Leung, E. L. Miller, and S. Jones, “Scalable security for petascale parallel file systems,” in Proceedings of the 2007 ACM/IEEE Conference on Supercomputing , ser. SC ’07. New York, NY, USA: Association for Computing Machinery, 2007. [Online]. Available: https://doi.org/10.1145/1362622.1362644 [55] J. Morgenstern, D. Garg, and F. Pfenning, “A proof-carrying file system with revocable and use-once certificates,” in Proceedings of the 7th International Conference on Security and Trust Management ,ser. STM’11. Berlin, Heidelberg: Springer-Verlag, 2011, pp. 40–55. [56] B. Dickens, H. S. Gunawi, A. J. Feldman, and H. Hoffmann, “Strongbox: Confidentiality, integrity, and performance using stream ciphers for full drive encryption,” Proceedings of the Twenty-Third International Conference on Architectural Support for Programming Languages and Operating Systems , 2018. [Online]. Available: https://api.semanticscholar.org/CorpusID:3983951
