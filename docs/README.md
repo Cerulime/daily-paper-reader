@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-21</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-22</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 3 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-21 20:56:12 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-22 20:29:50 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,9 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精读机密计算文件系统安全，另速读LLM代码编辑安全基准与APT图学习，共3篇。</p>
-<p>最值得关注的是机密计算中文件系统隔离的9.0高分方案，其次LLM代码编辑的“安全漂移”基准可用于评测AI编程工具。</p>
-<p>建议优先浏览精读论文，后续可结合速读基准验证自身代码工作流的安全稳定性。</p>
+<p>今日精读与速读共4篇论文，聚焦AI安全与漏洞检测，其中《Malformer》以9.0分成为最值得关注的亮点。该研究将Transformer用于多模态恶意软件检测，展示出高精度跨模态识别能力；另有三篇分别涉及智能合约漏洞、AI供应链投毒与混合入侵检测。建议普通读者优先深读Malformer一文，并顺带关注AI供应链投毒风险，以把握当前安全攻防趋势。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -76,7 +74,7 @@
     <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Securing Filesystems for Confidential Computing">Securing Filesystems for Confidential Computing</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Malformer: A Multi-Modal Malware Detector Using Transformers">Malformer: A Multi-Modal Malware Detector Using Transformers</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
@@ -86,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="WeSCE: A Benchmark for Measuring Security Drift in LLM-Driven Code Editing">WeSCE: A Benchmark for Measuring Security Drift in LLM-Driven Code Editing</span></li><li><span class="dpr-home-dashboard-paper-title" title="TGL-APT: Temporal Graph Learning with Graph Distillation for Efficient APT Investigation">TGL-APT: Temporal Graph Learning with Graph Distillation for Efficient APT Investigation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Pre-Model Representation Failures in GNN-Based Smart Contract Vulnerability Detection">Pre-Model Representation Failures in GNN-Based Smart Contract Vulnerability Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="Conjunctive Poisoning in AI Supply-Chain Applications">Conjunctive Poisoning in AI Supply-Chain Applications</span></li><li><span class="dpr-home-dashboard-paper-title" title="A Calibrated and Explainable Bimodal Machine Learning Framework for Hybrid Intrusion Detection">A Calibrated and Explainable Bimodal Machine Learning Framework for Hybrid Intrusion Detection</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
 </div>
 
