@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-22</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-23</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 7 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-22 20:29:50 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-23 20:03:54 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精读与速读共4篇论文，聚焦AI安全与漏洞检测，其中《Malformer》以9.0分成为最值得关注的亮点。该研究将Transformer用于多模态恶意软件检测，展示出高精度跨模态识别能力；另有三篇分别涉及智能合约漏洞、AI供应链投毒与混合入侵检测。建议普通读者优先深读Malformer一文，并顺带关注AI供应链投毒风险，以把握当前安全攻防趋势。</p>
+<p>今日精读7篇论文，聚焦软件缺陷检测与形式化验证，2篇深度阅读。最值得关注的是提交级切片模糊测试（9分）与概率轨迹表达式（8分），分别直击提交引发的bug和概率系统建模。建议优先精读这两篇，速读方向可延伸至无人机安全卸载与日志异常检测。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">1 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Malformer: A Multi-Modal Malware Detector Using Transformers">Malformer: A Multi-Modal Malware Detector Using Transformers</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="COMMITGUARD: Differential Slice Fuzzing for Commit-Induced Bug Detection">COMMITGUARD: Differential Slice Fuzzing for Commit-Induced Bug Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="A New Syntax and Semantics for Probabilistic Trace Expressions">A New Syntax and Semantics for Probabilistic Trace Expressions</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Pre-Model Representation Failures in GNN-Based Smart Contract Vulnerability Detection">Pre-Model Representation Failures in GNN-Based Smart Contract Vulnerability Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="Conjunctive Poisoning in AI Supply-Chain Applications">Conjunctive Poisoning in AI Supply-Chain Applications</span></li><li><span class="dpr-home-dashboard-paper-title" title="A Calibrated and Explainable Bimodal Machine Learning Framework for Hybrid Intrusion Detection">A Calibrated and Explainable Bimodal Machine Learning Framework for Hybrid Intrusion Detection</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="TRACE: Traversal and Reasoning Algebraic Computing Engine for Formal Hardware Verification">TRACE: Traversal and Reasoning Algebraic Computing Engine for Formal Hardware Verification</span></li><li><span class="dpr-home-dashboard-paper-title" title="Threat Aware Task Offloading and Caching for Secure UAV Assisted Vehicular Consumer Electronics">Threat Aware Task Offloading and Caching for Secure UAV Assisted Vehicular Consumer Electronics</span></li><li><span class="dpr-home-dashboard-paper-title" title="Too Sure to Be Safe: Model Calibration for Reliable Log Anomaly Detection">Too Sure to Be Safe: Model Calibration for Reliable Log Anomaly Detection</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>
 </div>
 
