@@ -1,0 +1,497 @@
+Title: Bootstrapping Mutual Attestation with Kleene's Second Recursion Theorem
+
+URL Source: https://arxiv.org/pdf/2608.20671v1
+
+Published Time: Mon, 24 Aug 2026 00:20:45 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# Bootstrapping Mutual Attestation with Kleene’s Second Recursion Theorem 
+
+# Takuma Imamura 
+
+takuma.imamura@acompany-ac.com Confidential Computing Lab, Acompany Co., Ltd. Nagoya, Japan 
+
+## Abstract 
+
+Mutual attestation among nodes with no central trusted operator requires each node to hold reference values (expected code mea-surements) for its peers. The naïve approach of mutually embed-ding these reference values in the nodes’ code leads to an infinite regress. We call the problem of resolving this infinite regress the 
+
+reference-value bootstrapping problem for mutual attestation. Exist-ing solutions avoid this regress by relying on a trusted third party (TTP), externally supplied reference values, or architecture-specific measurement mechanisms. We instead express the bootstrapping problem as a system of mutual fixed-point equations and solve it by Kleene’s second recursion theorem. The construction produces nodes that mutually reference one another’s code and reconstruct every peer’s exact source from built-in data alone. When a deployed source file is measured directly, as with a Python script, a node obtains the peer’s reference value by applying the measurement function directly to the reconstructed source. When a built image is measured, as with AWS Nitro Enclaves, a node instead repro-ducibly rebuilds the peer’s image from the reconstructed source and derives its reference measurement. For the first case, we de-velop PyReflect, a Python transpiler, and use it to implement a TPM mutual-attestation PoC. For the second, we develop NixReflect, a Nix transpiler, and use it in a PoC in which two Nitro Enclaves reproduce each other’s reference PCRs from built-in data alone. Our solution is architecture-independent, requires neither a TTP nor externally supplied reference values, and works with existing attestation stacks unchanged. 
+
+## CCS Concepts 
+
+• Security and privacy → Hardware-based security protocols ;• Theory of computation → Recursive functions .
+
+## Keywords 
+
+Mutual Attestation, Kleene’s Recursion Theorem, Trusted Execu-tion Environment, Trusted Platform Module, AWS Nitro Enclaves, Reproducible Build 
+
+## 1 Introduction 
+
+Remote attestation plays a crucial role in an isolated execution environment such as a Trusted Execution Environment (TEE), a Trusted Platform Module (TPM), or an AWS Nitro Enclave. The IETF Remote ATtestation procedureS (RATS) architecture [2] organises the process into roles. An Attester measures the target—typically hashing the code and configuration loaded into the isolated component—and emits a signed attestation report (evidence). A Verifier first validates the re-port’s authenticity against certificates issued by an Endorser , such as the hardware manufacturer, and then checks that the reported mea-surement matches a reference value —the expected measurement— supplied by a Reference Value Provider . Only when both checks pass does the Verifier accept that the target is running the intended software. This standard picture presupposes a one-way attestation: a Rely-ing Party (such as a client or key vault) verifies a single Attester, not the other way round. Consider a system in which several attestable nodes exchange confidential data with one another. Every node acts as a Verifier for its peers, so before any exchange each node must already know the reference values of all the others. A naïve approach would be to hard-code the peers’ reference values into every node. This does not work: node 𝐴 ’s code would embed 𝐵 ’s reference value, which is a digest of 𝐵 ’s code, which embeds 𝐴 ’s reference value, and so on ad infinitum . The mutually dependent values therefore form an infinite regress. We call the task of constructing nodes with mutually consistent, self-contained peer reference values the reference-value bootstrapping problem for mutual attestation. This many-node setting is not hypothetical. Decentralised and peer-to-peer computing platforms pool physical computing re-sources from independent providers, often with cryptocurrency incentives, and run confidential workloads across them. No oper-ator is trusted by all participants, so the workable roots of trust are the nodes’ own attestation mechanisms and every node acts as both Attester and Relying Party. The same need arises when a con-fidential application is composed of multiple cooperating enclave services, the setting targeted by the Decent platform [18], and in peer-to-peer confidential-computing networks at large [10]. A more practical example is an agentic AI system comprising multiple AI and tool components: components supplied by mutually distrustful providers can run in separate confidential VMs and perform mutual attestation before exchanging prompts, credentials, or intermediate state [1]. Existing approaches address or avoid this problem in one of four ways (Section 8): (1) delegating the distribution of reference values to a trusted third party (TTP) [5, 6]; (2) authenticating externally configured authorisation lists via architecture-specific credentials [18]; (3) placing configuration in architecture-specific report fields that lie outside the measured scope [12]; or (4) exploiting an architecture-specific measurement process that lets a group of nodes derive one another’s reference values [3]. Each either brings back a trusted party or ties the protocol to a particular isolation architecture. 
+
+> 1arXiv:2608.20671v1 [cs.CR] 21 Aug 2026 Takuma Imamura
+
+The aim of this paper is to provide a solution to the bootstrap-ping problem for mutual attestation that falls into none of the above categories; in other words, to present the first solution that is architecture-independent and requires neither a TTP nor ex-ternally supplied reference values. Our approach uses the target architecture’s existing software stack as-is, requiring no modifica-tions to its SDK, signing tools, loader, or attestation stack. Our main contributions are fourfold. (1) We reformulate the reference-value bootstrapping problem as a system of mutual fixed-point equations, and solves it using Kleene’s second recursion theorem [9] (Section 2). It also follows from the uniformity of Kleene’s theorem that it is possible to construct a transpiler that automatically generates mutual-referencing programmes. (2) For architectures that measure the deployed code itself (e.g. Linux IMA), each node reconstructs a peer’s exact source from built-in data and hashes it. We realise this with the 
+
+PyReflect transpiler, which turns templates—families of programs written with references to one another’s source— into working, mutually referencing nodes, and demonstrate the feasibility of self-contained reference values in a mutual-attestation PoC using TPM quote machinery backed by a userland software TPM (Section 3). (3) For architectures that measure build artifacts (e.g. SGX en-claves, confidential VMs, confidential containers, Nitro En-claves), the construction carries over exactly through re-producible builds : a node must rebuild its peer’s artifact bit-for-bit before measuring, or the recomputed reference value will not match the deployed one. We instantiate this case with the NixReflect transpiler: its bundled proof of concept runs two AWS Nitro Enclaves that reproduce each other’s enclave image bit-for-bit—and thereby each other’s reference PCR values—from built-in data alone (Section 4). (4) We isolate the run-time cost of rebuilding on a Nitro En-claves host by comparing two NixReflect variants: one reconstructs and simply hashes the peer’s Nix source, while the other reproducibly rebuilds the peer’s enclave image and derives its reference PCRs. In our PoC, the source-to-image-to-PCR computation is approximately 100 × slower than hashing alone; because rebuilding traverses the work-load’s full build closure, this gap is expected to widen for more complex applications (Section 5). In Section 6, we specify the trust assumptions underlying our approach to mutual attestation, and clarify and delimit the scope of our contributions. The construction replaces only the external Reference Value Provider: each uncompromised verifier derives the expected value and verifies the peer within its own TCB, inde-pendently in each direction. It otherwise inherits the trust roots, guarantees, and out-of-scope attacks of the underlying one-way-attestation flow. In Section 7, we examine two operational consequences. First, attestable builds can remove the run-time toolchain and build la-tency without trusting the party that supplies the resulting proof, but a verifier must trust the Build TEE’s hardware root and en-dorsement PKI; this is an additional root when the Build TEE and deployed nodes do not already share one. Second, updates currently propagate across the whole mutually dependent family, while a dependency-graph decomposition could confine them to affected strongly connected components. In Section 8, we compare our construction with representative systems from the four existing approaches outlined above. We also treat group-wide attestation topology as an orthogonal scalability question. 
+
+## 2 The bootstrapping problem as mutual fixed points 
+
+The apparent infinite regress becomes a system of mutual fixed-point equations once it is written down. We model a group of 𝑘 
+
+nodes with three assumptions. (i) Programs . A node is identified with (the Gödel number of) its source code 𝑒 and computes the partial function 𝜑 𝑒 . Here 
+
+𝜑 is a fixed acceptable numbering (Definition 2.1 below)— the denotational semantics of the implementation language. (ii) Source access . The intended behaviour of node 𝑖 is a com-putable partial function 𝑓 𝑖 (® 𝑒, −) . During execution it may use the source code ®𝑒 = (𝑒 1, . . . , 𝑒 𝑘 ) of every member, itself included. (iii) Computable measurement . A node’s measurement—hence its reference value—is a fixed (deterministic) computable function of its source code. Holding a peer’s source there-fore suffices to compute its reference value. Under these assumptions, a mutually attesting family is exactly a tuple ®𝑒 of source codes solving the system 
+
+𝜑 𝑒 𝑖 = 𝑓 𝑖 (𝑒 1, . . . , 𝑒 𝑘 , −) , 1 ≤ 𝑖 ≤ 𝑘. (†)The unknowns 𝑒 𝑖 occur on both sides. The left hand side 𝜑 𝑒 𝑖 is the partial function the program 𝑒 𝑖 computes. The right hand side 
+
+𝑓 𝑖 (® 𝑒, −) represents the behaviour of 𝜑 𝑒 𝑖 , which computes the partial function 𝑓 𝑖 using the source code ®𝑒 of 𝜑 𝑒 𝑗 (1 ≤ 𝑗 ≤ 𝑘 ) as part of its input. Hard-coding attempts to solve system ( †) by repeated substitu-tion, which never terminates 1; but the system as a whole is simply a mutual fixed-point equation , and recursion theory solves such equations in full generality. We refer to [15] for terminology and notation in recursion theory. 
+
+Definition 2.1. Let P (𝑛 ) be the class of all computable partial functions of type N𝑛 ⇀ N. A surjection 𝜑 : N → P (𝑛 ) is called a 
+
+computable numbering of P (𝑛 ) if the (𝑛 + 1)–ary partial function 
+
+(𝑒, 𝑥 ) ↦ → 𝜑 𝑒 (𝑥 ) := 𝜑 (𝑒 ) ( 𝑥 ) is computable. A computable num-bering 𝜑 of P (𝑛 ) is said to be acceptable if for each computable numbering 𝜓 of P (𝑛 ) , there exists a computable function 𝑟 : N → N
+
+(called a many-one reduction ) such that 𝜓 = 𝜑 ◦ 𝑟 .Intuitively, a computable numbering is an interpreter (or evalu-ation function) for a particular programming language; 𝜑 𝑒 is the partial function computed by code 𝑒 ; the many-one reduction 𝑟 is a transpiler from language 𝜓 to language 𝜑 . An acceptable num-bering can be thought of as a universal programming language into which any other language can be effectively translated. Unless                                    
+
+> 1More precisely, condider the directed graph 𝐺 :=(𝑉 (𝐺 ), 𝐸 (𝐺 ) ) , where 𝑉 (𝐺 ):=
+> {𝑖 |1≤𝑖 ≤𝑘 }and 𝐸 (𝐺 ):={ ( 𝑖, 𝑗 ) | 𝑓 𝑖 depends on variable 𝑒 𝑗 }. If 𝐺 is acyclic, hard-coding works as expected. However, if 𝐺 contains a directed cycle, hard-coding results in an infinite regress along that directed cycle. See also Section 7.2. 2Bootstrapping Mutual Attestation with Kleene’s Second Recursion Theorem
+
+one goes out of one’s way to build something special—Friedberg’s enumeration without duplication being the classical example [7]— any reasonable Turing-complete programming language naturally induces an acceptable numbering. The single-node case ( 𝑘 = 1) of system ( †) is precisely the subject of Kleene’s second recursion theorem. Theorem 2.2 (Kleene [9]). For each 𝑛 ∈ N, let 𝜑 (𝑛 ) be an ac-ceptable numbering of P (𝑛 ) . For every computable partial function 
+
+𝑓 : N × N𝑛 ⇀ N, there exists an 𝑒 ∈ N such that 
+
+𝜑 (𝑛 ) 
+
+> 𝑒
+
+= 𝑓 (𝑒, −) .
+
+Moreover, the index 𝑒 can be chosen effectively: there exists a com-putable function 𝑒 : N → N such that 
+
+𝜑 (𝑛 )   
+
+> 𝑒 (𝑖 )
+
+= 𝜑 (𝑛 +1) 
+
+> 𝑖
+
+(𝑒 (𝑖 ) , −) .
+
+Mutual attestation among several nodes requires the simulta-neous form of the theorem, which follows from the single-node case. Corollary 2.3 (Simultaneous recursion theorem). Let 𝜑 (𝑛 )
+
+be an acceptable numbering of P (𝑛 ) . For every 𝑘 -tuple of computable partial functions 𝑓 1, . . . , 𝑓 𝑘 : N𝑘 × N𝑛 ⇀ N there exists a 𝑘 –tuple of indices ®𝑒 := (𝑒 1, . . . , 𝑒 𝑘 ) ∈ N𝑘 such that 
+
+𝜑 (𝑛 ) 
+
+> 𝑒 𝑖
+
+= 𝑓 𝑖 (® 𝑒, −) , 1 ≤ 𝑖 ≤ 𝑘. 
+
+Moreover (𝑒 1, . . . , 𝑒 𝑘 ) is computable uniformly from indices of the 𝑓 𝑖 s. 
+
+The two clauses of Theorem 2.2 do different work. The first is an 
+
+existence statement: for every behaviour 𝑓 there is a program 𝑒 that may use its own source code, so self-reference never stands in the way of implementation. The second, uniform clause strengthens existence into an algorithm —in programming terms, a transpiler that takes any program expecting its own source code as an extra input and turns it into a genuinely self-referential program with the same behaviour. The same reading applies to Corollary 2.3: an entire mutually referencing family can be generated automatically from a template of behaviours written with the solution codes as free variables. This is the clause whose constructive idea our tools mirror— PyReflect 
+
+and NixReflect (Section 3 and Section 4) are operational coun-terparts of the map (𝑓 1, . . . , 𝑓 𝑘 ) ↦ → ( 𝑒 1, . . . , 𝑒 𝑘 ). Both results are classical; we write out their proofs in Appendix B because the tran-spilers follow the same self-application pattern and are best read alongside them. Read in the model above, Corollary 2.3 states that system ( †)always has a solution, computable uniformly from the behaviours: under assumptions (i)–(iii), self-contained reference values can al-ways be constructed without a trusted third party or a host-injected measurement. Each node 𝑒 𝑖 can compute, from built-in data alone, the exact code—and hence, by assumption (iii), the reference value— of every node in the family, itself included. Assumptions (i) and (ii) are harmless; assumption (iii) is substan-tive because its realisation depends on what the isolation archi-tecture measures. Section 3 treats architectures that measure the deployed code itself, where no build intervenes and the source-to-measurement map is a plain hash; Section 4 treats architectures that measure build artifacts, where we realise assumption (iii) through reproducible builds. 
+
+## 3 Mutual attestation without builds 
+
+We first instantiate the construction when the measured object is the deployed code: the architecture hashes the raw bytes of the program it loads. Linux IMA [17] is the canonical example—it measures each file as it is loaded and accumulates the digests in TPM PCR 10—and interpreted deployments generally fall into this class, since the file that ships is the file that runs. Here the source-to-measurement map of assumption (iii) is a single hash application, and the general construction goes as follows: (1) At build time, transpile the family using Corollary 2.3 so that each node can reconstruct every peer’s exact source code from built-in data. (2) At run time, reconstruct the peer’s source and hash it, ob-taining the peer’s reference value. (3) Run the architecture’s standard attestation flow, checking the measurement reported in the peer’s evidence against the self-computed reference value. Step (1) is a one-time transpilation; steps (2) and (3) need nothing beyond a hash function and the ordinary attestation machinery. The rest of this section describes our implementation of step (1) and a proof of concept that places the resulting self-computed reference values in a complete TPM mutual-attestation flow. 
+
+## 3.1 The PyReflect transpiler 
+
+PyReflect implements the uniform clause of Corollary 2.3 for the Python language. Its input is a template , represented as a JSON list of entries. Each entry pairs a node-id 𝑁 from a finite set N =
+
+{𝑁 1, . . . , 𝑁 𝑛 } with a body 𝑃 𝑁 of Python source code; an occurrence of 𝑁 ′ ∈ N inside a body stands for the source code of node 𝑁 ′.A template is thus the tuple 𝑓 1, . . . , 𝑓 𝑛 of Section 2: each intended behaviour written with the solution codes as free variables. Its out-put is one Python file per node—the solution tuple ®𝑒 : each emitted node reconstructs, at run time and from built-in data alone, the byte-exact source code of every node in the family. The transpiler follows the idea of the proof of Theorem 2.2. Two moves do the work. First, the family is treated as a single system: the whole template is serialised into one canonical data blob, shared verbatim by all nodes, and each emitted file is that blob plus a one-line selector naming which member it is. Mutual reference among 
+
+𝑛 programs thereby reduces to self-reference of one system—the same reduction that derives Corollary 2.3 from Theorem 2.2. Second, the remaining self-reference is realised by Kleene’s trick: no file can contain its own text outright, so occurrences of node-ids in the bodies are rewritten into calls to a run-time reconstruction function, which reassembles any member’s source file from the blob and regenerates the single line the blob cannot contain—its own embedding—just as the classical quine programme does. Ap-pendix C details the emitted file layout, the reconstruction function, and the correspondence with the proof (Appendix B). 
+
+## 3.2 PoC: TPM-backed mutual attestation 
+
+As a proof of concept we transpile a two-node template (node-ids 
+
+__NODE1 , __NODE2 ) into a pair that attest each other using TPM quote machinery, with each node backed by its own software TPM emulator ( swtpm ) driven through tpm2-pytss . The entire PoC runs 
+
+> 3Takuma Imamura
+
+inside a Docker container against the software TPM, so the demon-stration is environment-independent and reproduces identically on any host. Reference values are self-computed: a node reconstructs its peer’s exact source with the reconstruction function and takes its SHA-256 digest; since the reconstruction is byte-for-byte, this digest equals the measurement of the peer’s deployed file. The nodes then perform Elliptic-Curve Diffie–Hellman (ECDH) key exchange and mutual attestation, keeping measurement and session binding separate. Each node sends a fresh nonce and an ephemeral ECDH public key; resets a PCR and extends into it its own on-disk digest; and returns a TPM quote over that PCR, signed by an attestation key (AK), whose qualifying data is a digest of the node’s ephemeral public key and the peer’s nonce. The PCR thus carries only the measurement, while the qualifying data binds the quote to the session: the peer’s nonce gives freshness, and the ephemeral key ties the attested identity to the key exchange. Each node verifies the peer’s quote by replaying the expected PCR from the self-computed reference value alone, then checking the signature, the quote structure, the PCR digest, and the qualifying data, recomputed from the peer’s ephemeral key and the node’s own nonce. The PoC makes two deliberate simplifications. First, its swtpm in-stances run in ordinary userland and therefore provide no hardware-backed TPM identity. Credential activation would show only that an AK belongs to the same emulator instance as its emulator-generated endorsement key (EK); it would not establish a hardware root of trust. The PoC therefore omits AK–EK binding and trusts each received AK. This choice is specific to the emulator, not to the reference-value construction. The same TPM interface can instead be backed by a TEE-isolated vTPM [14] or a physical TPM. Such a deployment would authenticate the AK through its established endorsement path—the confidential VM’s hardware attestation for a vTPM, or an EK certificate and credential activation for a physical TPM. Second, the PoC uses PCR 23, which userland can extend and reset at will, so nothing ties the extended code hash to the program actually running. A rigorous deployment should instead measure files with the Linux Integrity Measurement Architecture (IMA) [17], replaying its measurement log against PCR 10; the session binding carries over unchanged, since it lives in the qualifying data rather than in any PCR. These simplifications concern how a production TPM deployment authenticates the TPM and its measurement, not the feasibility question studied here: the PoC instantiates the miss-ing reference-value step, generating mutually dependent values from the nodes themselves and using them in an otherwise standard attestation flow. 
+
+## 4 Mutual attestation with reproducible builds 4.1 From source to measurement 
+
+This section instantiates the same construction when the measured object is not deployed code but a build artifact. Most TEE measure-ments are of this kind. Intel SGX’s MRENCLAVE digests the enclave’s initial pages in load order; a confidential VM’s launch measurement (MRTD on TDX, the launch digest on SEV-SNP) covers the initial guest memory image; confidential containers bind a digest of the container image—or of a policy naming it—into the attestation re-port. Similarly, AWS Nitro Enclaves measure the enclave image file (EIF) into PCR0–2. In all of these, the measured object is a build artifact , not source text: the reference value is of the form 𝜇 (𝛽 (𝑒 )) , where 𝜇 is the artifact measurement function fixed by the architecture, and 𝛽 is the build procedure that generates the artifact from source code 𝑒 .It is particularly important to note that the build procedure 𝛽 is not, in general, a mathematical, deterministic function. The fixed-point construction itself is independent of this choice: changing architecture changes 𝜇 and 𝛽 , not the mutual source-reproduction step. In this sense, our method remains architecture-independent. The construction of Section 3 therefore picks up one extra step. (1) At build time, transpile the family over sources exactly as before. (2) At run time, reconstruct the peer’s source from built-in data. (2’) Rebuild the peer’s executable artifact so that it is bit-for-bit identical to the deployed artifact over all measurement-relevant contents. (3) Apply 𝜇 to the rebuilt artifact, obtaining the peer’s reference value, and run the standard attestation flow against it. The requirement in step (2’) is essential: artifacts built from the same source code 𝑒 must always have the same measurement 
+
+𝜇 (𝛽 (𝑒 )) , as required by assumption (iii). As noted above, however, 
+
+𝛽 need not be deterministic, so an ordinary build procedure may violate this requirement. We meet this requirement with reproducible builds [11]. By pin-ning all build dependencies by hash and using a reproducible builder, we ensure that the same complete source description reproduces the same artifact over all measurement-relevant contents, and hence the same measurement. Table 1 on page 5 summarises both source-to-measurement cases. For an artifact-measured architecture, our source-level construction computes 𝜇 ◦ 𝛽 by rebuilding the artifact reproducibly and then applying the architecture’s 𝜇 . The fixed-point construction itself is unchanged for every computable 𝜇 , but an implementation must carry the corresponding toolchain and pay the build cost. The Nitro Enclaves proof of concept below instantiates this source-to-reference map. 
+
+## 4.2 NixReflect and PoC: reproducing Nitro Enclave PCRs 
+
+The rewriting mechanism of Section 3.1 is tied neither to Python nor to hashing: it applies to any language whose programs are to be reproduced verbatim from built-in data. NixReflect —itself written in Python—takes a family of mutually referencing Nix ex-pressions and turns them into nodes, each able to reconstruct the exact build definition of every member by Kleene’s trick. Nix [4] is the natural target for this setting: the pinned Nix expressions used by our PoC close over the toolchain, dependencies, and sources, so reconstructing a peer’s expression reconstructs everything step (2 ′)needs. As a proof of concept, bundled with NixReflect , we implement a variant of the mutual quine on AWS Nitro Enclaves: a two-node 
+
+> 4Bootstrapping Mutual Attestation with Kleene’s Second Recursion Theorem
+
+Table 1: Architecture-specific measurements and derivation of the corresponding expected values from peer source (assump-tion (iii)).                
+
+> Architecture Measurement input Attested evidence Source →expected value Linux IMA (TPM) policy-selected file contents and metadata quoted PCR 10 and IMA measurement log hash the target file; verify its log entry after replaying the log to PCR 10 TPM PoC (Section 3.2) deployed source-file digest extended into PCR 23 quote over PCR 23 hash the source and replay the PCR extend Intel SGX initial enclave pages and load metadata
+> MRENCLAVE reproducible enclave build; apply SGX measurement CVM (Intel TDX / AMD SEV-SNP) initial TD/guest state, including page contents, placement, and launch metadata
+> MRTD / launch digest reproducible VM build and deterministic launch-measurement computation Confidential containers (runtime-specific) guest state and an attested workload policy, when supported TEE measurement and policy/init-data digest reproduce the image and policy; apply the runtime’s appraisal procedure AWS Nitro Enclaves enclave image file (EIF) and boot components PCR0–2 reproducible EIF build; derive PCR0–2 (Section 4.2)
+
+template transpiled into a pair of enclaves that, at run time, repro-duce each other’s reference PCR0–2. On Nitro Enclaves a node’s measurement is the set of PCR values of its enclave image file (EIF). The stock toolchain builds an EIF with nitro-cli from a Docker image, and this pipeline is not reproducible; we instead build each node’s EIF with Nix via monzo/aws-nitro-util [13], which yields bit-identical EIFs—and hence identical PCRs—from pinned inputs. The transpiled enclave definitions are reproducibly built and deployed side by side on the parent instance. We have verified the reference-value reproduction end-to-end on both x86_64 and AArch64 Nitro Enclaves-capable parent instances. At run time each enclave, from built-in data alone, (i) reconstructs its peer’s enclave definition (a Nix expression), (ii) reproducibly rebuilds the peer’s EIF inside the enclave , and (iii) computes PCR0–2 from the rebuilt image; reproducibility guarantees these equal the measurements of the peer’s deployed image. The nodes thus obtain one another’s reference PCRs from built-in data alone, resolving, without a TTP, the reference-value bootstrapping problem that AWS addresses with a measurement notary (Section 8.1). The PoC deliberately stops at the feasibility question posed by this paper: the two enclaves derive and announce each other’s refer-ence values rather than reimplement the established Nitro Enclaves attestation. Computing a peer’s reference PCRs from built-in data is exactly the self-contained Reference Value Provider of Section 2— the ingredient made problematic by mutual dependence—whereas obtaining an attestation document from the Nitro hypervisor and verifying it against those PCRs is the standard attestation flow for Nitro Enclaves. Composing the reproduced values with that flow yields mutual attestation without an external Reference Value Provider. 
+
+## 5 Cost 
+
+Transpilation. Let |𝑃 𝑖 | be the size of the template body of node 𝑖 
+
+in a 𝑘 –node family. The emitted node 𝑒 𝑖 consists of the shared header and framework, a one-line selector, the rewritten body ˆ 𝑃 𝑖 ,and the data blob, which encodes the header, the framework, and 
+
+all rewritten bodies ˆ 𝑃 1, . . . , ˆ𝑃 𝑘 (Appendix C). Rewriting alters each node-id occurrence by a constant, and the blob encoding inflates by a constant factor, so, taking the header and framework as constants of the transpiler, 
+
+|𝑒 𝑖 | = Θ
+
+Í𝑗 𝑃 𝑗 
+
+
+
+, Í𝑖 |𝑒 𝑖 | = Θ
+
+
+
+𝑘 Í𝑗 𝑃 𝑗 
+
+
+
+,
+
+and transpilation time is linear in the same quantity. In the Nitro Enclaves PoC, a two-node template of 0 .9 KB yields nodes of 3 .4 KB each. 
+
+Reference-value derivation. At run time a node derives a peer’s reference value in two steps: reconstruct the peer’s source—string reassembly from the blob, linear in Í𝑗 𝑃 𝑗 —and map the source to a measurement. Without a build (Section 3), the second step computes the measurement directly from the source by a single hash, so the whole derivation is negligible. With a build (Section 4), the node must instead carry out a reproducible build of the peer’s source inside itself, and this step can be expected to dominate; unlike the sizes above, its absolute cost is not determined by the construction. The attested handshake lies outside this derivation cost and is unchanged in either case. Mutual attestation costs exactly two one-way attestations per pair, up to 𝑘 (𝑘 − 1) / 2 pairs group-wide (Section 8.5). We measure the derivation cost on NixReflect ’s two bundled variants, run on the same host. The rebuild variant is the PoC of Section 4.2. The digest variant is identical in layout but stops after the quine step, reconstructing the peer’s source and computing its SHA-384 digest with no in-enclave build, isolating the cost of step (2 ′). Table 2 on page 6 summarises the configuration relevant to inter-preting the comparison; exact image and tool revisions are reported in Appendix D. Every benchmark run launches one enclave at a time with 2 vCPUs and 2 GiB of memory. The two variants there-fore run under identical resource allocations; these are configured capacities, not measurements of resource usage. The digest and rebuild EIFs are 42 MB and 50 MB, respectively. Timing is taken from the arrival times of the enclave’s console lines at the parent, 
+
+> 5Takuma Imamura
+
+Table 2: Benchmark host and enclave configuration.       
+
+> Item Configuration Host m6g.xlarge ; AWS Graviton2 (Arm Neoverse-N1), 4 vCPUs, 16 GiB RAM, one thread per core; Nitro Enclaves enabled OS Ubuntu 26.04 LTS; Linux 7.0.0-1010-aws Per-enclave allocation 2 vCPUs and 2048 MiB; one enclave at a time, identical for both variants Principal tools nitro-cli 1.4.5; Determinate Nix 3.21.8 (Nix 2.34.8), flakes enabled
+
+Table 3: Deriving a peer’s reference value inside a Nitro Enclave with NixReflect : mutual_quine_ne_sha (source di-gest) vs. mutual_quine_ne_pcrs (reproducible rebuild). Mean 
+
+± sample standard deviation over 10 runs for each node; ob-servations from the two nodes are not pooled.                                               
+
+> Metric Node digest rebuild derivation (s) 10.069 ±0.007 6.853 ±0.024 20.064 ±0.007 6.839 ±0.017 launch →entrypoint (s) 11.486 ±0.036 1.561 ±0.042 21.364 ±0.033 1.684 ±0.038 launch →result (s) 11.554 ±0.036 8.415 ±0.042 21.429 ±0.032 8.524 ±0.048
+
+between the entrypoint’s opening banner and its result marker; every run boots a fresh enclave in debug mode solely to expose this console output, and is terminated afterwards. All 10 runs per node per variant printed values matching the expected ones—the digest of the peer’s node file and the peer’s build-time PCR0–2, respectively. Table 3 on page 6 confirms that deriving a reference value by rebuilding takes approximately two orders of magnitude longer than hashing. For this PoC, the absolute cost is modest: under seven seconds to re-stage the peer’s rootfs, re-pack its ramdisk, and re-run the EIF assembly in RAM, and under ten seconds from cold launch to the peer’s reference PCRs. This result reflects a simple enclave whose application-level task is only to rebuild its peer and derive the peer’s reference PCRs. Both the rebuild time and the image size grow with the node’s closure. A more complex enclave that also includes a server applica-tion performing an attested handshake would therefore be expected to take longer to rebuild. Although both variants in this PoC fit within the same 2 GiB allocation, a larger build may also require more enclave memory than hashing alone to hold its toolchain, inputs, and intermediate artifacts. Both effects make the offloading of runtime-build (Section 7.1) more attractive for complex applica-tions. Note that the digest variant’s sub-0 .1 s figure is near the resolu-tion of console-based timing and is best read as “negligible”. 
+
+## 6 Trust assumptions and security considerations 
+
+Our construction changes a single role in the RATS architecture: it relocates the Reference Value Provider into the verifying node itself, and touches nothing else. Because the provider is part of the verifier, the construction introduces no external party into the trust model. The threat model is therefore inherited from the underlying architecture: the adversary may control the network and any subset of hosts and nodes, and what must be trusted are exactly the roots of trust that one-way attestation of each node already assumes— the isolation architecture, its measurement mechanism, and the Endorser’s certificates. The guarantee therefore belongs to each verifier rather than to the group as a whole. An uncompromised node derives the expected reference value and verifies each peer’s evidence within its own TCB; compromising other group members cannot make it accept code that the underlying one-way attestation would reject. For a pair of nodes 𝐴 and 𝐵 , 𝐴 ’s verification of 𝐵 is independent of 𝐵 ’s verification of 𝐴 .Reference-value comparison uses the underlying architecture’s measurement hash. A node accepts a peer only if the reported measurement equals the digest of the reconstructed source (Section 3) or of the reproducibly rebuilt artifact (Section 4), so passing off different code requires a second preimage. Our contribution is limited to demonstrating the feasibility of self-contained reconstruction of mutually dependent reference val-ues. As stated above, it inherits the threat model and security seman-tics of the underlying one-way-attestation flow: it neither prevents attacks outside that model nor, at the protocol level, enables attacks that the model rules out. 
+
+## 7 Discussion 7.1 Offloading the run-time build 
+
+For build-artifact measurements (Section 4), each node computes reference values dynamically by carrying out a reproducible build at run time. This is the dominant overhead of the construction: the node must carry a full build toolchain and pay the peer’s build cost—in the Nitro Enclaves PoC the enclave image must ship Nix and all pinned inputs. An alternative is to take care of the source-to-measurement step before deployment. Attestable builds [8] run a build inside a TEE-backed sandbox and emit a hardware-rooted proof—a confidential-computing proof (CCP) [16]—that a specific artifact, equivalently its measurement, was produced from a specific source snapshot. In our setting, the nodes’ vendor or deployer would issue such a CCP for every family member ahead of time; the recursion-theoretic fixed point is still taken over sources exactly as in Section 2. At run time a node is injected with the peer’s (measurement, CCP) pair over any untrusted channel—the peer itself, a registry—reconstructs the peer’s source from built-in data, checks that the CCP binds that 
+
+source to the measurement, and only then adopts the measurement as the reference value. The node then needs no toolchain and incurs no build latency. The scheme remains TTP-free in the relevant sense: a forged or mismatched pair is simply rejected, so the CCP provider need 
+
+> 6Bootstrapping Mutual Attestation with Kleene’s Second Recursion Theorem
+
+not be trusted—ground truth remains the self-contained source, from which the injected measurement must be proven to derive. Of-floading does, however, require each node to trust the build TEE’s hardware root and endorsement PKI. If the build and deployed nodes use the same attestation architecture and trust roots, this requirement adds no new root of trust; otherwise the verifier’s trust set expands. For example, using an AMD SEV-SNP build TEE for Ni-tro Enclaves nodes additionally requires trust in AMD’s attestation chain. Structurally this variant is closer to DECENT’s provisioned credentials (Section 8) than to the fully self-contained construction of Section 4.2: what is added is an attestable-build proof chain, not trust in a provisioning party. Working out this design, including revocation and transparency for build proofs, is future work. 
+
+## 7.2 Updates and redeployment 
+
+The fixed point is taken over the family as a whole, which has an operational consequence for updates. Under the current transpilers, changing even one node changes every member’s source and mea-surement because the shared blob records every body verbatim. An update therefore requires re-transpiling and redeploying the entire 
+
+family. In fact, the granularity can be refined. Regard the template as a directed graph with an edge from 𝐴 to 
+
+𝐵 when the body of 𝐴 references the source of 𝐵 : a change to 𝐵 can affect 𝐴 only if 𝐵 is reachable from 𝐴 , so members with no directed path to 𝐵 can keep their code—and their measurements—across the update. A transpiler exploiting this would resolve the fixed points per strongly connected component in reverse topological order, sharing a blob only within each component; Corollary 2.3 applies within each component, so no new theory is needed. Fully mutual attestation is the worst case—its reference graph is strongly con-nected, so every update remains global—but asymmetric topologies would benefit. Working out this refinement is beyond the scope of this paper. 
+
+## 8 Related work 
+
+In this section, we compare our approach with existing approaches addressing or sidestepping the same reference-value bootstrapping problem. 
+
+## 8.1 Trusted third parties (TTPs) 
+
+The most direct way to avoid this problem is to move the reference values out of the nodes’ measured artifacts: an external trusted third party—in RATS terms, a Reference Value Provider for the whole group—authorises and distributes the reference values, either through an online service or as signed values that nodes load at run time. Since no reference value appears inside any node’s measured code, the recursive dependency never arises. The price is that every verification is only as trustworthy as the TTP: whoever controls it can authorise the reference value of arbitrary code, so it must be trusted on top of the attestation roots the nodes already rely on; an online provider must also remain available. A guide to AWS Nitro Enclaves [5] states the mutual-reference problem directly: an enclave image’s measurement (PCR0) is known only after the image is built, so an enclave can hard-code neither its own measurement nor its peers’ in advance. Its remedy is a Mea-surement Notary Service —a trusted store of approved image mea-surements, gated by 𝐾 -out-of-𝑁 authorised signers, that relying enclaves query at run time. This is exactly the TTP our construction does away with: at build time we give each node a fixed-point rep-resentation from which it derives the measurements, so no external reference-value provider is consulted. Apache Teaclave [6] encounters the same bootstrapping problem among its SGX enclave services: hard-coding each peer’s MRENCLAVE 
+
+would change the verifier enclave’s own identity. Teaclave instead hard-codes the public keys of trusted auditors, while enclave mea-surements and the auditors’ signatures over them are loaded at run time. This removes the need for an online notary on every verifi-cation, because an untrusted host can distribute the signed values, but the auditors remain trusted authorities for deciding which en-clave identities are acceptable. Our construction requires neither an online notary nor auditor-signed reference values, since each node derives the expected measurements from its built-in representation of the family. 
+
+## 8.2 Self-attestation certificates 
+
+The Decent Application Platform [18] composes distributed Intel SGX applications whose enclave components mutually authenti-cate through self-attestation certificates : reusable, code-bound cre-dentials verified via the Intel Attestation Service or DCAP. The attestation root is not an additional trusted party—SGX already presupposes trust in Intel—so DECENT correctly claims mutual attestation with no TTP beyond the hardware manufacturer. At deployment, hosts and clients choose an authorisation list 
+
+(AuthList) of the code hashes permitted for each service. A com-ponent loads its AuthList immutably; after local attestation, the Decent Server certifies the component’s public key, code digest, and AuthList. A remote component accepts it only if the certificate chain is valid, the code digest is authorised for the requested service in the remote component’s own AuthList, and the two AuthLists are identical. The party supplying a list need not be trusted, since substituting a different list prevents it from matching the honest application’s certified policy. DECENT and our construction eliminate circularity at different boundaries. DECENT takes peer measurements as deployment in-puts: an AuthList is loaded after MRENCLAVE has been fixed and is then bound by certificate to the component’s key and code digest. Consequently, adding mutually dependent measurements to the AuthLists changes neither component’s MRENCLAVE . The certificate proves which list a component loaded, but not that the listed mea-surements were derived from particular sources; hosts and clients supply those entries. Our fixed-point construction instead makes each node recon-struct every peer’s exact source and compute its reference value internally (Section 2), requiring no externally supplied list of mea-surements. DECENT realises its approach with SGX attestation and a certificate hierarchy, whereas our source-level construction is unchanged across architectures and only the implementation of the measurement function varies. 
+
+> 7Takuma Imamura
+
+## 8.3 Hardware-rooted reference-value injection 
+
+A second family injects reference values from outside the node but anchors their authenticity to the hardware root of trust: the hardware binds an externally supplied value into the attestation report without folding it into the measurement, so a verifier can check the value without trusting whoever injected it. (When the field is too small for several measurements, it carries a digest of their concatenation, and the measurements themselves are supplied at run time.) For Intel SGX, Momose, Qin, Sakurai, and Vij [12] use the Key Separation and Sharing (KSS) feature in two ways. A fresh worker identifier bound to CONFIG_ID lets the attester reject reused worker enclaves. To resolve the mutual-attestation cycle, the attester hard-codes the worker’s measurement, while the worker is launched with the attester’s measurement bound to its own CONFIG_ID ; the worker uses this value to verify the attester, and the attester checks the same value in the worker’s quote. Because CONFIG_ID is attested but does not change MRENCLAVE , this launch-time injection avoids a circular hard-coded dependency. Confidential VMs offer analogous fields populated by the host at launch time— MR_CONFIG_ID on Intel TDX, HOST_DATA on AMD SEV-SNP—so the host can realise the same scheme. These fields are fixed at launch, so the host or launcher must supply the reference values before the node starts. Both approaches avoid circular hard-coding by placing peer reference values outside the measured artifact. Compared with our construction, they avoid carrying peer sources and rebuild-ing peer artifacts, and they allow the same measured binary to be launched with different peer policies. Their cost is dependence on an architecture-specific report field and on an external launch path to supply the reference values; an incorrect value makes an honest peer reject, but the launch path must still cooperate. Our nodes instead derive peer reference values from their built-in source rep-resentation, requiring neither an injection field nor launch-time input: the fixed-point construction remains unchanged across archi-tectures, while the measurement function and the cost of evaluating it remain architecture-specific. 
+
+## 8.4 Measurement-specific reference-value derivation 
+
+MAGE [3] tackles the same problem directly, phrasing its recursive dependency in the same terms: for mutual trust two enclaves would each need the other’s identity ( MRENCLAVE ) in its own initial data, yet embedding it changes that data and hence both identities. MAGE breaks the cycle without a trusted third party by instrumenting the enclaves so each derives the others’ identities from its own initial data. It stores every member’s pre-measurement (MAINFO )— the MRENCLAVE hash state up to a reserved segment—in a shared reserved section ( MARS ), and exploits how SGX finalises MRENCLAVE 
+
+over pages in load order to complete each peer’s hash. Realising this layout requires modifying the SGX toolchain. MAGE extends Intel SGX SDK 2.6.100.51363 with a library that reserves MARS and exposes derivation APIs, a signing tool that ex-tracts each enclave’s MAINFO and populates MARS , and an enclave loader that loads MARS last [3, Section 5.1]. Thus its deployment uses a modified build and load path, not only an instrumented enclave application. Structurally, MAGE’s construction is a measurement-level ana-logue of ours: an auxiliary section byte-identical across the group (every member’s pre-measurement) plus a per-member index, from which each identity is derived at run time—exactly the shape of the proof of Corollary 2.3 as implemented by PyReflect (Appen-dix C), a shared blob plus a per-node selector. The difference lies in what the shared aggregate records: MAGE stores one-way in-termediate hash states, so members can reproduce one another’s measurements but not their code, and the circularity is cut by the in-cremental structure of MRENCLAVE —the shared section is measured last—rather than solved by Kleene’s trick. The technique is thus strongly tied to the measurement process: the MAGE paper argues it extends to other TEEs with similar in-cremental hashes—AMD SEV/SEV-SNP and ARM TrustZone are discussed, without detailed procedures [3, Section 7.2]—but the derivation exploits the internal structure of one particular measure-ment process. For each TEE type, an instantiation must expose a compatible intermediate hash state and enforce where the shared section enters the measurement stream; in practice, this requires adapting the corresponding SDK, image-construction or signing tool, and loader, as applicable. A heterogeneous deployment must implement every participating TEE’s measurement-specific path. Both MAGE and our construction are TTP-free; the distinction is architectural rather than one of additional trust. Our fixed-point construction instead operates unchanged at the source level for any measurement function. An implementation supplies the architec-ture’s own 𝜇 through its existing build and measurement interfaces; it requires no modification to the TEE’s SDK, signing tools, loader, or attestation stack (Section 3.2, Section 4.2). 
+
+## 8.5 Scalability of mutual attestation 
+
+Orthogonal to where reference values come from is how many attestations must run: naïve mutual attestation among 𝑁 nodes performs up to 𝑁 (𝑁 − 1) / 2 pairwise handshakes. Careful Whisper [10] spreads attestation results through a gossip protocol, reducing the overhead to linear under ideal conditions. A simpler folklore remedy designates an attester node that vouches for the group, at the price of a distinguished component all nodes must trust. Both introduce intermediary Verifiers, and both presuppose that whoever verifies holds the right reference values—precisely the ingredient our construction supplies, and one that composes with either topology: the designated-attester star is simply an instance of the reference graphs that Corollary 2.3 handles. 
+
+## 9 Conclusion 
+
+The reference-value bootstrapping problem in mutual attestation is a system of mutual fixed-point equations ( †), and the simultaneous form of Kleene’s second recursion theorem solves it—uniformly, so the mutually referencing nodes are generated automatically rather than written by hand. When the architecture measures the deployed code itself, the construction is a transpilation followed by a hash: PyReflect gen-erates mutually referencing nodes, and a mutual-attestation PoC backed by a userland software TPM demonstrates the missing 
+
+> 8
+
+Bootstrapping Mutual Attestation with Kleene’s Second Recursion Theorem 
+
+reference-value step. When the architecture measures build arti-facts, reproducible builds provide the source-to-measurement map: the NixReflect PoC makes two Nitro Enclaves reproduce each other’s image bit-for-bit and hence derive each other’s reference PCR0–2 from built-in data alone. For the simple PoC target, the source-to-image-to-PCR computation is approximately 100 × slower than hashing alone; because rebuilding traverses the workload’s full build closure, this gap is expected to widen for more complex applications. These results establish the feasibility of self-contained reference-value reconstruction; they neither replace nor strengthen the under-lying attestation mechanism. Each verifier inherits the trust model and security semantics of its architecture’s one-way-attestation flow. In its self-contained form, the construction removes the need for a trusted Reference Value Provider, an external launch-time injec-tion channel, and an architecture-specific fixed-point mechanism. Unlike MAGE, it needs no intermediate measurement state and no changes to a TEE’s SDK, signing tools, loader, or attestation stack. This generality has operational costs. Artifact-measured nodes carry the reproducible-build closure and pay its run-time cost, and a change in a fully mutual family currently requires redeploying every member. Attestable builds can remove the run-time toolchain and latency without reintroducing a trusted provisioning party, but add trust in the Build TEE’s hardware root when it is not already among the deployed nodes’ roots. Managing the life cycle of attestable-build proofs and exploiting finer-grained dependency graphs for updates remain future work. 
+
+## References 
+
+[1] Sina Abdollahi, Mohammad M Maheri, Javad Forough, Amir Al Sadi, Josh Millar, David Kotz, Marios Kogias, and Hamed Haddadi. 2026. AgenTEE: Confidential LLM Agent Execution on Edge Devices. In Proceedings of the Sixth European Workshop on Machine Learning and Systems (Edinburgh, Scotland, UK) (EuroML-Sys ’26) . Association for Computing Machinery, New York, NY, USA, 473–480. doi:10.1145/3805621.3807660 [2] H. Birkholz, D. Thaler, M. Richardson, N. Smith, and W. Pan. 2023. Remote Attestation Procedures (RATS) Architecture. RFC 9334, IETF. doi:10.17487/RFC 9334 [3] Guoxing Chen and Yinqian Zhang. 2022. MAGE: Mutual Attestation for a Group of Enclaves without Trusted Third Parties. In 31st USENIX Security Symposium (USENIX Security 22) . USENIX Association, Boston, MA, 4095–4110. https: //www.usenix.org/conference/usenixsecurity22/presentation/chen-guoxing [4] Eelco Dolstra and Merijn de Jonge. 2004. Nix: A Safe and Policy-Free Sys-tem for Software Deployment. In 18th Large Installation System Administration Conference (LISA 04) (Atlanta, GA). USENIX Association, Berkeley, CA, 79–92. https://www.usenix.org/conference/lisa-04/nix-safe-and-policy-free-system-software-deployment [5] David-Paul Dornseifer and Ben Liderman. 2025. Verify enclave counterparties with reproducible builds and cryptographic attestation using AWS Nitro Enclaves. AWS Web3 Blog. https://aws.amazon.com/blogs/web3/verify- enclave-counterparties-with-reproducible-builds-and-cryptographic-attestation-using-aws-nitro-enclaves/ Last retrieved: 2026-08-05. [6] The Apache Software Foundation. 2020. Mutual Attestation: Why and How. GitHub repository. https://github.com/apache/teaclave/blob/65886ec4bb98 0f6f0a8a1c025478df570cd11b59/docs/mutual-attestation.md Last retrieved: 2026-08-19. [7] Richard M. Friedberg. 1958. Three theorems on recursive enumeration. I. De-composition. II. Maximal set. III. Enumeration without duplication. Journal of Symbolic Logic 23, 3 (1958), 309–316. doi:10.2307/2964290 [8] Daniel Hugenroth, Mario Lins, René Mayrhofer, and Alastair R. Beresford. 2025. Attestable Builds: Compiling Verifiable Binaries on Untrusted Systems using Trusted Execution Environments. In Proceedings of the 2025 ACM SIGSAC Conference on Computer and Communications Security (Taipei, Taiwan) (CCS ’25) . Association for Computing Machinery, New York, NY, USA, 4514–4528. doi:10.1145/3719027.3765128 [9] S. C. Kleene. 1938. On notation for ordinal numbers. Journal of Symbolic Logic 3, 4 (1938), 150–155. doi:10.2307/2267778 [10] Ceren Kocaoğullar, Gustavo Petri, Dominic P. Mulligan, Derek Miller, Hugo J. M. Vincent, Shale Xiong, and Alastair R. Beresford. 2025. Careful Whisper: Attesta-tion for peer-to-peer Confidential Computing networks. arXiv:2507.14796 [cs.CR] doi:10.48550/arXiv.2507.14796 [11] Chris Lamb and Stefano Zacchiroli. 2022. Reproducible Builds: Increasing the Integrity of Software Supply Chains. IEEE Software 39, 2 (2022), 62–70. doi:10.1 109/MS.2021.3073045 [12] Atsuki Momose, Kailun Qin, Ao Sakurai, and Mona Vij. 2025. Securing Nested Attestation of Confidential Serverless Computing without Intra-Enclave Isolation. Cryptology ePrint Archive, Paper 2025/727. https://eprint.iacr.org/2025/727 [13] Monzo. 2024–2026. aws-nitro-util. GitHub repository. https://github.com/mon zo/aws-nitro-util Last retrieved: 2026-08-17. [14] Vikram Narayanan, Claudio Carvalho, Angelo Ruocco, Gheorghe Almasi, James Bottomley, Mengmei Ye, Tobin Feldman-Fitzthum, Daniele Buono, Hubertus Franke, and Anton Burtsev. 2023. Remote attestation of confidential VMs using ephemeral vTPMs. In Proceedings of the 39th Annual Computer Security Appli-cations Conference (Austin, TX, USA) (ACSAC ’23) . Association for Computing Machinery, New York, NY, USA, 732–743. doi:10.1145/3627106.3627112 [15] P. Odifreddi. 1989. Classical Recursion Theory: The Theory of Functions and Sets of Natural Numbers . Studies in Logic and the Foundations of Mathematics, Vol. 125. North-Holland, Amsterdam. [16] Mark E. Russinovich, Cédric Fournet, Greg Zaverucha, Josh Benaloh, Brandon Murdoch, and Manuel Costa. 2024. Confidential Computing Proofs: An alterna-tive to cryptographic zero-knowledge. ACM Queue 22, 4 (Sept. 2024), 73–100. doi:10.1145/3689949 [17] Reiner Sailer, Xiaolan Zhang, Trent Jaeger, and Leendert van Doorn. 2004. Design and Implementation of a TCG-based Integrity Measurement Architecture. In 
+
+Proceedings of the 13th USENIX Security Symposium (San Diego, CA), Matt Blaze (Ed.). USENIX Association, Berkeley, CA, 223–238. http://www.usenix.org/publi cations/library/proceedings/sec04/tech/sailer.html [18] Haofan Zheng and Owen Arden. 2021. Secure Distributed Applications the De-cent Way. In Proceedings of the 2021 International Symposium on Advanced Security on Software and Systems (Virtual Event, Hong Kong) (ASSS ’21) . Association for Computing Machinery, New York, NY, USA, 29–42. doi:10.1145/3457340.3458304 
+
+## A Open Science 
+
+https://github.com/acompany-develop/mutual-attestation-kleene 
+
+## B Proofs of Kleene’s recursion theorems 
+
+Theorem 2.2 and Corollary 2.3 are classical results of recursion theory. We give the proofs here because the transpilers of Section 3.1 and Section 4.2 mirror their constructive self-application pattern; the syntactic correspondence is spelled out in Appendix C. Proof of Theorem 2.2. For 𝑛, 𝑚 ∈ N, let 𝑆 𝑚 𝑛 : N × N𝑚 → N be a computable function such that 
+
+𝜑 (𝑛 )   
+
+> 𝑆 𝑚 𝑛 (𝑒, ®𝑦 )
+
+= 𝜑 (𝑛 +𝑚 ) 
+
+> 𝑒
+
+(− , ®𝑦 ) .
+
+Note that such a function always exists by the 𝑆 𝑚 𝑛 theorem [9]. Consider the following computable partial function 𝑔 : N𝑛 ×N×N ⇀
+
+N:
+
+𝑔 ( ® 𝑥, 𝑦, 𝑧 ) := 𝜑 (1+𝑛 )
+
+> 𝑧
+
+ 𝑆 1 
+
+> 𝑛
+
+(𝑦, 𝑦 ) , ®𝑥  .
+
+Let 𝑗 be an index of 𝑔 with respect to 𝜑 (𝑛 +2) . The computable function 𝑒 : N → N defined by 
+
+𝑒 (𝑖 ) := 𝑆 1
+
+> 𝑛
+
+ 𝑆 1 
+
+> 𝑛 +1
+
+( 𝑗, 𝑖 ) , 𝑆 1 
+
+> 𝑛 +1
+
+( 𝑗, 𝑖 )
+
+satisfies the equation 
+
+𝜑 (𝑛 )   
+
+> 𝑒 (𝑖 )
+
+= 𝜑 (𝑛 +1) 
+
+> 𝑖
+
+(𝑒 (𝑖 ) , −) .
+
+Consequently, choosing 𝑖 to be any 𝜑 (𝑛 +1) -index of 𝑓 gives 𝜑 (𝑛 )   
+
+> 𝑒 (𝑖 )
+
+=
+
+𝑓 (𝑒 (𝑖 ) , −) . □
+
+Proof of Corollary 2.3. It can be reduced to the case 𝑘 = 1(Theorem 2.2) by using the computable isomorphism N𝑘  N. To 
+
+9Takuma Imamura              
+
+> header
+> SELF = ’A’ DATA = repr( D)
+> framework
+> render( 𝜏 )
+> body ˆ𝑃 𝐴
+> node 𝐴
+> header
+> SELF = ’B’ DATA = repr( D)
+> framework
+> render( 𝜏 )
+> body ˆ𝑃 𝐵
+> node 𝐵
+> render(’B’) render(’A’)
+> D=⟨nodes ,bodies (ˆ𝑃 𝐴 ,ˆ𝑃 𝐵 ),header ,framework ⟩
+
+Figure 1: Layout of the emitted nodes for a two-node family (identifier prefixes __pyreflect_ omitted). Shaded segments are byte-identical across all nodes, and their content is ex-actly what the shared blob D records—the index 𝑗 in the proof of Theorem 2.2; white segments are node-specific (the bod-ies, too, are recorded in D). Calling the framework’s render 
+
+with a node-id reassembles that node’s entire file: header, framework, and body come from D, the selector line comes from the argument, and the DATA line—the one line D cannot contain—is regenerated as repr of the running node’s own blob, mirroring the self-application 𝑆 1 
+
+> 𝑛
+
+( 𝑗, 𝑗 ). Each node thus reproduces every member’s file byte-for-byte, itself included (render(’A’) within 𝐴 yields 𝐴 ’s own file). 
+
+clarify the connection with the implementation of our transpilers, we shall also provide a more concrete proof. Define the computable partial function 𝐹 : N × N𝑛 × N ⇀ N by 
+
+𝐹 (𝑦, ®𝑥, 𝑖 ) :=
+
+(
+
+𝑓 𝑖 
+
+ 𝑆 1 
+
+> 𝑛
+
+(𝑦, 1) , . . . , 𝑆 1 
+
+> 𝑛
+
+(𝑦, 𝑘 ) , ®𝑥  , 1 ≤ 𝑖 ≤ 𝑘, 
+
+undefined , otherwise .
+
+Theorem 2.2 provides a 𝜑 (𝑛 +1) –index 𝑒 ∈ N such that 
+
+𝜑 (𝑛 +1) 
+
+> 𝑒
+
+( ® 𝑥, 𝑖 ) = 𝐹 (𝑒, ®𝑥, 𝑖 ) .
+
+For each 1 ≤ 𝑖 ≤ 𝑘 , we have 
+
+𝜑 (𝑛 )   
+
+> 𝑆 1
+> 𝑛 (𝑒,𝑖 )
+
+( ® 𝑥 ) = 𝜑 (𝑛 +1) 
+
+> 𝑒
+
+( ® 𝑥, 𝑖 )
+
+= 𝐹 (𝑒, ®𝑥, 𝑖 )
+
+= 𝑓 𝑖 
+
+ 𝑆 1 
+
+> 𝑛
+
+(𝑒, 1) , . . . , 𝑆 1 
+
+> 𝑛
+
+(𝑒, 𝑘 ) , ®𝑥  .
+
+Hence the tuple ®𝑒 :=  𝑆 1 
+
+> 𝑛
+
+(𝑒, 1) , . . . , 𝑆 1 
+
+> 𝑛
+
+(𝑒, 𝑘 ) gives a solution to the system of equations: 
+
+𝜑 (𝑛 ) 
+
+> 𝑒 𝑖
+
+= 𝑓 𝑖 (® 𝑒, −) , 1 ≤ 𝑖 ≤ 𝑘. □
+
+## C Design of the emitted nodes 
+
+This appendix maps each stage of PyReflect (Section 3.1) to the constructive pattern in the proof of Theorem 2.2 (Appendix B) and records the emitted file layout. NixReflect (Section 4.2) uses the same layout, substituting Nix expressions for Python source. Figure 1 depicts the layout of the emitted files and the run-time reproduction mechanism; the paragraphs below map each element onto the proof. 
+
+A minimal template. A two-node template has the following shape, where each body is arbitrary Python code that may refer to members’ sources through their node-ids: 
+
+[ {"node": "__NODE1", "body": "... __NODE2 ..."}, {"node": "__NODE2", "body": "... __NODE1 ..."} ] 
+
+Within a body, the node-ids __NODE1 and __NODE2 stand for the (to-be-computed) source code of the respective nodes; what the bodies do with those sources—the PoCs hash them—is immaterial to the construction below. 
+
+Rewriting—from 𝑓 to 𝑔 . The proof never hands a program its index outright. For a fixed behaviour 𝑓 = 𝜑 (1+𝑛 ) 
+
+> 𝑧
+
+, its function 𝑔 
+
+(Appendix B) replaces 𝑓 ’s index argument with the term 𝑆 1 
+
+> 𝑛
+
+(𝑦, 𝑦 )—
+
+reconstructed from a parameter 𝑦 by self-application instead of received as an input. PyReflect makes the same move syntactically: every occurrence of a node-id 𝑁 ′ in a body is rewritten into the call 
+
+__pyreflect_render__(’ 𝑁 ′’) , which recomputes the source of 
+
+𝑁 ′ at run time from embedded data. Writing ˆ 𝑃 𝑁 for the rewritten body, the ˆ 𝑃 𝑁 play the role of 𝑔 .
+
+The data blob—the index 𝑗 . The transpiler then serialises the whole rewritten family into a single value, the blob : the base64 encoding of the canonical JSON record 
+
+D = ⟨nodes , bodies , header , framework ⟩,
+
+where bodies maps each 𝑁 ↦ → ˆ𝑃 𝑁 and the header (imports) and framework are constants shared by all nodes. D is a complete description of the family short of the self-reference—an index 𝑗 of 𝑔 .That one blob serves all 𝑛 nodes is Corollary 2.3 at work: the pairing 
+
+N𝑛  N becomes the shared D, and the projection recovering 𝑒 𝑖 
+
+becomes a per-node selector line. 
+
+Emission—the self-application 𝑒 := 𝑆 1 
+
+> 𝑛
+
+( 𝑗, 𝑗 ). Every emitted node file has the same five-part layout: the header; the selector line __ pyreflect _SELF __ = ′𝑁 ′;the line __ pyreflect _DATA __ = repr (D) ;the framework; and the body ˆ 𝑃 𝑁 . The header, framework, and body ˆ𝑃 𝑁 are the parts shared with, or drawn from, D; only the selector line is node-specific. Since the header, framework, and bodies are all recorded in D, embedding repr( D) in a file otherwise laid out from D is exactly the partial application of the program to its own index—the step 𝑒 := 𝑆 1 
+
+> 𝑛
+
+( 𝑗, 𝑗 ) that gives a fixed point. 
+
+Run time—verifying 𝜑 𝑒 = 𝑓 (𝑒, −) . The framework reconstructs the source of any target node 𝜏 by 
+
+def __pyreflect_render__(target): d = __pyreflect_blob__() return (d["header"] + "__pyreflect_SELF__ = " + repr(target) + "\n" + "__pyreflect_DATA__ = " + repr(__pyreflect_DATA__) + "\n" + "\n" + d["framework"] + "\n" + d["bodies"][target]) 
+
+where __pyreflect_blob__ decodes the base64-encoded JSON embedded in the code. The header, framework, and body come straight from D, and the selector line from target ; the one line D
+
+> 10 Bootstrapping Mutual Attestation with Kleene’s Second Recursion Theorem
+
+Table 4: Complete environment for the Nitro Enclaves cost experiment. 
+
+Item Value Instance type m6g.xlarge : 4 vCPUs, 16 GiB RAM; AWS Graviton2 (Arm Neoverse-N1) processor AMI ubuntu/images/hvm-ssd-gp3/ubuntu-resolute-26.04-arm64-server-20260604 (ami-04d0f56e9ce314a8e , us-east-2 )OS / kernel Ubuntu 26.04 LTS / Linux 7.0.0-1010-aws Host storage 64 GiB Nitro Enclaves feature enabled Allocator pool memory_mib: 8192 , cpu_count: 2 
+
+Per-enclave allocation –memory 2048 –cpu-count 2 aws-nitro-util master branch (commit: b529ed6299a49ebe362d3cf618b21d6dac4a2e48) 
+
+nitro-cli version 1.4.5 (commit: 18a5f6f35f110c0f235f193ae3caff9434d64ee1) Docker version 29.1.3; Ubuntu package docker.io 
+
+29.1.3-0ubuntu4.1 Nix (host) Determinate Nix 3.21.8 (Nix 2.34.8) 
+
+cannot contain—its own __pyreflect_DATA__ line—is regenerated as repr of the running node’s own blob. This is correct on two counts: the canonical serialisation makes the blob byte-identical across nodes, so the substituted value equals the one in 𝜏 ’s file for any 𝜏 ; and __pyreflect_render__ is kept structurally identical to the layout function the transpiler itself used at build time, so the reconstruction reproduces the deployed file verbatim, itself included. This replay realises the defining equation 
+
+𝜑 𝑒 = 𝑓 (𝑒, −) of Theorem 2.2. 
+
+## D Complete benchmark environment 
+
+Table 4 on page 11 records the complete host and software configu-ration used for the benchmark in Section 5.

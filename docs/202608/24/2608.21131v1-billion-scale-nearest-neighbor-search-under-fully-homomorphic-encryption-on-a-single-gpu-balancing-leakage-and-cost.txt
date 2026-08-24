@@ -1,0 +1,498 @@
+Title: Billion-Scale Nearest-Neighbor Search under Fully Homomorphic Encryption on a Single GPU, Balancing Leakage and Cost
+
+URL Source: https://arxiv.org/pdf/2608.21131v1
+
+Published Time: Mon, 24 Aug 2026 00:53:22 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# Billion-Scale Nearest-Neighbor Search under Fully Homomorphic Encryption on a Single GPU, Balancing Leakage and Cost 
+
+Isamu Isozaki ∗
+
+Drexel University 
+
+Madison Bratina 
+
+Miriel AI 
+
+Edward Kim †
+
+Drexel University 
+
+August 24, 2026 
+
+Abstract 
+
+We build a system that answers “which database vectors are most similar to my query?” 
+
+without the server ever seeing the query . The query is encrypted with fully homomorphic en-cryption (FHE); the server does all its scoring on ciphertexts and returns encrypted results that only the client can read. The challenge is speed: at a billion vectors, scoring every row under encryption is far too slow, so we combine two ideas— rank reduction (shrink each vector’s dimen-sion) and a hierarchy (route to a small candidate set instead of scanning everything)—executed under encryption on a single GPU. We evaluate on three corpora at very different scales: aface corpus of 222 049 centroids clustered from ∼10 M face images (512-dim), DataComp-1B (1.39 × 10 9 vectors, 512-dim CLIP), and Deep1B ( 10 9 vectors, 96-dim). On DataComp-1B we reach a recall@10 of 0.90 against the single labeled answer, or 0.95 when a near-duplicate im-age in the top-10 also counts as correct (the data is web-scraped and full of duplicates), at ∼6 sper encrypted query on a GPU; a lighter configuration reaches 0.78 /0.83 at ∼1.8 s. These are warm (deployable) server-side latencies—client decryption and network transfer are excluded. On Deep1B we reach recall@10 0.90 under all-levels FHE ( 0.9045 measured over 2000 FHE queries, matching the 0.906 plaintext routing—the 96 →128 zero-pad is exact, correlation 1.0)at 2.3 s warm per query. We describe the full client–server protocol in enough detail to repro-duce it, and report accuracy and latency for every configuration. We also measure what this speed costs: the hierarchy’s access pattern leaks the database geometry (an observer recovers 
+
+72% of the coarse-cell neighbor graph from access patterns alone), and we show that seeded (fixed-group) padding cuts this leak by ∼35 × (to ≈2% ), where naive padding is defeated by a repeated-query attack. 
+
+# 1 Introduction 
+
+Suppose you want to search a large database of vectors—image embeddings, face templates—but the query is private and the database lives on an untrusted server. Fully homomorphic encryption (FHE) lets the server compute on encrypted data, so it can score your encrypted query against its database and hand back an encrypted answer it cannot read. The catch is cost: FHE arithmetic is expensive, and a database can have a billion entries. Scanning all of them under encryption per 
+
+> ∗
+
+imi25@drexel.edu 
+
+> †
+
+ek826@drexel.edu 
+
+1arXiv:2608.21131v1 [cs.CR] 21 Aug 2026 query is impractical: a prior GPU system brute-force-searched 10 M encrypted face vectors on eight 
+
+GPUs [8], so extrapolating linearly to DataComp’s 1.39 B vectors would take on the order of 1100 
+
+GPUs—whereas the hierarchical approach here runs on a single GPU. The real question is thus how to score only a small, well-chosen candidate set—under encryption—while keeping accuracy high. This paper is a systems paper: we show how to make encrypted approximate nearest-neighbor (ANN) search work at billion scale on a GPU, and we report what it costs and how well it works. Our contributions: • A clear, reproducible end-to-end protocol for encrypted ANN (§2): what the client sends, what the server computes on ciphertexts, and what comes back. • Rank reduction under encryption (§3.1): the server projects the encrypted query to a smaller dimension without ever seeing the projection matrix. We also solve a subtlety this creates—the projection distorts vector norms, so recovering true cosine similarity takes care— and prove a packing optimization correct. • An all-levels-FHE hierarchical search (§3.2): coarse → fine → rerank routing where each level is scored under encryption and the client steers, so a query touches ∼65 –110 k candidates instead of 1.39 B. • A set of GPU optimizations (§3.4) that cut the warm per-query cost by ∼5.4×.• A full evaluation (§4): accuracy and latency for every configuration on all three corpora. • An access-pattern leakage analysis (§5): plaintext metrics for how much the hierarchy’s co-access reveals of the database geometry and the query stream, and how padding—undone by a repeated-query intersection attack unless the decoys are fixed—trades leak for fetch cost. We also explored product quantization under FHE but do not use it in our DataComp results; §3.3 explains why (a real negative finding: fully hidden it does not beat plain encrypted search, and the leakage-allowing variant leaks too much). 
+
+# 2 System Overview: one query, start to finish 
+
+This section is the map for the rest of the paper. Read it and you know how the system works. 
+
+Setting. This overview describes the billion-scale (DataComp and Deep1B) path, which is where the hierarchy applies; the smaller face corpus is scored flat (no hierarchy, §4.1). The client owns the data and a CKKS secret key. Offline, the data owner clusters the database into a hierarchy —coarse cells, then finer cells, then leaves holding the actual rows—and gives the server the (encrypted) cluster centroids and the (encrypted) projection matrix. At query time the client holds the secret key; the server holds only encrypted things and does encrypted arithmetic (in a deployment—our prototype encrypts on the fly; see below). This is the standard single-key, outsourced-database setting (the querier is the data owner, not a third party). 
+
+Measured prototype vs. deployment. We state this plainly because it affects the threat model. Our measured system encrypts the touched database rows on the fly at query time—this is the per-query “enroll (encrypt)” term in the DataComp latency breakdown (Fig. 6)—so during our runs the database sits in plaintext on the server and is encrypted per query. That is a prototype convenience, not the setting above. We therefore report two latencies: a cold number that includes this on-the-fly 2per-query encryption (the prototype cost), and the deployable warm number—measured after the candidate rows are enrolled and their ciphertexts serialized to disk, so it is the cost of loading those pre-encrypted ciphertexts back from disk and scoring them—which is what Table 3 quotes; the cold number is roughly 3.5× larger (e.g. 13 .8 vs. 4.0 s at R256/leaf-32 ). A deployment matching the threat model pre-encrypts the database once, offline, and stores ciphertexts; there is then no per-query enroll cost, only a one-time storage cost, and it follows directly from the CKKS parameters (128 -bit security, 45 -bit scale). A serialized ciphertext is 2 · L · n · 8 · 2.5 bytes ( L RNS limbs, ring dimension n, 8 bytes per coefficient, ∼2.5× serialization overhead); it holds n/ 2 slots, and a block of n/ 2 vectors is stored as R diagonals (one per reduced dimension), so the per-vector cost is 
+
+R · 2Ln · 8 · 2.5
+
+n/ 2 = 80 L R bytes ,
+
+independent of the ring dimension n. At the shallow level the ranked matvec needs ( L=5 , i.e. level 
+
+4) this is 80 · 5 · 128 ≈ 51 KB per vector at R=128 (≈ 102 KB at R=256 ). Hence the ∼10 6-centroid routing index is ≈51 GB, and the full 1.39 B rows are 1.39 ×10 9 · 51 KB ≈ 71 TB ( ≈ 142 TB at 
+
+R=256 ). A deployment stores all of this as ciphertext—both the routing index and the reranked base rows are pre-encrypted at rest—so the 71 TB is a one-time storage cost; our prototype encrypts on demand only to avoid paying it during the measured runs. The ranked path needs no homomorphic thresholding (the client ranks after decryption), so the database can live at this low level; the membership (face) path instead evaluates an encrypted threshold ( ∼11 levels, L≈12 ), which by the same formula stores ∼2.4× (12 /5) larger per vector. 
+
+Security parameters. Both parameter sets are 128 -bit classic (OpenFHE HEStd_128_classic ,
+
+45 -bit scale), with the library choosing the ring dimension: the ranked DataComp path runs at multiplicative depth 4 (ring 214 ) and the face membership path at depth 11 (ring 215 , which the deeper chain needs to stay 128 -bit). 
+
+What CKKS gives us. CKKS is an FHE scheme for approximate real-number arithmetic. You can add and multiply ciphertexts, and—because it packs many numbers into one ciphertext (“slots”)—rotate the packed vector. Multiplications are the scarce resource: each ciphertext has a small multiplicative depth budget, so the whole pipeline is designed to spend as few multiplications as possible. 
+
+The round trip. Figure 1 shows one query end to end: 1. Client sends the query vector, encrypted (the server never sees it in the clear). 2. Server, coarse level: it homomorphically projects the encrypted query to a smaller rank 
+
+R and scores it against the ∼1000 coarse centroids (an encrypted matrix–vector product), returning the encrypted scores. 3. Client: decrypts the coarse scores, keeps the top few cells (“ nprobe ”), and tells the server which ones. 4. Server, fine level: scores the query against the finer centroids under those cells; returns encrypted scores. 5. Client: decrypts, keeps the top leaves. 3CLIENT (holds secret key) SERVER (encrypted data only)              
+
+> 1. Enc(query vector)
+> 2. project 512 R, score
+> the ~1000 coarse cells 3. Enc(coarse scores) 4. ids of top-nprobe coarse cells (client decrypted, picked) 5. gather + score fine cells
+> 6. Enc(fine scores) 7. ids of top-nprobe leaves
+> 8. gather + score real DB rows
+> 9. Enc(rerank scores)
+> 10. decrypt top-10 answer
+> The server never sees the query, the scores, or the chosen answer in plaintext; all routing decisions are made client-side after decryption.
+
+Figure 1: One encrypted query, start to finish. The client (left) holds the secret key and makes all routing decisions; the server (right) only stores encrypted data and computes on ciphertexts. 6. Server, rerank: gathers the actual database rows in those leaves, scores them, returns encrypted scores. 7. Client receives: decrypts, takes the top-10 → the answer. The server only ever does encrypted arithmetic; every “which cells next” decision happens on the client after it decrypts. This is why the server is a simple, stateless scorer and all the routing logic lives in the client. 
+
+Reproducing this. The server is a persistent process that loads the CKKS keys once and then, per request, receives a level id plus a list of group ids and the encrypted query, gathers those rows, scores them under encryption, and returns the score vector. Concretely we use ring dimension 16384 ,a shallow multiplicative depth (4), and score in batches of 8192 rows; the client packs candidate ids into ≤ 8192 -row batches. The two levers that actually make the per-request scoring cheap are rank reduction and the hierarchy; we also study product quantization (PQ), but—as a key negative result—find it does not pay under encryption (§3). 
+
+# 3 Method 
+
+One of our techniques is compression (make each vector cheaper: rank reduction) and one is struc-ture (score fewer vectors: the hierarchy); we also analyze product quantization—a second, natural compression—but find it does not pay under FHE, and do not use it. We take them in turn, each time giving the plain idea first and the FHE mechanics second. 
+
+3.1 Rank reduction: project to fewer dimensions 
+
+Idea. A 512 -dim vector is expensive to score under encryption. If we first project it to R dimen-sions ( 256 or 128 ), scoring gets cheaper, and—as long as R isn’t too small—accuracy barely drops. 4The twist is that the projection must happen under encryption (the query is encrypted) and without the server learning the projection matrix W .
+
+How. The server holds W as encrypted “diagonals” and computes Enc( qR) = W⊤Enc( q) with the standard diagonal matrix–vector method (encode a matrix by its diagonals; a matrix–vector product becomes a few rotations and multiplies). We pick the projection basis by Fisher discriminant analysis over the clusters (“lda-clusters”), which separates classes better than plain PCA/SVD for high-dimensional data. 
+
+The norm problem. Projection does not preserve length: a unit vector, projected, comes out with some other magnitude. So the raw encrypted score is |qR| · cos( θ), not the cosine we want. The database vectors can be re-normalized cheaply in plaintext when they are enrolled, but the query cannot—after projection it exists only as a ciphertext, and dividing an encrypted vector by its own (encrypted) length is expensive. How much this matters depends on what the server returns: • Ranked retrieval (our hierarchy). The server returns the raw scores and the client picks the top-k. The client owns its query and the projection, so it simply computes |qR| in plaintext and divides after decrypting—exact, and essentially free. This is the path our DataComp results use. • Membership search (the face task). Here the server must return a yes/no match under encryption —there is no decrypt-then-normalize step. We instead compare against a threshold scaled into the query’s units: approximate τ |qR| = pτ 2|qR|2 with a low-degree Chebyshev polynomial (the square root is smooth, so a low degree suffices, and we use a direct evaluator because the standard Paterson–Stockmeyer method is unstable at these tiny degrees), then test 
+
+sign( score − τ |qR|). Since multiplications are scarce we pre-scale into [−1, 1] with a plaintext constant, which also saves one multiplication. This threshold path runs at multiplicative depth 
+
+11 , matching the prior GPU encrypted-matching work [4]—the sign/threshold approximation is the deep part—except that the norm-recovery and the sign check now share that budget, so we run the Chebyshev at a lower degree than that work. By contrast the ranked hierarchical path returns raw scores and needs no homomorphic threshold, so it runs shallow (multiplicative depth 4)—the difference between the two paths is exactly whether the client or the server does the final normalize/threshold. 
+
+Detail (skippable). A packing optimization and its correctness. We pack all chunks of W into one ciphertext using non-overlapping windows, cutting projection storage by a factor c = 512 /R at no extra homomorphic cost, and combine chunks with cheap plaintext 0/1 masks (public constants, so applying them is a cheap ciphertext–plaintext multiply with no key-switch, and masking never moves data across window boundaries the way a rotation would). Under baby-step/giant-step (BSGS) the giant rotation acts on the already-combined ciphertext and mixes adjacent windows; nonetheless a single final fold recovers the exact answer (the mixing is a fixed permutation, invisible to the final sum), whereas folding after each giant step is provably wrong. A knock-on effect: because in this packing the baby rotations recur per chunk while the giant rotation is shared, the best baby step sits below the textbook √R (measured optimum B=4 at R=256 , B=2 at R=128 ; Fig. 2). One more enrollment trick matters for the hierarchy, where a fresh candidate set is encrypted every request: we plaintext-prerotate the database—shift each database diagonal by the giant-step amount 
+
+in plaintext at enrollment—so the server needs no database rotation keys at query time (a rotation-free load, used in all reported latencies). This removes a per-request key-switch and fixes a crash 52 4 8 16 32 64 projection baby step B 10 3 
+
+> projection time / query (ms)
+> opt B=4 opt B=2
+> 256 =16
+> 128 =11
+> Combined-window BSGS: optimal baby step sits BELOW R
+> R=256 R=128
+
+Figure 2: Projection latency vs. baby step B. The optimum is below √R because our packing makes the baby rotations recur per chunk while the giant rotation is shared. where re-encrypting under a freshly generated key would otherwise free the rotation keys the next request needs. 
+
+3.2 Hierarchy: score a few thousand rows, not a billion 
+
+The hierarchy is used only for the billion-scale corpora (DataComp and Deep1B); the 222 k-centroid face corpus is small enough to score exhaustively (a flat membership scan, §4.1), so it uses no hierarchy, no routing, and no access-pattern leakage. 
+
+Idea. Instead of scoring all 1.39 B rows, cluster them into a tree and only descend into the promis-ing branches. As in §2, the client scores ∼ 1000 coarse cells, opens the best few, scores their fine cells, opens the best leaves, and finally reranks the real rows in those leaves. A query touches ∼ 65 –110 krows total ( ∼ 1000 coarse + ∼ 18 k fine + 45 –90 k rerank), never the full billion. 
+
+How. Each level is one call to the same stateless encrypted scorer: the client sends the level’s candidate ids and the encrypted query; the server gathers those rows from a single per-level file (by offset and length), scores them, and returns the encrypted scores. The client decrypts and chooses what to open next. Two dials matter: the coarse beam width (which saturates—opening more than 
+
+16 coarse cells stops helping) and the leaf beam width, the main recall dial (Fig. 3 shows how often the true neighbor’s leaf is loaded as the leaf beam widens). 
+
+The DataComp index, concretely. For DataComp-1B the hierarchy is two levels, and it is worth stating exactly how it is built and queried—the querying is not a deep balanced-tree descent to single-vector cells. Build: we cluster the 1.39 B base vectors into 10 6 leaf clusters with a flat 
+
+k-means; each leaf is one cluster of base rows, represented by its centroid, so “the leaves” are the 
+
+10 6 centroids. We then build a coarse level of ∼1000 cells on top by assigning every leaf centroid to its nearest coarse centroid (the coarse level exists only to avoid scoring all 10 6 leaves on every query). Query : a search is exactly two encrypted rounds—(i) score the encrypted query against the 1000 coarse centroids and keep the top nprobe c=16 cells; (ii) score it against the ∼18 k leaf centroids that live under those 16 cells and keep the top nprobe ℓ (32 or 64 ); then load the base rows 620 21 22 23 24 25 26 27 28
+
+> leaf nprobe (leaves loaded) 0.65 0.70 0.75 0.80 0.85 0.90 0.95 1.00 routing recall (NN's leaf loaded)
+> Routing-recall ceiling vs. leaf beam width (DataComp)
+
+Figure 3: How often the true nearest neighbor’s leaf is among the loaded leaves, as the leaf beam widens—the ceiling on rerank recall set by routing. of those leaves and rerank in the projected R-dim. We fix the coarse beam at 16 throughout (both the recall and the leakage experiments); the leaf beam ( 32 or 64 ) is the main recall dial. Concretely, in the plaintext recall sweep the second round is implemented by scoring all 10 6 leaf centroids and masking every one not under a chosen coarse cell to −∞ before the top-nprobe ℓ (a vectorization convenience, identical in result to scoring only the ∼18 k candidates); the deployed FHE system instead fetches and scores only those ∼18 k leaves under the chosen coarse cells—which is exactly the first reveal the leakage model analyzes (§5). This flat, two-level scheme—a coarse index over a single flat leaf level—is what the FHE pipeline runs; the deeper balanced routing tree (splitting all the way down to one centroid per cell) is a separate construction we do not use here. 
+
+3.3 Product quantization: explored, but not used for DataComp 
+
+PQ replaces each vector by a short code that indexes small learned codebooks, so scoring becomes cheap table lookups. We explored it under FHE but ultimately do not use it in the DataComp results, and why is a finding in its own right. 
+
+Fully encrypted, PQ does not pay. Under encryption, PQ scoring has two phases. The first— the dot product between the query’s chunk embeddings and the codes—is constant-time and cheap. The second—the gather , mapping each code to its codebook entry—is the problem: done under encryption it needs an encrypted one-hot vector per code per centroid, which blows up storage and adds a ciphertext–ciphertext multiply per centroid. Residual (additive) PQ softens this: with K=2 
+
+codewords per level and M =2 subquantizers, a centroid is reconstructed as a sum over L residual levels, 
+
+ci ≈
+
+> M
+
+M
+
+> m=1
+> L
+
+X
+
+> l=1
+
+CB (m)
+
+> l
+
+h
+
+k(m)
+
+> i,l
+
+i
+
+,
+
+where ⊕ concatenates the M chunks and each (l, m ) selects one of K=2 codewords, so the one-hot per chunk shrinks from a flat K′≈2000 to just L two-way selects. But now there is a ciphertext– ciphertext multiply at every level, and the gather still scales linearly in the number of centroids scored—so, fully hidden, PQ never beat plain encrypted vector search in our measurements. 70 2 4 6 8 10 12 14 16 warm latency / query (s) [load + score] 
+
+> baseline (disk, 1-thread, per-batch proj) + threaded load (16) + projection cache + ciphertext loaded in CPU 16.7s 7.0s 4.1s 3.1s
+> Cumulative warm-query optimization stack (DataComp R256, leaf=32; 16 threads, plaintext pre-rotation)
+
+Figure 4: Cumulative effect of the software optimizations on the warm per-query latency (load +
+
+score, one-time enrollment excluded) of one DataComp query (R256, leaf=32; 16 threads, plaintext pre-rotation throughout): from a disk, single-threaded, per-batch-projection baseline ( 16 .7 s) to the full stack ( 3.1 s, in-mem), a 5.4× speedup. The + projection cache stage (disk load, plaintext pre-rotation) is exactly the Table 3 R256/leaf-32 configuration and matches its 4.0 s warm latency. 
+
+Allowing leakage leaks too much. The alternative is to offload the gather to the client: the server returns a small distance table (constant-time, size independent of the database) and the client does the lookup-and-sum in plaintext, which is O(n) but cheap because the client can index its own codes. But this is, in the worst case, a setting where the attacker holds the plaintext codes without the codebook (and without the original data), so we can measure exactly how much the codes leak: rank neighbors by Hamming distance on the codes, compare to the true nearest neighbors by cosine on the real centroids, and report the fraction of each centroid’s true cosine top-10 recovered from code agreement ( db-leak @10 ; the attacker holds the codes, not the codebook). On the 10 6 DataComp leaf centroids, publishing the residual codes at a single level leaks db-leak@ 10 ≈ 0.27 ; running the coarse 
+
+1000 -way level under encryption and publishing only the second-level residual codes drops this to 
+
+0.075 (shared codebook). This residual client-gather is genuinely fast—its server cost is table-lookup and independent of N (≈1.2 s)—but it buys that speed by publishing a neighbor-graph leak the exact hierarchy does not have. Since the hierarchical index is already fast and leaks only its access pattern rather than the whole neighbor graph (§5), we saw no benefit to the PQ path for DataComp and dropped it. 
+
+3.4 GPU optimizations for the encrypted scorer 
+
+The encrypted matrix–vector product is the inner loop, and most of its cost turned out to be GPU memory management, not arithmetic. The big wins, cumulatively cutting a DataComp query’s 
+
+warm latency (load + score) from 16 .7 to 3.1 s (Fig. 4): read the encrypted database with many threads; project the query once and reuse it across batches; and hold the encrypted rows in CPU memory and upload them straight to the GPU, instead of round-tripping them through disk. 
+
+Warm-query kernel path. Two further GPU-kernel changes target the warm query—the steady-state latency once the one-time caches are hot, which is the number that matters for a served system. First, we keep the small-step (baby-step) rotation keys resident in VRAM: a cold query still generates them ( ∼0.5 s), but every subsequent warm query finds the key-init step essentially free. On its own, though, caching exposed a second bottleneck—the many separate malloc s for per-key ciphertexts 8Rows Metric Before After Reduction                         
+
+> 214 warm query 813 ms 323 ms 60% 214 baby-step 524 ms 22 ms 96% 214 total incl. setup 9.68 s5.60 s42% 215 warm query 1.65 s1.20 s27%
+
+Table 1: Warm-query latency after small-step rotation-key VRAM caching and the single_alloc 
+
+fragmentation fix, on a face-scale brute-force encrypted scan. fragmented GPU memory and slowed the following matrix multiply, cancelling much of the gain. Allocating every ciphertext from one unified region ( single_alloc ), together with preallocating and reusing the temporary ciphertexts, removes the fragmentation. Together these take the warm-query baby-step path from 524 to 22 ms (a ∼96% drop) and the full warm query from 813 to 323 ms on a brute-force scan of 214 encrypted rows (Table 1). Beyond one ciphertext block—at 215 rows, where a second set of 512 diagonals is needed—the BSGS scan itself dominates and the remaining gain is smaller ( 1.65 to 1.20 s); the optimal baby step there was BABY_STEP_N1 = 23 . These gains are within noise on the DataComp hierarchy, whose per-query cost is dominated by enrollment and rerank rather than a long warm scan, but they set the steady-state latency on the membership (face) path. 
+
+# 4 Evaluation 
+
+We report accuracy and latency for every configuration on all three corpora, all measured on a single 
+
+NVIDIA L40S (48 GB) GPU on an AWS g6e.4xlarge instance ( 16 vCPUs = 8 physical cores of an AMD EPYC 7R13, 128 GB host RAM, and an ∼8 TB EBS SSD volume holding the pre-encrypted database, which the warm-query load streams with 16 threads at ∼1 GB/s—a single stream reads EBS at only ∼150 MB/s, so the threading is what keeps the ciphertext load off the critical path). Every FHE score was checked against the plaintext computation and matched to ∼10 −4, so the FHE and plaintext accuracies are identical—we therefore use plaintext routing to sweep many configurations and FHE runs to measure latency. The corpora stress different techniques, and their evaluation protocols differ accordingly. 
+
+Datasets and queries. All three corpora are evaluated on 2000 held-out queries. The face corpus is Glint360K ( ∼10 M face images) clustered into 222 049 centroids, each labeled by the majority face identity of its members; the 2000 queries are held-out face embeddings scored against all 222 049 centroids, and a match is judged by identity (a query may match many same-identity centroids). For DataComp-1B we build a disjoint random held-out split (seed 0): 10 ,000 image items are drawn and removed from the database so a query cannot retrieve itself; the reported recall and latency use 2000 of these image-to-image queries (the leakage study in §5 uses all 10 ,000 ), and ground truth is each query’s true nearest database image. For Deep1B (the standard billion-scale ANN benchmark: 10 9 deep image descriptors, 96-dim, L2-normalized) we cluster the base into 10 6
+
+leaf centroids under a 1000 -cell coarse level, and use 2000 held-out queries from the public query set with the official rank-1 nearest neighbor as ground truth; being 96 -dim, its vectors are zero-padded to 128 under encryption—an exact, no-loss operation (not rank reduction), so FHE and plaintext scores are identical (correlation 1.0). We do not hold out a separate tuning set: the rank and beam-width operating points, and the face decision threshold, are chosen on these same queries, so they are best-case operating points—the recall and latency trends we rely on are smooth across the 9Table 2: Face (222k centroids): precision/recall/ F1 at the best-F1 threshold, and warm per-query FHE latency (steady-state, one-time enrollment excluded), vs. projected rank. Latency was mea-sured at R ∈ { 32 , 64 , 128 } and grows steeply with rank. rank precision recall F1 latency/q full (512) 0.991 0.995 0.993 —512 0.988 0.985 0.986 —256 0.979 0.970 0.974 —192 0.985 0.939 0.962 —128 0.967 0.916 0.941 7.0 s 96 0.964 0.884 0.923 —64 0.940 0.834 0.884 2.1 s 32 0.807 0.711 0.756 0.8 s 16 0.585 0.380 0.461 —16 32 64 96 128 192 256 512 projected rank R 0.4 0.5 0.6 0.7 0.8 0.9 1.0 score (best-F1 threshold)       
+
+> full-rank F1= 0.993
+> Face (222k centroids): retrieval quality vs. rank reduction
+> precision recall
+> F164 256 1000 2000 codebook size K (M=4) 0.88 0.90 0.92 0.94 0.96 0.98 1.00 recall@10
+> PQ recall saturates by K 2000 (face centroids)
+> R=32 R=64 R=128 R=512
+
+Figure 5: Face. Left: quality vs. rank (Table 2). Right: PQ recall@10 saturates by K ≈ 2000 ; very low rank ( R=32 ) caps quality regardless of K.sweeps, but the single reported points should be read as such. 
+
+4.1 Face corpus (222k centroids from 10 M images, 512-dim) 
+
+This corpus uses no hierarchy : at 222 k centroids we score the encrypted query against all of them (a flat membership scan), so there is no coarse/leaf routing and no access-pattern leakage—the hierarchy of §3.2 is used only for the billion-scale corpora (DataComp and Deep1B). Retrieval is judged against query identity : we cluster ∼10 M face images (Glint360K) down to ∼222 049 
+
+identity centroids and report precision/recall/ F1 of a threshold on cosine (no reranking—a cluster either matches or not). This is the setting that most stresses rank reduction (512-dim). Table 2 and Fig. 5 show quality degrading gracefully with rank: rank 256 keeps F1=0 .974 against the full-rank 
+
+0.993 , and F1 only falls off a cliff below rank 64. PQ on top saturates by codebook size K ≈ 2000 .10 Table 3: DataComp-1B: recall@10 and warm per-query latency per configuration (coarse beam 
+
+16 ). Warm latency = loading the pre-encrypted candidate ciphertexts and scoring them (disk, 16 
+
+threads, plaintext pre-rotation); the database is encrypted once, offline. It excludes the prototype’s on-the-fly per-query enrollment (encryption), which roughly triples the time (the cold cost). The top row is the plaintext, no-rank-reduction reference—the accuracy ceiling (its exact-id misses are all near-duplicates, hence dup-tol = containment). rank leaf recall@10 exact recall@10 dup-tol warm latency/q 512 (plaintext ref) 64 0.910 0.975 N/A 128 32 0.780 0.833 1.8 s 128 64 0.792 0.839 2.7 s 256 32 0.853 0.887 4.0 s 256 64 0.900 0.950 6.1 sR128 leaf32 R128 leaf64 R256 leaf32 R256 leaf64 0.0 0.2 0.4 0.6 0.8 1.0 recall@10        
+
+> 0.78 0.83 0.79 0.84 0.85 0.89 0.90 0.95
+> DataComp-1B (coarse nprobe=16): recall per config
+> recall@10 (exact id) recall@10 (dup-tolerant) coarse fine rerank 0246810 12 14 16 time / query (s)
+> 1.5s 3.6s 15.3s
+> Where the time goes: DataComp R256, leaf=64 (rerank dominates)
+> score (proj+matvec) load (GPU upload) enroll (encrypt) removable
+
+Figure 6: DataComp-1B. Left: recall@10 (exact and duplicate-tolerant) per configuration. Right: 
+
+where the per-query (cold) time goes for R256/leaf-64 —the rerank stage dominates, and per-query enrollment (encrypting the candidate rows) is the removable gap to the deployable warm number (load + score). 
+
+4.2 DataComp-1B ( 1.39 × 10 9, 512-dim CLIP) 
+
+This is the headline setting: full-scale, image-to-image, using the hierarchy with rank reduction to 256 /128 . Because the data is web-scraped and full of near- duplicates, we report both exact-id 
+
+recall@10 (is the labeled answer in our top-10) and duplicate-tolerant recall@10 (does our top-10 contain a ≥ 0.95 -cosine near-duplicate of it)—the latter is the honest quality on this data. In fact, at full rank the duplicate-tolerant recall equals containment (was the answer’s leaf loaded at all): every exact-id miss is a ≥ 0.99 -cosine near-duplicate, so the reranking is effectively perfect and the remaining gap is purely routing—this is the 0.975 ceiling in the plaintext reference row of Table 3. Table 3 and Fig. 6 give every configuration: rank 256 reaches 0.90 /0.95 (exact/dup), rank 128 a lighter 0.79 /0.84 , and the coarse beam saturates at 16 .
+
+4.3 Deep1B ( 10 9, 96-dim) 
+
+Deep1B uses the same coarse → fine → rerank hierarchy as DataComp, scored under encryption at every level with the client picking from decrypted scores—but at a much lower native dimension. The 11 Table 4: Deep1B ( 10 9, 96-dim): recall@10 (plaintext routing) vs. coarse and leaf beam, 2000 queries. The 96 →128 zero-pad is exact, so all-levels FHE reproduces this—the operating point (coarse 16 ,leaf 64 , bold ) gives FHE recall@10 0.9045 at 2.3 s warm per query. leaf beam coarse beam 16 32 64 128 256 4 0.706 0.767 0.797 0.814 0.819 
+
+8 0.762 0.829 0.873 0.896 0.909 
+
+16 0.781 0.856 0.906 0.936 0.953 
+
+32 0.790 0.870 0.921 0.955 0.974 0 5 10 15 20 25 30 35 40 DB blocks (8192 rows each) 0510 15 20 25 latency / query (s)    
+
+> regime jump (~28 30 blocks) cold warm
+> Encrypted-scan latency vs. rows scored (R=128)
+> cold (first query) warm (steady state) 32 64 128 projected rank R 1234567warm latency / query (s)
+> 0.77s 2.13s 7.00s
+> Warm per-query latency vs. rank (face, 222k centroids)
+
+Figure 7: Left: encrypted-scan latency (cold and warm) vs. number of scored rows, from a standalone R128 scan (thread settings independent of Table 3). Right: warm per-query latency vs. rank (face, 222k). 
+
+96 -dim vectors are zero-padded to 128 and scored directly with no rank reduction and no projection: the pad is an exact identity, so the FHE score equals the plaintext 96 -dim cosine (correlation 1.0). Table 4 sweeps the coarse and leaf beams; the operating point (coarse 16 , leaf 64 ) reaches recall@10 
+
+0.906 , with high-recall points to 0.974 . Running the entire pipeline under all-levels FHE on 2000 
+
+queries reproduces this: recall@10 0.9045 at a warm per-query latency of 2.30 s (load 1.64 s + score 
+
+0.66 s; the cold prototype, with on-the-fly enrollment, is 7.6 s), scoring 1000 coarse + ∼18 k fine +
+
+∼75 k rerank candidates. DataComp needs its R256/leaf-64 configuration ( 6.1 s warm; Table 3) to reach the same 0.90 recall, so Deep1B gets there ∼2.6× faster—chiefly because the native 128 -dim packing is denser than DataComp’s zero-padded 512 -dim path (Deep1B is also a lower-dimensional, and thus easier, corpus). 
+
+4.4 Latency and scaling 
+
+Fig. 7 shows how encrypted-scan latency grows with the number of rows scored (super-linearly, with a jump once the working set outgrows a GPU threshold), and the warm per-query cost as a function of rank. Together with the optimization stack (Fig. 4) these set the few-seconds-per-query operating point. 12 5 Access-Pattern Leakage 
+
+Because the server computes only on ciphertexts, it never sees the query, the scores, or the returned answer. What it does see is the access pattern : which group ids the client asks it to gather at each level. We describe what that reveals, level by level, in our coarse → leaf hierarchy with no oblivious-access protection. Throughout we assume a strong attacker: because a single search is several round trips (a coarse request, then a leaf request that depends on the coarse result), the attacker must be able to tell that these requests belong to the same query and link them into one session—by timing, ordering, or a session identifier—and to link a query to its predecessors. A weaker attacker that only saw an interleaved, unlinkable stream of gather requests from many concurrent queries could not attribute a leaf request to the coarse selection that produced it, and would learn correspondingly less. The analysis below is therefore an upper bound on what a realistic server-side observer learns. 
+
+What the server stores (and therefore what it can observe). We store each level of the index as an independent flat file of all embeddings at that level; no tree and no child → parent map are stored anywhere on the server. The coarse → leaf linkage exists only on the client, which computes it after decrypting each level’s scores. As a result the client reveals a selection to the server twice per query. First, after scoring the coarse level (a full scan of the coarse file, which leaks nothing on its own), it fetches the leaves under its chosen coarse cells so they can be scored—the server sees that set of leaf ids, the query’s coarse neighborhood. Second, after scoring those leaves, it fetches the database rows in the few leaves it keeps—the server sees the fine leaf selection. Both are just sets of leaf ids in the flat leaf file; the server never sees a coarse id or which coarse cell a leaf belongs to. This flat, tree-free storage is the sole structural assumption behind the analysis below, and it is what keeps Parent Recovery (below) a quantity the attacker must recover , rather than one storage hands it for free. 
+
+What the attacker sees, level by level. 
+
+• Coarse scoring. The client fetches the entire coarse file on every query (all ∼1000 cells are scored), so this step reveals nothing about which cells the query preferred. • Coarse pick (first reveal). To score the leaf level, the client fetches the leaves that are 
+
+children of the coarse cells it chose. The server sees that set of leaf ids—the query’s coarse neighborhood—but, with flat storage and no parent map, not which coarse cell they came from. It can only recover the coarse → leaf grouping from co-access across many queries (Parent Recovery, below). • Leaf pick (second reveal). The client then fetches the database rows in the few leaves it keeps; the server sees those leaf ids—the query’s fine localization. So each query reveals two nested locations: a coarse neighborhood (the leaves under its coarse pick) and, inside it, the fine leaf set it keeps. It never reveals the query vector, the scores, the coarse ids themselves, or which reranked row is the answer. 
+
+5.1 Quantifying the leak 
+
+The interesting leak is not only where is this one query but how the queries relate to each other :two access sets that overlap tell the server the two private queries live in the same part of the 13 space, even though it never learns either vector. This “relationships between access sets” view is the classic lesson of the searchable-encryption literature [5], and a recent vector-search benchmark makes the same point for IVF search—revealing which clusters a query probes is a privacy property in its own right, separate from hiding the vector and the scores [6]. Everything below is measured 
+
+offline in plaintext from a held-out query set. The router gives each query q two access sets: its 
+
+coarse pick A(q) (the leaves under its chosen coarse cells) and its leaf pick S(q) (the few leaves it keeps, |S(q)| = b, the leaf beam). The query-side metrics below use the sharper leaf pick S(q); the database-side metrics use both. We use the plaintext query vectors only to score against ground truth: the query similarity sim( qi, q j ) = ⟨ˆqi, ˆqj ⟩ (cosine of the normalized queries) and the true nearest-neighbor and parent structure. No attacker is trained and no ciphertext is touched. 
+
+Access-pattern defenses. We compare three ways the client can pad the sets it fetches, applied at both reveals—the coarse pick and the leaf pick, each with its own group size G (write O for a padded set, standing for either A(q) or S(q)). With no padding the server observes the true set directly. With random padding it observes O = S ∪ D, where the decoy set D is drawn fresh on every query. With seeded padding every cell r has a fixed anonymity group g(r) of size G, and the client always fetches O = S 
+
+> r∈S
+
+g(r)—the same set on every repeat. We hold the observed size equal across the two schemes so the comparison is not confounded by one simply fetching more, and we sweep the coarse and leaf group sizes (Gcoarse , G leaf ) independently to see how each reveal’s padding moves each metric. 
+
+The intersection attack. Padding helps only if the decoys cannot be told apart from the real cells. Against the strong attacker assumed above—one that can link t repeats of the same query—the server intersects the observations, 
+
+Rt(q) = 
+
+> t
+
+\
+
+> i=1
+
+Oi(q),
+
+which removes anything that changes between repeats. Fresh random decoys appear in only one observation and wash out, so Rt(q) → S(q); a fixed seeded group is present every time and survives, so Rt(q) = S 
+
+> r∈S(q)
+
+g(r) for all t. This one mechanism drives every comparison below: random padding is undone by repetition, seeded padding is not (it instead lowers the resolution to the group). Where queries never repeat or cannot be linked, the intersection collapses to t = 1 and the two schemes are indistinguishable. 
+
+Query-side metrics. For a query q (or its cleaned set Rt(q) under repeats): • Absolute localization |S(q)| = b: the nearest leaf is one of b candidates. The single-query baseline. • Relative localization J(S(qi), S (qj )) = |S(qi) ∩ S(qj )||S(qi) ∪ S(qj )| plotted against sim( qi, q j ): does access overlap track query similarity? A strong relationship means the access pattern exposes the geometry of the private query stream—the most telling of the three, since similarity is exactly what an embedding is meant to encode. We report the leaf-set Jaccard binned by query cosine, and its rank correlation. • Repeated-observation narrowing Rt(q) = Tti=1 Oi(q) vs. t: how many candidates sur-vive repeated observation. Fresh padding decays toward b; seeded padding stays flat at the group size. 14 • Access-pattern uniqueness U (q) = {q′̸ = q : J(S(q′), S (q)) ≥ τ } : an anonymity-set size—how many other queries share, to within overlap τ , the same trace ( τ = 1 is exact equality). 
+
+Database-side metrics. Over a stream the server also accumulates co-access. With ni = # {q :
+
+i ∈ O(q)} and cij = # {q : i, j ∈ O(q)}, the normalized co-access is Jij = cij /√ninj (computed on the cleaned sets Rt when repeats are available). • Neighbor Recovery@ k: rank each cell’s neighbors by Jij and compare to its true k nearest cells, 
+
+NR@ k = 1
+
+N
+
+X
+
+> i
+
+| top Jk (i) ∩ NN true  
+
+> k
+
+(i) |
+
+k ,
+
+computed on the leaf picks S(q) (a leaf neighbor graph) and on the coarse picks A(q) (a coarse neighbor graph). Only the coarse scoring is a full scan with no signal; the coarse pick does leak, so both levels are recoverable. Because the attacker is never handed the tree, there is no static, query-free version—recovery exists only through the observed co-access. • Parent Recovery : cluster the co-access of the coarse picks A(q)—leaves fetched together because they share a coarse parent—and score the clusters against the true leaf → coarse grouping (adjusted Rand index). Because we store flat files with no parent map, this grouping is never given to the server—it is a genuine recovered quantity here, not the trivial 1.0 it would be in a tree-storing deployment. 
+
+What the defenses buy. Under the intersection attack the two schemes separate cleanly. Ran-dom padding reverts every metric to its no-padding value as t grows: the overlap–similarity cor-relation reappears, Rt decays to b, uniqueness returns, and Neighbor and Parent Recovery climb back to baseline. Seeded padding holds against repetition, but only by lowering the resolution —overlaps collapse to group granularity, Rt plateaus at the group size, uniqueness rises to the group’s occupancy, and recovery flattens at a floor set by the group construction (most effective when the groups are dispersed, for Neighbor Recovery, or straddle true parents, for Parent Recovery). It never removes the leak; it quantizes it. This is the same conclusion the searchable-encryption literature reaches for repeated and linkable searches [9, 10]: hiding the access pattern one query at a time is not enough once the attacker can link queries over time. 
+
+5.2 Measured leakage 
+
+We evaluate all of the above offline on the 10 ,000 held-out DataComp image queries at the operating point (coarse beam 16 , leaf beam 64 , 10 6 leaves). Query similarity is the cosine of the plaintext query embeddings; the geometry ground truth is the leaf and coarse centroids. Rank is fixed—the leak is a property of the routing, not of the projection. 
+
+How each quantity is computed, and its approximations. Everything is a function of the observed access sets and the plaintext query vectors; no attacker is trained. Co-access between two cells is Jij = cij /√ninj , where ni is the number of queries that fetch cell i and cij the number that fetch both (the cosine of their query-membership vectors). Neighbor Recovery@ k (k=10 ) ranks each cell’s partners by Jij and reports the mean overlap of that top-k with the cell’s true k nearest centroids by cosine. Parent Recovery clusters the co-access graph by linking each leaf to its single strongest partner and taking connected components, scored against the true leaf → coarse map by 15 adjusted Rand index. Precision samples query pairs and reports the mean query cosine conditioned on sharing ≥d cells, with lift relative to the random-pair mean. Repeated-observation narrowing 
+
+re-draws the padding on a query’s fixed routing t times and intersects the observations. Three approximations keep this tractable and are unbiased or clearly bounded. (i) The co-access graph is exact (every co-occurring pair is counted), but the Neighbor-Recovery average is estimated over a sample of ∼4000 well-connected leaves rather than all 10 6—a Monte-Carlo estimate of a mean, not a subsample of the graph (a uniform sample of 10 6 leaves almost never co-occurs, giving an empty graph); the coarse side uses all ∼1000 coarse cells, and Parent Recovery is scored over the ∼3000 
+
+most-accessed leaves. (ii) For large padded sets we cap the co-access pair count by using fewer queries; since Jij is scale-invariant under query subsampling (numerator and both denominators scale together), this changes the estimator’s variance, not its value. (iii) The similarity metrics use 
+
+∼0.1–0.5M sampled query pairs rather than all  10 4
+
+> 2
+
+; a shared leaf fires for only ∼0.1% of pairs, so those conditional means rest on a few hundred pairs. 
+
+Reading the numbers. Neighbor Recovery and Parent Recovery are fractions in [0 , 1] : 1 means the attacker reconstructs the true neighbor graph (or the true leaf → coarse grouping) exactly from access patterns alone, and 0 means no better than chance—for Neighbor Recovery@ 10 over n cells chance is ≈10 /n , i.e. ∼10 −5 over 10 6 leaves and ∼0.01 over 1000 coarse cells, so a Coarse Neighbor Recovery of 0.01 under padding is effectively dead. The similarity lift is the mean query cosine given a shared cell divided by the mean over random pairs: lift = 1 means a shared cell says nothing about similarity, and lift > 1 means the two queries are more alike than a random pair by that factor—so a shared leaf at lift 1.57 makes a pair 57% more similar than chance, and seeded padding driving the lift toward 1 is the signal being destroyed. Finally Rt is how many candidate cells survive t
+
+repeated observations: the size of the attacker’s residual hiding set. 
+
+What leaks with no defense (Table 5). The database geometry leaks substantially from co-access alone: the attacker recovers 72% of each coarse cell’s true nearest neighbors, and reconstructs the leaf → coarse grouping almost perfectly (adjusted Rand index 0.99 )—because a query fetches a coarse cell’s whole leaf block, same-parent leaves are inseparable in the access log. Leaf-level neighbor recovery is lower ( 0.22 ) but non-trivial. The stream also leaks query similarity: a shared coarse cell raises the expected pairwise cosine from 0.44 (a random pair) to 0.54 , and a shared leaf —far rarer—to 0.68 (Fig. 10). A shared leaf is thus the sharper signal: rare but high-confidence. On 
+
+Deep1B the picture holds structurally—Coarse Recovery 0.75 , Parent 0.98 , Leaf 0.14 , all within a few points of DataComp (Table 5)—but the query-similarity lift is far larger: a shared leaf makes a pair 8.4× more similar than random (vs. 1.6× on DataComp) and a shared coarse cell 4.4×, because Deep1B’s random-pair cosine ( 0.07 ) is much lower, so the same shared-cell signal is proportionally stronger. The recovery numbers are thus a property of the routing, not the corpus; the lift depends on how spread out the query distribution is. 
+
+Random vs. seeded padding under the intersection attack (Table 6, Fig. 9). We pad both reveals—the coarse pick and the leaf pick—with fresh (random) or fixed-group (seeded) decoys, and let the attacker intersect repeated queries. Random padding hides every leak at a single observation, but the intersection strips it and Leaf Neighbor Recovery, Coarse Neighbor Recovery, and the cosine signal all revert to baseline. Seeded padding holds under repetition—Coarse Neighbor Recovery collapses from 0.72 to 0.02 , Parent Recovery from 0.99 to 0.65 , and stays there. (Random padding never dents Parent Recovery, even at a single observation: fresh decoys are noise the clustering averages out, whereas the fixed seeded groups corrupt it.) 16 quantity DataComp-1B Deep1B Leaf Neighbor Recovery 0.22 0.14               
+
+> Coarse Neighbor Recovery 0.72 0.75
+> Parent Recovery (adjusted Rand index) 0.99 0.98
+> mean cosine, random query pair 0.44 0.07
+> mean cosine |shared leaf (lift) 0.68 (1 .57 ×)0.59 (8 .4×)
+> mean cosine |shared coarse cell (lift) 0.54 (1 .24 ×)0.31 (4 .4×)
+
+Table 5: Baseline access-pattern leakage, no defense, for both billion-scale corpora (coarse beam 
+
+16 , leaf beam 64 , 10 6 leaves, 10 ,000 queries; routing scored at full embedding dimension— 512 for DataComp, 96 for Deep1B—so the leak is a property of the plaintext geometry, independent of the FHE rank reduction R). Recovery is nearly identical across datasets—the leak is a property of the routing, not the data—but the query-similarity lift is far larger on Deep1B, whose random-pair cosine ( 0.07 ) is much lower than DataComp’s ( 0.44 ), so a shared cell is a proportionally stronger signal.                               
+
+> scheme attack Leaf Rec. Coarse Rec. Parent Rec. lift |leaf lift |coarse
+> DataComp-1B / Deep1B
+> random no intersection 0.08 /0.04 0.52 /0.45 0.98 /0.98 1.1/2.11.0/1.0
+> random with intersection 0.22 /0.14 0.72 /0.75 0.99 /0.98 1.6/8.51.2/4.4
+> seeded no intersection 0.05 /0.03 0.02 /0.02 0.65 /0.69 1.2/3.41.0/1.1
+> seeded with intersection 0.05 /0.03 0.02 /0.02 0.65 /0.69 1.1/3.31.0/1.1
+
+Table 6: Random vs. seeded padding on both reveals, with and without the intersection attack (B=128 ), reported as DataComp-1B / Deep1B . Random is undone by repetition (reverts to baseline); seeded holds. lift |leaf and lift |coarse are the query-similarity lifts (mean cosine of a pair sharing that cell, over the random-pair mean); seeded padding drives both toward 1. The coarse lift is weak on DataComp ( ≤ 1.2×) but sizeable on Deep1B ( 4.4× at baseline); the leaf lift is the sharp signal ( 8.5× on Deep1B), which seeded padding cuts to 3.3×.
+
+Equal-budget defense (Table 7, Fig. 9). Under a shared padding budget B = NcGc = NℓGℓ
+
+(base Nc=16 , Nℓ=64 , so Gc=B/ 16 and Gℓ=B/ 64 ) the coarse side is far cheaper to hide: since 
+
+Nc ≪ Nℓ, the same budget buys Gc = 4 Gℓ, so the coarse leak dies quickly (Coarse Neighbor Recovery ≈0.02 by B=128 ) while the leaf leak needs much more before Gℓ even exceeds 1. As B
+
+grows, Parent Recovery falls 0.80 → 0.28 , Leaf Neighbor Recovery 0.22 → 0.001 , and the shared-leaf cosine 0.68 → 0.45 (the signal is dead). Seeded padding never removes a leak; it quantizes it to group granularity at a fetch-cost multiplier—a clean privacy/cost dial, cheapest on the coarse side. Its cost in warm ciphertext latency —the full padded pipeline scored end-to-end under FHE—is Table 8 and Fig. 8. 
+
+# 6 Related Work 
+
+We build on the CKKS approximate-arithmetic scheme (OpenFHE) accelerated on GPU by FIDESlib, whose baby-step/giant-step diagonal linear transforms our projection and scoring extend to the rank-reduced, hierarchical setting. Closest in spirit is recent GPU-accelerated encrypted face-similarity search with a rotation-key-efficient BSGS-Diagonal packing, under the same single-key model, evaluated at up to ∼32 K templates [4]; earlier encrypted-matching systems (HERS, Blind-Match, GROTE) target biometric one-to-many matching. We differ by targeting billion-scale ANN 17 B Gc Gℓ Leaf Rec. Coarse Rec. Parent Rec. lift |leaf lift |coarse                             
+
+> DataComp-1B / Deep1B
+> 64 410.22 /0.14 0.06 /0.06 0.80 /0.86 1.6/8.41.0/1.3128 820.05 /0.03 0.02 /0.02 0.65 /0.69 1.1/3.51.0/1.1256 16 40.007 /0.006 0.01 /0.01 0.46 /0.48 1.0/2.01.0/1.0512 32 80.001 /0.001 0.01 /0.01 0.28 /0.30 1.0/1.51.0/1.0
+
+Table 7: Equal-budget seeded padding on both reveals (with intersection), as DataComp-1B / Deep1B . Coarse is cheapest to hide because Gc = 4 Gℓ. As the budget grows both query-similarity lifts collapse toward 1 (the signal is destroyed): the leaf lift falls 1.6 → 1.0 on DataComp and 8.4 → 1.5 on Deep1B, while the (already weak) coarse lift is ≈1 throughout on DataComp and 
+
+1.3 → 1.0 on Deep1B. Raw cosines are in Table 5 and Fig. 10.                                              
+
+> coarse/ recall dup-Warm ciphertext latency (s) at budget B
+> Configuration leaf @10 tol base 64 128 256 512
+> (1 ,1) (4 ,1) (8 ,2) (16 ,4) (32 ,8)
+> DataComp R128 16 /64 0.792 0.839 2.63 3.64 6.77 13 .06 25 .39
+> DataComp R256 16 /64 0.900 0.950 5.93 8.31 15 .30 29 .67 57 .65
+> Deep1B ( 128 )16 /64 0.905 –2.21 3.19 4.86 8.13 14 .42
+
+Table 8: Cost of the equal-budget defense (the dial in Table 7, plotted in Fig. 8). Warm (load +score, database pre-encrypted—the deployable cost) per-query latency of the full padded 
+
+pipeline with all routing levels under FHE (coarse pick, leaf pick, and rerank all encrypted). base is the unpadded operating point (coarse Nc=16 , leaf Nℓ=64 ); at budget B the padded fetch is exactly 
+
+B coarse cells and B leaves (route level0: B, fine: B), with copies (Gc, G ℓ)=( B/ 16 , B/ 64) shown under each column. recall@10 and dup-tolerant recall@10 are at the base operating point—padding fetches decoys and does not change what is retrieved. Base latencies agree with Table 3 ( 2.7/6.1 s) and the Deep1B 2.30 s operating point to within run-to-run variance (e.g. 5.93 vs. 6.1 s at R256); every measurement passed the plaintext golden check (correlation 1.0). Deep1B uses exact-NN ground truth (no near-duplicate notion, hence no dup-tol). One L40S. and by combining rank reduction and a hierarchy to get there. 
+
+# 7 Conclusion and Future Work 
+
+We showed that encrypted-query ANN scales to a billion vectors on a GPU by composing rank reduction and a hierarchical index, reaching recall@10 of 0.90 /0.95 (exact/duplicate-tolerant) on DataComp-1B at ∼6 s per encrypted (warm) query (server-side), and recall@10 0.90 on the 96 -dim Deep1B benchmark (all-levels FHE, 2.3 s warm per query), and we documented the full protocol and every configuration’s cost. We also measured the system’s access-pattern leakage (§5): even though the values are encrypted, the hierarchy’s access pattern reveals which cells are fetched, and from co-access alone an observer recovers much of the database geometry (coarse-neighbor recov-ery 0.72 on DataComp-1B and 0.75 on Deep1B, parent-grouping recovery 0.98 –0.99 —a property of the routing, not the data) and a weaker query-similarity signal. Fixed-group (“seeded”) padding suppresses these durably where fresh-decoy padding is undone by a repeated-query intersection attack—at a fetch-cost that is cheapest on the coarse reveal. Tightening this privacy/cost trade-off, and closing the gap to a fully oblivious traversal, is the main direction we leave open. On 18 base 64 128 256 512 padding budget B (base = unpadded: coarse 16 / leaf 64) 010 20 30 40 50 60 warm ciphertext latency / query (s)  57.7s 25.4s 14.4s 
+
+> Cost of the equal-budget defense (all-levels FHE, warm)
+> DataComp R256 DataComp R128 Deep1B (native-128)
+
+Figure 8: Warm ciphertext latency per query vs. padding budget B for the three configurations (all-levels FHE, load +score). base is the unpadded operating point (coarse 16 , leaf 64 ); each budget 
+
+B fetches B coarse cells and B leaves, so latency grows approximately linearly in B (the fetch cost, not exponential)—the same dial that collapses the leak in Table 7. Axis is linear in B.the performance side, the warm cost is dominated by loading candidate ciphertexts onto the GPU (Table 8, Fig. 6), and the access distribution is heavily skewed—a small set of clusters is routed to far more often than the rest. A straightforward win is therefore to minimize loads by pinning the hot clusters resident on-GPU : keep the most-frequently-fetched clusters permanently encrypted and loaded on dedicated GPUs (sharding the index across devices by fetch frequency), so common queries skip the reload entirely. The fetch-frequency profile needed to do this is already available from the access log—trivially so, since it is the very same co-access signal we study for leakage— which makes this a low-effort systems optimization, orthogonal to the cryptography. In the same vein, since the dominant load cost is paid per fetched region rather than per query, batching many queries against each loaded region—scoring a whole batch in one pass before evicting it—would amortize that load over the batch and raise throughput (slot packing already amortizes within aquery; this extends the idea across queries). Complementary on the accuracy side, the per-query cost scales with the working dimension (the reduced rank R for DataComp, native 128 for Deep1B), so stronger compression —learned or quantized projections, product or residual quantization—that preserves recall at an even lower dimension would cut the dominant scoring cost directly; how far the dimension can be pushed before recall degrades is an open question worth pursuing. Finally, the encrypted database’s storage and upload footprint—not just its per-query load cost—can be shrunk with orthogonal cryptographic tools: switching each stored ciphertext down to the minimal modulus its remaining computation needs [1], regenerating the public-random half of a fresh ci-phertext from a short seed, and transciphering (hybrid homomorphic encryption)—uploading data under a compact symmetric cipher and homomorphically converting it to FHE server-side, which removes the ciphertext-expansion cost from the wire [7, 2, 3]—each trading a one-time server-side computation for a large reduction in stored and transmitted ciphertext. The deepest lever is the modulus chain itself: a ciphertext’s size is set by its number of RNS limbs, which is bounded below by the multiplicative depth the score requires (depth 4 here). Once each stored row already sits at that minimal level, modulus switching buys nothing further—so the remaining win is to lower the 
+
+19 1 2 4 8 16 32 repeated observations t      
+
+> 70 80 90 100 110 120 130 surviving set size  | tOt|
+> Leaf reveal
+> dataset
+> DataComp-1B Deep1B
+> dataset
+> DataComp-1B Deep1B
+> 124816 32 repeated observations t
+> 20 40 60 80 100 120
+> Coarse reveal
+> padding none random seeded
+
+Repeated-observation narrowing: random is stripped, seeded holds 64 128 256 512 padding budget per layer B = NcGc = N G 
+
+0.0 0.2 0.4 0.6 0.8 1.0 recovery 
+
+Seeded padding vs. budget: coarse dies first (both datasets) 
+
+dataset 
+
+> DataComp-1B Deep1B
+
+dataset 
+
+> DataComp-1B Deep1B
+
+Figure 9: Left: repeated-observation narrowing—random decoys are stripped by the intersection while seeded groups survive, at both reveals. Right: recovery vs. padding budget on both reveals; the coarse leaks die first. Solid: DataComp-1B; dashed: Deep1B (the two nearly coincide—the leak is a property of the routing, not the corpus). 16 64 128 leaf beam 0.10 0.15 0.20 0.25 0.30 0.35 Leaf Neighbor Recovery            
+
+> Leaf recovery vs. leaf beam
+> dataset
+> DataComp-1B Deep1B
+> dataset
+> DataComp-1B Deep1B
+> 2021222324
+> coarse beam 0.90 0.92 0.94 0.96 0.98 1.00 Parent Recovery (ARI)
+> Parent recovery vs. coarse beam 124shared cells (at least) 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 mean query cosine
+> A shared cell implies similarity
+> dataset
+> DataComp-1B Deep1B
+> dataset
+> DataComp-1B Deep1B
+> 64 128 256 512 seeded padding budget B
+> 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 mean query cosine
+> Seeded padding kills it
+> cos shared leaf
+
+Figure 10: Left: leakage vs. beam width—Leaf Neighbor Recovery falls as the leaf beam widens (coarse-independent), Parent Recovery is near-perfect. Right: a shared leaf implies higher query similarity than a shared coarse cell, and seeded padding drives that cosine to the random-pair baseline. Solid: DataComp-1B; dashed: Deep1B—whose random-pair cosine is much lower ( 0.07 
+
+vs. 0.44 ), so the same shared-cell signal is a far larger lift (8.4× vs. 1.6× for a shared leaf). 
+
+depth requirement itself , via a shallower scoring circuit, which would shrink every stored ciphertext’s limb count and hence both its storage and its dominant load cost across the entire database. 
+
+# References 
+
+[1] Zvika Brakerski, Craig Gentry, and Vinod Vaikuntanathan. (leveled) fully homomorphic en-cryption without bootstrapping. In Innovations in Theoretical Computer Science (ITCS) , pages 309–325, 2012. [2] Anne Canteaut, Sergiu Carpov, Caroline Fontaine, Tancrède Lepoint, María Naya-Plasencia, Pascal Paillier, and Renaud Sirdey. Stream ciphers: A practical solution for efficient homomorphic-ciphertext compression. Journal of Cryptology , 31(3):885–916, 2018. Earlier version at FSE 2016. 20 [3] Jihoon Cho, Jincheol Ha, Seongkwang Kim, Byeonghak Lee, Joohee Lee, Jooyoung Lee, Dukjae Moon, and Hyojin Yoon. Transciphering framework for approximate homomorphic encryption. In Advances in Cryptology – ASIACRYPT , 2021. [4] Gabrielle De Micheli, Syed Mahbub Hafiz, Geovandro Pereira, Eduardo L. Cominetti, Thales B. Paiva, Jina Choi, Marcos A. Simplicio Jr, and Bahattin Yildiz. Lightweight, practical encrypted face recognition with gpu support. arXiv preprint arXiv:2604.00546 , 2026. [5] Mohammad Saiful Islam, Mehmet Kuzu, and Murat Kantarcioglu. Access pattern disclosure on searchable encryption: Ramification, attack and mitigation. In Network and Distributed System Security Symposium (NDSS) , 2012. [6] Anne-Marie Kermarrec, Rafael Pires, Mathis Randl, and Martijn de Vos. A unified benchmark for privacy-preserving vector search. arXiv preprint arXiv:2608.01192 , 2026. [7] Kristin Lauter, Michael Naehrig, and Vinod Vaikuntanathan. Can homomorphic encryption be practical? In ACM Cloud Computing Security Workshop (CCSW) , pages 113–124, 2011. [8] Miriel AI. Scaling homomorphically encrypted face search to 10 million vectors on gpus. https://miriel.ai/blog/ scaling-homomorphically-encrypted-face-search-to-10-million-vectors-on-gpus ,2026. Blog post. [9] Simon Oya and Florian Kerschbaum. Hiding the access pattern is not enough: Exploit-ing search pattern leakage in searchable encryption. In USENIX Security Symposium , 2021. arXiv:2010.03465. [10] Zhiwei Shang, Simon Oya, Andreas Peter, and Florian Kerschbaum. Obfuscated access and search patterns in searchable encryption. arXiv preprint arXiv:2102.09651 , 2021. 21
