@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-25</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-26</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 6 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 9 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>6</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-25 20:44:49 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-26 22:13:43 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日6篇论文聚焦AI安全与系统加固：精读破解ArrowCloak隐藏方向泄露结构，及CodeMechanic缺陷属性引导修复；速读覆盖漏洞严重性预测、LLM代码幻觉防御和软件定义SSD安全。最值得关注的是ArrowCloak的降秩攻击突破，以及CodeMechanic对程序缓解的自动化引导。建议普通读者优先了解LLM生成代码的幻觉风险与运行时防御实践。</p>
+<p>今日9篇安全研究聚焦攻击检测与恶意软件分析，其中精读高分落在Pivot攻击检测（9.0）和内存取证恶意软件分级（8.0）上。最值得关注的是结合系统与网络信息提升横向移动检测，以及风险校准的可解释内存取证分类器。普通读者可优先了解这两项技术的适用范围，再结合硬件竞赛与SSD安全速读扩展视野。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -74,7 +74,7 @@
     <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Hiding Directions, Leaking Structure: Breaking ArrowCloak through Low-Rank Structure">Hiding Directions, Leaking Structure: Breaking ArrowCloak through Low-Rank Structure</span></li><li><span class="dpr-home-dashboard-paper-title" title="CodeMechanic: Bug-Property-Guided Program Mitigation">CodeMechanic: Bug-Property-Guided Program Mitigation</span></li><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Effective Pivot Attack Detection via System and Network Information">Effective Pivot Attack Detection via System and Network Information</span></li><li><span class="dpr-home-dashboard-paper-title" title="EGAMA-RC: Risk-Calibrated Evidence-Gated Adaptive Malware Analysis for Robust and Interpretable Memory-Forensic Triage">EGAMA-RC: Risk-Calibrated Evidence-Gated Adaptive Malware Analysis for Robust and Interpretable Memory-Forensic Triage</span></li><li><span class="dpr-home-dashboard-paper-title" title="Towards LLM-Enhanced Android Taint Analysis">Towards LLM-Enhanced Android Taint Analysis</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">6 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="On Predicting Vulnerability Severity Using In-Context Learning: An Industrial Case Study">On Predicting Vulnerability Severity Using In-Context Learning: An Industrial Case Study</span></li><li><span class="dpr-home-dashboard-paper-title" title="Evaluating Inference-Time Defenses Against Package Hallucination in LLM-Generated Code">Evaluating Inference-Time Defenses Against Package Hallucination in LLM-Generated Code</span></li><li><span class="dpr-home-dashboard-paper-title" title="SxSSD: A Secure and Extensible Software-defined Solid State Drive">SxSSD: A Secure and Extensible Software-defined Solid State Drive</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="SxSSD: A Secure and Extensible Software-defined Solid State Drive">SxSSD: A Secure and Extensible Software-defined Solid State Drive</span></li><li><span class="dpr-home-dashboard-paper-title" title="Adversarial Entropy Inflation Against Gumbel-Based Inference Verification">Adversarial Entropy Inflation Against Gumbel-Based Inference Verification</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
 </section>
 </div>
 
