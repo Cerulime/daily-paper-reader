@@ -1,0 +1,480 @@
+Title: DBcover: A White-box SQL Test Generation Framework for Coverage Improvement
+
+URL Source: https://arxiv.org/pdf/2608.25573v1
+
+Published Time: Thu, 27 Aug 2026 00:57:44 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# DBcover: A White-box SQL Test Generation Framework for Coverage Improvement 
+
+# Yankai Rong 
+
+Renmin University of China Beijing, China yankairong@ruc.edu.cn 
+
+# Shuang Liu ∗
+
+Renmin University of China Beijing, China Shuang.Liu@ruc.edu.cn 
+
+# Jinhao Dong 
+
+Renmin University of China Beijing, China jhdong@stu.pku.edu.cn 
+
+# Qiang Yin 
+
+China Electronics Technology Kingbase (Beijing) Technologies Inc. Beijing, China qyin@kingbase.com.cn 
+
+# Wei Lu 
+
+Renmin University of China Beijing, China lu-wei@ruc.edu.cn 
+
+# Jianhua Wang 
+
+China Electronics Technology Kingbase (Beijing) Technologies Inc. Beijing, China jhwang@kingbase.com.cn 
+
+# Xiaoyong Du 
+
+Renmin University of China Beijing, China duyong@ruc.edu.cn 
+
+## Abstract 
+
+Relational Database Management Systems (RDBMSs) form the back-bone of modern data-intensive applications, making their reliability and robustness of paramount importance. However, due to the large code base and immense code complexity, achieving high coverage in RDBMS testing remains a formidable challenge. Traditional fuzzing approaches rely on random SQL generation, which fails to capture the intricate correspondence between SQL and paths (SQL-to-path correspondence) within the codebase, leading to low code coverage. Symbolic execution–based methods can, in principle, address this issue but incur prohibitive computational costs and suffer from scalability bottlenecks on large systems. We propose DBcover, an LLM-driven database test generation framework that performs white-box, code-aware SQL test genera-tion through contextual reasoning. DBcover integrates lightweight dynamic analysis to extract SQL-to-path correspondence and call graphs as global context, and constructs source-level dependency information around target functions as local context. Both types of contextual information are organized within a unified knowl-edge graph, enabling efficient retrieval, reasoning, and reuse across iterative test generation. Built upon this contextual foundation, DBcover adopts a two-phase test generation strategy. In the seed selection phase, it identifies a semantically relevant existing test case by analyzing SQL-to-path relationships within the knowledge graph. In the query generation phase, the LLM, equipped with both global and local context, employs a fine-grained reasoning pipeline to synthesize new SQL test cases that accurately trigger previously uncovered code regions. Experimental results show that DBcover substantially outperforms existing fuzzers, achieving 80 .1% and 82 .3% coverage on PostgreSQL and MySQL. Experiments conducted on an enterprise RDBMS KingbaseES demonstrate the effective-ness and practical applicability of our approach on closed-source RDBMSs. 
+
+> ∗Corresponding author.
+
+## Keywords 
+
+DBMS, Large Language Model, Testcase Generation 
+
+## 1 Introduction 
+
+Relational Database Management Systems (RDBMSs) serve as the core infrastructure of modern data-intensive applications, where their stability directly determines the reliability of upper-layer ser-vices. As a key metric for assessing testing adequacy, code cov-erage has been widely adopted to evaluate the completeness of system testing [23, 24, 32], exerting a direct impact on the quality assessment and release decisions of industrial RDBMSs. Given the pervasive deployment of RDBMSs in critical systems, improving code coverage of RDBMSs has become an urgent requirement for ensuring system quality and robustness. In recent years, a variety of automated SQL test case generation techniques have been proposed [8, 14, 16, 32], aiming to produce both syntactically and semantically valid queries. Some approaches operate at the intermediate representation (IR) level to preserve semantic correctness during mutation [16, 32], while others employ stateful fuzzing to maintain consistent database states throughout execution [14]. Another line of work emphasizes fine-grained cov-erage collection [24], improving the applicability of testing frame-works in industrial settings. Despite these advances, DBMS-oriented test generation techniques still face a fundamental challenge that constrains their coverage improvement: the absence of source code level context information, i.e., an explicit mapping between SQL test cases and their corresponding execution paths (SQL-to-path correspondence) . Existing gray-box methods [24, 32] provide limited coverage feedback but fail to capture the underlying code-level insights explaining why certain queries expand coverage, nor can they effectively guide the gen-eration of new test inputs to expose untested paths. In principle, white-box approaches such as symbolic execution [20] can establish arXiv:2608.25573v1 [cs.DB] 26 Aug 2026 CREATE TABLE sales (                                
+
+> id int ,
+> sale_date date
+> ) PARTITION BY RANGE ( sale_date ); CREATE TABLE sales_2025 PARTITION OF sales
+> FOR VALUES FROM ( '2025-01-01' ) TO ( '2026-01-01’ ); INSERT INTO sales VALUES ( 1,'2025-03-01’ ); SELECT * FROM sales
+> WHERE sale_date BETWEEN '2025-01-01' AND '2025-12-31' ;CREATE TABLE sales (
+> id int ,
+> sale_date date
+> ) PARTITION BY RANGE ( sale_date ); CREATE TABLE sales_2025 PARTITION OF sales
+> FOR VALUES FROM ( '2025-01-01' ) TO ( '2026-01-01’ ); INSERT INTO sales VALUES ( 1,'2025-03-01’ ); INSERT INTO sales VALUES ( 2,'2025-03-02’ ); INSERT INTO sales VALUES ( 16 ,'2025-03-16’ ); SELECT * FROM sales
+> WHERE sale_date BETWEEN '2025-01-01' AND '2025-12-31' ;
+
+…(a) Source code (c) Generated test case 
+
+(b) Seed test case                          
+
+> 1 ResultRelInfo *ExecFindPartition(ModifyTableState *mtstate, ...){ 2... 3PartitionDesc partdesc = dispatch->partdesc; 4int partidx; 5if (partdesc->nparts == 0 || (partidx = get_partition_for_tuple(dispatch, values, isnull)) < 0) 6... 7 } 8 static int get_partition_for_tuple(PartitionDispatch pd, Datum *values, bool *isnull){ 9... 10 PartitionKey key = pd->key; 11 PartitionDesc partdesc = pd->partdesc; 12 PartitionBoundInfo boundinfo = partdesc->boundinfo; 13 switch (key->strategy){ 14 case PARTITION_STRATEGY_HASH: 15 ... 16 case PARTITION_STRATEGY_RANGE:{ 17 bool equal = false, 18 range_partkey_has_null = false; 19 ... 20 if (partdesc->last_found_count >= PARTITION_CACHED_FIND_THRESHOLD){ 21 int last_datum_offset = partdesc->last_found_datum_index; 22 Datum *lastDatums = boundinfo->datums[last_datum_offset]; 23 PartitionRangeDatumKind *kind = boundinfo->kind[last_datum_offset]; 24 int32 cmpval; 25 cmpval = partition_rbound_datum_cmp(key->partsupfunc, key->partcollation, lastDatums, kind, values, key->partnatts); 26 ... 27 }28 ... 29 }
+
+16 times Figure 1: A Motivation example. 
+
+such SQL-to-path correspondences. However, the immense com-plexity and scale of DBMS codebases lead to severe path explosion, rendering exhaustive symbolic analysis impractical. Recent advances in Large Language Models (LLMs) have opened new possibilities for automated test generation. Several LLM-based approaches [19, 28, 30] leverage the models’ strong code com-prehension capabilities by embedding the source code of target functions into prompts to generate function-level test cases. These methods typically focus on isolated modules or components of open source software systems—such as compiler optimization passes [28]—where the context is well-bounded and can be explic-itly provided to the model. Moreover, LLMs with strong capability, such as GPT-4 [5], are adopted in those approaches. Testing an RDBMS introduces fundamentally different challenges. These sys-tems comprise millions of lines of code distributed across tightly coupled modules—such as query optimization, transaction manage-ment, and storage engines—with complex runtime dependencies and dynamic state interactions. Producing a test case that merely exercises a function’s general behavior is easy; generating one that precisely triggers a specific execution path or deep code location is far more difficult. Compounding this difficulty, industrial testing environments often enforce strict security policies (e.g., closed-source constraints) and limited computational resources (e.g., few available GPUs), which restrict the use of very large models (e.g., >70B parameters). Under these practical constraints, the central challenge becomes: how to effectively guide LLMs to generate test cases that increase code coverage in large-scale, highly entangled RDBMS codebases despite limited model capacity. 
+
+Efficiently collecting the necessary contextual informa-tion from the RDBMS to guide SQL test case generation is a central challenge. This observation motivates the design of DBcover, an LLM-driven white-box SQL test generation framework that employs a two-layer context collection strategy. DBcover ex-plicitly models both the global and local contexts of the target code and unifies them within a comprehensive knowledge graph. DBcover operates in two phases. In the first phase, it collects the global context, which includes the call graph and the SQL-to-path correspondence. The latter is obtained by executing existing SQL test cases—such as those from regression suites—and recording their detailed execution traces. These traces establish a fine-grained mapping between SQL inputs and the internal code paths they exer-cise. Using this mapping, DBcover computes the distance between uncovered code regions and existing execution paths in the call graph, and then identifies the closest covered path along with its as-sociated test case to serve as the seed for subsequent test generation. In the second phase, DBcover collects local context, including the source code of the target function and its dependency information, to guide the LLM in generating new test cases. To enable the model to better focus on problem-solving and mitigate the impact of model hallucinations, DBcover designs a task-specific pipeline, decompos-ing the overall task into five fine-grained subtasks, each supported by specialized prompt templates. Through this two-phase process, DBcover effectively transforms the challenge of contextualizing the RDBMS system into a hierarchical reasoning problem. By in-tegrating the global SQL-to-path correspondence context and the local source code context, it enables LLMs to generate semantically valid, coverage-oriented SQL test cases with high accuracy. The main contributions of our study are as follows: 
+
+> 2
+
+• We propose DBcover, an LLM-driven white-box test case gen-eration framework for RDBMSs that integrates lightweight program analysis with LLM reasoning to achieve effective code coverage improvement. 
+
+• We propose a two-layer context collection strategy for effi-ciently collecting the necessary contexts. (1) The global context layer captures SQL-to-path correspondence from existing test cases via dynamic execution analysis, providing a mapping be-tween SQL statements and their triggered internal code paths. (2) The local context layer extracts detailed target code and dependency information to guide LLM reasoning. Both layers are organized within a unified knowledge graph, enabling ef-ficient context retrieval, reasoning, and reuse across iterative test generation. 
+
+• We propose a two-phase test generation strategy built upon the collected contextual knowledge. (1) In the seed selection phase, DBcover queries the knowledge graph to identify the seed test case whose execution path is closest to the target function in the call graph. (2) In the query generation phase, the LLM, equipped with both global and local context retrieved from the knowledge graph, employs a fine-grained reasoning pipeline to synthesize new SQL test cases designed to traverse previously uncovered code regions precisely. 
+
+• We conduct extensive experiments on PostgreSQL, MySQL, and a real-world industrial closed-source DBMS (KingbaseES). Results show that DBcover significantly outperforms state-of-the-art SQL test generation methods in line coverage. 
+
+## 2 Motivation Example 
+
+Fig. 1 illustrates a motivation example, including the source code of uncovered code lines (Fig. 1(a)), the seed test case (Fig. 1(b)) we se-lected from the regression tests, and the test case generated by our approach (Fig. 1(c)), which can cover the target line, i.e., the function 
+
+partition_rbound_datum_cmp (highlighted with a in line 25 of Fig. 1(a)). It is a cache optimization strategy that can only be trig-gered when the system repeatedly accesses the same partition over a given threshold, i.e., the condition partdesc->last_found_count 
+
+>= PARTITION_CACHED_FIND_THRESHOLD in line 20 evaluates to true. To reach the condition in line 25, the table partition strat-egy must be partition-by-range ( PARTITION_STRATEGY_RANGE 
+
+evaluates to true in line 16). If we trace a bit further beyond the current function ( get_partition_for_tuple ), the condition 
+
+partdesc->nparts == 0 in line 5 must evaluate to false (indicat-ing that at least one valid partition descriptor exists), otherwise the optimization strategy in the C compiler will skip evaluating the second part of the || operator and fail to trigger the function 
+
+get_partition_for_tuple . If we trace further back along the call chain, more complex path conditions will be retrieved. This is how the symbolic execution approach works. Fig. 1(b) shows a seed test case that exercises line 20 but fails to reach line 25. Inspection of the SQL statements reveals that the seed already satisfies the code-level semantics we derived from the source: the table is range-partitioned and contains a valid partition descriptor. Nonetheless, producing this seed via existing automatic generators is non-trivial: the seed comprises multiple SQL state-ments with intricate inter-statement value dependencies and pre-cise semantic constraints, which typical syntax-oriented or naive fuzzing approaches struggle to satisfy. Covering the deeper target at line 25 is substantially harder. Fig. 1(c) shows the test case gen-erated by DBcover, which can hit line 25. Achieving this coverage requires not only crafting semantically correct statements but also executing repeated insertions against the same partitioned table across multiple runs so that runtime counters/state (e.g., cached-find counts or access-threshold conditions) evolve to the values that trigger the desired path. Existing generation methods do not capture such internal program states and thus fail to systematically synthesize inputs that reach these kinds of guarded, stateful code regions. DBcover generates the test case shown in Fig. 1(c) through a two-phase process. In the first phase, DBcover analyzes existing regression test cases to extract the SQL-to-path correspondence by recording their execution traces and constructing a call graph cen-tered on the target function. These structural and dynamic insights are then organized into a knowledge graph, which captures the relationships among SQL statements, execution paths, and invoked code entities—providing a structured and interpretable global con-text for test generation. Given a specific uncovered line (e.g., line 25), DBcover traverses the call graph to locate the execution path with the smallest distance to the function get_partition_for_tuple ,which contains the target code region. The test case associated with this nearest execution path is then selected as the seed test case. This seed provides both the semantic and structural foundation for subsequent generation, guiding the LLM in synthesizing new SQL statements that are more likely to trigger the uncovered target line. In the second phase, DBcover leverages the code comprehen-sion and reasoning capabilities of large language models (LLMs) to synthesize a new test case that can trigger the target uncovered line. This phase is guided by the global context extracted earlier, including the seed test case and its execution path, together with the local context, i.e., the source code of the target function. To enhance reasoning quality and controllability, DBcover adopts a fine-grained reasoning pipeline, decomposing the overall task into five fine-grained subtasks, each with targeted prompt instructions. (1) The LLM is first provided with the seed SQL test case (Fig. 1(b)) and its associated execution path, which in-cludes the call sequence from get_partition_for_tuple 
+
+to partition_rbound_datum_cmp . From this global context, the model analyzes the high-level DBMS operations in the seed—specifically, the creation of a RANGE-partitioned table and a single tuple insertion—and infers the functional roles of routines along the call path from their names and invocation order. (2) Next, the LLM examines the source code of the target func-tion partition_rbound_datum_cmp and its immediate caller 
+
+get_partition_for_tuple , including function signatures and function body with coverage information. (3) Integrating global and local insights, the LLM deduces the precise runtime conditions required to reach the uncovered code: (i) the table must use range partitioning, and (ii) the same 
+
+> 3
+
+Source 
+
+DBMS 
+
+Seed Pool 
+
+Knowledge Graph Construction  
+
+> SQL Query Execution Path Function Execution Contain Call
+> Analyzing the triggering condition Reading the context and feedback
+> Reasoning the generation strategy
+> Generating SQL test cases
+
+Test Case Generation Test Cases Quality Verify  
+
+> Error Message
+> Test Coverage
+> Bug Detection
+
+SQL Query  
+
+> Query_id:
+> Query_content: CREATE TABLE sales... INSERT into... VALUES ... SELECT ... FROM ...
+
+Execution Path     
+
+> Path_id:
+> Path_content: ... -> ExecFindPartition ->
+> get_partition_for_tuple
+
+Function        
+
+> Function_id:
+> Function_signature: get_partition_for_tuple(...) Function_body: Source code with coverage information : static int 32 : get_partition_for_tuple(...){ ... : ... 25 :switch (key->strategy) ... : ... 0: cmpval = partition_rbound_datum_cmp(...)
+
+Seed Selection 
+
+Edge 
+
+Node 
+
+Node 
+
+Node  
+
+> Execution Contain Call Function call relationships Paths containing specific functions SQL queries triggering execution paths
+
+Figure 2: Overview of the DBcover framework. 
+
+partition must be accessed at least 16 times consecutively, as 
+
+PARTITION_CACHED_FIND_THRESHOLD is defined as 16. (4) Building on the insights derived from the preceding analysis, the LLM identifies that the seed satisfies the first condition but fails the second—it performs only one insertion, so last_found_count never reaches the threshold. Consequently, the cache-optimized path invok-ing partition_rbound_datum_cmp remains unexecuted. To close this semantic gap, the LLM formulates a minimal, tar-geted strategy: augment the seed test with additional INSERT 
+
+statements that map to the exact same RANGE partition as the original tuple. Specifically, 15 more insertions are needed to bring the total access count to 16, thereby satisfying the caching precondition and enabling execution of the target branch. (5) Finally, the fifth subtask focuses on test case synthesis. Guided by the generation strategy, the LLM generates the new SQL test case shown in Fig.1(c) based on the seed test case in Fig.1(b). This SQL extends the seed test case by performing 15 additional insertions into the same RANGE partition, ensuring that the consecutive-hit condition is met. When executed, the generated test successfully triggers the cache-optimized branch, invokes partition_rbound_datum_cmp , and covers the previously unreachable line 25. 
+
+## 3 Methodology 3.1 Overview 
+
+In this section, we present the design of DBcover. The core idea is to efficiently gather the contextual information needed from the RDBMS codebase so that an LLM can generate test cases that effectively improve code coverage. DBcover operates in two phases. First, it leverages existing regression test cases to extract global SQL-to-path context, enabling the identification of a seed test case whose execution reaches code regions closest to the uncovered target. Then, equipped with this seed, DBcover uses the LLM to interpret the local context—including the target function and its dependencies—and mutate the seed to synthesize new SQL inputs that more precisely exercise the uncovered code. The workflow of DBcover is illustrated in Fig. 2. DBcover consists of three major components: knowledge graph construction, seed selection, and test case generation. DBcover first collects both global and local context information and unifies them into a knowledge graph. To minimize context collection cost, DBcover leverages the existing regression test suite of the target RDBMS as the initial seed pool. Each test case is executed once to obtain its execution path, and the resulting SQL-to-path traces are stored in the knowledge graph for reuse. Whenever new test cases, those that successfully improve coverage, are added to the seed pool, their execution paths are incrementally added to keep the knowledge graph up to date. In addition, DBcover automatically extracts the target function and its dependency information as local context and inserts them into 
+
+> 4
+
+the graph. Built upon this knowledge graph, DBcover performs a two-phase test generation workflow. The seed selection module retrieves the seed whose execution path is closest to the target code region. Then, using this seed together with the global and local context, DBcover prompts the LLM with a fine-grained reasoning pipeline to synthesize new SQL inputs intended to cover the target code. 
+
+## 3.2 Knowledge Graph Construction 
+
+To effectively contextualize the RDBMS code base, we propose a two-layer context extraction strategy and organize the extracted context into a knowledge graph. Before diving into the context collection details, we first formally define the knowledge graph we used in DBcover. 
+
+Definition 3.1 (Code Context Knowledge Graph). We define the code context knowledge graph as G = (𝑉 , 𝐸, Prop 𝑉 , Prop 𝐸 , 𝑓 𝑉 , 𝑓 𝐸 ),where 𝑉 is the set of nodes, 𝐸 is the set of edges. Prop 𝑉 is the set of properties associated with the nodes and Prop 𝐸 is the set of properties associated with the edges. 𝑓 𝑉 : 𝑉 → Prop 𝑉 maps each node to its set of properties. 𝑓 𝐸 : 𝐸 → Prop 𝐸 maps each edge to its set of properties. Nodes in a knowledge graph consist of three types: Q: SQL queries, P: execution paths, and F : functions. For SQL query nodes, the properties include Query_id and Query_content , for execu-tion path nodes, the properties include Path_id and Path_content ,and for function nodes, the properties include Function_id ,
+
+Function_signature , and Function_body . Edges captures three types of relationships between the nodes, including Execution: from a Q node to a P node, meaning a SQL query exercises an execution path; Contain: from a P node to a F node, meaning an execu-tion path contains a function; and Call: from a F node to a F
+
+node, meaning one function calls another. For Execution edges, the properties include Execution_id and Execution_condition ,describing the condition under which a SQL query triggers an exe-cution path. For Contain edges, the properties include Contain_id 
+
+and Contain_relationship , describing the relationship where an execution path contains a function. For Call edges, the properties include Call_id and Call_relation , describing the relationship where one function calls another. Figure 2 illustrates the knowledge graph constructed by DBcover. The graph consists of three types of nodes, i.e., SQL queries, ex-ecution paths, and functions, and three types of directed edges: Execution from a SQL query to an execution path, Contain from an execution path to a function, and Call from one function to another. Each node in the graph is associated with a set of structured prop-erties. For instance, the SQL query 𝑄 1 includes properties such as 
+
+Query_id : “ 𝑄 1” and Query_content : “CREATE TABLE t1 (a INT) PARTITION BY RANGE (a); ...”, representing a specific test case. The execution path node 𝑃 2 holds properties like Path_id : “ 𝑃 2”and Path_content : “ExecFindPartition -> get_partition_for_tuple’. The function node 𝐹 2 stores properties such as Function_id : “ 𝐹 2”, 
+
+Function_signature : “partition_rbound_datum_cmp” and the pa-rameters, and Function_body , where Function_body includes the source code snippet annotated with coverage information. The edges in the knowledge graph represent the relationships between these nodes. Execution edges link SQL queries to their corresponding execution paths. For example, the Execution edge from 𝑄 1 to 𝑃 2 reflects the pathability from a query to its runtime behavior. Contain edges connect execution paths to the specific functions they exercise, such as the edge from 𝑃 2 to 𝐹 2, which grounds dynamic observations in static code elements. Call edges represent internal function call dependencies, such as the edge from 
+
+𝐹 1 to 𝐹 2, revealing the internal structure of the DBMS. The code context knowledge graph is constructed progressively during our test generation process. We categorize the code con-text into global context and local context, based on the scope of the context information. The global context contains information that spreads across a large portion of the project, for instance, the execution path of a given test case, the call graph, etc. The local context includes information that is local to our target function or code lines, for instance, the source code of the target function, its current coverage, etc. 
+
+Global Context Extraction. The global context, including the SQL-to-path correspondence and the call graph, is extracted at the beginning, when we analyze the DBMS source code and the project’s directory structure. It can also be extracted incrementally during the test generation process. When new test cases are added to the seed pool, this process is automatically triggered. This process begins by systematically extracting the source code and organizing it into logical units based on the relationships between function calls. We will execute all the regression test cases in the seed pool to collect SQL-to-path correspondence information. During the execution of SQL test cases, their execution paths are tracked in real time, capturing the dynamic interactions between the queries and the underlying code. These execution paths are represented as execution path nodes in 𝑉 and are connected to the relevant SQL query nodes through Execution edges. The execution paths, along with the function call graph, are integrated into the knowledge graph, linking SQL queries to their corresponding execution paths and functions. This approach ensures that we capture the broad execution context of the DBMS, providing a comprehensive view of system behavior. 
+
+Local Context Extraction. The local context, in contrast, fo-cuses on a specific target function and its source code augmented with coverage information. Formally, let 𝐹 𝑖 ∈ 𝑉 denote the func-tion node corresponding to the target function in the knowl-edge graph G. Its associated properties, given by 𝑓 𝑉 (𝐹 𝑖 ), include 
+
+Function_id , Function_signature , and Function_body , where 
+
+Function_body embeds line-level execution counts derived from prior test runs. To obtain this coverage-enriched representation, DB-cover instruments the target DBMS to collect line-level execution counts during test runs and associates them with the correspond-ing source code of 𝐹 𝑖 . This representation precisely captures which lines within 𝐹 𝑖 remain unexecuted or under-tested. By grounding test generation in this coverage-enriched local context, DBcover can systematically target unexplored code in the function. This knowledge graph effectively expresses the relationship be-tween SQL queries, execution paths, and the underlying code func-tions. It integrates dynamic execution information with static code structure, providing strong semantic support for subsequent test case generation and path analysis. The knowledge graph serves as a rich representation, allowing for precise and targeted test case generation based on the execution context and coverage data. 
+
+> 5
+
+Algorithm 1 Seed Selection  
+
+> 1:
+
+Input: Knowledge graph G, target function 𝐹 target , maximum depth 𝐷  
+
+> 2:
+
+Output: Seed SQL query or ∅ 
+
+> 3:
+
+for 𝑑 = 0 to 𝐷 do  
+
+> 4:
+
+for each function 𝑓 with dist (𝐹 target , 𝑓 ) = 𝑑 do  
+
+> 5:
+
+if ∃ 𝑃 ∈ P : 𝑓 ∈ 𝑃 then  
+
+> 6:
+
+return SQL query of 𝑃  
+
+> 7:
+
+end if  
+
+> 8:
+
+end for  
+
+> 9:
+
+end for  
+
+> 10:
+
+return ∅
+
+## 3.3 Seed Selection 
+
+In coverage-guided testing of complex systems like RDBMSs, blindly generating SQL queries from scratch is often ineffective: the probability of randomly triggering a deep, target-specific function (e.g., a query optimizer routine) is extremely low due to intricate parsing, validation, and dispatch logic. To address this, DBcover leverages the knowledge graph G to perform informed seed selec-tion —identifying existing test cases that already execute code close to the target function 𝐹 target .The key insight is that functions reachable via a few static call edges from the target function ( 𝐹 target ) are more likely to share execution context (e.g., data structures, transaction state, or query plan stages). Thus, small, semantics-preserving mutations to a seed that reaches such a neighboring function can often bridge the re-maining gap to 𝐹 target . We quantify this notion of proximity using the shortest-path distance over Call edges in the knowledge graph 
+
+G. Formally, we use dist (𝑓 , 𝐹 target ) to denote the minimum number of directed Call edges from function 𝑓 to the target function 𝐹 target 
+
+in the knowledge graph. As shown in Algorithm 1, DBcover searches for the closest func-tion 𝑓 to the target function 𝐹 𝑡𝑎𝑟𝑔𝑒𝑡 (by dist (Ftarget , f)), where 𝑓 is on the execution path of existing test cases recorded in the knowledge graph. Specifically, it iterates over distances 𝑑 = 0, 1, . . . , 𝐷 , where 
+
+𝐷 is a configurable bound that prevents excessive search in deeply nested call chains. For each 𝑓 at distance 𝑑 , it checks whether any execution path 𝑃 ∈ P contains 𝑓 (i.e., the dynamic path of some past test exercised 𝑓 ). If such a path exists, the algorithm returns its associated SQL query as the seed. Figure 2 illustrates this process: given 𝐹 4 as the target function 
+
+𝐹 target , DBcover identifies a function 𝐹 2 that is close to it through the Call edge in the knowledge graph ( 𝐹 2 → 𝐹 4). It then finds an execution path 𝑃 2 that contains 𝐹 2 through the Contain edge in the knowledge graph ( 𝑃 2 → 𝐹 2), indicating that 𝐹 2 was actually executed during a previous test. This path is linked back to the original SQL query 𝑄 1 via the Execution edge. Since 𝑄 1 has already triggered 𝐹 2, it serves as an ideal seed for mutating toward 𝐹 target .
+
+## 3.4 Test Cases Generation 
+
+The Test Case Generation component of DBcover leverages the reasoning capabilities of LLMs to synthesize SQL test cases that exercise previously uncovered RDBMS code regions. Instead of Prompt Template                    
+
+> Role Definition : You are a DBMS testing expert, tasked with
+> generating SQL test cases that trigger uncovered code. Follow
+> these steps to generate test cases:
+> Step1: Analyze global context
+> -Analyze the DBMS operations corresponding to {Seed}(e.g.,
+> the creation of tables, data insertion, and the execution
+> of queries with specific predicates).
+> -Infer the functional responsibilities of the routines in
+> {relevant_call_path } from their naming semantics and
+> invocation order within the execution flow.
+> Step2: Retrieve local context:
+> -Retrieve the { function_body } of { target_function }.
+> -Retrieve the { function_signature } of { target_function },
+> including function names, parameter types, and return type.
+> Step3: Analyze Trigger Conditions:
+> -Analyze the control flow in { relevant_call_path } to
+> determine the runtime conditions required to invoke
+> {target_function } (e.g., non -null input, presence of table
+> partitioning, specific tuple values).
+> Step4: Generate Strategy for Coverage Improvement:
+> -Diagnose why the current seed failed to trigger the
+> uncovered code.
+> -Propose minimal modifications to the seed to cover the
+> targeted code.
+> Step5: Generate Test Case:
+> -Write a new, complete SQL script that includes:
+> -DDL (CREATE TABLE ...)
+> -DML (INSERT) to populate data
+> -Ensure the test is self -contained and executable as a
+> single batch.
+> Input :
+> -Target function: { target_function }
+> -The seed test case: {Seed}
+> -A relevant call path leading to { target_function } from the
+> seed’s entry point: { relevant_call_path }
+
+Figure 3: Fine-grained reasoning prompt template. 
+
+presenting the model with large volumes of undifferentiated source code, DBcover provides a curated contextual package extracted from the knowledge graph G. To enhance reasoning accuracy and interpretability, particularly under the 32B-parameter LLM used in industrial deployment, DBcover organizes test generation into a fine-grained five-stage pipeline, with each stage grounded in in-formation retrieved from G. The model first interprets the global context. It then narrows its focus to the local context of the target function, including its body, signature, and uncovered regions. An-chored in this global-to-local progression, the LLM can accurately infer the specific runtime conditions required to reach the miss-ing coverage and transform them into concrete SQL test cases. As shown in the prompt template in Fig. 3, the detailed steps are as follows: 
+
+1. Analyze Global Context: The system first presents the LLM with the seed SQL script {Seed} and its associated execution path 
+
+{relevant_call_path} . Guided by the prompt, the model (i) an-alyzes the DBMS operations performed by {Seed} (e.g., table cre-ation, data insertion, and the execution of queries with specific 
+
+> 6
+
+predicates), and (ii) infers the functional responsibilities of the rou-tines along {relevant_call_path} from their naming semantics and invocation order within the execution flow. This step recon-structs the global execution context in which the target function is embedded. 
+
+2. Retrieve Local Context: After reconstructing the global execu-tion environment, DBcover directs the LLM to examine the local code context of {target_function} . The LLM retrieves the func-tion’s body, signature, parameters, and uncovered regions. Based on this information, the model identifies the internal computation performed by the target routine, the meaning of its inputs and outputs, and how its control-flow guards relate to the surrounding execution path. This step anchors the reasoning in the precise code that needs to be triggered. 
+
+3. Analyze Trigger Conditions: Using both the global context (from the seed and its execution path) and the local context of the target function, the LLM analyzes the control-flow dependencies leading to {target_function} . It infers the runtime conditions necessary to reach the uncovered code—such as specific argument values, required table states, or repeated access patterns that acti-vate caching or optimization paths. For example, when targeting 
+
+partition_rbound_datum_cmp , the model deduces that the cache-enabled branch becomes reachable only after repeated boundary comparisons in a test case meet or exceed the predefined thresh-old. This analysis reveals exactly why the seed fails to trigger the desired path. 
+
+4. Generate Strategy for Coverage Improvement: The LLM then diagnoses the semantic gap between the inferred trigger conditions and the behavior of {Seed} . By comparing the required runtime state with what the seed actually constructs, the model proposes minimal and targeted modifications—such as generating additional inserts mapping to the same partition, issuing a more selective predicate, or restructuring the query to induce repeated lookups. This strategy outlines the concrete transformations needed for the seed to reach the previously uncovered region. 
+
+5. Generate Test Case: Finally, DBcover instructs the LLM to instantiate the improvement strategy into a fully executable SQL script. The model synthesizes all necessary DDL statements, con-structs the appropriate DML operations to populate data with the required structure and distributions, and formulates the triggering query that satisfies the inferred runtime conditions. The generated script is self-contained and ordered as a single batch, ensuring that all prerequisite states—such as table schemas, inserted tuples, and access patterns—are established within the test itself. This staged, context-aware prompting enables systematic ex-ploration of stateful, hard-to-reach DBMS logic—such as partition caching mechanisms—while remaining compatible with lightweight models and automated pipelines. After generation, synthesized test cases are executed under instrumentation (e.g., gcov ). Feedback is analyzed along two axes: (1) whether the target branch is now covered, and (2) whether a crash or bug is exposed. Successful tests enrich the seed pool and update G with new Execution edges and refined coverage. Failed attempts trigger iterative refinement: exe-cution paths, runtime values, and error messages are incorporated into a revised prompt, enabling the LLM to diagnose and correct its reasoning in subsequent rounds. This closed-loop integration of graph-augmented context, structured reasoning, and dynamic feedback allows DBcover to progressively uncover deeper, state-dependent code paths in the DBMS. 
+
+## 4 Evaluation 
+
+In the evaluate section, we try to answer the following three re-search questions. 
+
+RQ1: How effective is DBcover in improving the test coverage of RDBMSs as compared to existing generation methods? 
+
+RQ2: How does the two-phase design of DBcover contribute to enhancing the effectiveness of DBcover? 
+
+RQ3: Is DBcover effective in closed-source industrial databases? 
+
+## 4.1 Experimental Setup 
+
+4.1.1 Implementation. To collect comprehensive data for test case generation, DBcover extracts function-level source information from the DBMS codebase using Doxygen [1]. To capture the func-tion call relationships within the system, we compile the source code with LLVM, constructing a detailed call graph that represents the interactions between functions. For code coverage information, we use gcov and lcov, and we develop custom Python scripts to integrate coverage data from both source code and gcov files. SQL execution paths are traced by instrumenting the DBMS with the Pin tool [4], enabling us to monitor the execution flow and capture the specific paths taken during query execution. In practice, Pin is employed exclusively offline for path collection, ensuring that generated tests execute natively in CI pipelines without incurring runtime overhead. All gathered data, including coverage metrics, function relationships, and execution traces, are stored in a Neo4j database [3], providing an organized and queryable foundation for test case generation and evaluation. 
+
+4.1.2 Environment. For RQ1 and RQ2, the experiments were con-ducted on a server equipped with an Intel(R) Xeon(R) Gold 6454S Processor (128 cores) and 512GB of RAM, with 2 NVIDIA RTX 5880 Ada 48GB GPUs, running a 64-bit version of Ubuntu 22.04.5 LTS. For RQ3, since it evaluates the performance of an industry closed-sourced RDBMS, we run the experiments on their internal environments on a server equipped with an Intel(R) Core(TM) i9-14900K Processor (32 cores) and 64GB of RAM, with 2 NVIDIA GeForce RTX 4090 GPUs (each with 48GB of memory), running a 64-bit version of CentOS 7. Experiments for DBcover and its vari-ant DBcover nse use the qwen3:32b large language model with a temperature of 0.7. 
+
+4.1.3 Target RDBMSs. To demonstrate the effectiveness of DB-cover, we applied it to a variety of relational database management systems (DBMS), including the open-source systems MySQL (ver-sion 8.0.33) and PostgreSQL (version 17.0), as well as a proprietary industrial DBMS, KingbaseES [2]. The inclusion of both open-source and closed-source systems in our evaluation provides a comprehen-sive assessment of DBcover’s performance across different RDBMS implementations. 
+
+4.1.4 Baselines: 
+
+• Base: The baseline approach refers to using the initial set of regression test cases as input, executing the test cases on 
+
+> 7
+
+Table 1: Line coverage achieved by the compared methods                
+
+> DBMS Base SQUIRREL ShQveL DBcover nse DBcover PostgreSQL 68.6% 69.0% 31.5% 75.7% 80.1%
+> MySQL 71.2% 71.4% 25.7% 77.2% 82.3%
+
+the target RDBMS and measuring the collective coverage achieved after these executions. 
+
+• ShQveL [34] enhances existing SQL test case generator (SQLancer++ [33]) by leveraging LLM to synthesize SQL fragments. This is the first and only available LLM-assisted test generation method for RDBMS and thus is selected as a comparison method. In our implementation, we utilized Gemini-2.5-pro (with 175B parameters) as the LLM for the test case generation process. Additionally, we made modifi-cations to certain parts of the code to adapt it to MySQL. 
+
+• SQUIRREL [32]: is a representative test generation approach that conducts mutations on the intermediate representation (IR) representations, aiming to achieve high syntax and se-mantic correctness of the generated SQL query. SQUIRREL also supports the generation of multiple interdependent SQL statements. We supplemented squirrel’s seed, thus maintain-ing the same initial seed as DBcover. 
+
+4.1.5 Seed test cases. Seed inputs were collected from the official GitHub repositories of the RDBMSs under evaluation. These reposi-tories typically provide extensive regression test suites that cover a wide spectrum of query types, making them a strong foundation for initial test case selection. To ensure fairness, all compared methods are initialized with the same seed pool. 
+
+## 4.2 Comparison with Baselines 
+
+Table 1 shows the results by each compared RDBMS test case gen-erator in 24-hour time-bounded experiments. The column Base 
+
+reports the coverage achieved by executing only the initial seed pool (i.e., without generating any new test cases). We can observe that the initial seed pools already achieve a rather high line cov-erage, with 68.6% on PostgreSQL and 71.2% on MySQL. DBcover achieves the highest coverage— 80.1% on PostgreSQL and 82.3% 
+
+on MySQL—surpassing the seed baseline by 11.5% and 11.1% , re-spectively. SQUIRREL improves coverage by merely 0.4% on Post-greSQL (68.6% → 69.0%) and 0.2% on MySQL. ShQveL—a standalone LLM-augmented generator that does not leverage the seed cor-pus—achieves substantially lower coverage ( 31.5% on PostgreSQL, 
+
+25.7% on MySQL). We attribute the effectiveness of DBcover largely to its use of source-level context that explicitly links SQL inputs to their ex-ecution paths, which we refer to as SQL-to-path correspondence .Without this mapping, test generators cannot determine which SQL constructs are needed to reach a given uncovered code re-gion. Both SQUIRREL and shQveL lack such context information, and thus cannot effectively cover the target code region. DBcover overcomes this barrier by explicitly collecting the SQL-to-path correspondence, providing LLM with this global context—and lever-aging its native code comprehension ability—DBcover unlocks deep, 
+
+Table 2: Ablation study results (per module on PostgreSQL)                                                                                                     
+
+> Project Lines Base DBcover nse DBcover utils/adt 66211 81.60% 84.90% 88.00% (+3.10%, +6.40%) commands 32326 81.60% 83.40% 86.10% (+2.70%, +4.50%) nodes 24882 44.30% 44.70% 47.80% (+3.10%, +3.50%) parser 24206 87.30% 88.30% 90.00% (+1.70%, +2.70%) executor 23181 86.40% 86.50% 90.20% (+3.70%, +3.80%) catalog 13791 83.00% 85.90% 87.70% (+1.80%, +4.70%) access/transam 12118 52.80% 60.80% 64.60% (+3.80%, +11.80%) optimizer/plan 8434 91.10% 93.10% 96.20% (+3.10%, +5.10%) optimizer/util 7705 87.00% 87.90% 91.10% (+3.20%, +4.10%) access/heap 7241 67.10% 75.00% 83.90% (+8.90%, +16.80%) optimizer/path 7087 95.10% 95.20% 95.80% (+0.60%, +0.70%) access/nbtree 6310 86.90% 87.70% 88.00% (+0.30%, +1.10%) regex 5136 70.40% 73.00% 73.50% (+0.50%, +3.10%) tcop 4534 68.00% 70.50% 71.80% (+1.30%, +3.80%) postmaster 4299 52.60% 53.30% 53.90% (+0.60%, +1.30%) access/gin 4127 75.60% 77.20% 78.50% (+1.30%, +2.90%) utils/misc 3914 66.80% 71.10% 75.00% (+3.90%, +8.20%) tsearch 3643 88.70% 90.00% 90.20% (+0.20%, +1.50%) access/gist 3287 73.40% 75.80% 77.00% (+1.20%, +3.60%) utils/mmgr 3281 70.90% 72.10% 73.20% (+1.10%, +2.30%) access/brin 3198 70.20% 73.20% 84.30% (+11.10%, +14.10%) utils/activity 3127 66.30% 68.60% 72.30% (+3.70%, +6.00%) access/common 2849 78.10% 79.40% 80.40% (+1.00%, +2.30%)
+> Average 11952 75.01% 80.37% 83.08% (+2.71%, +8.07%)
+
+previously unreachable code in production-grade DBMSs. Absent nearby execution paths, DBcover performs an upward call-graph search to locate the closest executed ancestor. Using this node as an anchor, the LLM infers the necessary state transitions to extend the execution path toward the deep target. Through detailed analysis, we observe that most remaining un-covered code resides in regions that are fundamentally unreach-able via valid SQL inputs during normal execution—such as crash-recovery routines, I/O error handlers, and system-management paths triggered only by operating-system–level events. Because DBcover (and all compared baselines) operates strictly through the user-facing SQL interface, these internal mechanisms lie outside the scope of what any SQL-based test generator can exercise. Beyond these architectural limits, a non-trivial fraction of uncovered code resides in SQL-reachable components but is guarded by complex path conditions requiring intricate runtime value computations. These conditions often depend on the results of deep internal func-tion calls or comparisons against macro-defined system constants, and satisfying them typically demands precise control over mul-tiple interdependent SQL parameters and system settings, which requires reasoning and numeric constraint solving beyond the cur-rent capabilities of small parameter LLMs. Together, these factors explain why overall coverage naturally plateaus around 80%. 
+
+## 4.3 Ablation Study 
+
+To evaluate the contribution of global context, we introduce 
+
+DBcover nse , a variant of DBcover that removes the global con-text collection and seed selection steps. In DBcover nse , the LLM 
+
+> 8SELECT interval_lerp('-3 days'::interval, '2 days'::interval, 0.75); ERROR: function interval_lerp(interval, interval, numeric) does not exist LINE 1: SELECT interval_lerp('1 day'::interval, '5 days'::interval, ... ^HINT: No function matches the given name and argument types. You might need to add explicit type casts.
+
+(a) Source code (b) Test case generated by DBcovernse                                                           
+
+> 1 static Datum percentile_cont_multi_final_common (FunctionCallInfo fcinfo ,
+> Oid expect_type ,
+> int16 typLen ,bool typByVal ,char typAlign ,
+> LerpFunc lerpfunc ){
+> 2...
+> 3for (; i<num_percentiles ;i++){
+> 4int64 first_row =pct_info [i]. first_row ;
+> 5int64 second_row =pct_info [i]. second_row ;
+> 6int idx =pct_info [i]. idx ;
+> 7if ( second_row >first_row )
+> 8result_datum [idx ] = lerpfunc (first_val ,second_val ,
+> pct_info [i]. proportion );
+> 9else
+> 10 result_datum [idx ] = first_val ;
+> 11 ...
+> 12 }
+> 13 ...
+> 14 }
+> 15 Datum percentile_cont_interval_multi_final (PG_FUNCTION_ARGS ){
+> 16 return percentile_cont_multi_final_common (fcinfo ,
+> INTERVALOID ,
+> 16 , false, TYPALIGN_DOUBLE ,
+> interval_lerp );
+> 17 }
+> 18 static Datum interval_lerp( Datum lo ,Datum hi ,double pct ){
+> 19 Datum diff_result =DirectFunctionCall2 (interval_mi ,21 hi ,lo );
+> 20 Datum mul_result =DirectFunctionCall2 (interval_mul ,
+> diff_result ,
+> Float8GetDatumFast (pct ));
+> 21 return DirectFunctionCall2 (interval_pl ,mul_result ,lo );
+> 22 }
+
+(d) Test case generated by DBcover 
+
+> DROP TABLE IF EXISTS test_intervals; CREATE TABLE test_intervals (id serial, duration interval); INSERT INTO test_intervals (duration) VALUES ('1 hour'), ('1 day'), ('1 week'), ('1 month'), ('1 year'); SELECT percentile_cont(ARRAY[0.33]) WITHIN GROUP (ORDER BY duration) FROM test_intervals; CREATE TABLE test_intervals (id serial, duration interval); INSERT INTO test_intervals (duration) VALUES ('1 day'), ('1 day'), ('2 days'), ('2 days'), ('3 days'); SELECT percentile_cont(ARRAY[0.0, 0.25, 0.5, 0.75, 1.0]) WITHIN GROUP (ORDER BY duration) FROM test_intervals;
+
+(c) Seed Figure 4: A Case Study. 
+
+receives only the local context, i.e., the target function’s source code and line-level coverage information. Table 1 shows the evaluation results of running both settings of DBcover for 24 hours. DBcover nse achieves the coverage: 75 .7% on PostgreSQL and 77 .2% on MySQL, compared to DBcover’s 80 .1% and 82 .3%, corresponding to drops of 4 .4% and 5 .1%, respectively. We fur-ther break down the coverage improvement on a per-module basis to assess the robustness of DBcover, i.e., whether the global context shows improvement consistently on different modules. Table 2 sum-marizes the coverage improvement of top-23 largest PostgreSQL modules by source lines of code (SLOC), which together consti-tute the majority of the system’s core logic—including query exe-cution ( executor ), planning ( optimizer/plan , optimizer/path ), and built-in data types ( utils/adt ). The last column of Table 2 shows three numbers, i.e., the coverage achieved by DBcover, its improvement over DBcover nse , and Base, respectively. On average, DBcover achieves a 2.71% coverage improvement over DBcover nse and 8.07% over the Base configuration. These re-sults demonstrate that both the seed selection mechanism and the fine-grained reasoning pipeline contribute significantly to generat-ing test cases that effectively increase code coverage. The largest coverage gain occurs in access/brin (+11.1%, +14.1%). The code in this module is guarded by strong runtime preconditions: a BRIN index must exist, the table must contain sufficient data to popu-late at least one range block, and a query referencing the indexed column must be issued. These conditions constitute a stateful depen-dency chain that can hardly be inferred from the target function’s source code. Therefore, the seed selection step shows great im-provement. What’s more , the gap between DBcover nse and Base (average +5.36%) reflects the benefit of local-code-aware prompting alone, while the additional +2.71% gain from DBcover highlights the unique contribution of our full prompt pipeline—specifically, its integration of global SQL-to-path context with structured, multi-step reasoning—to unlock stateful and semantically complex code paths that local analysis cannot reach. A complementary benefit arises in modules governed by syntac-tic and semantic constraints rather than runtime state. For example, 
+
+utils/adt —which implements PostgreSQL’s built-in data types such as numeric , jsonb , arrays, and ranges—improves from 84 .9% to 88 .0% (+3.1%). Its functions are triggered only by specific SQL constructs, including type casts (e.g., ’123’::numeric ) and typed literals (e.g., ’[1,5]’::int4range ). While common cases are cov-ered by the seed corpus, deeper branches—such as numeric over-flow handling or recovery from malformed but syntactically valid JSON—require inputs that are both well-formed and corner cases. The seed provides a valid syntactic template, allowing the LLM to generate safe mutations (e.g., increasing precision or nesting depth) that remain parseable and type-consistent. Without this guidance, the LLM (DBcover nse ) often produces ill-formed queries rejected by the parser before reaching the target code. In contrast, several modules show minimal improvement. 
+
+optimizer/path increases only from 95 .2% to 95 .8% (+0.6%), 
+
+access/nbtree from 87 .7% to 88 .0% (+0.3%), and tsearch from 90 .0% to 90 .2% (+0.2%). These components are already extensively exercised by the seed corpus, as their core logic is routinely trig-gered during standard query processing. The remaining uncovered code primarily consists of error-handling routines or assertions. Notably, the postmaster module also shows negligible gain (from 53 .3% to 53 .9%, +0.6%), but for a fundamentally different reason: it manages server lifecycle events such as process startup, client connection dispatch, and shutdown signaling. These behaviors are 
+
+> 9
+
+triggered by operating-system interactions or internal signals, not by SQL queries. 
+
+## 4.4 Case Study 
+
+Fig. 4 illustrates a case study on generating test cases that cover the target function interval_lerp (line 19 of Fig. 4(a)), including an erroneous test case generated without seed guidance (Fig. 4(b)) and a correct test case synthesized by DBcover (Fig. 4(d)) from the seed shown in Fig. 4(c). The function interval_lerp is a static helper used internally by PostgreSQL’s percentile aggregation logic. When prompted with only the source code of interval_lerp —without any seed test case—the LLM generates a syntactically plausible but se-mantically invalid query, as shown in Fig. 4(b). The direct call 
+
+SELECT interval_lerp(...) fails when parsing because the function has no SQL interface, yielding the error: “function in-terval_lerp(interval, interval, numeric) does not exist”. The correct interface is “ percentile_cont ”. In contrast, DBcover avoids this pitfall with a two-phase design. In the first stage, starting from the target function 
+
+interval_lerp , DBcover traverses the call graph upward and iden-tifies percentile_cont_multi_final_common as the nearest func-tion. Then the seed selection strategy searches for the correspond-ing seed, shown in Fig. 4(c), in the knowledge graph. In the second stage, guided by a structured prompt, the LLM retrieves relevant context from the knowledge graph and analyzes the trigger con-dition for interval_lerp . The function is invoked in line 8 by 
+
+lerpfunc , which executes only when second_row > first_row 
+
+(line 7 of Fig. 4(a)) evaluates to true. Through code analysis, the LLM identifies that first_row and second_row are computed as 1 + ⌊ 𝑝 × ( 𝑛 − 1)⌋ and 1 + ⌈ 𝑝 × ( 𝑛 − 1)⌉ respectively, where 𝑝 is the percentile value and 𝑛 is the row count. The condition second_row > first_row holds true precisely when 𝑝 × ( 𝑛 − 1) is not an integer, indicating that the requested percentile falls between existing data points and requires interpolation. The LLM then diagnoses that the seed’s percentiles— [0.0, 0.25, 0.5, 0.75, 1.0] —with 𝑛 = 5result in 𝑝 × ( 𝑛 − 1) ∈ { 0, 1, 2, 3, 4}, all integers. Since ⌊𝑘 ⌋ = ⌈𝑘 ⌉ = 𝑘 
+
+for any integer 𝑘 , first_row equals second_row for all percentiles, causing the condition in line 7 to evaluate to false. To satisfy the interpolation requirement, it generates a minimal, self-contained mutation by replacing the percentile array with [0.33] , where 0.33 × 4 = 1.32 (non-integer), ensuring ⌊1.32 ⌋ = 1 < 2 = ⌈1.32 ⌉
+
+and thus second_row (3) > first_row (2), successfully triggering 
+
+interval_lerp .
+
+## 4.5 Evaluation on Enterprise Closed-Source RDBMS 
+
+We evaluate DBcover on KingbaseES [2], a commercial relational DBMS widely used in critical enterprise systems. While KingbaseES is a closed-source product and its source code cannot be disclosed publicly, our evaluation is performed in an internal environment with a qwen3:32b model locally deployed where source-level in-strumentation is permitted under a collaboration agreement. Our testing targets two foundational subsystems that are central to the correctness and robustness of the database engine. The first is the data type processing module , which implements built-in data types—such as numeric, string, and temporal types—as well as type coercion rules. The second is the metadata management module ,which governs all schema-related metadata. Using DBcover’s test generation pipeline, we automatically syn-thesize SQL test cases that exercise complex behaviors in these subsystems—such as edge-case type conversions, nested expres-sions, and metadata-intensive operations. Starting from an initial coverage of 50.0% in the data type processing module and 68.0% in the metadata management module (achieved by existing internal test suites), DBcover significantly advances coverage to 80.0% and 
+
+81.4% , respectively. These results demonstrate that our approach can effectively explore deep, stateful logic in proprietary database engines. Due to licensing restrictions, internal implementation de-tails cannot be disclosed; however, the reported coverage metrics reflect genuine execution paths within the production codebase. 
+
+## 5 Related Work 5.1 RDBMS Test Case Generation Methods 
+
+In traditional DBMS test case generation, fuzzing [9, 14, 16, 24, 32– 34] has received extensive attention due to its efficiency in automat-ically producing diverse inputs and triggering program behaviors. Existing approaches can be broadly grouped into two complemen-tary directions, i.e., improving the syntactic and semantic validity of generated test cases, and refining coverage feedback to better reflect meaningful execution differences. The first line of work focuses on generating well-formed SQL that adheres to DBMS grammar and semantics. Early tools like SQLsmith [22], SQLancer [21] and Apollo [15] generate single statements via syntax-driven traversal. Recent approaches produce multiple semantically related queries per test case, with genera-tive methods synthesizing these groups from scratch. DynSQL [14] dynamically queries the schema to guide abstract syntax tree in-stantiation into valid SQL. SQUIRREL [32], mutate seed queries, supporting syntax-preserving mutations. Griffin [12] recombines SQL fragments and repairs semantic inconsistencies using a meta-data dependency graph. However, these methods treat the DBMS as a black/grey box and cannot reason about how SQL inputs map to internal execution paths, limiting their ability to improve code coverage. Another line of work focuses on improving the accuracy of coverage feedback. Traditional gray-box fuzzers rely on basic block or edge coverage [16, 32], which conflates semantically distinct executions that follow the same control flow. Tools like Squirrel [32] and SQLRight [16] extend AFL’s bitmap size (Squirrel enlarges the default 64 KB bitmap to 256 KB) to alleviate hash collisions and obtain finer-grained coverage feedback for SQL synthesis. Ratel [24] addresses these issues by using static analysis to assign dedicated counters to basic blocks and branches, eliminating collisions, and by instrumenting all binaries at compile time for system-wide coverage in multi-process RDBMS. This line of work is orthogonal to ours. While this work does not generate queries, it provides valuable, precise coverage feedback that can enhance test-case generation guidance. 
+
+> 10
+
+## 5.2 LLM for Test Case Generation 
+
+With the rapid progress of large language models (LLMs) in code understanding and generation, LLM-driven test case generation has surged recently [6, 11, 18, 25–31, 34]. Due to their strong seman-tic modeling abilities, LLMs can generate structured, semantically meaningful test inputs and have been integrated into various test-ing frameworks to enhance testing quality and automation across software systems. Two main approaches have emerged: using LLMs to augment existing test generators and directly synthesizing tests with LLMs. In the augmentation paradigm, LLMs are integrated into existing test generators to enhance their generation process [13, 17, 34]. For instance, ShQveL [34] extracts SQL features through LLM interac-tions and incorporates them into existing generators, increasing behavioral coverage while maintaining efficiency. LLAMA [13] uses an LLM to generate semantically valid seeds and refines them with multi-feedback optimization and hybrid fuzzing for smart contracts. In these approaches, LLMs assist with tasks like syntax repair, seed enrichment, and semantic expansion, compensating for the limi-tations of traditional generators. However, their effectiveness is still constrained by the base generator’s ability to construct the execution context needed to trigger deep system logic, limiting improvements from LLM-based augmentation alone. More recent research efforts [6, 7, 10, 11, 25] increasingly treat large language models as primary test generators, producing com-plete and standalone test cases without relying on traditional mu-tation engines. For example, Whitefox [28] employs a multi-agent framework for testing compiler optimizations, progressively re-fining testing requirements to synthesize programs that activate specific optimization behaviors. CoverUp [6] integrates coverage analysis, code context, and runtime feedback to iteratively generate new tests; however, its generation process does not leverage any seed traces obtained from real executions, leaving the model with-out guidance from concrete runtime semantics and resulting in ex-ploratory generation under limited contextual constraints. MuTAP [11] further combines mutation testing principles with prompt engi-neering, steering LLMs to produce Python unit tests and adding new assertions derived from surviving mutants to strengthen test quality. Despite promising results, existing LLM-based testing approaches typically depend on large-parameter models and are evaluated pri-marily on well-documented, open-source systems. Moreover, they tend to target isolated functionalities (e.g., compiler optimizations) rather than deeply integrated system software, whose complexity, dynamic interactions, and tight module interdependencies pose substantially greater challenges. 
+
+## 6 Threats to Validity 
+
+Threats to validity primarily concern the generalizability of our method across diverse database architectures and LLM backends. To ensure broad applicability, we conducted experiments on three representative RDBMSs, comprising PostgreSQL, MySQL, and King-baseES. Among these, PostgreSQL and MySQL serve as the founda-tional open-source architectures for numerous derivative systems and are characterized by their immense codebase scale and logical complexity. KingbaseES complements this by representing main-stream commercial databases to ensure diversity in our evaluation. Methodologically, DBcover is inherently extensible across such diverse systems because its deterministic workflow is driven by generalizable program analysis and structured knowledge graphs rather than system-specific heuristics, ensuring a consistent and transferable testing process. Regarding model dependence, our evaluation utilized a specific 32B-parameter model. The fact that even a relatively modest-sized code-capable LLM achieves significant gains when guided by pre-cise and path-aware context indicates that the structured reasoning pipeline is the dominant factor in generating effective test cases, minimizing the reliance on extremely large model scales. This obser-vation suggests that the choice of the underlying language model does not fundamentally compromise the validity of our findings. Moving forward, we plan to extend our evaluation to a broader range of LLMs, encompassing diverse parameter sizes and archi-tectures, to further substantiate the framework’s robustness across varying model capabilities. 
+
+## 7 Conclusion and Future Work 
+
+We propose DBcover, a LLM-driven database test generation frame-work that performs white-box, code-aware SQL test generation through contextual reasoning, aiming at effectively improving code coverage of RDBMSs. To tackle the challenge of efficiently con-textualizing the RDBMS system, we propose a two-layer context collection strategy, which collects global context and local context related to the target function efficiently. We then propose a two-phase test generation approach, which relying on the global context to obtain a seed test case, and using local context to guide LLM for accurate test case generation. We conduct extensive experiments on PostgreSQL, MySQL, and a real-world industrial closed-source DBMS (KingbaseES). Results show that DBcover significantly out-performs state-of-the-art SQL test generation methods on code coverage. Moreover, while our primary metric is code coverage, the path-aware SQL test cases generated by DBcover are inherently com-patible with advanced bug-detection oracles, such as differential testing, metamorphic relations, and crash monitors, and provide a high-quality substrate for systematic bug discovery, which we plan to explore in future work. 
+
+## Acknowledgments 
+
+This work is supported by the National Natural Science Foundation of China under Grant Nos. 62472429, 62441230, the Fundamental Research Funds for the Central Universities, and the Research Funds of Renmin University of China, and the A3 Foresight Program No. 62461146205. We gratefully acknowledge the support from the RUC-Kingbase Database Collaborative Innovation Joint Laboratory. 
+
+## References  
+
+> [1] 2026. Doxygen. https://doxygen.cn/index.html. [2] 2026. KingbaseES. https://www.kingbase.com.cn/. [3] 2026. Neo4j. https://neo4j.com/. [4] 2026. Pintool. https://www.intel.com/content/www/us/en/developer/articles/ tool/pin-a-dynamic-binary-instrumentation-tool.html. [5] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Floren-cia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774
+> (2023).
+> 11
+
+[6] Juan Altmayer Pizzorno and Emery D Berger. 2025. CoverUp: Effective High Coverage Test Generation for Python. Proceedings of the ACM on Software Engineering 2, FSE (2025), 2897–2919. [7] Andrea Arcuri, Man Zhang, and Juan Galeotti. 2024. Advanced white-box heuris-tics for search-based fuzzing of rest apis. ACM Transactions on Software Engi-neering and Methodology 33, 6 (2024), 1–36. [8] Jinsheng Ba and Manuel Rigger. 2023. Testing database engines via query plan guidance. In 2023 IEEE/ACM 45th International Conference on Software Engineering (ICSE) . IEEE, 2060–2071. [9] Tim Blazytko, Cornelius Aschermann, Moritz Schlögel, Ali Abbasi, Sergej Schu-milo, Simon Wörner, and Thorsten Holz. 2019. {GRIMOIRE }: Synthesizing structure while fuzzing. In 28th USENIX Security Symposium (USENIX Security 19) . 1985–2002. [10] Xiang Cheng, Fan Sang, Yizhuo Zhai, Xiaokuan Zhang, and Taesoo Kim. 2025. RUG: Turbo LLM for Rust Unit Test Generation. In 2025 IEEE/ACM 47th In-ternational Conference on Software Engineering (ICSE) . IEEE Computer Society, 634–634. [11] Arghavan Moradi Dakhel, Amin Nikanjam, Vahid Majdinasab, Foutse Khomh, and Michel C Desmarais. 2024. Effective test generation using pre-trained large language models and mutation testing. Information and Software Technology 171 (2024), 107468. [12] Jingzhou Fu, Jie Liang, Zhiyong Wu, Mingzhe Wang, and Yu Jiang. 2022. Griffin: Grammar-free dbms fuzzing. In Proceedings of the 37th IEEE/ACM International Conference on Automated Software Engineering . 1–12. [13] Keke Gai, Haochen Liang, Jing Yu, Liehuang Zhu, and Dusit Niyato. 2025. LLAMA: Multi-Feedback Smart Contract Fuzzing Framework with LLM-Guided Seed Generation. arXiv preprint arXiv:2507.12084 (2025). [14] Zu-Ming Jiang, Jia-Ju Bai, and Zhendong Su. 2023. {DynSQL }: Stateful fuzzing for database management systems with complex and valid {SQL } query generation. In 32nd USENIX Security Symposium (USENIX Security 23) . 4949–4965. [15] Jinho Jung, Hong Hu, Joy Arulraj, Taesoo Kim, and Woonhak Kang. 2019. Apollo: Automatic detection and diagnosis of performance regressions in database sys-tems. Proceedings of the VLDB Endowment 13, 1 (2019), 57–70. [16] Yu Liang, Song Liu, and Hong Hu. 2022. Detecting logical bugs of {DBMS } with coverage-based guidance. In 31st USENIX Security Symposium (USENIX Security 22) . 4309–4326. [17] Zhengxiong Luo, Qingpeng Du, Yujue Wang, Abhik Roychoudhury, and Yu Jiang. 2025. Enhancing protocol fuzzing via diverse seed corpus generation. IEEE Transactions on Software Engineering (2025). [18] Yunbo Ni and Shaohua Li. 2025. Interleaving Large Language Models for Compiler Testing. Proceedings of the ACM on Programming Languages 9, OOPSLA2 (2025), 815–841. [19] Yaroslav Oliinyk, Michael Scott, Ryan Tsang, Chongzhou Fang, Houman Homay-oun, et al. 2024. Fuzzing {BusyBox }: Leveraging {LLM } and Crash Reuse for Embedded Bug Unearthing. In 33rd USENIX Security Symposium (USENIX Security 24) . 883–900. [20] Pansilu Pitigalaarachchi. 2024. Symbolic Execution for Dynamic Kernel Anal-ysis. In Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security . 5104–5106. [21] M. Rigger. 2020. Sqlancer: Detecting Logic Bugs in DBMS. https://github.com/ sqlancer/sqlancer. [22] A. Seltenreich, B. Tang, and S. Mullender. 2018. SQLsmith: A random SQL query generator. https://github.com/anse1/sqlsmith. [23] Jinghan Wang, Yue Duan, Wei Song, Heng Yin, and Chengyu Song. 2019. Be sensitive and collaborative: Analyzing impact of coverage metrics in greybox fuzzing. In 22nd International Symposium on Research in Attacks, Intrusions and Defenses (RAID 2019) . 1–15. [24] Mingzhe Wang, Zhiyong Wu, Xinyi Xu, Jie Liang, Chijin Zhou, Huafeng Zhang, and Yu Jiang. 2021. Industry practice of coverage-guided enterprise-level DBMS fuzzing. In 2021 IEEE/ACM 43rd International Conference on Software Engineering: Software Engineering in Practice (ICSE-SEIP) . IEEE, 328–337. [25] Chunqiu Steven Xia, Matteo Paltenghi, Jia Le Tian, Michael Pradel, and Lingming Zhang. 2024. Fuzz4all: Universal fuzzing with large language models. In Pro-ceedings of the IEEE/ACM 46th International Conference on Software Engineering .1–13. [26] Hanxiang Xu, Wei Ma, Ting Zhou, Yanjie Zhao, Kai Chen, Qiang Hu, Yang Liu, and Haoyu Wang. 2025. CKGFuzzer: LLM-Based Fuzz Driver Generation Enhanced By Code Knowledge Graph. In 2025 IEEE/ACM 47th International Conference on Software Engineering: Companion Proceedings (ICSE-Companion) . IEEE, 243–254. [27] Chen Yang, Junjie Chen, Bin Lin, Ziqi Wang, and Jianyi Zhou. 2024. Advancing code coverage: Incorporating program analysis with large language models. ACM Transactions on Software Engineering and Methodology (2024). [28] Chenyuan Yang, Yinlin Deng, Runyu Lu, Jiayi Yao, Jiawei Liu, Reyhaneh Jab-barvand, and Lingming Zhang. 2024. Whitefox: White-box compiler fuzzing empowered by large language models. Proceedings of the ACM on Programming Languages 8, OOPSLA2 (2024), 709–735. [29] Chenyuan Yang, Xuheng Li, Md Rakib Hossain Misu, Jianan Yao, Weidong Cui, Yeyun Gong, Chris Hawblitzel, Shuvendu Lahiri, Jacob R Lorch, Shuai Lu, et al. 2025. Autoverus: Automated proof generation for rust code. Proceedings of the ACM on Programming Languages 9, OOPSLA2 (2025), 3454–3482. [30] Chenyuan Yang, Zijie Zhao, and Lingming Zhang. 2025. Kernelgpt: Enhanced kernel fuzzing via large language models. In Proceedings of the 30th ACM Inter-national Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 . 560–573. [31] Zhiyu Zhang, Longxing Li, Ruigang Liang, and Kai Chen. 2025. Unlocking Low Frequency Syscalls in Kernel Fuzzing with Dependency-Based RAG. Proceedings of the ACM on Software Engineering 2, ISSTA (2025), 848–870. [32] Rui Zhong, Yongheng Chen, Hong Hu, Hangfan Zhang, Wenke Lee, and Dinghao Wu. 2020. Squirrel: Testing database management systems with language validity and coverage feedback. In Proceedings of the 2020 ACM SIGSAC Conference on Computer and Communications Security . 955–970. [33] Suyang Zhong and Manuel Rigger. 2025. Scaling Automated Database System Testing. arXiv preprint arXiv:2503.21424 (2025). [34] Suyang Zhong and Manuel Rigger. 2025. Testing Database Systems with Large Language Model Synthesized Fragments. arXiv preprint arXiv:2505.02012 (2025).

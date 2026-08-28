@@ -1,0 +1,1012 @@
+Title: FRESCO: Complete and Scalable Temporal Safety for CHERI Application Processors
+
+URL Source: https://arxiv.org/pdf/2608.26353v1
+
+Published Time: Fri, 28 Aug 2026 00:11:39 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# FRESCO : Complete and Scalable Temporal Safety for CHERI Application Processors 
+
+Merve G¨ ulmez *,† , Nils Jordan *,† , Jialun Zhang *,‡, Hossam ElAtali §,Gang Tan ‡, N. Asokan §, ∥, Thomas Nyman ¶
+
+> †
+
+Ericsson Security Research, ‡Pennsylvania State University, §University of Waterloo, 
+
+> ∥
+
+KTH Royal Institute of Technology, ¶Ericsson Product Security 
+
+{merve.gulmez,nils.jordan,thomas.nyman }@ericsson.com, {jialun.zhang,gtan }@psu.edu hossam.elatali@uwaterloo.ca, asokan@acm.org 
+
+# Abstract 
+
+CHERI provides hardware-enforced spatial memory safety. While prior work extends it with heap temporal safety, stack use-after-return remains unaddressed. Existing defenses fall short: compiler analysis reliably catches only references that escape as function re-turn values, while dynamic sanitizers impose overheads that pre-clude production deployment. We present FRESCO , built on the principle that a stack capability must not outlive the frame that created it. FRESCO “colors ” the stack pointer with per-invocation provenance identifiers; every capability derived from it inherits that lifetime and is hardware-invalidated the moment the function exits, regardless of how or where it escaped. Because stack frames retire orders of magnitude more frequently than heap allocations, FRESCO manages the resulting color pressure through: 1) Color Saver , a static capability-aware escape analysis that confines coloring to functions needing it, and whose core al-gorithm we mechanically verify in Rocq, and 2) capability-color segmentation , which partitions memory into disjoint segments, each with an independent color namespace. Color segmentation lets stack and heap temporal safety coexist on one system, making FRESCO 
+
+the first hardware /software co-design to provide complete and scal-able temporal safety for CHERI application processors. We realize 
+
+FRESCO on the CHERI-RISC-V QEMU full-system emulator and the out-of-order CHERI-Toooba FPGA softcore, with software sup-port in the CHERI-enabled Clang /LLVM compiler and CheriBSD OS. FRESCO systematically prevents use-after-return, use-after-free, and double-free across the NIST Juliet Test Suite and CVEs, with only a small run-time overhead in SPEC CPU ( ≈ 4% g.m.), SQLite, and PostgreSQL ( ≈ 10 − 14%). 
+
+# 1 Introduction 
+
+Capability Hardware Enhanced RISC Instructions (CHERI) is a prominent design for hardware-assisted memory safety. By using capabilities—hardware-supported descriptions of permissions—instead of conventional pointers, it inherently provides hardware-enforced spatial safety for C and C ++ .Prior work augments CHERI to also provide temporal-safety guarantees by mitigating heap-based use-after-free /use-after-reallocation vulnerabilities [1, 2, 3, 4]. However, they only cover heap allocation in CHERI application processors, leav-ing stack use-after-return unmitigated. Stack use-after-return 
+
+> *The authors contributed equally to this research.
+
+bugs occur when a stack-allocated object is used after the function where the object is defined has returned. Compiler-based escape analysis can reliably detect use-after-return when stack-local references escape the allocating function as return values (as returning such a reference is always an error), but escapes via, e.g., pointers embedded into heap-allocated or global objects require dynamic analysis, e.g., sanitizers [5, 6]. 
+
+This paper and contributions. Building on recent work introducing colored capabilities [3] to CHERI, we de-sign stack coloring , a novel stack-focused temporal-safety scheme which deterministically protects against use-after-return. Stack coloring leverages the ability to simultaneously retract sets of colored capabilities at once without the need to fully revoke them. It turns the stack pointer capability into a colored capability ensuring that any capabilities that ref-erence allocations in a particular stack frame reflect a stack allocation’s provenance through a ‘color’ (provenance identi-fier) assigned to precisely that frame. By retracting dangling capabilities to retired stack frames when a function returns, stack coloring prevents use-after-return conditions regardless of how references escape the functions their allocations be-long to. Since stack frames are retired orders of magnitude more frequently than heap allocations, we must scale colored ca-pabilities well beyond the ≈ 2M unique provenance identi-fiers (IDs) in prior work [3] to support stack coloring. We manage the resulting color pressure through two comple-mentary mechanisms: 1) Color Saver : a compiler extension which confines coloring to functions that need it through a capability-aware escape analysis and prevents stale capabil-ity reads from reused stack memory; we mechanically ver-ify the soundness of its escape classifier in Rocq [7], and 2) capability-color segmentation : a hardware feature that associates segments of memory with distinct provenance-validity tables (PVTs), allowing ≈ 2M colors per memory segment .Color segmentation allows stack and heap temporal-safety enforcement leveraging colored capabilities to coexist on the same system. Further, we demonstrate how color segmenta-tion improves performance of heap temporal-safety enforce-ment in color-segmented allocators . This enables us to re-alize a full temporal-safety solution for CHERI in FRESCO ,the first hardware /software co-design providing complete and scalable temporal safety for CHERI application processors. 1arXiv:2608.26353v1 [cs.CR] 26 Aug 2026 In summary, our contributions are: 
+
+• A complete temporal-safety solution for CHERI com-bining stack coloring , a novel stack temporal-safety scheme leveraging colored capabilities (§4.1); and a 
+
+color-segmented allocator enforcing temporal safety of heap allocations (§4.2). We implement stack coloring in CHERI-enabled Clang /LLVM (§6.2.2) and a jemalloc-based color-segmented allocator in CheriBSD (§6.3.3). 
+
+• Color Saver , combining capability-aware escape analy-sis and stale-read prevention to reduce color use with-out weakening guarantees (§4.1.1). We integrate Color Saver with CHERI-enabled Clang /LLVM (§6.2.1) and mechanically verify the basic escape classifier in Rocq (§5.1). 
+
+• Capability-color segmentation , an extension to colored capabilities [3] scaling them well beyond ≈ 2M prove-nance IDs (§4.1.1). We implement color segmentation in FRESCO , a CPU design based on CHERI-RISC-V re-alized in the QEMU full-system emulator and CHERI-Toooba [8] FPGA softcore (§6). 
+
+• Showing FRESCO systematically prevents use-after-return, use-after-free, and double-free conditions in NIST Juliet test cases and real-world CVEs (§7.1). 
+
+• Demonstrating the e ffi cacy of the full solution run-ning on FRESCO in the SPEC CPU benchmarks and real-world SQLite, PostgreSQL, and gRPC benchmarks (§7.3). 
+
+# 2 Background 
+
+2.1 CHERI 
+
+CHERI is an instruction-set architecture (ISA) exten-sion that augments conventional ISAs with a capability-based hardware-software co-design for memory protection. Hardware-supported capabilities enforce spatial safety for code or data pointers. The CHERI ISA specification [9] defines capability representations in registers and memory, along with instructions to manipulate them safely. A CHERI capability is twice the width of a native pointer type—128 bits on 64-bit platforms—and includes one addi-tional validity-tag bit, stored separately to prevent tamper-ing by non-capability-aware instructions. These tags are pre-served by valid, capability-aware instructions but are invali-dated by unauthorized manipulation or injection of arbitrary capabilities. In CHERI ISAs, general-purpose and address registers are extended to hold full capabilities. CHERI-RISC-V stores the program counter (PC) and stack pointer (SP) in the program counter capability ( pcc ) and stack pointer capa-bility ( csp ) registers, respectively. Each capability includes: 
+
+• Permissions : A bitmask defining allowed operations. 
+
+• Object type (otype ): A signed integer enabling tempo-rary “sealing” and “unsealing” of capabilities for opaque pointer and fine-grained in-process isolation. 
+
+• Bounds : The valid memory range relative to address. CHERI enforces spatial safety by assigning each allo-cation a capability describing its valid range and permis-sions. New capabilities are derived from existing ones, while maintaining monotonicity which ensures that new capabili-ties cannot exceed the permissions or bounds of their parent. Sealed capabilities for compartmentalization and exception handling introduce limited non-monotonicity. Extensions to CHERI have also explored sandboxing [10], initialization safety [11, 12], safe speculation [13, 14], and side-channel resistance [15]. 
+
+2.2 CHERI Temporal Safety 
+
+Cornucopia & Cornucopia Reloaded. Cornucopia [1] pro-vides deterministic use-after-reallocation (UAR) detection for heap allocations on CHERI: freed memory is quarantined and marked in a shadow bitmap, once quarantine exceeds a threshold, a kernel-performed revocation sweep clears the validity tags of stale capabilities before memory is reused. Quarantine leaves dangling pointers valid, obscuring use-after-free (UAF) defects, and inflates memory overhead due to delayed reuse. The threshold trades mitigation complete-ness for performance, as revoke-on-free is prohibitively ex-pensive. Even with concurrent sweeping, a stop-the-world phase is required to scan register files, recently modified pages and kernel-held capabilities. Cornucopia Reloaded [2] removes global pauses by using capability load barriers ,which trap capability loads from pages not yet swept, but quarantine remains: memory freed during a sweep epoch can-not be reused until the next sweep completes. CheriBSD includes Cornucopia Reloaded via the malloc revocation shim (MRS), which wraps BSD libc allocation functions (malloc() etc. and free() ). 
+
+Colored Capabilities. PICASSO [3] addresses the same prob-lem, but eliminates the quarantine bu ff er and reduces fre-quency of sweeping revocation. Its colored capabilities intro-duce a deliberately limited form of indirection into CHERI’s otherwise indirection-free model, decoupling the validity of a capability’s provenance (the allocation it represents) from the validity of the capability itself . Each colored capabil-ity carries its ”color” as a provenance identifier (provenance ID) in the otype field. A corresponding provenance-validity bit (PVB) is held in a separate, in-memory PVT, indexed by the provenance ID, with in-use identifiers tracked by the unit number ( unr ) allocator (Appendix A). Unlike memory-versioning schemes (§8), only the capability, not the backing memory, is colored. Hardware consults the PVB on every load or store issued through a colored capability, faulting once the PVB is invalidated. This retracts all capabilities sharing provenance at once, disabling dereferencing dangling colored capabilities without permanently revoking them and closing the UAF /UAR gap. PICASSO integrates into the CheriBSD MRS, as a drop-in replacement for the default scheme. To keep provenance checks o ff the critical central process-ing unit (CPU) path, PICASSO caches recently accessed 128-bit PVT words in a PVT-bu ff er, a small (64-word, 4-way set-associative) cache structure indexed by the virtual PVB address. A colored load or store can read a cached PVB without paying for provenance-translation lookaside bu ff er (PTLB) translation and PVT load. Coherence is maintained by flushing the entire bu ff er on any fence instruction; cor-rectness therefore relies on the MRS issuing a fence after it toggles a PVT, and on fences after page-table updates. 22.3 Remaining CHERI Temporal-Safety Gaps 
+
+State of the art temporal-safety schemes for CHERI still ex-hibit gaps in their e ff ectiveness and scalability: 
+
+1) No stack temporal-safety enforcement. PICASSO [3], like earlier CHERI work [1, 2], leaves use-after-return out of scope, on the basis that it is rare and “unlikely to be ex-ploitable” [16]. In practice, however, temporal-safety viola-tions on stack-allocated objects continue to yield medium- to high-severity disclosures to the common vulnerability enu-meration (CVE) program [17, 18, 19] (§8). Proponents of memory-safety standardization have called on regulators to incentivize deployment of complete , deterministic memory-safety technologies in the coming decade [20] (§9), and ad-vances in automating exploit development with artificial in-telligence (AI) agents [21, 22] add urgency to complete en-forcement, including of stack use-after-return. 
+
+2) Bounded color space. PICASSO ’s 21-bit identifiers admit just over two million concurrently distinguishable allocations per process: that far exceeds the 16 a ff orded by 4-bit memory-tagging schemes [2, 23] (§8) and makes sweeps rare, but the pool remains finite, placing an upper limit on the number of concurrent live allocations the scheme can scale to. Enlarging the space does not scale freely; it consumes scarce capability bits (competing with other CHERI extensions), inflates the PVT and the cost of used-identifier bookkeeping. 
+
+3) Residual overhead on allocation-heavy workloads. Both designs in §2.2 pay a cost proportional to the number of revocations, but di ff er in what triggers them: Cornucopia’s quarantine bu ff er threshold, versus exhaustion of PICASSO ’s global color space: omnetpp, the SPEC CPU2006 INT bench-mark allocating enough to trigger revocation in PICASSO ,costs 38% in run-time and roughly 80% in memory [3]. This is an obstacle to deployment in allocation-intensive programs. 
+
+# 3 Problem Statement 
+
+3.1 Goals 
+
+Our overall objective is to bridge the gaps 1) – 3) discussed in §2.3 by achieving the following goals: 
+
+G1 Full temporal safety. Deterministically protect against 
+
+both use-after-free and use-after-return of heap and stack allocations, closing the stack temporal-safety gap in prior CHERI temporal-safety designs. 
+
+G2 Scalability without a color ceiling. The number of si-multaneously live objects managed by colored capabili-ties must be bounded by available memory rather than by the bits the capability format reserves for the provenance ID. Long-running and allocation-heavy workloads must remain deployable without widening that field. 
+
+G3 Bounded revocation cost . Revocation must be infre-quent. Its trigger must not be exhaustion of a single global identifier pool, and each cycle’s cost must be pro-portional to the live state it reclaims rather than by cu-mulative allocation history or by fragmentation of the identifier space. 
+
+3.2 System and Adversary Model 
+
+System Model. We assume the same system model as CHERI [1] and PICASSO [3] and that CHERI’s spatial-safety properties hold for both heap- and stack-allocated objects. We rely on compiler toolchain ( Comp ) and heap allocator ( Alloc )satisfying the following assumptions: 
+
+A1 : Comp is trusted and correctly instruments function pro-logues and epilogues that manage stack-frames. 
+
+A2 : Alloc is part of the trusted runtime. 
+
+A3 : Comp derives capabilities to stack-allocated objects with bounds no wider than the enclosing stack frame. 
+
+A4 : Alloc maintains correct bounds on capabilities it is-sues. 
+
+A5 : Alloc can discern malformed input to free() .
+
+Adversary Model. We assume an adversary ( Adv ) who ma-nipulates program behavior through malicious input. Exploit-ing defects in the victim program, such as faulty input vali-dation, Adv can influence it to i) invoke arbitrary sequences of malloc() and free() calls (or C ++ new and delete ), and ii) trigger arbitrary sequences of function calls and re-turns, thereby controlling the allocation, deallocation, and reuse of stack frames. In particular, Adv can exploit program defects in which a capability to a stack-allocated object es-capes its defining frame—by being returned, stored to heap-or statically-allocated memory, leaked from a retired stack frame through an initialization-safety violation, or passed to a concurrent thread—and is dereferenced after the frame is deallocated (use-after-return, CWE-562 [24]), including after the frame’s memory has been reused by a subsequent call. CHERI’s architectural guarantees prevent Adv from forg-ing capabilities. Adv cannot influence compiler-emitted stack management beyond directing control flow through le-gitimate calls and returns ( A1 ), and can interact with Alloc 
+
+only through malloc() and free() , not by tampering with its data structures, control-data, or code ( A2 ). This is consis-tent with the adversary model of prior work [1, 2, 3]. CHERI capabilities are monotonically nonincreasing; soft-ware can narrow, but never widen, a derived capability’s per-missions and bounds relative to its parent. Consequently, A3 
+
+implies that stack-directed capabilities lie within their (once-) enclosing frames, and A4 the analogous property for heap-directed capabilities and their (once) heap-allocated objects. 
+
+A5 ensures that Alloc rejects capabilities not pointing to the start of a legitimate heap allocation; MRS rejects invalid ca-pabilities and capabilities to non-heap-allocated data. Uninitialized reads of stale stack- or heap-allocated ca-pabilities are in scope. Beyond that, uninitialized reads of memory allocations are out of scope, but can be sys-tematically prevented by previously proposed CHERI exten-sions [12] or compiler-based uninitialized memory sanitiza-tion [25, 26, 27]. Our completeness claim is consequently one of escape routes , not of allocation granularity . Provenance is tracked per allocation on the heap and per function activation on the stack; within that granularity, protection is determinis-tic and independent of how references escape: whether re-turned in a register, stored into heap- or statically-allocated 3memory, recovered from reused stack memory, or passed to concurrent threads. We discuss intra-frame lifetime viola-tions in §9. Consistent with prior CHERI implementations on application-class processors, we exclude transient-execution and other micro-architectural attacks and side-channels [28]. We note, however, that similarly to PICASSO [3], FRESCO ’s provenance-validity checks are enforced before instruction commit: loads commit and stores issue only after the check succeeds, so temporal-safety violations never become archi-tecturally visible; only transient covert channels remain out of scope. 
+
+# 4 System Design 
+
+FRESCO achieves G1 by composing two CHERI-based temporal-safety mechanisms: allocation-provenance track-ing for the heap inspired by PICASSO [3] and summarized in §2.2, and stack coloring , our novel counterpart for stack allocations, which extends colored capabilities to track stack-frame provenance . §4.1 presents stack coloring, Color Saver, and color segmentation; §4.2 contrasts FRESCO ’s and PI-CASSO ’s approaches to heap temporal-safety. 
+
+4.1 Stack Coloring 
+
+Figure 1 illustrates stack coloring: it turns the csp into a colored capability, enabling stack-frame provenance track-ing, which associates each colored capability with the color (provenance ID) of the frame holding the allocation it points to. On function entry ❶, the csp receives a new color from a finite set, and colored capabilities subsequently derived from it inherit that color ❷. The csp retains its color for the du-ration of the function, so all capabilities to allocations within that frame share one color. For simplicity, we refer to this as the stack frame’s color and depict frames as di ff erently col-ored in Figure 1. Strictly speaking, only colored capabilities 
+
+carry the color through their assigned provenance ID. When the function returns ❸ its stack frame becomes inac-tive, and de-referencing a capability into it would constitute a use-after-return. Stack coloring prevents this by toggling the PVB for the frame’s color to invalid , thereby retracting every dangling pointer whose provenance ties it to the inac-tive frame. Any subsequent dereference through an escaped capability bearing that color traps ( G1 ). 
+
+Frame coloring. Stack coloring assigns the csp a unique color in the instrumented function prologue 1and retires that color in the epilogue. Both are emitted by Comp (§3.2) which alone is entrusted with the colored capability set type instruction ( ccsettype ) that manipulates the csp ’s color. Capabilities derived from the colored csp inherit its object type ( otype ) and hence the frame’s color. Recall from §2.1 and §3.2 that untrusted software, lacking access to ccset-type , cannot alter a capability’s otype . On return, the epi-logue toggles the PVB for the retiring frame’s color, restores the caller’s color to csp , and retires the old color from the assignable set.    
+
+> 1Fresco is a mural technique executed on freshly laid, still-wet lime plas-ter. Analogously, FRESCO ’s stack coloring “paints” the csp in the prologue before the frame’s “plaster sets” and the function body properly begins. Revocation sweep Allocate new stack segment
+
+return entry 1
+
+> CSP CSP CSP CSP CSP
+
+Stack frame inactive Stack frame allocated PVT: 000100 000 …
+
+3Segment colors exhausted? 4Color: 0x01          
+
+> Color: 0x02
+> Color: 0x03
+> Color: 0x04
+> Color: 0xff
+> (a) check if colors available? (b) save prev. color from CSP
+> (c) assign new color to CSP
+> (d) toggle PVB for color in CSP
+> (retracts capabilities to stack frame) (e) restore prev. color to CSP
+> Segment can be Reclaimed?
+
+5       
+
+> 0x04 Cap. to stack frame
+> Capabilities to stack derived from CSP Cap. to stack frame 0x04
+
+2   
+
+> Capabilities derived from CSP 0x04 retracted
+> Epilogue Prologue
+
+1 3
+
+Figure 1: High-level overview of stack coloring. 
+
+4.1.1 Addressing Color Churn. 
+
+In PICASSO , a process’s supply of colors is finite, bounded by the number of otype bits reserved for the provenance ID. For heap allocations this su ffi ces in many workloads [4]. Stack frames, however, are allocated and retired orders of magnitude more frequently than heap objects are allocated and freed. Applying stack coloring on the baseline PICASSO 
+
+design is impractical for any realistic workload. We solve the color churn problem through two complementary mecha-nisms: 1) Color Saver and 2) capability-color segmentation .
+
+Color Saver. Stack coloring prevents a capability derived from a frame from remaining usable after that frame returns. Color Saver preserves this protection while avoiding unneces-sary coloring by answering two questions: 1) Can a capabil-ity pointing into the current stack frame escape and remain usable after the function returns? This happens when the function returns the capability, stores it in a global or heap object, or passes it to a call whose target the analysis can-not resolve. The escape analysis uses the answer to decide whether the function must be colored. 2) Where can a capa-bility left in reused stack memory be recovered? Stack alloca-tion does not erase validity tags, so a capability loaded from a reused tag granule —the capability-aligned, capability-sized unit with which CHERI associates a validity tag—can re-cover a stale capability left there by an earlier use, provided no intervening store has cleared the tag. Because uncolored functions share their caller’s color, such a capability may still bear a live color: its retraction waits on a return of the ances-tor frame the color originates from, not on the frame that left the capability behind. The stale-read analysis therefore deter-mines where the compiler must clear tags before the program can recover stale capabilities. §5 presents the algorithms and their guarantees, §6.2.1 their compiler implementation; the rules appear in Appendix B and C and the Rocq proof in the artifact. 
+
+Capability-color segmentation. Color Saver reduces how many functions draw colors, but cannot bound how many a thread consumes over time: long-running threads still ex-haust any fixed pool, so the color churn problem persists. 4</> 
+
+> Source Code
+
+Clang C/C++ Frontend 
+
+</> 
+
+> LLVM IR
+
+LLVM Optimizer Optimization Passes Color Saver analysis 2
+
+</>  
+
+> Annotated & instr. LLVM IR Stack coloring Instrumentation 6
+> 101001010 101001010 010101001
+> Instr. Object
+> 101001010 101001010 010101001
+> Instr. Binary
+> 101001010 101001010 010101001
+> libfresco CHERI-enabled Linker LLVM CHERI-RISC-V Backend 4789Stale-read analysis & optimization 5Capability -flow facts Initial clear instrumentation 13
+
+Figure 2: FRESCO compiler architecture. Dark grey denotes additions or modifications needed to support stack coloring, while light grey indicates additions common to CHERI-enabled toolchains. White denotes components without significant changes. Capability-color segmentation addresses color churn and G2 :rather than drawing from a single process-wide pool, it di-vides a processes’ virtual memory into distinct color seg-ments , each with its own virtual PVT and hence its own provenance-ID namespace. The upper portion of a colored capability’s address identifies the segment the provenance ID belongs to. Because colors are scoped to their segment’s ad-dress range, colors in one segment can never alias those in another. 
+
+Scaling stack coloring with color segmentation. Stack col-oring dynamically divides the stack into disjoint address-space segments, each associated with its own color names-pace . Frame colors are assigned from a segment’s names-pace until either its colors or memory is exhausted; each exhaustion ends an epoch , dividing the stack into succes-sive epochs during which frames are backed by a particu-lar segment. Stack coloring tracks colors assigned within an epoch using a per-thread counter maintained by the instru-mented prologues, and an epoch stub in a runtime support library ( libfresco ) manages segment transitions. When the counter approaches the reserved range, the prologue invokes the stub ( ❶ in Figure 1); the stub initializes a new stack seg-ment ( ❹ in Figure 1), switches the thread to it, and resets the counter. Each thread can thus sustain colored capabilities across as many epoch switches as necessary, meeting G2 .The number of segments a system supports is bounded only by available memory. As the stack retracts, segments fall out of use; unused segments can be reclaimed and reused once a revocation sweep has invalidated capabilities pointing to them (❺ in Figure 1). 
+
+4.1.2 Compiler pipeline 
+
+Figure 2 shows the compiler architecture supporting stack-coloring instrumentation. The Clang frontend lowers C /C++ 
+
+to LLVM intermediate representation (IR), inserting an ini-tial clear at every variable that may hold a capability ➀. Af-ter the standard optimization pipeline, Color Saver classifies each function’s stack allocations ➁, produces capability-flow facts ➂, and annotates the IR ➃, identifying the functions from which a capability to the stack may escape. Instrumen-tation then proceeds in two steps: the stale-read analysis re-moves initial clears that capability-flow facts prove unneces-sary ➄; and the backend’s stack coloring instrumentation ➅
+
+emits the coloring prologue and epilogue for the functions Color Saver selected. The CHERI-RISC-V backend lowers the instrumented code, and emits instrumented objects ➆,which are linked against libfresco ❽, to produce the in-strumented binary ➈.
+
+4.2 Color-segmented allocator 
+
+Color segmentation also benefits heap temporal-safety en-forcement: a segment-aware MRS and heap allocator can scale beyond 2M simultaneously live allocations and further delay capability revocation sweeps. Allocation and deal-location follow PICASSO ’s: malloc() claims an identifier through the MRS and colors the returned capability with cc-settype ; free() clears the corresponding PVB, detecting double-frees in the process, and releases memory for reuse. A color-segmented allocator associates heap regions with distinct color segments, each with its own PVT and prove-nance ID namespace. This composes with allocators that already partition their address space, since a color-segment boundary can coincide with a partition the allocator already maintains; an allocation’s segment follows from the address the allocator returns, at no additional bookkeeping cost. As on the stack, colors are drawn from a segment’s namespace until either its colors or its memory is exhausted. The alloca-tor uses both conditions to decide where to place new alloca-tions. Three di ff erences distinguish this design from PICASSO ’s. First, identifiers come from per-segment namespaces rather than a process-wide pool, so identifier exhaustion becomes a per-segment rather than a process-wide condition ( G2 ). Spreading allocations across segments rather than one global namespace also makes revocation sweeps correspondingly rarer ( G2 ). Second, identifier bookkeeping uses a flat bitmap allocator (Appendix A.1) in place of PICASSO ’s unr allocator, eliminating the fragmentation-dependent growth that domi-nates PICASSO’s worst-case footprint ( G3 ). Third, heap and stack enforcement coexist on one system: each draws col-ors from disjoint segments, so neither consumes the other’s namespace ( G1 ). 
+
+4.3 FRESCO ’s runtime architecture 
+
+Figure 3 shows FRESCO ’s architecture. Every access through a colored capability in a FRESCO -instrumented application ❶
+
+is subject to a hardware PVB-check ❷, which confirms the ca-pability’s provenance before the access proceeds. The check uses a per-segment PVT ❸. A color segment resolver ❹
+
+translates the PVT-area base address held in the provenance-validity table register (PVTR) ❺, inherited from PICASSO ,into the correct per-segment PVT o ff set, using the address of the capability. The PVT area is reserved from process vir-5Per-segment PVT     
+
+> CheriBSD Kernel
+> Malloc Revocation Shim
+> FRESCO CHERI-RISCV CPU
+> libfresco ID bitmap Allocator
+> 11
+> Stack segment management
+> User mode  Kernel mode FRESCO Instrumented application
+> Heap segment management 97Segmented memory allocator 10
+> Revocation service 12 PVB check 2Color Segment resolver 4
+> Per-segment PVT VM reservation
+> mapped at exec 6Per-segment mmap and PVT allocation
+> 8PVT#1 PVT#2 PVT#3 PVT#4 PVT#N PVTR 5Added or modified for FRESCO Inherited from PICASSO Inherited from CHERI FRESCO-Instrumented application 13…
+> malloc(size)
+> A
+> free(cap)
+> B
+
+Figure 3: Overview of the FRESCO runtime architecture. tual memory (VM) on process start, but physical pages are only mapped to a segment and its PVT once the stack seg-ment management inside libfresco ❼ allocates the seg-ment using a kernel-level facility ❽. For the heap, the MRS’ 
+
+heap segment management ❾ initializes heap color segments and directs the segmented memory allocator ❿ to use them, while the ID bitmap allocator 11 manages per-segment prove-nance ID allocations. The in-kernel revocation service 12 ,also inherited from PICASSO , fully revokes stale capabilities for reclaimable segments reported by the stack ❺ and heap ❿
+
+segment management. §6.3.3 details the adjusted revocation process. 
+
+# 5 Color Saver Analysis 
+
+5.1 Escape Analysis 
+
+The escape analysis traces possible capability flows backward from where a capability could outlive the function: return val-ues, globals, and arguments passed to calls that cannot be re-solved. To do so, it summarizes capability-relevant LLVM instructions and repeatedly propagates possible flows through copies, loads, stores, and calls. A function must be colored if a capability pointing to its frame may escape; otherwise, its coloring prologue and epilogue can be omitted. 
+
+Capability-flow facts. The analysis represents explicit capa-bility flow with three kinds of facts (adopted from [29]): 
+
+Copy (d, s), Load (d, p), Store (p, v),
+
+where d, s, p, v are LLVM values. They state, respectively, that a capability in s may flow to d, that d may receive a capability read through p, and that a capability in v may be written through p. Casts, address calculations, phi nodes, and select instructions preserve capabilities and produce copy facts. Capability loads and stores produce load and store facts. 
+
+Call graph. For direct calls, the analysis connects its actual arguments to formal parameters and its returned values to the call result, allowing capability flows to cross function bound-aries. Otherwise, it uses the call’s summary where available, or falls back to treating the call’s arguments and result as pos-sible escape routes. Globals, the current function’s arguments and returns, inline assembly, and unsupported capability op-erations are handled similarly. 
+
+Propagation. Tracking only escaping LLVM values is insuf-ficient, since a capability may be stored in memory and later recovered through another pointer. The analysis follows both direct and memory flow, using a finite, conservative abstrac-tion that may color a function unnecessarily, but cannot hide a possible escape. Starting from possible escape routes, the solver repeatedly applies the propagation rules until no new flow is found. The finite LLVM input and memory-flow ab-straction ensure termination. A function is then colored if a capability pointing into its frame reaches a possible escape route. Detailed propagation rules are given in Appendix B. 
+
+Guarantee. Assume that extraction records every way a ca-pability can be copied, loaded, stored, passed across a call, or exposed outside the analyzed modules, and that no capability pointing into a new frame exists before that frame is created. Under these assumptions, the solver has no false negatives: if it omits coloring for a function, no capability pointing into that function’s frame can escape. We mechanized this result for the propagation algorithm in Rocq. The proof does not verify the LLVM extraction code nor the optimizations in Ap-pendix B.5; the end-to-end guarantee depends on extraction covering every relevant LLVM construct. Appendix B.4 de-scribes the guarantee; the artifact has the mechanized proof. 
+
+5.2 Stale-Read Analysis 
+
+Stale-read analysis prevents a stale capability left by an earlier use of stack storage from being recovered after that storage is reused: it zeroes the storage of every declared local variable that could hold a capability, then removes those clears that the program’s own stores already render redundant. 
+
+Variables that may hold capabilities. Recall that CHERI holds one validity tag per naturally-aligned, capability-sized granule (16 bytes for 128-bit capabilities), out of band from the data itself (§2.1). The tag is set only by a capability-width store of a tagged value, and cleared by any overlapping non-capability store. Tag-preserving bulk writes, e.g. memcpy() )whose destination is declared as bytes or capability-carrying integer types in the pure-capability application binary inter-face (ABI), can propagate capabilities into opaque storage under Adv influence. Even storage that never receives a ca-pability during its own lifetime may sit on granules that a previous occupant of that frame slot left tagged. Recovery under our adversary model (§3.2) only requires that the gran-ule survive overwriting until an Adv -influenced path issues a capability load from it. To recover a stale capability, Adv 
+
+must cause stack storage to be reused and read as a capabil-ity before any store clears or replaces its tag. Since Adv can neither forge a capability nor widen its bounds, a compiler-generated slot is accessible only if the compiler exposes a ca-pability whose bounds include it. Under the trusted-compiler assumption ( A1 ), every such slot is written before any capa-bility load from it. Storage for a declared local variable, how-ever, can be read before initialization along a path selected by 
+
+Adv , triggering undefined behavior exposing stale capabili-ties. We therefore identify declared local variables that can propagate stale capabilities. 6Stale-read analysis selects every local variable with auto-matic storage duration, excluding parameters and variables of C ++ reference type, whose type is capability-carrying or recursively contains one through an atomic value, array ele-ment, structure or union member, or C ++ base or member. It also selects variables at least one tag granule in size, all variable-length arrays, and integers explicitly cast to a ca-pability type. The size-based cases cover type punning and copies that preserve validity tags. Stale-read instrumentation aligns and zeroes the storage of selected variables at their def-inition, before any initialization or use; this zeroing is the ini-tial clear .
+
+Removing unnecessary initial clears. A possible read of a tag granule is a capability load overlapping the granule, or a tag-preserving memory copy whose source overlaps it. A 
+
+definite overwrite is a store other than the initial clear that overlaps the granule; a non-capability store clears the old tag and a capability store replaces it. If the analysis cannot re-solve an operation’s target, o ff set, size, or e ff ect, it records a possible read for every tag granule of the variable and no definite overwrite. An initial clear is removed if every path from the variable’s definition to a possible read contains a definite overwrite before the read; otherwise, the clear is re-tained. Appendix C describes the details. 
+
+Guarantee. Assume that stale-read analysis 1) selects every declared local from whose storage a stale capability can be recovered; 2) every operation that can recover or propagate one is classified as a possible read; 3) the control-flow model includes every executable path; and 4) a definite overwrite is recorded only for a store guaranteed to clear or replace the tag. Under these assumptions, the analysis is sound: every stale capability read is preceded by either a retained initial clear or definite overwrite, so Adv cannot recover stale capa-bilities by the program reading reused storage before writing it. 
+
+# 6 FRESCO Implementation 
+
+We implement FRESCO for CHERI-RISC-V in the QEMU full-system emulator and CHERI-Toooba field-programmable gate array (FPGA) (§6.1). We also extend the CHERI-enabled Clang /LLVM compiler with stack coloring and Color Saver (§6.2), and add the libfresco runtime, segment-aware MRS, allocator, and revocation to CheriBSD (§6.3). 
+
+6.1 FRESCO CHERI RISC-V Hardware 
+
+Per-segment PVTs. FRESCO extends PICASSO with address-based color segmentation, allowing the same color value in di ff erent memory segments without aliasing in the PVT. Re-call from §4.1.1 that each segment has its own virtual PVT placed in a contiguous PVT reservation area beginning at a base address B configured to the PVTR control and status register (CSR). FRESCO describes the location of a segment’s PVT to the hardware through three CSRs: the table base B,the segment shift s (so a segment spans 2 s bytes), and the seg-ment count N (a power of two). A capability with address a
+
+and otype t then addresses bit t mod 8 of the PVT byte 
+
+B +  (a ≫ s) & ( N − 1) | {z }
+
+> segment
+
+Z + ⌊t/8⌋,
+
+where Z is the per-segment slice size. The three CSRs— B, s,and N—are programmed per process at startup from parame-ters embedded into the executable and linkable format (ELF), or from built-in defaults, so the segment size and count are configurable rather than fixed in hardware; only Z, tied to the 
+
+otype width, is constant. The address selects the segment and the otype the bit, so the same otype in two segments resolves to di ff erent PVT bytes—a per-segment namespace with no software involvement. Heap and stack share this PVT addressing scheme, so neither needs to know which kind of segment a capability belongs to. 
+
+Retracting capabilities. Retracting colored capabilities means invalidating their PVB. In PICASSO this is a read-modify-write of a single bit that races with any other core doing the same to a neighboring bit in the same word. In soft-ware it costs a load, an or , a store, and a fence on every deal-location (§2.2). FRESCO adds a csealtype instruction that sets a PVT bit atomically in a segment’s PVT, decoded and issued through the memory pipeline like other atomic opera-tions, which removes both the fence and the window in which a concurrent retire could be lost. Additionally, csealtype 
+
+selectively invalidates the cached PVB of the PVT-bu ff er, avoiding the need to flush the entire bu ff er using a fence. 
+
+csealtype takes the capability whose color is being retired as operand and uses the address-derived indexing described above; software need not compute a table o ff set. 
+
+6.2 FRESCO Clang /LLVM Compiler 
+
+6.2.1 Color Saver Analysis 
+
+Color Saver runs at a late LLVM IR boundary: after the op-timization pipeline but before instruction selection. This IR still carries capability types, call attributes, and stack-object lifetime markers, yet already reflects the optimizer’s transfor-mations. The escape classifier marks the functions the back-end must emit stack-coloring instrumentation for; the stale-read analysis rewrites the IR with validity tag clears. 
+
+Whole-program escape classification. Separate compila-tion normally hides definitions in other translation units from an LLVM module pass, forcing calls to them to be treated as opaque. We therefore add an analysis compilation that reduces every optimized module in the analyzed build to the capability-flow facts of §5.1 and solves over the com-bined corpus. The solver matches compatible declarations and definitions across module boundaries and computes call summaries and escape classifications in a single global fixed point, so a caller can use a precise callee summary regardless of which translation unit the callee came from. Missing, am-biguous, and interposable targets remain conservatively mod-eled as external calls. We then recompile with the result-ing per-function classifications attached to the corresponding LLVM functions, before backend instrumentation. 
+
+Stale-read clearing. We modified the Clang frontend to emit an llvm.cheri.capability.auto.init intrinsic at each eligible stack object definition. The stale-read analysis, im-plemented alongside the escape analysis, then removes un-necessary clears. Each remaining intrinsic is lowered to an 7Instrumented colored call                          
+
+> Function entry
+> Phase A
+> Frame Allocation
+> Phase B
+> Function body Epilogue
+> execution order
+> ❶Read the caller’s color
+> ℓ
+> ❷Increment kto k+1
+> ❸Check whether k<K
+> ❹Recolor csp with k+1
+> ❺Save the caller’s color ℓ
+> ❻Restore ℓ
+> ❼Retract color k+1
+
+Figure 4: Prologue and epilogue of an instrumented col-ored function. Phase A executes before frame allocation and performs the operations that must precede a possible epoch switch. Phase B records the caller’s color after the frame and callee-save area have been established. k = segment’s epoch counter; K = threshold; ℓ = caller’s provenance ID. LLVM memory-set operation that zeroes its range. Instruc-tion selection expands this operation into a CHERI target’s zeroing sequence which clears capability tags. 
+
+6.2.2 Stack Coloring Instrumentation 
+
+The -fcheristackcolor flag enables stack coloring in-strumentation; FRESCO applies it only to functions the es-cape analysis (§5.1) selects. Each colored frame receives a fresh color from a monotonically increasing counter k held in thread local storage (TLS). FRESCO splits the prologue around frame allocation into Phase A and Phase B (Figure 4). Phase A precedes frame allocation: it reads the caller’s color out of csp ❶, increments the color counter to k + 1 ❷, and compares the result against the epoch threshold ( K) ❸. If the threshold has not been reached, Phase A recolors csp ❹
+
+and continues on the common path; otherwise, it invokes the 
+
+libfresco epoch stub (§6.3.2) which switches the thread stack to a new segment and retries coloring. This ordering ensures the frame is not written to before a segment switch. Phase B follows frame allocation and callee-save spills, and performs stores that require a frame. It writes the caller’s color in a reserved slot ❺, which remains until the epilogue restores it ❻.
+
+ABI compatibility. A segment switch moves csp to a dif-ferent address range, which a ff ects both stack-passed argu-ments and the address used by va start to support functions with variadic arguments. The prologue and epoch stub pre-serve the ABI transparently to the instrumented function. The RISC-V ABI (§2.1) passes eight integer arguments in a0 –
+
+a7 and places additional arguments in the caller’s outgoing-argument area. A callee accesses these arguments at posi-tive o ff sets from its entry csp . Functions with more than eight arguments, and variadic functions, therefore read part of their parameter list through csp , and after a segment switch those o ff sets would refer to the new segment rather than to the original argument area. Before invoking the epoch stub, Phase A records the size of the argument area into TLS; when the stub switches segments, it reserves an equivalent area be-low the new segment’s top and copies the arguments across. The destination derives from the new segment’s capability, so CHERI’s bound checks prevent the copy from exceeding the             
+
+> Seg 1
+> depth 0
+> Seg 2
+> depth 1
+> Seg 3
+> depth 2
+> Seg 4
+> depth 3· · ·
+> ❶Stack Segment Switch :depth +1, color new csp
+> ❷Return trampoline :depth −1, restore prior segment
+
+Figure 5: Stack segment nesting. Each time k reaches its pre-set threshold, libfresco moves the thread onto a fresh segment pushed onto the segment stack; returns emptying a segment pop it. Segments are allocated lazily with an own k.segment. The work is proportional to the argument-area size and is paid only on the overflow path. For variadic functions, Phase A additionally saves the incoming csp in the thread-local context; because the stub clobbers caller-saved registers, Phase B reloads this value once the frame exists and makes it available to va start . Its location is fixed by an agreement between the backend and libfresco .
+
+6.3 FRESCO CheriBSD 
+
+6.3.1 Kernel segment management 
+
+At execve() the kernel reserves a contiguous virtual mem-ory region, the segment pool , together with the corresponding PVT reservation area, sizing both from the ELF-embedded segment count and segment size, or from built-in defaults when those parameters are absent. The same parameters program the three segment-addressing CSRs of §6.1, so hardware and runtime agree on a process’s segment layout. Both regions are passed to userspace as bounded capabilities. Physical pages back a segment and its PVT slice only when that segment is first mapped through the kernel’s segment-allocation facility, so unused segments cost virtual address space rather than memory. The in-kernel revocation service sweeps asynchronously, fully revoking capabilities into the segments that the stack and heap segment managers report as reclaimable. 
+
+6.3.2 Stack segment management in libfresco runtime 
+
+Stack coloring eventually exhausts the 2 21 color values en-coded in the otype (§4.1). FRESCO therefore partitions the stack into disjoint color segments (Figure 5), each with an in-dependent color namespace. When a segment’s color counter reaches its threshold K (Phase A in Figure 4), the epoch stub supplied by libfresco , the runtime support library intro-duced in §4.3, switches the stack to a fresh segment by saving the current csp , return address, and counter; and installing a return trampoline as the triggering function’s return address. When the function which triggered a segment switch returns, the trampoline saves the retiring segment’s color counter to its TLS entry, restores the caller’s csp , return address, and color counter, decrements depth , and returns. 
+
+Epoch stack. FRESCO records the current segment nesting depth and, for each active segment, stores the previous csp ,return address, and color counter in a TLS descriptor. These descriptors form a dynamically grown doubly-linked list. On return, the libfresco runtime uses the descriptor to restore 8the previous segment. If a segment exhausts its color space, 
+
+libfresco allocates a new segment for that nesting level and resets its counter. Thus, neither nesting depth nor the color space of an individual segment imposes a fixed bound. 
+
+Multi-threading. libfresco interposes on thread creation: it allocates a segment from the FRESCO segment pool and in-stalls it as the new thread’s stack, so that every thread colors frames against its own PVT. The interposer also wraps the start routine so that the thread begins with the epoch counter 
+
+k = 0, the same baseline the main thread receives at process start. libfresco registers a thread destructor the first time a thread allocates a segment; at thread exit it walks the seg-ment list and returns each segment to the shared pool (§6.3.3). 
+
+libfresco applies the same principle at fork : the child in-herits the parent’s counter and PVT copy-on-write, so a child handler leaves k = K and lets the ordinary overflow path give it a fresh segment with a clean PVT. 
+
+Non-local control flow. Stack unwinding and longjmp re-sume execution in an outer frame without running the epi-logue of the function they leave. libfresco therefore ex-poses a recovery routine that takes the stack address of the target frame, retracts the colors of every frame deeper than the target, and restores the latest k. C ++ exception handling invokes the recovery routine from the personality routine be-fore each frame runs its cleanup landing pad since destructors executed during an unwind are themselves colored calls, and again on entry to the catch handler. longjmp needs a single invocation, using the saved csp in the setjmp jump bu ff er. 
+
+6.3.3 Heap segment management in MRS and allocator 
+
+The MRS activates segments from a pool reserved at initial-ization, so activation requires no system call or memory allo-cation. Colors and memory are tracked separately. On mal-loc() , the MRS checks whether the current segment’s colors are nearing exhaustion, and if so, activates a new segment or queues revocation. When the underlying allocator can-not serve a request, the MRS attempts to switch to a segment with memory available. In either case MRS prefers a reusable segment—one whose colors revocation has reclaimed, or one in which the underlying allocator has since freed memory— and activates a fresh one only if none is found. The allocator then reserves memory from the selected seg-ment, or non-segmented memory via mmap() for allocations exceeding the segment size. FRESCO identifies the segment containing the returned address and assigns a color from that segment’s bitmap; addresses in non-segmented memory draw from a global bitmap and PVT. Every allocation thus receives a unique color regardless of size, and the segments need not accommodate arbitrarily large objects. That fallback names-pace is finite, but with the default 4 MB segment size an ap-plication would need more than ≈ 8 TiB of live oversized allocations to exhaust it, and larger segments can be config-ured. On free() , FRESCO identifies the segment and sets the corresponding PVB—or the PVB in the global PVT for non-segmented addresses—retracting the capability. The underly-ing allocator then releases the memory for immediate reuse. Figures 9a and 9b in Appendix D illustrate both flows. 
+
+Triggering revocation. FRESCO triggers revocation proac-tively when the free segment pool falls below a threshold, Table 1: Area costs of FRESCO and PICASSO on the CHERI-Toooba for VCU118 @ 25 MHz compared to CHERI-Toooba.                        
+
+> CHERI-Toooba PICASSO FRESCO
+> value value ∆(%) value ∆(%)
+> LUTs 688096 720347 32251( +4.69) 722488 34392( +5.00) Memory 20113 21611 1498( +7.65) 21611 1498( +7.65) Registers 419300 445129 25829( +6.16) 446164 26864( +6.40)
+
+or when no segment can be reused or freshly activated. The sweep runs asynchronously (§6.3.1), and each malloc() 
+
+polls for its completion so colors are reclaimed as soon as the kernel sweep finishes. As in PICASSO , reclamation snapshots the PVT, clears the corresponding bits from the live PVT, and returns the snapshotted colors back to the ID allocator; in 
+
+FRESCO , this procedure is applied per segment. 
+
+Color density and segment utilization. A segment retires when it exhausts either its memory or its colors, and the two are consumed by di ff erent quantities: memory tracks the live heap footprint; colors, the cumulative allocation count, since freed memory returns to the allocator immediately but its color only at the next sweep. Workloads of small, short-lived allocations therefore churn colors independently of their working-set size and can exhaust a segment’s colors while much of its memory remains recyclable. Such a segment re-tires early: its memory sits idle until a sweep reclaims the colors, its 512 KiB of metadata is amortized over less use-ful memory, and the pool drains faster, triggering revocation more often. Because the per-segment colors and metadata are fixed, segment size governs this balance: larger segments amortize metadata over more memory but waste more of it when colors run out first; smaller ones track color-hungry workloads more closely at the cost of more segments and more aggregate metadata. 
+
+Jemalloc integration. Our prototype builds on jemalloc [30] which does not partition its address space into fixed regions. 
+
+FRESCO binds each segment to a dedicated jemalloc arena and modifies the arena’s extent allocation to draw from the segment’s address range: it first attempts to retrieve mem-ory from the segment’s pre-allocated region via an atomic bump pointer, falling back to a mmap() path for allocations exceeding the segment size. Only this slow path changes. The fast path uses tcache and size-class pools, continuing to recycle memory within the segment unchanged, preserving jemalloc’s cache behavior. A segment switch therefore need not flush the tcache: when the tcache serves recycled memory from a previous segment, the address-based lookup identifies the segment and assigns a color from its namespace. Only when those colors are fully exhausted is the allocation re-tried on the current segment. Retries, however, can thrash the cache: in the worst case every cached entry belongs to an exhausted segment, and each must be returned to its arena be-fore a fresh allocation is requested, draining tcache one entry at a time. 
+
+# 7 Evaluation 
+
+We evaluate FRESCO ’s security, performance, and hard-ware area cost using the BESSPIN-GFE evaluation plat-9form. We replace the standard CHERI-Toooba core with our 
+
+FRESCO CHERI-Toooba, an extension of the CHERI-RISC-V Toooba FPGA softcore (RV64ACDFIMSUxCHERI) built on the open-source Bluespec RISC-V 64-bit Toooba core. We synthesize the system-on-chip (SoC) at 25MHz (BESSPIN-GFE default) for the Xilinx Virtex UltraScale + VCU118 FPGA. We conduct the security evaluation (§7.1) both on the FPGA platform and a functionally equivalent QEMUsystem-CHERI128 full-system emulator. We bound FRESCO at 2048 4-MiB segments. We answer the following research ques-tions: 
+
+RQ1 : Can FRESCO detect use-after-return and use-after-free? 
+
+RQ2 : How does Color Saver impact color churn? 
+
+RQ3 : What is FRESCO ’s hardware cost and performance? 
+
+RQ4 : What is FRESCO ’s run-time and memory overhead? 
+
+7.1 Security Evaluation 
+
+To answer RQ1 , we evaluate FRESCO on the Juliet Test Suite 1.3, using the CWE-415 (double free), CWE-416 (use af-ter free), and CWE-562 (return of stack variable address). Across 1,214 vulnerable (“bad”) and patched (“good”) test cases, FRESCO detects all bad cases with zero false posi-tives .We further evaluate FRESCO against real-world CVEs, GitHub issues, and OSS-Fuzz reports. On the heap, FRESCO 
+
+prevents exploitation of BZip2 (CVE-2016-3189), nasm (CVE-2017-10686, CVE-2019-8343), libzip (CVE-2019-17582), NGINX (CVE-2020-24346), LibreDWG (CVE-2022-35164), Lua (CVE-2019-6706), mjs (issues 73 and 78), and yasm (issue 91), reproduced from the test suites in [31, 32]. On the stack, FRESCO detects use-after-return in nasm (CVE-2020-21686) [33], mjs (issue 301) [34], and libucl (OSS-Fuzz #42500636) [35]. We also evaluate the proof-of-concept (PoC) from Microsoft’s analysis of the CHERI ISA [27], a complete exploit chain against JavaScriptCore (JSC) exploiting a dangling stack pointer, and confirm that 
+
+FRESCO detects the access to the retired stack frame. None of these use-after-returns are discovered by the compiler (§8), but FRESCO detects them in all the reproduced cases. Across all experiments, FRESCO demonstrates complete coverage of the evaluated temporal-safety violations across heap and stack . These results support the case that FRESCO ad-dresses concerns of memory-safety completeness (§9). 
+
+7.2 Color Saver Analysis 
+
+To answer RQ2 , we compare Color Saver against full stack coloring on SPEC CPU2006 INT under QEMU. We also show that FRESCO completes omnetpp under the SPEC ref 
+
+workload, which exceeds two million live colored alloca-tions, unachievable for PICASSO alone [4]. Table 2 reports, per benchmark: escape-analysis classi-fication (Safe /Unsafe), stack segments consumed, split be-tween calls served by the fast inline path and those taking the slow end-of-epoch path, maximum call-stack depth, and completed revocation sweeps under the default configuration. tps p50 p90 p99     
+
+> 010 20 30 40
+> Overhead vs Baseline (%)
+> +23 +16 +17
+> +305
+> +6 +7 +7 +6 +9 +10 +10 +10 +9 +11 +10 +10 +13 +16 +15 +14
+> Cornucopia PICASSO FRESCO heap FRESCO heap+stack FRESCO complete
+
+Figure 6: PostgreSQL pgbench latency percentiles and TPS. 
+
+Color Saver reduces segments needed by an order of mag-nitude. It also keeps instrumentation compact: full color-ing grows SPEC CPU2006 binaries by 26.5%, Color Saver by 1.4%, and the complete configuration including stale-read clearing by 2.0% (Table 4, Appendix E). 
+
+7.3 Performance Evaluation 
+
+Impact on baseline CHERI-Toooba. To answer RQ3 , we analyze FRESCO ’s impact on CHERI-Toooba processor logic, energy, and memory. We synthesize FRESCO CHERI-Toooba for the VCU118 FPGA. Table 1 shows power and resource utilization reported by Xilinx Vivado 2019.1. The overheads over the unmodified CHERI-Toooba are moderate: ≈5% in logic, ≈6.40% in registers, ≈8% in memory. FRESCO incurs minimal hardware-cost compared to PICASSO .
+
+Microbenchmarks. To isolate the cost of stack coloring, we color every function frame in MiBench [36] using a freestanding version of libfresco running baremetal on a cycle-accurate Bluesim model of the FRESCO softcore. Full coloring adds a 12.9% geometric-mean cycle overhead or 7.0% g.m. excluding the limits microbenchmark, an out-lier with 127.7% overhead representing an extreme worst-case of function calls with almost no computation (Table 3 in Appendix E). Each colored call costs 15–25 cycles. Bench-marks whose hot loop is a function call pay the most— 
+
+bitcount makes 67501 colored calls through function point-ers to single-expression functions for 37.7% overhead; lim-its reaches 127.7%—while those looping inside a single frame show overheads below measurement noise ( dijkstra ,
+
+sha ). 
+
+SPEC INT 2006. To answer RQ4 , we evaluate FRESCO 
+
+on the PICASSO artifact’s setup [37]: the subset of SPEC CPU2006 INT with the train input set that runs unmod-ified under baseline CHERI on the VCU118 FPGA. Fig-ure 7 reports normalized cycle and memory overheads for the CheriBSD allocator on an unmodified CHERI-Toooba core (Cornucopia), for PICASSO with its original allocator and our bitmap allocator (§A.1); and for FRESCO in three configura-tions: segmented heap only ( heap ), segmented heap and stack coloring ( heap +stack ), and heap +stack with stale-read clear-ing ( complete ). All benchmarks are compiled with optimiza-tion level -O3 . On omnetpp, the original PICASSO alloca-tor incurs a 38% overhead; our bitmap allocator reduces this to 15%, and the segmented allocator to 11% with no revo-cation. The stack +heap and complete variants add nothing further, despite 2 stack segments and 9 × 10 5 slow-path col-ored calls. The residual cost is not revocation but segment retirement: omnetpp exhausts its segments’ colors and takes the retry-allocation path in jemalloc more than 3,000 times, 10 Table 2: Color Saver (CS) vs. Full coloring (Full): Stack and Heap segment and revocation statistics (SPEC INT2006). Stack segments Fast path calls Slow path calls Max depth Revocations Benchmark Safe / Unsafe Full CS Full CS Full CS Full CS Full CS # Allocations Heap segments xalancbmk 15287 / 1245 6460 460 1.35e10 9.52e8 8.38e6 2.83e6 8 6 4 0 1.06e6 114 omnetpp 2085 / 111 3470 2 6.86e9 3.01e6 4.03e8 9.84e5 3 1 2 0 1.30e8 63 omnetpp (ref) 2085 / 111 7740 10 1.54e10 9.77e6 8.31e8 7.29e6 3 2 4 3 2.67e8 95 h264ref 504 / 13 2820 1 5.60e9 4 3.00e8 0 4 0 1 0 3.83e4 10 sjeng 111 / 19 2170 88 4.53e9 1.77e8 7.66e5 7.22e3 10 6 1 0 5 2bzip2 59 / 4 239 3 3.74e8 18 1.16e8 0 3 0 0 0 87 4gobmk 2402 / 71 1530 8 3.16e9 1.68e5 5.03e5 0 8 0 0 0 1.21e5 9hmmer 455 / 21 40 1 8.09e7 6 5.17e5 0 2 0 0 0 1.70e5 3libquantum 95 / 0 5 1 7.01e6 0 4.91e4 0 2 0 0 0 108 2since its caches keep serving memory from retired segments (§6.3.3). xalancbmk performs roughly 460 stack-segment switches across millions of colored calls, yet stays near 13%, indicating that stack coloring is inexpensive on both the fast and slow paths. Overall, FRESCO incurs ≈ 4% geometric-mean run-time overhead, below both Cornucopia ( ≈ 11%) and PICASSO (≈ 5%) despite covering both stack and heap. Memory overhead is ≈ 18% g.m. (cf. PICASSO ’s ≈ 8%) but the heap-only configuration is only 2% in PICASSO ’s fa-vor. In SPEC, FRESCO closes the stack use-after-return gap with no aggregate run-time cost relative to PICASSO .We also evaluate FRESCO on SQLite 3.22.0 [38], Post-greSQL [39, 40] and gRPC 1.54.2 QPS [41]. The PI-CASSO artifact builds the benchmarks using cheribuild 
+
+defaults [42]. We reproduce that setup for comparability to prior work. 
+
+SQLite. SQLite’s speedtest1 benchmark exercises di ff erent database operations (create, insert, reorder, delete, etc.). Ta-ble 5 lists the phases and Figure 11 the per-phase results, both in Appendix E. Overall, FRESCO (complete ) incurs a run-time overhead of ≈ 10% compared to PICASSO ’s ≈ 8% and Cornu-copia’s ≈ 11%, and a memory overhead of ≈ 90%, of which 
+
+≈ 71% relates to the heap; just below Cornucopia’s 99%. 
+
+PostgreSQL pgbench . We run PostgreSQL server on CHERI-Toooba with pgbench on a separate host connected over the local network. We configure a scale factor of 10 and execute 10 3 transactions with one client. We disable fsync, synchronous commit, full page writes, statistics collection, and parallel workers. Figure 6 shows Cornucopia’s p99 la-tency rising by over 300%, a consequence of its revocation sweep in a single-core environment. FRESCO (complete ) de-grades transactions per second (TPS) by 13.8%, compared to 
+
+PICASSO ’s 6.2%, and Cornucopia’s 23.1%: a moderate re-duction, but free of Cornucopia’s latency peaks at p99. 
+
+gRPC QPS. The gRPC [41] server runs on the FPGA, and ten clients run on a separate host. Transport security is dis-abled, each client and server is a single synchronous pro-cess, and one channel per client with eight outstanding mes-sages. The clients send 0-byte requests and await responses while recording throughput and latency percentiles. Each run lasts 120 seconds with a 15-second warmup, and we report the median of three runs per configuration. Figure 10 in Appendix E shows the latency distribution. FRESCO (com-plete ) costs 16.7% in Queries Per Second (QPS) against Cor-nucopia’s 15.6% and PICASSO ’s 2.9%. The tails separate the designs: at p99, FRESCO adds 23% and PICASSO 5.2%, while Cornucopia’s latency rises 3 .7× under revocation. In bzip2 gobmk hmmer sjeng libquantum h264ref omnetpp xalancbmk geomean 11.25 1.5 23
+
+> Overhead Factor (Cycles)
+> 0.98x 0.98x 0.98x 1.00x 1.00x 1.01x 2.46x 1.00x
+> 1.11x
+> 1.90x
+> 1.08x
+> 1.00x 1.00x 1.00x 1.04x 1.01x 1.01x 1.38x 1.02x
+> 1.05x
+> 1.15x 1.00x 1.00x 1.00x 1.05x 1.09x 1.00x 1.11x 1.04x
+> 1.03x
+> 0.97x 1.01x 1.00x 1.05x 1.01x 0.99x 1.11x 1.13x
+> 1.03x
+> 1.00x 1.04x 1.00x 1.05x 1.00x 0.99x 1.11x 1.13x
+> 1.04x
+> Baseline (1.0x) Cornucopia Cornucopia 2-core PICASSO PICASSO (bitmap) FRESCO heap FRESCO heap + stack FRESCO complete
+
+(a) Normalized CPU cycles. bzip2 gobmk hmmer sjeng libquantum h264ref omnetpp xalancbmk geomean 11.25 1.5 23
+
+> Overhead Factor (Max RSS)
+> 1.17x 1.37x 1.11x 1.00x 1.00x 2.30x 2.04x 1.20x
+> 1.34x
+> 1.00x 1.00x 1.02x 1.00x 1.01x 1.00x 1.80x 1.00x
+> 1.08x
+> 1.01x 0.97x 1.00x 1.04x 1.00x 1.09x 1.18x 1.61x 1.02x
+> 1.10x
+> 0.98x 1.01x 1.04x 1.26x 1.03x 1.20x 1.63x 1.32x
+> 1.17x
+> 0.98x 1.01x 1.09x 1.26x 1.09x 1.20x 1.63x 1.32x
+> 1.18x
+> Baseline (1.0x) Cornucopia PICASSO PICASSO (bitmap) FRESCO heap FRESCO heap + stack FRESCO complete
+
+(b) Normalized memory overhead measured as maximum RSS. 
+
+Figure 7: SPEC CPU2006 INT results directly comparable configurations, FRESCO (heap ) trails the best-performing PICASSO by 4.7% to 2.9%. Across all three workloads, the total cost of FRESCO ’s complete coverage stays below or comparable to Cornu-copia, currently deployed in CheriBSD, which covers only the heap. FRESCO ’s complete temporal safety therefore costs no more, in aggregate, than today’s partial enforce-ment. 
+
+# 8 Related Work 
+
+Stack Temporal safety has been treated as easier to se-cure [43], far rarer than heap-based use-after-free [44], and, per Lee et al., “unlikely to be exploitable” [16]; a decade of work has accordingly confined run-time mitigation to the heap [16, 44, 43, 1, 2]. Medium- and high-severity CVEs against stack-allocated state nonetheless continue to be dis-closed [17, 18, 19]. 
+
+Compiler-based defenses. Clang’s -Wreturn-stack-address [45] and GCC’s -Wreturn-local-addr [46] re-ject only the unconditional error of returning a stack reference directly from its allocating function; references that escape indirectly, through heap or statically allocated memory, evade 11 them. Dynamic sanitizers close part of this gap by tracking pointer propagation at run time [43, 5, 6], but their per-store bookkeeping precludes production deployment. FRESCO ’s enforcement is instead architectural: escape analysis only re-moves instrumentation the hardware provably does not need. Clang’s -ftrivial-auto-var-init prevents stale reads of capabilities, but writes every byte of every local it applies to; Color Saver’s stale-read analysis gives the same protection against stale capabilities with fewer stores (§5.2), but leaves unrelated uninitialized non-capability reads unmasked. 
+
+Embedded CHERI CPUs. CHERIoT [47] adapts the CHERI ISA to resource-constrained embedded CPUs and lets software derive capabilities storable only to stack memory, so stack references cannot reach the heap or a global. A stack pointer can then outlive its allocation only by being returned in a register or stored through a pointer to a higher frame. The restriction is non-conformant with the C standard, and how much existing code it accommodates is unclear. FRESCO tar-gets CHERI application CPUs and leaves stack capabilities free to escape while their frame is live, retaining (CHERI) C/C++ compatibility. CheriOS’s slinky stack [29] builds on SafeStack [48], placing non-escaping locals on a contigu-ous safe stack and potentially escaping ones on a segmented, monotonically advancing unsafe stack. Because the unsafe stack pointer never decrements on return, expired memory is not immediately reallocated: capability bounds keep active functions out of expired frames, and an exhausted segment is quarantined and swept before its physical memory is recy-cled. 
+
+CHERI composed with memory versioning. Filardo [23], partially specified in CHERI ISAv9 [49, Appendix C.5] stamps each allocation and its pointers with a matching ver-sion and re-versions the memory on free, so stale capabilities cease to match, closing the reallocation gap without a quar-antining. Versions are held in memory tags whose width is constrained (Arm Memory Tagging Extension exposes 4-bit tags, or 16 versions), so versions must be recycled, and col-lisions between live and stale pointers degrade the guarantee from deterministic to probabilistic. Exhaustion falls back to quarantine and Cornucopia-style sweeping, reintroducing the cost versioning was meant to avoid, and the composed design has not been implemented. These shortcomings motivate en-coding provenance in the capability itself [3]. 
+
+CHERI-D. Concurrent to our work, CHERI-D [4] likewise extends CHERI with an architecturally-tracked provenance ID for immediate reuse of freed heap memory. The designs di ff er in where the metadata lives and how each lifts PI-CASSO ’s ID ceiling. CHERI-D co-locates an 8-bit ID with the object data, inline in its cache line or in a per-page ID table, and checks it against the capability’s ID. A slot thus can be reallocated 254 times before it is quarantined, trading 
+
+PICASSO ’s global color ceiling for a per-slot one. CHERI-D supports only allocations smaller than a page, leaving larger objects on the sweeping path, and whether allocation ID in-lining can extend to stack allocations is unclear. FRESCO 
+
+retains PICASSO ’s separately-indexed PVT and removes the process-wide color ceiling through color segmentation, so the usable identifier space scales with the number of live seg-ments rather than with the width of a fixed field, and without a per-object reuse bound. 
+
+# 9 Discussion and Future Work 
+
+On memory-safety completeness. Partial memory safety is not a graceful degradation but a distinct, weaker property whose residual gaps remain individually exploitable. Con-ventional engineering has failed to eliminate memory-safety vulnerabilities because a single error in a multi-million-line codebase can yield total control to Adv ; under this economy of failure, a mechanism that enforces a property for every al-location class but one leaves an intact attack surface rather than a proportionally reduced guarantee. Watson et al. [20] accordingly argue that protection technologies should be clas-sified not by attack class but by their contribution to memory-safety properties such as spatial and temporal safety, and by whether that contribution is complete .Recall from §3.2 that FRESCO ’s completeness claim is one of escape routes , not of allocation granularity. Intra-frame lifetime violations, in which a reference outlives the lexical scope of its referent while the allocating activation remains live (use-after-scope), are not addressed: coloring is assigned per activation, so all allocations within a frame are indistin-guishable by provenance, and, being within the bounds of a live object, such accesses are equally invisible to CHERI’s spatial checks. This is a granularity decision rather than a limitation of stack coloring. Colors can be assigned per scope rather than per frame at the cost of color pressure. How-ever, whereas frame teardown is an architecturally visible event that a prologue /epilogue can instrument, block-lifetime boundaries exist only in the compiler’s IR and have no run-time manifestation unless one is manufactured [50]. 
+
+Relevancy for CHERI standardization. RISC-V Interna-tional’s CHERI Special Interest and Task Groups are driving CHERI-RISC-V toward ratification [51], and commercial sil-icon and softcores are already emerging around the CHERIoT and Codasip ecosystems. The draft defines RVY , a family of base ISAs adding CHERI to 64-bit RISC-V, together with op-tional extensions [52, 53] enabling temporal-safety enforce-ment analogous to Cornucopia Reloaded. An earlier concern that scarce free page table entry (PTE) bits would force a simplified encoding, and with it a revocation state machine slower than CHERI ISAv9’s [3], has not materialized: the draft under review uses five PTE bits, mirroring ISAv9 [9, 4.3.12]. 
+
+FRESCO complements these e ff orts rather than competing with them. Building on colored capabilities, it reduces how 
+
+often revocation must run rather than how the sweep is re-alized, and so composes with 64-bit RISC-V (RV64Y). Its provenance indirection rests on modest ISA-level additions (PVTR, ccsettype , PVB check, segmentation controls), is core-agnostic, and, through color segmentation, removes the dependence on a provenance ID of a fixed width. We proto-type on the CHERI ISAv9 CHERI-Toooba core, the most ma-ture openly available multi-stage application core for CHERI, and expect FRESCO to apply to future large-pipeline CHERI processors; adaptation to RV64Y is left as future work. 12 Acknowledgments 
+
+We thank our colleague at Ericsson: Håkan Englund, for his feedback on this manuscript and the discussions on early de-signs, leading up to this work. This work is supported in part by the Wallenberg Visiting Professor Program, the Natural Sciences and Engineering Research Council of Canada (grant number RGPIN-2026- 04826). 
+
+# References 
+
+[1] N. Wesley Filardo, B. F. Gutstein, J. Woodru ff ,S. Ainsworth, L. Paul-Trifu, B. Davis, H. Xia, E. Tomasz Napierala, A. Richardson, J. Baldwin, D. Chisnall, J. Clarke, K. Gudka, A. Joannou, A. Theodore Markettos, A. Mazzinghi, R. M. Norton, M. Roe, P. Sewell, S. Son, T. M. Jones, S. W. Moore, P. G. Neumann, and R. N. M. Watson, “Cornucopia: Temporal Safety for CHERI Heaps,” in Proceedings of the 41st IEEE Symposium on Security and Privacy , ser. S&P ’20. IEEE, May 2020, pp. 608–625. [Online]. Available: https: 
+
+// ieeexplore.ieee.org /document /9152640 [2] N. W. Filardo, B. F. Gutstein, J. Woodru ff , J. Clarke, P. Rugg, B. Davis, M. Johnston, R. Norton, D. Chisnall, S. W. Moore, P. G. Neumann, and R. N. M. Watson, “Cornucopia Reloaded: Load Barriers for CHERI Heap Temporal Safety,” in Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems , ser. ASPLOS ’24, vol. 2. La Jolla CA USA: ACM, Apr. 2024, pp. 251–268. [Online]. Available: https: // dl.acm.org /doi /10.1145 /3620665.3640416 [3] M. G¨ ulmez, R. Sturm, H. ElAtali, H. Englund, J. Woodru ff , N. Asokan, and T. Nyman, “PI-CASSO: Scaling CHERI Use-After-Free Protection to Millions of Allocations using Colored Capabili-ties,” in Proceedings of the 35th USENIX Security Symposium , ser. USENIX Sec ’26. Baltimore, MD, USA: USENIX Association, Aug. 2026, p. 20. [On-line]. Available: https: // www.usenix.org /conference /
+
+usenixsecurity26 /presentation /guelmez [4] Y. Wang, J. Woodru ff , A. Mazzinghi, P. Rugg, S. W. Stark, A. Joannou, R. N. M. Watson, and S. W. Moore, “CHERI-D: Secure and e ffi cient inline object ID for CHERI temporal memory safety,” Jun. 2026. [Online]. Available: http: // arxiv.org /abs /2606.19055 [5] LLVM Team, “AddressSanitizer,” Feb. 2026. [Online]. Available: https: // releases.llvm.org /22.1.0 /tools /clang /
+
+docs /AddressSanitizer.html#stack-use-after-return-uar [6] GCC Team, “Instrumentation Options: -fsanitize-address-use-after-scope,” Apr. 2026. [Online]. Available: https: // gcc.gnu.org /onlinedocs /gcc-16.1.0 /gcc /Instrumentation-Options.html#index-fsanitize 003daddress [7] H. Herbelin, P.-M. P´ edrot, coqbot, G. Gilbert, M. D´ en` es, letouzey, E. J. G. Arias, M. Sozeau, T. Zimmermann, E. Tassi, J.-C. Filliatre, P. Roux, G. Melquiond, J. Gross, A. Spiwack, barras, P. Boutillier, V. Laporte, J. Fehrle, S. Glondu, Y. Bertot, J. Hugunin, C. Pit-Claudel, A. Caglayan, forestjulien, P. Courtieu, Y. Leray, F. Besson, P. Rousselin, and MSoegtropIMC, “Rocq-prover /rocq: Rocq 9.2.0,” Mar. 2026. [Online]. Available: https: // zenodo.org /records /19256047 [8] CTSRD, “CTSRD-CHERI /Flute,” Nov. 2019. [Online]. Available: https: // github.com /CTSRD-CHERI /Flute [9] R. N. M. Watson, P. G. Neumann, J. Woodru ff , M. Roe, H. Almatary, J. Anderson, J. Baldwin, G. Barnes, D. Chisnall, J. Clarke, B. Davis, L. Eisen, N. W. Filardo, F. A. Fuchs, R. Grisenthwaite, A. Joannou, B. Laurie, A. T. Markettos, S. W. Moore, S. J. Murdoch, K. Nienhuis, R. Norton, A. Richardson, P. Rugg, P. Sewell, S. Son, and H. Xia, “Capability Hardware Enhanced RISC Instructions: CHERI Instruction-Set Architecture (Version 9),” University of Cambridge, 15 JJ Thomson Avenue Cambridge CB3 0FD United Kingdom, Technical Report UCAM-CL-TR-987, Sep. 2023. [Online]. Available: https: // www.cl.cam.ac.uk /
+
+techreports /UCAM-CL-TR-987.html [10] D. Chisnall, B. Davis, K. Gudka, D. Brazdil, A. Joannou, J. Woodru ff , A. T. Markettos, J. E. Maste, R. Norton, S. Son, M. Roe, S. W. Moore, P. G. Neumann, B. Laurie, and R. N. Watson, “CHERI JNI: Sinking the Java Security Model into the C,” in Proceedings of the Twenty-Second International Conference on Architectural Support for Programming Languages and Operating Systems , ser. ASPLOS ’17. New York, NY, USA: Association for Computing Machinery, Apr. 2017, pp. 569–583. [Online]. Available: https: // dl.acm.org /doi /10.1145 /
+
+3037697.3037725 [11] A. L. Georges, A. Gu´ eneau, T. Van Strydonck, A. Timany, A. Trieu, S. Huyghebaert, D. Devriese, and L. Birkedal, “E ffi cient and provable local capa-bility revocation using uninitialized capabilities,” in 
+
+Proceedings of the 48th ACM SIGPLAN Symposium on Principles of Programming Languages , ser. POPL ’21, vol. 5, Jan. 2021, pp. 6:1–6:30. [Online]. Available: https: // dl.acm.org /doi /10.1145 /3434287 [12] M. G¨ ulmez, H. Englund, J. T. M¨ uhlberg, and T. Nyman, “Mon CH ´ ERI: Mitigating Uninitialized Memory Access with Conditional Capabilities,” in 
+
+46th IEEE Symposium on Security and Privacy ,ser. S&P ’15. San Francisco, CA, USA: IEEE Computer Society, Apr. 2025, pp. 829–847. [Online]. Available: https: // www.computer.org /csdl /proceedings-article /sp /2025 /223600a791 /26hiTWeltII [13] F. A. Fuchs, J. Woodru ff , P. Rugg, A. Richardson, J. Clarke, N. W. Filardo, B. Davis, J. Baldwin, P. G. Neumann, S. W. Moore, and R. N. M. Watson, “Architectural Contracts for Safe Speculation,” in Proceedings of the 41st International Conference on Computer Design , ser. ICCD ’23. Washington, 13 DC, USA: IEEE Computer Society, Nov. 2023, pp. 578–586. [Online]. Available: https: // doi.org /10.1109 /
+
+ICCD58817.2023.00093 [14] F. A. Fuchs, J. Woodru ff , P. Rugg, A. Joannou, J. Clarke, J. Baldwin, B. Davis, P. G. Neumann, R. N. M. Watson, and S. W. Moore, “Safe Speculation for CHERI,” in 
+
+Proceedings of the 42nd IEEE International Conference on Computer Design , ser. ICCD ’24. Milan, Italy: IEEE, Nov. 2024, pp. 364–372. [Online]. Available: https: // ieeexplore.ieee.org /document /10818045 [15] H. ElAtali, M. G¨ ulmez, T. Nyman, and N. Asokan, “BLACKOUT: Data-Oblivious Computation with Blinded Capabilities,” in Proceedings of the 2025 ACM SIGSAC Conference on Computer and Com-munications Security , ser. CCS ’25. New York, NY, USA: Association for Computing Machinery, Nov. 2025, pp. 2039–2053. [Online]. Available: https: // dl.acm.org /doi /10.1145 /3719027.3765169 [16] B. Lee, C. Song, Y. Jang, T. Wang, T. Kim, L. Lu, and W. Lee, “Preventing Use-after-free with Dangling Pointers Nullification,” in Pro-ceedings 2015 Network and Distributed System Security Symposium , ser. NDSS ’15. San Diego, CA: Internet Society, 2015. [Online]. Available: https: // www.ndss-symposium.org /ndss2015 /ndss-2015-programme /preventing-use-after-free-dangling-pointers-nullification /
+
+[17] NVD, “CVE-2026-10646,” Jun. 2026. [Online]. Avail-able: https: // nvd.nist.gov /vuln /detail /CVE-2026-10646 [18] ——, “CVE-2026-26399,” Apr. 2026. [Online]. Avail-able: https: // nvd.nist.gov /vuln /detail /cve-2026-26399 [19] ——, “CVE-2026-3591,” Mar. 2026. [Online]. Avail-able: https: // nvd.nist.gov /vuln /detail /CVE-2026-3591 [20] R. N. Watson, J. Baldwin, D. Chisnall, T. Chen, J. Clarke, B. Davis, N. Filardo, B. Gutstein, G. Jenk-inson, B. Laurie, A. Mazzinghi, S. Moore, P. G. Neumann, H. Okhravi, A. Richardson, A. Rebert, P. Sewell, L. Tratt, M. Vijayaraghavan, H. Vin-cent, and K. Witaszczyk, “It Is Time to Standard-ize Principles and Practices for Software Memory Safety,” Communications of the ACM , vol. 68, no. 2, pp. 40–45, Jan. 2025. [Online]. Available: https: // dl.acm.org /doi /10.1145 /3708553 [21] Z. Wang, N. Schiller, H. Li, S. S. Narayana, M. Nasr, N. Carlini, X. Qi, E. Wallace, E. Bursztein, L. Invernizzi, K. Thomas, Y. Shoshitaishvili, W. Guo, J. He, T. Holz, and D. Song, “ExploitGym: Can AI Agents Turn Security Vulnerabilities into Real Attacks?” May 2026. [Online]. Available: http: 
+
+// arxiv.org /abs /2605.11086 [22] ——, “ExploitGym: Can AI Agents Turn Security Vulnerabilities into Real Attacks? |
+
+Max Planck Institute for Security and Privacy,” May 2026. [Online]. Available: https: // www.mpi-sp.org /108048 /ExploitGym Can AI Agents Turn Security Vulnerabilities into Real Attacks [23] N. Filardo, “For discussion: MSR’s CHERI +MTE composition,” Aug. 2024. [Online]. Available: https: 
+
+// github.com /riscv /riscv-cheri /issues /340 [24] MITRE, “CWE-562: Return of Stack Variable Address (4.17),” Feb. 2024. [Online]. Available: https: // cwe. mitre.org /data /definitions /562.html [25] J. Chow, B. Pfa ff , T. Garfinkel, and M. Rosen-blum, “Shredding Your Garbage: Reducing Data Lifetime Through Secure Deallocation,” in Pro-ceedings of the 14th USENIX Security Symposium ,ser. USENIX Security ’15. Baltimore, MD, USA: USENIX Association, Jul. 2005. [Online]. Available: https: // www.usenix.org /conference /14th-usenix-security-symposium /shredding-your-garbage-reducing-data-lifetime-through [26] A. Milburn, H. Bos, and C. Giu ff rida, “SafeInit: Com-prehensive and Practical Mitigation of Uninitialized Read Vulnerabilities,” in Proceedings 2017 Network and Distributed System Security Symposium . San Diego, CA: Internet Society, 2017. [Online]. Available: https: // www.ndss-symposium.org /ndss2017 /ndss-2017-programme /safelnit-comprehensive-and-practical-mitigation-uninitialized-read-vulnerabilities /
+
+[27] N. Joly, S. ElSherei, and S. Amar, “Security Analysis of CHERI ISA,” Microsoft Security Response Center, Tech. Rep., Oct. 2020. [Online]. Available: https: // web.archive.org /web /20260623110840 /https: 
+
+// www.microsoft.com /en-us /msrc /blog /2020 /10 /
+
+security-analysis-of-cheri-isa [28] R. N. M. Watson, G. Barnes, J. Clarke, R. Grisenth-waite, P. Sewell, S. W. Moore, and J. Woodru ff ,“Arm Morello Programme: Architectural secu-rity goals and known limitations,” University of Cambridge, 15 JJ Thomson Avenue Cambridge CB3 0FD United Kingdom, Technical Report UCAM-CL-TR-982, Jul. 2023. [Online]. Avail-able: https: // www.cl.cam.ac.uk /techreports /UCAM-CL-TR-982.pdf [29] L. G. Esswood, “CheriOS: Designing an untrusted single-address-space capability operating system util-ising capability hardware and a minimal hypervisor,” University of Cambridge, 15 JJ Thomson Avenue Cam-bridge CB3 0FD United Kingdom, Technical Report UCAM-CL-TR-961, Sep. 2021. [Online]. Available: https: // doi.org /10.17863 /CAM.74163 [30] J. Evans, “Jemalloc /jemalloc,” GitHub, Apr. 2026. [On-line]. Available: https: // github.com /jemalloc /jemalloc [31] M.-D. Nguyen, S. Bardin, R. Bonichon, R. Groz, and M. Lemerre, “Binary-level Directed Fuzzing for Use-After-Free Vulnerabilities,” in 23rd Interna-tional Symposium on Research in Attacks, Intrusions and Defenses (RAID 2020) , 2020, pp. 47–62. [On-line]. Available: https: // www.usenix.org /conference /
+
+raid2020 /presentation /nguyen 14 [32] J. Ahn, J. Lee, K. Lee, W. Gwak, M. Hwang, and Y. Kwon, “BUDAlloc: Defeating use-after-free bugs by decoupling virtual address management from kernel,” in Proceedings of the 33rd USENIX Security Symposium , ser. USENIX Security ’24. Philadelphia, PA, USA: USENIX Association, Aug. 2024, pp. 181–197. [Online]. Available: https: // www.usenix.org /
+
+conference /usenixsecurity24 /presentation /ahn [33] Suhwan, “3392643 – stack-use-after-scope in expand mmac params at asm /pre-proc.c:4931,” Jan. 2020. [Online]. Avail-able: https: // web.archive.org /web /20250218001414 /
+
+https: // bugzilla.nasm.us /show bug.cgi?id =3392643 [34] Vancir, “Stack-use-after-scope in function mg avprintf (at mjs.c:4697),” Nov. 2024. [Online]. Avail-able: https: // web.archive.org /web /20260825104636 /
+
+https: // github.com /cesanta /mjs /issues /301 [35] OSS Fuzz, “Libucl:ucl add string fuzzer: Stack-use-after-return in ucl include file single [42500636],” Aug. 2021. [Online]. Available: https: // issues.oss-fuzz.com /issues /42500636 [36] M. Guthaus, J. Ringenberg, D. Ernst, T. Austin, T. Mudge, and R. Brown, “MiBench: A free, commer-cially representative embedded benchmark suite,” in 
+
+Proceedings of the Fourth Annual IEEE International Workshop on Workload Characterization. WWC-4 (Cat. No.01EX538) , Dec. 2001, pp. 3–14. [Online]. Available: https: // ieeexplore.ieee.org /document /990739 [37] M. G¨ ulmez, “PICASSO: Scaling CHERI Use-After-Free Protection to Millions of Allocations using Colored Capabilities,” May 2026. [Online]. Available: https: // zenodo.org /records /20353117 [38] “SQLite Home Page.” [Online]. Available: https: 
+
+// sqlite.org /
+
+[39] “PostgreSQL.” [Online]. Available: https: /postgresql. org /
+
+[40] CTSRD, “CTSRD-CHERI /postgres,” Jun. 2019. [On-line]. Available: https: // github.com /CTSRD-CHERI /
+
+postgres [41] C. Tiller, J. Tattermusch, M. D. Roth, V. Pai, Y. Tibrewal, and M. Lumish, “gRPC,” Jun. 2025. [Online]. Available: https: // github.com /grpc /grpc /tree /
+
+v1.54.2 [42] CTSRD, “CTSRD-CHERI /cheribuild,” Capability Hardware Enhanced RISC Instructions, Aug. 2026. [Online]. Available: https: // github.com /CTSRD-CHERI /cheribuild [43] T. H. Y. Dang, P. Maniatis, and D. Wag-ner, “Oscar: A practical page-permissions-based scheme for thwarting dangling pointers,” in Pro-ceedings of the 26th USENIX Conference on Secu-rity Symposium , ser. USENIX Security ’17. USA: USENIX Association, Aug. 2017, pp. 815–832. [On-line]. Available: https: // www.usenix.org /conference /
+
+usenixsecurity17 /technical-sessions /presentation /dang [44] Y. Younan, “FreeSentry: Protecting Against Use-After-Free Vulnerabilities Due to Dangling Pointers,” in Proceedings 2015 Network and Distributed System Security Symposium , ser. NDSS ’15. San Diego, CA: Internet Society, 2015. [Online]. Available: https: // www.ndss-symposium.org /ndss2015 /ndss-2015-programme /freesentry-protecting-against-use-after-free-vulnerabilities-due-dangling-pointers /
+
+[45] LLVM Team, “Diagnostic flags in Clang,” Mar. 2025. [Online]. Avail-able: https: // releases.llvm.org /20.1.0 /tools /clang /docs /
+
+DiagnosticsReference.html#wreturn-stack-address [46] GCC Team, “Options to Request or Suppress Warnings: -Wno-return-local-addr,” Aug. 2025. [Online]. Avail-able: https: // gcc.gnu.org /onlinedocs /gcc-15.2.0 /gcc /
+
+Warning-Options.html#index-Wno-return-local-addr [47] S. Amar, T. Chen, D. Chisnall, F. Domke, N. W. Filardo, K. Liu, R. M. Norton, Y. Tao, R. N. M. Watson, and H. Xia, “CHERIoT: Rethinking security for low-cost embedded systems,” Microsoft, Technical Report MSR-TR-2023-6, Feb. 2023. [Online]. Avail-able: https: // www.microsoft.com /en-us /research /wp-content /uploads /2023 /02 /cheriot-63e11a4f1e629.pdf [48] LLVM Team, “SafeStack,” Feb. 2026. [Online]. Available: https: // releases.llvm.org /22.1.0 /tools /clang /
+
+docs /SafeStack.html [49] R. N. M. Watson, G. Barnes, J. Clarke, R. Grisenth-waite, P. Sewell, S. W. Moore, and J. Woodru ff ,“Arm Morello Programme: Architectural secu-rity goals and known limitations,” University of Cambridge, 15 JJ Thomson Avenue Cambridge CB3 0FD United Kingdom, Technical Report UCAM-CL-TR-982, Jul. 2023. [Online]. Avail-able: https: // www.cl.cam.ac.uk /techreports /UCAM-CL-TR-982.pdf [50] T. Nyman, G. Dessouky, S. Zeitouni, A. Lehikoinen, A. Paverd, N. Asokan, and A.-R. Sadeghi, “HardScope: Hardening Embedded Systems Against Data-Oriented Attacks,” in Proceedings of the 56th Annual Design Automation Conference 2019 . Las Vegas NV USA: ACM, Jun. 2019, pp. 1–6. [Online]. Available: https: // dl.acm.org /doi /10.1145 /3316781.3317836 [51] T. Kurd, “CHERI RISC-V Standardisation-Status,” Cambridge, UK, Mar. 2026. [On-line]. Available: https: // cheri-alliance.org /wp-content /uploads /2026 /04 /D1-3.6-Tariq-Kurd-CHERI-Standardisation-Status-CHERI-Blossoms-2026.pdf [52] T. Aird, H. Almatary, A. A. Garzia, J. Baldwin, P. Buxton, D. Chisnall, J. Clarke, B. Davis, N. W. Filardo, F. A. Fuchs, T. Hutt, A. Joannou, M. Kaiser, T. Kurd, B. Laurie, M. van der Maas, M. Malenko, A. T. Markettos, D. McKay, J. Melling, S. Menefy, S. W. Moore, P. G. Neumann, R. Norton, A. Richardson, M. Roe, P. Rugg, P. Sewell, C. Shaw, R. Tura, R. N. M. Watson, T. Wenmann, J. Woodru ff , and J. Z. Yu, “”Svy” Extension, Version 1.0 for RV64Y (Stable state),” Aug. 15 2025. [Online]. Available: https: // riscv.github.io /riscv-cheri /#section priv cheri vmem [53] ——, “”Svucrg” Extension, Version 1.0 for RV64Y (Stable state),” Aug. 2025. [Online]. Available: https: 
+
+// riscv.github.io /riscv-cheri /#section cheri priv crg ext 
+
+# A PICASSO unr allocator 
+
+The unr allocator is PICASSO ’s adaptation of FreeBSD’s unit-number allocator ( alloc unr ), a facility allocating inte-ger IDs that PICASSO uses to assign and reclaim provenance IDs (colors). It stores the claimed /available state of all IDs in compressed form as a doubly-linked list whose nodes are either runs , which compactly encode consecutive ranges of allocated or free IDs, or bitmaps , which cover fragmented re-gions. Bitmaps are a fixed 512 bits, and they are formed only where they replace at least three runs. To allocate a color, the unr traverses the list until it finds an available ID. While the color space remains unfragmented, a free run is always adjacent to the allocated run, so the allo-cator simply decrements the free run’s length, increments the allocated run’s length, and returns the next sequential ID. If an adjacent node is instead a bitmap, which becomes more likely as color fragmentation increases, the allocator must search for the first free bit, set it, and return the corresponding ID. Reclamation first locates the node holding the ID. In a bitmap, the corresponding bit is cleared; in a run, the run is split into three parts whose middle part is the reclaimed ID, after which a collapse unr function merges neighboring runs and bitmaps to mark the ID available. In both cases, adjacent nodes may be merged or converted between representations to keep the structure compact. FreeBSD’s unr provides no bulk reclamation of IDs. Be-cause PICASSO frees a large number of IDs at each revoca-tion, calling the per-ID free function in a loop would be pro-hibitively ine ffi cient. PICASSO therefore adds a free many -unr() function that rebuilds the internal unr structure from scratch: it allocates a new unr header, iterates through the revoker’s PVT snapshot to determine which IDs remain in use, reconstructs the full unr structure, and then frees the old structure. This solves the bulk free problem, but at a significant cost in memory and run-time. The old and new data structures coexist in memory for the duration of the free many unr() 
+
+call, the rebuild performs a large number of node allocations, and subsequent calls still perform structural maintenance to recompact the result. These costs are inherent to the unr de-sign: freeing a single ID in the middle of a run splits the run into three nodes and forces restructuring, so bulk-freeing IDs scattered across the structure requires either modifying ev-ery a ff ected node individually, or discarding and rebuilding the structure wholesale. The unr allocator’s data structure is therefore ill suited for e ffi cient in-place bulk updates. 
+
+A.1 Bitmap-based provenance ID allocation. 
+
+Scaling the color space through color segmentation makes the cost of ID bookkeeping more, not less, important. PICASSO ’s residual memory overhead (up to ≈ 80% during revocation on omnetpp) stems from fragmentation of the color space in its 
+
+unr allocator (§2.3). FRESCO replaces the unr allocator with a flat bitmap that represents each identifier by a single bit. This yields four characteristics the unr lacks: 1) Its mem-ory footprint is constant: n = 256 KiB for a 2 21 -identifier namespace, irrespective of allocation pattern, fragmentation, or revocation count. 2) No operation allocates dynamically so allocation and free require no system calls; the unr allo-cator, by contrast, frequently allocates internal nodes, partic-ularly once revocation has fragmented the structure. 3) The bitmap representation is independent of fragmentation and re-quires no structural maintenance, whereas the unr allocator performs frequent splitting, merging, and representation con-version. 4) Because the allocator bitmap and PVT supplied at revocation have identical layout, bulk reclamation reduces to word-granular AND-NOT operations over [ n/64] words. 
+
+Design and implementation. The allocator stores the bitmap in a statically sized array and uses FreeBSD’s bitstring prim-itives for scanning and bulk bit manipulation. As in the unr 
+
+allocator, ‘ low ‘ and ‘ high ‘ delimit the allocatable ID range, ‘num bits‘ records the number of identifiers in that range, ‘busy‘ the number of currently allocated IDs, ‘hint‘ the po-sition at which the next search begins, and ‘lock‘ a spinlock ensuring thread safety across allocation and free. Allocation uses hint as a fast path: if the hint points to a free bit, it is claimed without any scan. Otherwise the allo-cator scans from hint to num bits and, failing that, wraps around to scan from 0 up to but excluding hint. On success, 
+
+hint advances to one past the claimed position, and the re-turned identifier is the bit position plus low , mapping the in-ternal bitmap o ff set to the hardware-configured color range. Bulk freeing aligns the allocator’s bitmap with the seal-ing bitmap supplied by the revoker and, for each 64-bit word, ANDs it with the negation of the corresponding sealing bitmap word. It then updates busy and sets hint to the begin-ning of the first word a bit was freed from. The bulk freeing is a single pass over the bitmap and requires no allocation. 
+
+A.2 Benchmark comparison against unr 
+
+We evaluate the bitmap allocator using the same setup as in G¨ ulmez et al. [3]: the subset of SPEC CPU2006 INT bench-marks that run unmodified on the baseline CHERI system, with the train input set on the VCU118 FPGA. We compare 
+
+PICASSO using our bitmap allocator against PICASSO using its original unr allocator. Figure 8a reports normalized CPU cycles. On the seven benchmarks that never trigger revocation, the two allocators perform equivalently, with the remaining di ff erences within measurement noise. On omnetpp, the only benchmark trig-gering revocations, the bitmap allocator reduces the cycle overhead by 23% compared to PICASSO ’s unr .Figure 8b reports normalized memory overhead as maxi-mum resident set size (RSS). The bitmap allocator’s footprint is a constant ≈ 256KiB irrespective of workload character-istics. The e ff ect is clearest on omnetpp, where the bitmap allocator stays at 1.01x memory usage, while unr peaks at 1.80x. 16 bzip2 gobmk hmmer sjeng libquantum h264ref omnetpp xalancbmk geomean 1.0 1.2 1.4 1.6 1.8 2.0 2.2 2.4 2.6 
+
+> Overhead Factor (Cycles)
+> 1.00x 1.00x 1.00x 1.04x 1.05x 1.01x 1.38x 1.02x
+> 1.06x
+> 1.00x 1.00x 1.00x 1.05x 1.09x 0.99x 1.15x 1.03x
+> 1.04x
+> Baseline (1.0x) PICASSO (unr) PICASSO (bitmap)
+
+(a) Normalized CPU cycles. bzip2 gobmk hmmer sjeng libquantum h264ref omnetpp xalancbmk geomean 1.0 1.2 1.4 1.6 1.8 2.0 2.2 2.4 2.6 
+
+> Overhead Factor (Max RSS)
+> 1.00x 1.00x 1.02x 1.00x 1.01x 1.00x 1.80x 1.00x
+> 1.08x
+> 1.00x 1.00x 1.01x 1.00x 1.00x 1.00x 1.01x 1.00x
+> 1.00x
+> Baseline (1.0x) PICASSO (unr) PICASSO (bitmap)
+
+(b) Normalized memory overhead measured as maximum RSS. 
+
+Figure 8: Comparison between unr and bitmap allocator. 
+
+# B Escape Analysis 
+
+B.1 LLVM Facts 
+
+LLVM uses static single assignment form: a function argu-ment and each instruction result is an LLVM value . The anal-ysis records only values that may carry a capability. We write 
+
+f and g for functions, c for a call instruction, i for an argu-ment position, and v, d, s, p for LLVM values. The following facts are extracted from LLVM IR. 
+
+• Copy ( f, d, s) represents a capability-preserving SSA op-eration from source s to destination d in f . Such opera-tions include casts, getelementptr , phi , select , and aggregate or vector extraction and insertion. 
+
+• Load ( f, d, p) represents an LLVM load through pointer 
+
+p whose result is d.
+
+• Store ( f, p, s) represents an LLVM store of s through pointer p.
+
+• Parameter ( f, i, v) says that v is formal parameter i of f .A formal parameter is the value received by the callee. 
+
+• ReturnValue ( f, v) says that an LLVM ret in f returns 
+
+v.
+
+• Call ( f, c) says that call instruction c occurs in f .
+
+CallArgument (c, i, v) records its actual argument i,where an actual argument is the value supplied by the caller. CallResult (c, v) records the call result. 
+
+• InlineCall (c, g) says that call c may invoke g, so the anal-ysis connects the actual arguments at c to the formal pa-rameters of g. ReturnCall (c, g) says that values returned by g may flow to the result of c.
+
+• RetainValue ( f, v) says that v may be retained after f
+
+returns, for example by persistent memory or an unre-solved call. 
+
+• ObserveValue ( f, v) says that code outside the analysis may access memory through v but may not retain v it-self. This models, for example, an LLVM nocapture 
+
+argument. 
+
+• FrameOrigin ( f, v) says that v may point into the current stack frame. LLVM alloca results and instructions that expose the stack pointer are frame origins. 
+
+B.2 Algorithm 
+
+One execution of a function is an activation , and its stack storage is its frame . The frame escapes if a capability point-ing into it remains reachable after the activation returns. This can happen in two ways: the capability can be stored in per-sistent memory, or it can be returned. The analysis there-fore performs one Retain search and one Return search. Both searches start at their respective escape endpoints, propagate through calls and LLVM value flow, and report a function when they reach one of its frame origins. Loads and stores require more than SSA reachability. The analysis attaches a short access path to each value. An access path is a record of the memory edges that must be crossed to reach the capability. Formally, a path is a word ℓ ∈ P =
+
+{L, R}≤5, where ℓ = ϵ means that the capability is the value itself. L labels the content edge of an abstract memory cell, and R labels the edge for the value supplied to a store. The four path operations describe how a load or store changes this record: 
+
+• prepend L(ℓ) adds a leading L. When a reachable value is stored through pointer p, this records that the value can subsequently be found in the content of p.
+
+• prepend LR (ℓ) returns the set 
+
+{prepend L(ℓ), prepend R(ℓ)}, namely both Lℓ and 
+
+Rℓ; here prepend R symmetrically adds R. When reasoning backward from a load result to its pointer, the analysis conservatively considers both sides of the abstract memory cell. 
+
+• take L(ℓ) removes a leading L, if present. Thus a path Lℓ
+
+at a load pointer becomes path ℓ at the loaded value. 
+
+• take R(ℓ) removes a leading R, if present. Thus a path Rℓ
+
+at a store pointer becomes path ℓ at the stored value. Whenever a rule writes ℓ′ ∈ S , it means that the rule is in-stantiated once for every element ℓ′ of the set S ; it is not an equality between a path and a set. For example, if a pointer has path LR ϵ, a load through that pointer uses take L and leaves path Rϵ on the loaded value. If the pointer has path 
+
+Rϵ, a store through it uses take R and leaves ϵ on the stored value. A path that does not start with the required letter pro-duces no result. Paths are capped at length five; at that limit the rules keep conservative su ffi x variants rather than drop-ping the flow. Finally, P+ = P \ { ϵ} is the set of nonempty paths. Each search has two propagation relations. RetainUsed 
+
+and ReturnUsed record ordinary reachability for the corre-sponding search. RetainDerived and ReturnDerived mark the subset of that reachability which may also be followed 17 backward through the definition of a value. Every Derived fact also has a corresponding Used fact. The following named abbreviations make the call rules readable: 
+
+ArgFlow ( f, c, g, i, a, p) ≡ Call ( f, c)
+
+∧ InlineCall (c, g)
+
+∧ CallArgument (c, i, a)
+
+∧ Parameter (g, i, p),
+
+RetFlow ( f, c, g, x, r) ≡ Call ( f, c)
+
+∧ ReturnCall (c, g)
+
+∧ CallResult (c, x)
+
+∧ ReturnValue (g, r).
+
+Thus, ArgFlow connects an actual argument a to the matching formal p, and RetFlow connects a returned value r to the call result x.
+
+B.3 Rules 
+
+The rules in this subsection are the rules covered by the Rocq proof. In the common propagation rules, 
+
+Used and Derived are shorthand: read each rule once with RetainUsed /RetainDerived and once with Retur-nUsed /ReturnDerived .
+
+Endpoints that retain. 
+
+• RetainUsed ( f, v, ℓ ) ← RetainValue ( f, v), ℓ ∈ P.This rule adds a RetainUsed fact for every path in P.
+
+• RetainDerived ( f, v, ℓ ) ← RetainValue ( f, v), ℓ ∈ P.This rule adds a RetainDerived fact for every path in P.
+
+• RetainUsed ( f, v, ℓ ) ← ObserveValue ( f, v), ℓ ∈ P+.This rule adds RetainUsed for every nonempty path in 
+
+P+.
+
+• RetainDerived ( f, v, ℓ ) ← ObserveValue ( f, v), ℓ ∈ P+.This rule adds RetainDerived for every nonempty path in P+.
+
+• RetainUsed ( f, p, ℓ ) ← Parameter ( f, i, p), ℓ ∈ P+.This rule adds RetainUsed for every nonempty path at formal p.
+
+• RetainDerived ( f, p, ℓ ) ← Parameter ( f, i, p), ℓ ∈ P+.This rule adds RetainDerived for every nonempty path at formal p.
+
+Calls. 
+
+• RetainUsed ( f, a, ℓ ) ← ArgFlow ( f, c, g, i, a, p),
+
+RetainUsed (g, p, ℓ ). This rule copies RetainUsed from formal p in g to actual a in f .
+
+• Used (g, p, ℓ ) ← ArgFlow ( f, c, g, i, a, p), Used ( f, a, ℓ ). This rule copies Used from actual a in f to formal p in 
+
+g.
+
+• Used ( f, a, ℓ ) ← ArgFlow ( f, c, g, i, a, p),
+
+Derived (g, p, ℓ ). This rule copies Derived from formal p in g to Used at actual a in f .
+
+• Derived ( f, a, ℓ ) ← ArgFlow ( f, c, g, i, a, p),
+
+Derived (g, p, ℓ ). This rule copies Derived from formal p in g to Derived 
+
+at actual a in f .
+
+• Used ( f, x, ℓ ) ← RetFlow ( f, c, g, x, r), Used (g, r, ℓ ). This rule copies Used from returned value r in g to call result x in f .
+
+• Used (g, r, ℓ ) ← RetFlow ( f, c, g, x, r), Derived ( f, x, ℓ ). This rule copies Derived from call result x in f to Used 
+
+at returned value r in g.
+
+• Derived (g, r, ℓ ) ← RetFlow ( f, c, g, x, r),
+
+Derived ( f, x, ℓ ). This rule copies Derived from call result x in f to 
+
+Derived at returned value r in g.
+
+Endpoints that return. 
+
+• ReturnUsed ( f, r, ℓ ) ← ReturnValue ( f, r), ℓ ∈ P.This rule adds a ReturnUsed fact for every path in P.
+
+• ReturnDerived ( f, r, ℓ ) ← ReturnValue ( f, r), ℓ ∈ P.This rule adds a ReturnDerived fact for every path in P.
+
+Copies. 
+
+• Used ( f, d, ℓ ) ← Copy ( f, d, s), Used ( f, s, ℓ ). This rule copies Used from source s to destination d.
+
+• Used ( f, s, ℓ ) ← Copy ( f, d, s), Derived ( f, d, ℓ ). This rule copies Derived at destination d to Used at source s.
+
+• Derived ( f, s, ℓ ) ← Copy ( f, d, s), Derived ( f, d, ℓ ). This rule copies Derived at destination d to Derived at source s.
+
+Loads and stores. 
+
+• Used ( f, p, ℓ ′) ← Load ( f, d, p), Derived ( f, d, ℓ ), ℓ ′ ∈
+
+prepend LR (ℓ). For each ℓ′ ∈ prepend LR (ℓ), this rule copies Derived at load result d to Used at pointer p.
+
+• Derived ( f, p, ℓ ′) ← Load ( f, d, p), Derived ( f, d, ℓ ), ℓ ′ ∈
+
+prepend LR (ℓ). For each ℓ′ ∈ prepend LR (ℓ), this rule copies Derived at load result d to Derived at pointer p.
+
+• Used ( f, d, ℓ ′) ← Load ( f, d, p), Used ( f, p, ℓ ), ℓ ′ ∈
+
+take L(ℓ). For each ℓ′ ∈ take L(ℓ), this rule copies Used at pointer 
+
+p to loaded value d.
+
+• Used ( f, s, ℓ ′) ← Store ( f, p, s), Used ( f, p, ℓ ), ℓ ′ ∈
+
+take R(ℓ). For each ℓ′ ∈ take R(ℓ), this rule copies Used at pointer 
+
+p to stored value s.
+
+• Derived ( f, s, ℓ ′) ← Store ( f, p, s), Used ( f, p, ℓ ), ℓ ′ ∈
+
+take R(ℓ). For each ℓ′ ∈ take R(ℓ), this rule copies Used at pointer 
+
+p to Derived at stored value s.
+
+• Used ( f, p, prepend L(ℓ)) ←
+
+Store ( f, p, s), Used ( f, s, ℓ ). This rule prefixes L to the path at stored value s and adds the resulting Used fact at pointer p.
+
+• Derived ( f, p, prepend L(ℓ)) ←
+
+Store ( f, p, s), Used ( f, s, ℓ ). This rule prefixes L to the path at stored value s and adds the resulting Derived fact at pointer p.
+
+Decision. 
+
+• UnsafeFunction ( f ) ←
+
+FrameOrigin ( f, o), RetainUsed ( f, o, ϵ ). This rule derives UnsafeFunction ( f ) from a root 
+
+RetainUsed fact at a frame origin. 
+
+• UnsafeFunction ( f ) ←
+
+FrameOrigin ( f, o), ReturnUsed ( f, o, ϵ ). This rule derives UnsafeFunction ( f ) from a root 
+
+ReturnUsed fact at a frame origin. 18 B.4 Rocq Guarantee 
+
+The Rocq theorem proves that the basic algorithm has no false negatives for the abstract machine used by the proof. More precisely, suppose the input facts cover every parameter, per-sistent endpoint, copy, load, store, call, and return in a nor-malized program. If an activation returns while one of its stack allocations is still reachable from a returned capability, persistent memory, or a value in a still-live activation, then the rules derive UnsafeFunction for that activation’s function. Equivalently, if the rules classify a function as safe, none of these post-return paths exists in the abstract machine. The theorem permits false positives and assumes that LLVM fact extraction is complete. 
+
+B.5 Optimization 
+
+The production analysis uses three refinements around the ba-sic algorithm. The theorem above covers only the basic rules. The refinements are summarized below. 
+
+• Function summaries. For each function, the analysis records whether a returned capability may be derived from a particular formal parameter or from the caller’s frame. A call can then apply this summary directly to its actual argument and result instead of repeatedly expand-ing the callee’s return flow. 
+
+• Shared-value propagation. Globals, aliases, and con-stant expressions are shared by many functions. The analysis computes their capability flow once, then im-ports only the portion reachable from a shared value mentioned by each function. This avoids building one duplicated shared graph per function. 
+
+• Variadic caller-frame modeling. A variadic callee can obtain a capability to its caller’s argument area through 
+
+va start . The analysis models this as a hidden formal parameter and summarizes whether the callee retains or returns it. Calls then transfer that e ff ect to the caller’s frame. 
+
+# C Stale-Read Analysis Facts and Rules 
+
+A CHERI memory tag records whether a memory word con-tains a valid capability. A stale capability is a tagged capabil-ity left by an older use of the same stack storage. The com-piler initially inserts a clearing store for each source variable that might expose such a capability. A candidate is one such clear. A candidate’s root is an LLVM value associated with the storage protected by that clear; one candidate may have several roots after optimization. The analysis uses these input facts: 
+
+• Candidate (k, v): value v is a root of candidate k.
+
+• MustRetain (k): incomplete or unsupported information forces candidate k to keep its clear. 
+
+• AddressCopy (d, s): d preserves the address represented by s. Casts, address calculations, selections, and merges produce this fact. 
+
+• NonStackOrigin (v): v comes from a parameter, global, constant, or function value rather than the local stack variable whose clear is being decided. 
+
+• TagSink (v): using v may load, expose, or publish a memory tag. A sink is simply such an endpoint. 
+
+• ClosedTarget (c, g): the extractor knows the complete set of functions that call site c may invoke, and g is one of them. 
+
+• CallArgument (c, i, a) and Parameter (g, i, p): actual a is passed to formal p at position i.
+
+> MayObserveTag
+
+(v) is derived when v may reach a tag sink. RetainClear (k) is the final decision to keep candidate 
+
+k’s clear. The complete Datalog program has eight rules: 
+
+S1. MayObserveTag (v) ← TagSink (v). Traversal starts at every sink and works back toward candidate roots. 
+
+S2. MayObserveTag (s) ←
+
+> AddressCopy
+
+(d, s), MayObserveTag (d). If a de-rived address may reach a sink, its source may also reach it. 
+
+S3. MayObserveTag (d) ←
+
+> AddressCopy
+
+(d, s), MayObserveTag (s). The re-verse direction conservatively treats address copies as possible aliases; an alias is another value that may name the same storage. 
+
+S4. NonStackOrigin (d) ←
+
+> AddressCopy
+
+(d, s), NonStackOrigin (s). A derived address keeps the source’s non-stack origin. 
+
+S5. MayObserveTag (a) ←
+
+> ClosedTarget
+
+(c, g), CallArgument (c, i, a),
+
+> Parameter
+
+(g, i, p), MayObserveTag (p). If a known callee may observe a formal, the matching actual may be observed. 
+
+S6. RetainClear (k) ← Candidate (k, v), MayObserveTag (v). Keep the clear when any root of the candidate may reach a sink. 
+
+S7. RetainClear (k) ← Candidate (k, v), NonStackOrigin (v). Keep the clear when an optimized root is not proven to be source-owned stack storage. 
+
+S8. RetainClear (k) ← MustRetain (k). Keep the clear when-ever extraction explicitly requests the conservative fall-back. 19 D Segment-aware malloc() and free malloc(size) je_malloc(size) 
+
+acquire memory address within segment? 
+
+segment_lookup() 
+
+no Allocate provenance ID from segment bitmap Allocate provenance ID from global bitmap Assign capability color from provenance ID Return colored capability to caller Reserve memory from 
+
+curr_segment 
+
+size <segment_size curr_segment_cap > size colors_available > 0curr_segment =segment_new() 
+
+yes yes no no Reserve non-segmented memory using mmap() 
+
+yes Reuse memory from 
+
+jemalloc cache no Queue revocation 
+
+A
+
+yes 
+
+(a) Flowchart of segmented malloc() operation. free(cap) 
+
+Retrieve otype 
+
+from cap otype < 0
+
+address within segment? 
+
+segment_lookup() 
+
+no Invalidate PVB in segment PVT Invalidate PVB in global PVT yes Mark provenance ID for revocation 
+
+je_free(cap) 
+
+B
+
+Free memory no yes (b) Flowchart of segmented free() operation. 
+
+Figure 9: Illustrations of segmented malloc() and free() from §6.3.3. 20 E Supplementary Evaluation 
+
+Table 3: FRESCO stack-coloring overhead on MiBench (PICASSO , FRESCO with Full coloring). The cost is fixed per colored call ( ≈15–25 cycles) 
+
+Benchmark Cycles Overhead Colored Baseline Colored calls adpcm decode 3 343 861 3 407 442 +1.9 % 801 adpcm encode 2 998 361 3 025 730 +0.9 % 718 aes 72 906 78 459 +7.6 % 183 basicmath 962 892 1 172 249 +21 .7 % 8 500 bitcount 2 599 349 3 578 829 +37 .7 % 67 501 blowfish 1 463 062 1 509 120 +3.1 % 3 005 crc 11 620 12 469 +7.3 % 13 dijkstra 2 151 579 2 150 657 −0.0 % 3limits 1 977 4 502 +127 .7 % 125 qsort 1 044 383 1 161 010 +11 .2 % 7 314 randmath 149 668 150 135 +0.3 % 11 rc4 65 128 67 373 +3.4 % 2rsa 48 002 49 058 +2.2 % 51 sha 1 506 595 1 498 536 −0.5 % 1 214 Geo. mean (all 14) +12 .9 % Geo. mean (w /o limits a) +7.0 %  
+
+> a
+
+limits is a 2k-cycle microbenchmark whose runtime is entirely function-call overhead 0 500 1000 1500 2000 Latency (ms) 
+
+> Baseline Cornucopia PICASSO FRESCO heap FRESCO heap+stack FRESCO complete
+> p50:515 p50:552 p50:531 p50:547 p50:598 p50:622
+> gRPC tail latency (0 bytes)
+> p50 p90 p95 p99
+
+Figure 10: gRPC QPS latency percentile. 21 Table 4: Code size ( .text bytes) of colored SPEC CPU2006 binaries 
+
+Benchmark Baseline Full coloring Color Saver FRESCO complete 401.bzip2 59512 65650 ( +10 .3 %) 59884 ( +0.6 %) 60206 ( +1.2 %) 445.gobmk 670248 905938 ( +35 .2 %) 677424 ( +1.1 %) 678574 ( +1.2 %) 456.hmmer 229232 274766 ( +19 .9 %) 231228 ( +0.9 %) 232518 ( +1.4 %) 458.sjeng 105664 118490 ( +12 .1 %) 107604 ( +1.8 %) 107606 ( +1.8 %) 462.libquantum 27436 36818 ( +34 .2 %) 27436 ( +0.0 %) 27564 ( +0.5 %) 464.h264ref 594016 644514 ( +8.5 %) 595228 ( +0.2 %) 595982 ( +0.3 %) 471.omnetpp 413616 601438 ( +45 .4 %) 422036 ( +2.0 %) 429004 ( +3.7 %) 483.xalancbmk 2314936 3571506 ( +54 .3 %) 2426824 ( +4.8 %) 2456150 ( +6.1 %) Geo. mean (+26 .5 %) (+1.4 %) (+2.0 %) 100 110 120 130 140 142 145 150 160 161 170 180 190 200 210 230 240 250 260 270 280 290 300 310 320 400 410 500 510 520 980 990 
+
+Phase ID 
+
+0.9 1.0 1.1 1.2 1.3 1.4 1.5 1.6 1.7 
+
+> Overhead Factor
+> 1.00x 1.11x 1.18x 1.01x 1.06x 1.04x 1.00x 1.27x 1.02x 1.03x 0.99x 1.39x 1.41x 1.62x 1.01x 1.02x 0.99x 1.00x 0.99x 1.02x 1.00x 1.27x 1.48x 0.99x 1.00x 1.23x 1.00x 1.19x 1.00x 1.59x 0.99x 0.99x 1.09x 1.10x 1.09x 1.10x 1.04x 1.09x 1.09x 1.12x 1.03x 1.03x 1.04x 1.08x 1.07x 1.07x 1.09x 1.10x 1.07x 1.07x 1.09x 1.07x 1.06x 1.08x 1.07x 1.07x 1.08x 1.08x 1.11x 1.09x 1.11x 1.06x 1.10x 1.08x 1.10x 1.10x 1.09x 1.10x 1.04x 1.10x 1.09x 1.13x 1.03x 1.03x 1.05x 1.08x 1.08x 1.07x 1.09x 1.11x 1.07x 1.07x 1.09x 1.08x 1.07x 1.09x 1.08x 1.08x 1.09x 1.08x 1.12x 1.09x 1.10x 1.07x 1.10x 1.08x 1.10x 1.10x 1.09x 1.07x 1.08x 1.12x 1.11x 1.13x 1.04x 1.04x 1.06x 1.11x 1.10x 1.11x 1.09x 1.11x 1.09x 1.08x 1.09x 1.12x 1.10x 1.12x 1.10x 1.12x 1.07x 1.08x 1.12x 1.10x 1.12x 1.10x 1.17x 1.11x 1.09x 1.08x 1.09x 1.19x 1.10x 1.16x 1.12x 1.16x 1.06x 1.05x 1.07x 1.09x 1.09x 1.12x 1.23x 1.14x 1.09x 1.12x 1.21x 1.12x 1.10x 1.11x 1.09x 1.13x 1.03x 1.09x 1.14x 1.10x 1.12x 1.11x 1.16x 1.12x
+
+Baseline (1.0x) FRESCO heap + stack (total 1.101x) Cornucopia (total 1.113x) FRESCO complete (total 1.102x) PICASSO (total 1.079x) FRESCO heap (total 1.084x) 
+
+Figure 11: SQLite Speedtest1 Benchmark Results 22 Table 5: SQLite Speedtest1 phase descriptions and overhead compared to baseline. ID  Benchmark  Cornucopia  PICASSO  FRESCO heap  FRESCO heap  + stack  FRESCO complete Time (s)  Overhead  Time (s)  Overhead  Time (s)  Overhead  Time (s)  Overhead  Time (s)  Overhead 100  50000 INSERTs into table with no index  49.06  1.00 × 53.48  1.09 × 53.93  1.10 × 53.75  1.10 × 53.54  1.09 ×
+
+> 110  50000 ordered INSERTS with one index /PK  92.61  1.11 × 91.37  1.10 × 91.35  1.10 × 91.78  1.10 × 90.36  1.08 ×
+> 120  50000 unordered INSERTS with one index /PK  112.15  1.18 × 103.55  1.09 × 103.63  1.09 × 104.15  1.09 × 103.39  1.09 ×
+> 130  25 SELECTS, numeric BETWEEN, unindexed  96.00  1.01 × 104.66  1.10 × 104.12  1.10 × 101.75  1.07 × 112.82  1.19 ×
+> 140  10 SELECTS, LIKE, unindexed  129.20  1.06 × 125.58  1.04 × 126.19  1.04 × 130.49  1.08 × 133.97  1.10 ×
+> 142  10 SELECTS w /ORDER BY, unindexed  198.22  1.04 × 207.27  1.09 × 209.31  1.10 × 212.81  1.12 × 221.51  1.16 ×
+> 145  10 SELECTS w /ORDER BY and LIMIT, unindexed  151.94  1.00 × 165.48  1.09 × 165.59  1.09 × 168.32  1.11 × 170.67  1.12 ×
+> 150  CREATE INDEX five times  163.38  1.27 × 143.72  1.12 × 145.22  1.13 × 145.57  1.13 × 149.16  1.16 ×
+> 160  10000 SELECTS, numeric BETWEEN, indexed  87.46  1.02 × 88.59  1.03 × 88.65  1.03 × 89.57  1.04 × 91.17  1.06 ×
+> 161  10000 SELECTS, numeric BETWEEN, PK  89.23  1.03 × 89.71  1.03 × 89.76  1.03 × 90.53  1.04 × 91.63  1.05 ×
+> 170  10000 SELECTS, text BETWEEN, indexed  167.54  0.99 × 175.43  1.04 × 176.21  1.05 × 178.14  1.06 × 179.66  1.07 ×
+> 180  50000 INSERTS with three indexes  200.89  1.39 × 156.29  1.08 × 156.64  1.08 × 160.12  1.11 × 157.91  1.09 ×
+> 190  DELETE and REFILL one table  207.29  1.41 × 158.07  1.07 × 158.67  1.08 × 162.27  1.10 × 160.13  1.09 ×
+> 200  VACUUM  182.75  1.62 × 120.56  1.07 × 120.67  1.07 × 125.68  1.11 × 126.48  1.12 ×
+> 210  ALTER TABLE ADD COLUMN, and query  4.33  1.01 × 4.67  1.09 × 4.67  1.09 × 4.67  1.09 × 5.28  1.23 ×
+> 230  10000 UPDATES, numeric BETWEEN, indexed  80.19  1.02 × 86.99  1.10 × 87.34  1.11 × 87.29  1.11 × 89.59  1.14 ×
+> 240  50000 UPDATES of individual rows  111.52  0.99 × 120.51  1.07 × 120.63  1.07 × 122.40  1.09 × 122.91  1.09 ×
+> 250  One big UPDATE of the whole 50000-row table  19.02  1.00 × 20.43  1.07 × 20.48  1.07 × 20.61  1.08 × 21.48  1.12 ×
+> 260  Query added column after filling  4.57  0.99 × 5.02  1.09 × 5.03  1.09 × 5.01  1.09 × 5.60  1.21 ×
+> 270  10000 DELETEs, numeric BETWEEN, indexed  180.69  1.02 × 188.16  1.07 × 191.14  1.08 × 197.26  1.12 × 196.93  1.12 ×
+> 280  50000 DELETEs of individual rows  128.31  1.00 × 136.09  1.06 × 137.36  1.07 × 140.78  1.10 × 141.37  1.10 ×
+> 290  Refill two 50000-row tables using REPLACE  399.53  1.27 × 338.96  1.08 × 341.18  1.09 × 351.96  1.12 × 347.68  1.11 ×
+> 300  Refill a 50000-row table using (b&1) == (a&1)  219.51  1.48 × 159.50  1.07 × 160.30  1.08 × 163.37  1.10 × 162.04  1.09 ×
+> 310  10000 four-ways joins  319.78  0.99 × 347.18  1.07 × 350.50  1.08 × 362.28  1.12 × 364.09  1.13 ×
+> 320  subquery in result set  649.39  1.00 × 707.26  1.08 × 709.12  1.09 × 695.58  1.07 × 673.62  1.03 ×
+> 400  70000 REPLACE ops on an IPK  126.69  1.23 × 110.89  1.08 × 111.43  1.08 × 111.26  1.08 × 112.30  1.09 ×
+> 410  70000 SELECTS on an IPK  71.51  1.00 × 78.81  1.11 × 79.61  1.12 × 79.58  1.12 × 81.05  1.14 ×
+> 500  70000 REPLACE on TEXT PK  130.57  1.19 × 119.23  1.09 × 118.94  1.09 × 120.84  1.10 × 120.48  1.10 ×
+> 510  70000 SELECTS on a TEXT PK  107.79  1.00 × 119.61  1.11 × 119.28  1.10 × 120.77  1.12 × 121.21  1.12 ×
+> 520  70000 SELECT DISTINCT  97.70  1.59 × 65.48  1.06 × 65.63  1.07 × 67.45  1.10 × 68.24  1.11 ×
+> 980  PRAGMA integrity check  289.91  0.99 × 321.43  1.10 × 321.64  1.10 × 341.81  1.17 × 337.10  1.16 ×
+> 990  ANALYZE  41.07  0.99 × 44.59  1.08 × 44.63  1.08 × 46.09  1.11 × 46.27  1.12 ×
+> Total  (baseline 4410.23 s)  4909.81  1.11 × 4758.56  1.08 × 4778.84  1.08 × 4853.95  1.10 × 4859.63  1.10 ×
+> Cycles (baseline 110,297,124,849)  122,791,628,666  1.11 × 119,008,630,444  1.08 × 119,515,005,225  1.08 × 121,392,070,775  1.10 × 121,534,708,445  1.10 ×
+> Instructions (baseline 61,758,979,977)  75,327,090,954  1.22 × 62,376,697,908  1.01 × 62,061,319,862  1.00 × 62,674,079,628  1.01 × 64,198,625,846  1.04 ×
+> Memory (RSS) (baseline 14,304)  28,484  1.99 × 14,400  1.01 × 24,544  1.72 × 27,264  1.91 × 27,284  1.91 ×
+
+23

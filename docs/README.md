@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-26</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-28</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 9 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 16 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>6</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>6</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>10</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-26 22:13:43 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-28 03:32:24 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日9篇安全研究聚焦攻击检测与恶意软件分析，其中精读高分落在Pivot攻击检测（9.0）和内存取证恶意软件分级（8.0）上。最值得关注的是结合系统与网络信息提升横向移动检测，以及风险校准的可解释内存取证分类器。普通读者可优先了解这两项技术的适用范围，再结合硬件竞赛与SSD安全速读扩展视野。</p>
+<p>今日精读6篇、速读10篇，共处理16篇论文，聚焦系统安全与硬件验证。最值得关注的是GPU信息流追踪实现用户数据隔离的GIFT，以及CHERI处理器时间安全验证框架FRESCO，均获9.0高分。建议普通读者优先浏览速读中的硬件竞赛经验与漏洞诊断方法，快速扩展视野。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +71,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">6 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Effective Pivot Attack Detection via System and Network Information">Effective Pivot Attack Detection via System and Network Information</span></li><li><span class="dpr-home-dashboard-paper-title" title="EGAMA-RC: Risk-Calibrated Evidence-Gated Adaptive Malware Analysis for Robust and Interpretable Memory-Forensic Triage">EGAMA-RC: Risk-Calibrated Evidence-Gated Adaptive Malware Analysis for Robust and Interpretable Memory-Forensic Triage</span></li><li><span class="dpr-home-dashboard-paper-title" title="Towards LLM-Enhanced Android Taint Analysis">Towards LLM-Enhanced Android Taint Analysis</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Here is a GIFT: Enforcing User Data Isolation in LLM Serving via GPU Information Flow Tracking">Here is a GIFT: Enforcing User Data Isolation in LLM Serving via GPU Information Flow Tracking</span></li><li><span class="dpr-home-dashboard-paper-title" title="FRESCO: Complete and Scalable Temporal Safety for CHERI Application Processors">FRESCO: Complete and Scalable Temporal Safety for CHERI Application Processors</span></li><li><span class="dpr-home-dashboard-paper-title" title="PRISM: Lightweight Enclave Isolation with Prismatic Capabilities">PRISM: Lightweight Enclave Isolation with Prismatic Capabilities</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +84,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">6 篇</strong>
+    <strong class="dpr-home-dashboard-count">10 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="SxSSD: A Secure and Extensible Software-defined Solid State Drive">SxSSD: A Secure and Extensible Software-defined Solid State Drive</span></li><li><span class="dpr-home-dashboard-paper-title" title="Adversarial Entropy Inflation Against Gumbel-Based Inference Verification">Adversarial Entropy Inflation Against Gumbel-Based Inference Verification</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Verdict to Diagnosis: Attributable Security Review of Pull Requests">From Verdict to Diagnosis: Attributable Security Review of Pull Requests</span></li><li><span class="dpr-home-dashboard-paper-title" title="Answer Is Cheap, Show Me the Evidence! Augmenting Automated Vulnerability Assessment with Evidence">Answer Is Cheap, Show Me the Evidence! Augmenting Automated Vulnerability Assessment with Evidence</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>10</strong></span></div>
 </section>
 </div>
 

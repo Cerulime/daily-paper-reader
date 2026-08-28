@@ -1,0 +1,730 @@
+Title: PRISM: Lightweight Enclave Isolation with Prismatic Capabilities
+
+URL Source: https://arxiv.org/pdf/2608.26367v1
+
+Published Time: Fri, 28 Aug 2026 00:12:14 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# PRISM : Lightweight Enclave Isolation with Prismatic Capabilities 
+
+## Merve Gülmez *,† *, Adam Caulfield *,‡, Håkan Englund †, N. Asokan ‡,§ , Thomas Nyman ∥
+
+> †
+
+## Ericsson Security Research, ‡University of Waterloo, 
+
+> §
+
+## KTH Royal Institute of Technology, ∥Ericsson Product Security 
+
+## {merve.gulmez,hakan.englund,thomas.nyman}@ericsson.com, acaulfield@uwaterloo.ca, asokan@acm.org 
+
+# Abstract 
+
+Trusted execution environments (TEEs) protect sensitive code and data from external interference, but lack inherent memory safety. CHERI can enforce spatial memory safety at the object level. Attempts to establish a TEE using CHERI primitives su ff er from (1) expensive capability revocation op-erations, (2) need to rely on the host operating system (OS) to support provenance tracking and physical memory protec-tion, (3) expensive domain transitions, and (4) lack of support for remote attestation. We introduce prismatic capabilities and present PRISM , a TEE architecture for CHERI leveraging prismatic capabili-ties to create userspace enclaves while addressing these chal-lenges. PRISM binds enclave ‘hues’ (identifiers) in prismatic capabilities to physical memory access controls, enables O(1) ownership establishment without memory sweeps, and sup-ports e ffi cient domain transitions that atomically activate and deactivate prismatic capabilities. Additionally, PRISM en-ables remote attestation of its enclaves. We demonstrate that execution of userspace enclaves in PRISM incurs only mod-erate overhead ( ≤ 15%), a significant improvement over the same workloads under Intel SGX. 
+
+# 1 Introduction 
+
+Hardware-isolated trusted execution environments (TEEs) 
+
+have become a cornerstone of confidential computing, en-abling applications to protect sensitive code and data even when the host operating system (OS) is compromised or ma-licious. TEEs provide an isolated computing environment within which code and data are inaccessible to the host sys-tem, except when authorized and through well-defined in-terfaces. The use of TEEs in industry [1, 2, 3, 4] and academia [5, 6, 7] is ubiquitous across a broad range of sys-tems. TEEs protect their code and data from direct manipu-lation. However, the Achilles’ heel of TEEs is the threat sur-face exposed by the software within; security lapses in real-world TEEs are predominantly caused by vulnerabilities in the trusted software, such as memory-safety issues [8, 9, 10]. The memory safety of TEE code is typically not enforced by the architecture itself. It can be achieved though memory-safe languages, e.g., Rust, but TEE OSs or their trusted run-time typically rely on low-level C (or C ++ ) components re-purposed from mainstream toolchains. The threat surface is exacerbated by bloated trusted computing bases (TCBs); 
+
+> ** Both authors contributed equally to this research.
+
+the software threat surface of a confidential virtual machine (CVM) is hardly any smaller than that of its non-confidential counterpart, unless explicitly minimized as part of system hardening. Capability Hardware Enhanced RISC Instructions (CHERI) [11] guarantees spatial memory safety, extend-ing conventional instruction set architectures (ISAs) with hardware capabilities that embed object types, bounds, permissions, and validity tags into pointers themselves. CHERI naturally enforces spatial memory safety at the object level and enables fine-grained compartmentalization through capability sealing and controlled invocation (§2.1). While CHERI’s per-pointer access control and sealed in-vocation are relevant to userspace TEEs, also known as en-claves , CHERI was not built to enforce exclusive access of capabilities belonging to a TEE. CHERI-TrEE proposes a CHERI-based TEE design [12]; however, it requires a lin-ear memory sweep to prove exclusive ownership, and further operates directly on physical memory without virtual-address support—precluding deployment on systems with an OS-managed MMU. Capstone [13] avoids sweeps by introduc-ing linear capabilities with revocation trees, but imposes tree-traversal overhead and requires a bespoke compiler toolchain. CHERI, by design, avoids such indirection: once a capability is derived, no historical lookup table tracks where it propa-gates. This makes ensuring exclusive access in CHERI fun-damentally di ffi cult—there is no e ffi cient way to revoke all capabilities overlapping a given region short of scanning all memory and registers. Virtual-to-physical address transla-tion further exacerbates this problem: capabilities operate on virtual addresses, yet enclave isolation must protect physical memory. 
+
+This paper and contributions. We propose prismatic ca-pabilities for the CHERI architecture to enable lightweight enclave execution in userspace, secure from even an untrusted operating system. A prismatic capability is a new capabil-ity type for enclaves which receive a hue (provenance iden-tifier for an enclave instance), and where data additionally receives a color 1(provenance identifier for dynamic alloca-tions). Hues are bound to an assigned physical memory re-gion and simultaneously gate memory accesses to provide ex-clusive access, control invocation, and serve as an attestation identity. Hue assignment and life-cycle are managed exclu-sively by a machine-mode (M-mode) TCB, ensuring that no software below machine mode—including the OS kernel— can assign and retire enclave hues. Hardware call gates en-able safe, zero-trap context switches into and out of a running enclave. Finally, a hardware-hue-addressed table enforces ac-1arXiv:2608.26367v1 [cs.CR] 26 Aug 2026 
+
+➀ 1-bit Validity tag 
+
+➁ Permissions ➂ Object type ➃ Bounds 
+
+➄ Baseline architecture address Figure 1: CHERI capability layout from Watson et al. [15] cess control at the physical layer, ensuring that even a mali-cious OS that controls virtual address translation cannot reach enclave memory. In summary, our contributions are: 
+
+• The design of prismatic capabilities (§ 4): a CHERI ex-tension with capability-based physical memory isolation, hardware call gates for trap-free enclave transitions, and minimal M-mode TCB (Hue Management Monitor) for life cycle management and remote attestation. 
+
+• PRISM : a realization of prismatic capabilities on the CHERI-RISC-V QEMU full-system emulator and in an field-programmable gate array (FPGA) softcore based on the CHERI-Toooba [14] processor (§5.1). 
+
+• Software support for PRISM through a CheriBSD kernel driver (§ 5.3) and userspace enclave software development kit (SDK) that supports source-compatibility 2 with Soft-ware Guard Extension (SGX) enclaves (§5.4). 
+
+• Demonstrating the e ffi cacy of PRISM through three case studies using real-world SGX enclaves (§6.1.2) recompiled to PRISM with moderate run-time overhead ( ≈ 6 − − 15%). 
+
+• Proof of security for PRISM ’s attestation protocol through formal modeling and symbolic protocol verification (§6.3). We will make the full source code and register-transfer level (RTL)-implementation of PRISM available for artifact evalu-ation and plan to open-source all the artifacts on acceptance. 
+
+# 2 Background 
+
+## 2.1 CHERI 
+
+CHERI is an ISA extension that adds a capability-based hardware-software co-design for memory protection, using hardware-supported capabilities to enforce spatial safety for pointers. The CHERI ISA specification [11] defines how ca-pabilities are represented in registers and memory and the in-structions that manipulate them safely. As shown in Fig. 1, a CHERI capability is twice the width of a native pointer type—128 bits on 64-bit platforms—plus a separate validity-tag bit ➀ held outside the addressable data to prevent tampering by non-capability-aware instruc-tions. Capability-aware instructions preserve this tag, but it is cleared by unauthorized manipulation or attempts to inject ar-bitrary capabilities. CHERI widens the general-purpose and address registers to hold full capabilities, each comprising: 
+
+• Permissions ➁: a bitmask defining allowed operations. 
+
+• Object type ( otype ) ➂: a signed integer enabling tempo-rary “sealing” and “unsealing” of capabilities for opaque pointers and fine-grained in-process isolation.   
+
+> 1We distinguish between hues and colors as, as explained in §4, prismatic capabilities combine both to provide isolation and temporal safety.
+> 2With the exception of source-code changes necessary to make the enclave-code conformant to CHERI C /C++ and the recompilation of enclave code (typically targeting 64-bit x86) to our PRISM -enabled CHERI-Toooba target.
+
+• Bounds ➃: The valid memory range relative to the baseline architecture address ➄, using a compressed encoding [16] to reduce the space taken by a capability at the cost of stricter alignment for larger object allocations. Special-purpose registers, e.g. the program counter ( pc ) and stack pointer ( sp ), are replaced with equivalent capability-registers: program counter capability ( pcc ) and stack pointer capability ( csp ). CHERI enforces spatial safety by associat-ing each allocation with a capability describing its valid range and permissions. New capabilities are derived from existing ones, while maintaining monotonicity that ensures that new capabilities cannot exceed the permissions or bounds of their parent. The lineage is traceable to initial boot-time capabil-ities; the default code capability ( ddc ) and pcc . CHERI’s sealing enables compartmentalization, rendering sealed ca-pabilities inert until passed to a cinvoke instruction which jumps to an entry point within a compartment and simultane-ously unseals a data capability, granting access to compart-ment data. Exception handling uses the same mechanism for limited non-monotonicity. Extensions to CHERI have also explored sandboxing [17], initialization safety [18, 19, 20], safe speculation [21, 22], and side-channel resistance [23]. 
+
+Capability relocation. Capabilities cannot be embedded statically in an executable: storing a pointer-sized value as ordinary data lacks a valid tag, and conventional relocation types cannot describe a capability’s base, bounds, and per-missions. The CHERI toolchain emits a capability reloca-tion table ( __cap_relocs ) with one entry per capability to be initialized at program launch, recording the slot to fix up together with the target object’s base, o ff set, and size. The run-time linker—or, for statically linked binaries, equivalent startup code embedded in the C runtime—walks this table and, for each entry, derives a corresponding capability from the appropriate root, sets its tag, and writes it into the corre-sponding pointer slot, so that globals, function pointers, and similar values hold valid capabilities before application code runs. Because every capability originates this way, the mono-tonicity guarantee extends from these roots to all capabilities in the process [24]. 
+
+CHERI temporal-safety enforcement. By design, CHERI avoids indirection such as table-based lookups. Temporal safety therefore relies on a software mechanism that peri-odically sweeps memory and revokes capabilities [25, 26]. 
+
+PICASSO [27] introduces colored capabilities to track alloca-tion provenance and shows that single-bit indirection accel-erates temporal safety in CHERI. Colored capabilities decou-ple the validity of a capability’s provenance (the allocation it represents) from the validity of the capability itself. Each colored capability carries a provenance identifier (provenance ID) encoded in the otype field (referred to as the capability’s 
+
+"color" ). A corresponding provenance-validity bit (PVB) is stored separately in a hardware-managed provenance-validity table (PVT) in process memory, indexed by the provenance ID. Hardware checks the PVB on every load or store issued through a colored capability. Dereferencing colored capabili-ties without a valid PVB bit is prevented. This allows all ca-pabilities sharing provenance to be retracted at once by inval-idating their PVB, disabling dereferencing dangling colored capabilities without permanently revoking them. 22.2 Trusted Execution Environments 
+
+TEEs are a class of hardware extensions that provide a pro-tected runtime isolated from a system’s host environment: code and data in a TEE can only be directly called, read and written to by code in the same TEE. This is enforced on an architectural level, so even privileged software on the system (e.g., host operating system) cannot directly access code /data belonging to a TEE. The nature of the trusted environment varies based on the particular TEE implementation. Many designs of TEEs are available in commercial central processing units (CPUs) [3, 1, 4, 2, 28]. For example, Intel’s SGX [3] enables TEEs in userspace (referred to as enclaves) in Intel processors. ARM TrustZone [1] partitions all system resources (e.g., timers, peripherals, interrupts) between the host and TEE (referred to as the normal and secure world , re-spectively) in ARM Cortex-M and -A processors. Addition-ally, ARM TrustZone enables a set of trusted applications to execute within the bounds of its TEE (atop a small trusted operating system in the Cortex-A variant). Recent commer-cial CPUs have also enabled virtual machines inside a TEE [4, 2, 28], protected from the host virtual machine manager. Academic proposals for TEE design have been prevalent in recent years [7, 29, 30, 31, 32, 5, 33, 34, 35] including those targeting the RISC-V ISA [7, 29, 30, 31, 32]. Among them is Keystone [6], which enables construction of SGX-like TEEs using RISC-V primitives, leveraging the physi-cal memory protection (PMP) mechanism to restrict access to TEE memory. It also establishes a secure monitor run-ning in machine mode to act as a reference monitor that con-trols the PMP configuration at run time. Regardless of their specifics, TEEs guarantee hardware-backed isolation from the host OS. Because of this, TEEs can enable remote attes-tation, a challenge-response protocol in which a prover ( Prv )aims to convince a verifier ( Vrf ) that their software /hardware configuration is valid. Remote attestation requires the prover to have a root of trust on their device that can measure and re-port on the software /hardware components of interest to Vrf .The latter is typically conducted by computing a message au-thentication code (MAC) or digital signature over the compo-nents of interest, thus requiring secure key storage and usage. Due to this requirement, the hardware-backed security prop-erties of TEEs naturally constitutes such a root of trust, and some even build attestation operations directly into the CPU fabric [3, 2, 4]. 
+
+# 3 Problem Statement 
+
+## 3.1 System and Adversary Model 
+
+We consider a Prv system running a host OS to manage the execution of multiple userspace processes, provide inter-process isolation, and perform virtual-to-physical translation. We assume a CPU core with a memory management unit. We also consider a CPU equipped for CHERI, such that the en-tire runtime environment can operate in pure-capability mode 
+
+(i.e., all pointers are turned to capabilities and non-capability memory accesses are prohibited). Prismatic capabilities aim to support establishment of enclaves, housing code and data that is isolated from the most privileged software on the sys-tem. We consider an adversary ( Adv ) in line with related works [6, 7], which we assume can exploit vulnerabilities in the OS to gain control and call an arbitrary sequence of op-erations at its disposal. With this control, Adv can modify memory not explicitly protected to either (1) leak secrets (2) tamper with an enclave’s code /data. We assume CHERI’s spatial-safety properties hold as in-tended. As such, we assume permissions and bounds can only be decreased through the creation of a new (equal- or less-privileged) capability (cf. CHERI monotonicity in §2.1). An enclave may divulge prismatic capabilities pointing to enclave memory to untrusted software. In § 4 we explain how CPU hardware ensures such capabilities remain opaque to untrusted software and other enclaves. However, we as-sume enclave software to be responsible for validating that any prismatic capabilities it receives from untrusted software are pointing to valid and correct objects within the enclave. This assumption is consistent with TEEs which must vali-date any untrusted input from outside their trust boundary before the input is used in sensitive operations. Hardware attacks that require physical access to circumvent hardware protections (e.g., hardware-protected code /data) are out-of-scope for this work, as they require a set of mitigations that are orthogonal to the focus of this work [36, 37, 38, 39]. Con-sistent with prior TEE work [3, 13, 12, 7], availability is out of scope: since Adv controls the OS, it can trivially deny service by refusing to schedule the host process. Regarding remote attestation, we also assume Adv may discard, inject, or modify network messages [40]. We exclude microarchi-tectural side-channels from our adversary model, but discuss this threat surface in-detail in Appendix 8. 
+
+## 3.2 Design Goals and Challenges 
+
+Prior work [13, 12, 27] has extended traditional usage of CHERI capabilities beyond spatial safety. However, the fol-lowing challenges must be addressed to enable an e ffi cient capability-based TEE design: 1. obtaining exclusive ownership of capabilities belonging to the TEE without performing expensive look-up operations (e.g., memory sweeps or tree-traversal); 2. enabling privilege separation for management of metadata used to track provenance of TEE; 3. enabling exclusive access with an untrusted host OS, as capabilities are specified on virtual addresses and enclave protection needs to apply to physical addresses; 4. enabling e ffi cient domain transitions, such that enter and exit from enclave does not require performing an expen-sive context-switch routine to disable an enclave’s capa-bilities; 5. enabling external verifiers to assess whether a particular enclave was created using the expected code /data and ex-ecutes on the anticipated system. To address these challenges, a capability-based TEE architec-ture must have the following properties: 
+
+[P1] Exclusive Ownership Management : assigning and re-voking exclusive ownership of an enclave’s capabilities must not require expensive search operations, and meta-data for provenance tracking must be inaccessible to un-trusted software. [P1] ensures enclave isolation from its untrusted host userspace process. 3[P2] Physical Memory Exclusivity : enclave capabilities must be bound to physical access control measures, in addition to out-of-the-box spatial safety on virtual ad-dresses. [P2] ensures enclave isolation from the un-trusted host OS. 
+
+[P3] Safe Domain Transitions : entering and exiting an en-clave (calls /returns or interrupts by the untrusted OS) must not enable tampering with enclave state. 
+
+[P4] Spatial and Temporal Safety : full spatial and temporal safety across both enclave and non-enclave execution. 
+
+[P5] Secure Measurement and Attestation : enclave code and data is cryptographically measured upon creation, with measurements stored in TCB memory; attestation reports bind the enclave to both the installed TCB and device. 
+
+# 4 Prismatic Capabilities Design 
+
+Prismatic capabilities extend CHERI capabilities with a hue-based 3isolation mechanism that enforces exclusive access to physical memory regions. The name draws on the analogy of an optical prism separating white light into distinct spectral components: a single address space is partitioned into iso-lated protection domains, each identified by a distinct hue and accessible only through capabilities bearing the same hue. Prismatic data capabilities additionally carry a color for tem-poral safety protection of dynamically allocated memory re-gions within a hue (enclave instance). Fig. 2 shows the com-ponents of a prismatic capability system and depicts the en-clave life cycle. A prismatic capability carries a hue attribute (encoded in the capability’s object type field) assigned by a machine-mode TCB at enclave creation time. Each prismatic capa-bility belonging to a particular enclave instance carries the same hue. At each memory access, CPU hardware compares the capability’s hue against entries in a hardware-managed 
+
+Hue-Addressed Memory (HAM) table. The HAM associates contiguous physical memory regions with the enclave’s hue identifiers. The check applies to both instruction fetch and data load /store (keyed on the authorizing capability); addi-tionally, for data loads /stores, a check on the validity of the color’s provenance is performed. The memory access suc-ceeds if 1) the access’s physical address, after translation, resides within the enclave’s physical region, 2) the hue and color of the capability authorizing the access matches that registered for the target region, and 3) the access is other-wise valid according to the bounds, permissions, and other invariants enforced by CHERI. Crucially, prismatic capabili-ties are usable only from within the enclave with the same hue 
+
+[P1] . Additionally, even if stale or forged (non-hue) capabili-ties reference the same physical addresses, they cannot access a hue-locked region [P2] . Together, [P1] and [P2] provide isolation without page-table isolation or software-mediated domain crossings. CHERI’s monotonicity property ensures any capability de-rived from a prismatic capability shares the original capabil-ity’s hue, but capabilities of an arbitrary hue cannot be forged.    
+
+> 3A “ hue ” contrasts with the use of “ color ” used to refer to subject or object identifier in tag-based memory access-control schemes or by PICASSO
+> with respect to CHERI’s otype while encoding a provenance ID (§2.1).
+
+## 4.1 System Components 
+
+As shown in Fig. 2, the system is comprised of hardware com-ponents, software modules, and data structures. Among the software modules are the following: 
+
+• OS: the system’s full feature-rich host OS. The OS is as-sumed to be compromised and acting maliciously. 
+
+• App : a host application, which requests the creation of an enclave within its own address space. 
+
+• Enclave : a subsection of the App’s address space used for operations isolated from the rest of the system. 
+
+• Hue Management Monitor (HMM) : a security monitor that operates at machine mode level, and is responsible for crucial aspects of an enclave’s life cycle. We assume there are just two main hardware components: 
+
+• PRISM CPU : the CPU core which is capable of enforcing standard CHERI spatial memory safety, augmented with support for prismatic capabilities. 
+
+• HAM : PRISM ’s hardware mechanism for enforcing phys-ical memory isolation for enclaves (full details in Sec-tion 5.1). It is a sub-component of the PRISM CPU. Finally, the HMM maintains one critical data structure called the hue table , which maintains a mapping of enclave hues and the measurement of the code and data upon creation. 
+
+## 4.2 Life-cycle 
+
+We describe the enclave life cycle stages: creation, execution (invocation, return, preemption), attestation, and destruction: 
+
+Enclave Creation. In 1 , the host application creates an enclave by calling the OS and passing the enclave binary (e.g., encl.so in Fig. 2). In 2 , the OS allocates a contiguous physical region and invokes the HMM (via a privileged call) in 3 . In 4 the HMM assigns a unique hue to the enclave in-stance (e.g., 1 in the example depicted in Fig. 2), measures the memory contents by computing a cryptographic hash over the enclave’s code and data, and records the hue-to-measurement binding in hue table in HMM-private storage. Fig. 2 shows a mapping between the hue 1 and h(encl.so) in the hue table. In 5 , HMM updates the HAM to associate the hue with the physical region (further details in Section 5.1). Then, it locks the memory against all memory accesses except for ac-cesses through prismatic capabilities with the associated hue. Finally, the HMM seals a code capability and a data capa-bility (e.g., EPCC and EDCC in Fig. 2) with the assigned hue, and returns them to the host application in 6 . After creation, the sealed capabilities are the only means to enter the en-clave. Hue accesses are confined: a capability carrying a TEE hue may only access memory explicitly assigned to that hue; the host OS cannot redirect the enclave to attacker-controlled memory by manipulating page tables. 
+
+Enclave Execution. The enclave is invoked in 7 by the host application. It enters the enclave via a single unprivi-leged hardware instruction (described further in Section 5). Upon the execution of this instruction, the HAM validates that both code and data capabilities carry matching hue, acti-vates the corresponding hue entry, installs the code capability, and transfers control to the enclave entry point. A return sen-try is saved for later use by the enclave to return to the caller. As a result of this design, no trap to the HMM occurs; in-vocation is entirely a hardware operation. From this point, in-4Figure 2: Overview of prismatic capabilities : hardware /software components and the enclave life cycle. struction fetches and data accesses succeed because the code and data capabilities carry matching hue. Any code whose capabilities carry a di ff erent hue is denied by the HAM. Interrupts may fire during enclave execution. The HMM preempts the enclave by saving its register state into enclave memory (inaccessible to the OS), deactivates the HAM en-try to re-lock the enclave’s memory, scrubs the trap frame, and redirects execution to OS interrupt handler. The OS pro-cesses the interrupt, unaware that an enclave was executing. To resume, the host simply re-invokes the enclave; entry logic detects the saved state and the HMM restores execution from the interrupted point. Synchronous faults (such as CHERI exceptions) are handled similarly, except they terminate the enclave execution rather than saving resumable state. In 8 , the enclave exits via a single unprivileged instruction that atomically deactivates the hue (re-locking the enclave’s memory) and returns control to the caller. The HAM entry remains valid, so the enclave can be re-entered at a later time. 
+
+Attestation . The host application responds to remote at-testation requests by calling the OS to transfer control to the HMM for report generation in 9 . The HMM constructs a re-port, containing measurements of the enclave code, the hue, an attestation challenge, and measurement of the HMM code. This report is then signed using the device signing key, bind-ing the measurements of the enclave and HMM at the time of the attestation request to the particular device. The remote attestation protocol is discussed in more details in §5.6. 
+
+Destruction. In 10 , the host application can permanently destroy an enclave, by making such a request to the OS, which in return forwards the request to the HMM via a privileged call. The HMM invalidates the hue in the HAM, retires the hue, then clears and releases the physical memory in 11 . Pris-matic capabilities become unusable when the hue is retired: their hue no longer corresponds to a HAM entry, so subse-quent invocation attempts fault. Retired hues can later be re-claimed by the HMM by performing a system-wide sweep to revoke stale prismatic capabilities held by untrusted software. This hue-revocation is independent of the enclave life cycle. 
+
+## 4.3 Enclave temporal safety 
+
+While enclave spatial safety follows from the baseline CHERI design (§ 3.1), we adapt colored-capability-based temporal-safety enforcement ([P4] ) from PICASSO [27] (§ 2.1). Our adversary model precludes storing provenance-validity data in a host-controlled PVT . Instead, each enclave contains an enclave provenance-validity table (EPVT) . Pris-matic capabilities reserve a portion of CHERI’s otype as hues. The remaining otype s are treated as PICASSO colors. The EPVT contains 1-bit PVB entries indexed by the color (i.e., provenance ID). On allocation, a trusted memory al-locator within the enclave assigns a unique color to pris-matic capabilities and marks the corresponding PVB in the EPVT valid . On free, the allocator marks the correspond-ing PVB invalid . All loads or stores with a color are subject to an additional hardware check against the EPVT in paral-lel to hue checks. Once a color has been invalidated, the CPU ensures that all capabilities with that color cannot be dereferenced, preventing use-after-free (UAF) and use-after-reallocation (UAR) conditions within the enclave. The re-vocation sweep which invalidates stale heap capabilities and reclaims colors (performed by a separate kernel thread in PI-CASSO ) is performed by the trusted runtime inside the en-clave. Unlike CHERI revocation sweeps, enforcing temporal safety within enclave instances only requires sweeping the particular enclave memory. According to our system and ad-versary model (§3.1), enclave code is responsible for validat-ing any capability divulged to, and later received back from untrusted code. Since temporal-safety enforcement does not extend to capabilities that have left the enclave boundary (due to our adversary model § 3.1), enclave software must ensure potentially stale capabilities originating from outside the en-clave are not used. 
+
+# 5 Implementation Details 
+
+In this section, we present PRISM , our implementation of pris-matic capabilities for the CHERI-RISC-V architecture. We implemented two versions of PRISM : 1) a QEMU-system-CHERI128 full-system emulator, and 2) a softcore based on the CHERI-Toooba processor intellectual property (IP) (§ 5.1). We also implement an M-mode security moni-tor (HMM) (§ 5.2), a CheriBSD kernel driver (§ 5.3), and an SGX-compatibility layer comprising a trusted enclave runtime system (TRTS) and an untrusted runtime system 5(URTS) 4(§5.4). 
+
+## 5.1 PRISM CHERI-RISC-V Implementation 
+
+Hue-Addressed Memory. The HAM is the hardware mech-anism that enforces enclave physical memory isolation. It is a 64-entry fully-associative table positioned between the memory management unit (MMU) and the memory subsys-tem. On every memory access (instruction fetch or data load-
+
+/store), after the MMU produces a physical address, the HAM checks whether the capability used for the access falls within a protected region and, if so, whether it carries the correct hue. Where the MMU enforces virtual-to-physical translation and page-level permissions, the HAM enforces domain sepa-ration: it determines whether the code currently executing has the right to access a particular physical address range, based on the hue carried by the capability being used for the access. HAM entries use naturally aligned power-of-two (NAPOT) encoding, storing a base page number and a size exponent rather than explicit base and top addresses. This replaces two magnitude comparators with a single masked equality check. Each entry totals 66 bits:                
+
+> Field Bits Description
+> basePage 52 physical page number of region start
+> log2Pages 6region size =2log2Pages pages
+> hue 6enclave instance identifier
+> valid 1entry is programmed
+> active 1enclave is currently executing
+
+For a given access to page number P and entry with base B
+
+and exponent L, the entry matches when ( P & ∼(2 L − 1)) = B.All 64 entries are evaluated in parallel. If one or more entries match, access is granted only if the matching entry is active 
+
+and the capability’s hue equals the entry’s hue. The same check gates both instruction fetch and data access, each on its post-translation physical address: a fetch is checked against the hue of the executing pcc , and a load or store against the hue of the capability authorizing it. Because the check hap-pens after address translation, a malicious kernel cannot use the page tables to redirect an enclave’s fetches or data ac-cesses to physical memory of another hue ( [P2] , § 3.2). The mismatched hue is denied regardless of how the virtual ad-dress was mapped. M-mode accesses are unconditionally exempt, allowing the HMM to manage enclave memory re-gardless of HAM state. Each entry additionally holds the temporal-safety metadata needed to verify the color, as de-scribed in §5.5, the enclave-virtual base address of its EPVT bitmap and the number of validity slots it covers. The HAM is core-local (similar to RISC-V’s PMP). In a multi-core con-figuration the HMM must program the corresponding entry on every core. In this work, we limit PRISM to a single core. 
+
+Domain Transition. We introduce EInvoke , an extension to the cinvoke instruction, which activates the corresponding HAM entry (i.e., sets its active bit) when the sealed otype 
+
+falls within the TEE hue range, before transferring control to enclave code. The EInvoke instruction remains unpriv-ileged and does not trap to the HMM. We also introduce a new unprivileged instruction ( EExit ) used to exit from an enclave. This instruction reads the hue from the current pcc ,         
+
+> 4The TRTS and URTS mirror their counterparts in the SGX runtime.
+> 3a color 3b hue
+> 12Permissions 3Object Type 4Bounds 5Baseline architecture address
+
+Figure 3: Prismatic capability layout. Fields ➀–➄ have the same usage as the CHERI capability (from Fig. 1), except for 
+
+➂ which is further subdivided into hue and color. deactivates the corresponding HAM entry (i.e., clears the ac-tive bit), and jumps to the return sentry. The enclave’s mem-ory is immediately re-locked upon return via EExit . Before the exit, the TRTS scrubs general-purpose register, so no en-clave secret or capability remains in registers when control returns to untrusted code; the same scrub guards the outside call (OCALL) exit path. The TRTS and URTS are discussed further in §5.4. On an out-of-order core, enclave entry must be serialized: a HAM entry activates only when EInvoke commits, so PRISM 
+
+suppresses its speculative redirect and, at commit, activates the entry and squashes younger instructions before fetching enclave code. As a result, no instruction runs under the en-clave’s hue before the hue is active ( [P3] , §3.2). EExit needs no barrier, as it returns to host code without a hue. 
+
+Hue, color and otype encoding. The layout of a prismatic capability is shown in Fig. 3. Compared to the CHERI capa-bility layout in Fig. 1, a prismatic capability subdivides the 
+
+otype into two sub-ranges reserved for enclave use. The re-served sub-range of the otype space is defined via TEE_-OTYPE_BASE . All otype s values defined below this are either colors or CHERI reserved types, whereas otype s at or above it encode enclave instance identity in 3b and its EPVT meta-data in 3a . Specifically, each prismatic capability otype is defined as otype = (hue ≪ pvt_shift ) | color , where: 
+
+• hue is an id_width -bit enclave instance identifier that se-lects the HAM entry and hue table row; 
+
+• color is the remaining low-bit index into its EPVT; 
+
+• pvt_shift splits the 21 otype bits between hue and 
+
+color bits (e.g., pvt_shift = 21 - id_width ). The value of pvt_shift is determined at run time from a machine-mode control and status register (CSR). Making this split software-configurable preserves backward compatibility across di ff erent enclave-ID allocations without modifying the hardware datapath. The default 6-bit id_width admits up to 63 concurrent enclaves (hue ∈ [1 , 63]) and a 15-bit color per enclave instance. This split can be retuned without data-path changes. The four reserved CHERI otype s fall outside 
+
+TEE_OTYPE_BASE and are exempt from the HAM check; the HAM gates only capabilities whose otype lies in the enclave range. 
+
+Machine-mode monopoly on hue assignment. The hue is an unforgeable, M-mode-rooted credential that untrusted code may hold and pass but never conceive. The PRISM hard-ware restricts creation of enclave-range otype s to M-mode: any attempt by S- or U-mode software to seal a capability with a hue it does not already hold is rejected. Untrusted soft-ware thus cannot forge an enclave’s hue or mint a new one to alias it. The only source of valid enclave-owned prismatic 6capabilities is the HMM’s creation routine. 
+
+## 5.2 Hue Management Monitor 
+
+The HMM is a minimal M-mode security monitor. It is the only software component that can program HAM entries, ac-cess enclave memory (via M-mode exemption), and manage hue and otype encoding. 
+
+Boot . The boot process atop PRISM occurs in two stages. The HMM is the first code to execute at reset. It (1) configures the HAM so that supervisor-mode software cannot access the HMM’s text region, (2) reserves one hue for its own exclu-sive use, and (3) initializes the hue table and M-mode CSR defining pvt_shift . In the second stage, the HMM loads the CheriBSD kernel and transfers control to its entry point in supervisor mode. Because isolation between HMM and OS is configured in the first stage, the HAM blocks OS ac-cess to HMM memory. The OS therefore serves TEE-related requests from the application through /dev/tee device node (discussed further in §5.3). 
+
+Creation. On an enclave creation request, the HMM: (1) as-signs a hue from a bitmap allocator, (2) measures the enclave code and static data pages in place by computing SHA-256 over their contents (using relative virtual addresses so o ffl ine verification is independent of load address), (3) programs the HAM entry (with valid=1, active=0 ), and (4) seals code and data capabilities with the assigned hue. The sealed capa-bilities are returned to the kernel via a shared bu ff er. The HMM also processes __cap_relocs on behalf of the en-clave, deriving a corresponding capability for each entry: 
+
+• function entries receive enclave-wide bounds (so that pcc -relative addressing remains valid from any function) and execute permission, derived from M-mode pcc ;
+
+• data entries receive per-object bounds derived from M-mode default data capability ( ddc ), with constant entries further restricted to read-only. Each resulting capability is associated with the enclave’s hue and written into enclave memory where indicated by the cor-responding __cap_relocs entry. This ensures indirect refer-ences in the enclave use a valid prismatic capability carrying the enclave’s hue. 
+
+Trusted interrupt handler. Timer interrupts arrive asyn-chronously and, because the untrusted OS services them, pose a confidentiality hazard: a preempted enclave’s register file must never be visible to the kernel, yet the kernel must still schedule and enforce fairness. PRISM reconciles these re-quirements by interposing the HMM on the interrupt path. When a timer fires during enclave execution, the HMM (1) takes the trap in M-mode, (2) saves the enclave’s architectural state into a per-enclave state save area (SSA) in the enclave’s own hue-protected data region, (3) scrubs the general-purpose registers, and (4) converts the machine timer interrupt into a supervisor timer interrupt that the kernel handles through its ordinary path. Execution resumes transparently on the next enclave entry. The SSA is laid out as follows:             
+
+> Off set Field Size
+> 0x000 resume_ marker 8 bytes 0x010 saved_pcc 16 bytes (capability) 0x020 user_ret 16 bytes (capability) 0x030 regs[0..31] 32 ×16 bytes
+
+Non-preemptible transition windows. Saving the enclave’s architectural state is only correct when the interrupted pro-gram counter lies in enclave instructions, where all state is live in registers and the SSA is not being modified. This in-variant breaks while the enclave is inside its own entry /exit trampoline: these sequences write the SSA themselves, so saving the state mid-sequence could corrupt it or overwrite re-sume context that an OCALL is still consuming. We therefore treat this short, statically known entry /exit sequence as non-preemptible . The HMM sets a conservative boundary above it and, on a timer trap, compares the faulting pcc against this boundary, declining to enter the respective trampoline again and returns via mret . Since the sequence is short and non-looping, the pending tick is delivered cleanly through the ker-nel’s normal path on the next cycle. 
+
+Idempotent resume. On re-entry via EInvoke the tram-poline inspects SSA.resume_marker : if unset, the trampo-line takes the first-entry path that establishes the stack and calls directly into enclave; if set, SSA.resume_marker de-notes a pending interrupt resume which PRISM handles in M-mode. The trampoline executes a single reserved instruction that traps directly into the HMM. The HMM reloads general-purpose registers from the SSA, sets mepcc CSR to saved_-pcc , and returns with mret to the enclave. Since this resume instruction sits in the non-preemptible prefix, a timer arriving just before it retires is declined and simply re-executes on the next entry, so interrupt /resume do not expose partial state. 
+
+Trusted fault handler. A synchronous fault inside an ac-tive enclave—a HAM /temporal-safety denial or any CHERI violation—raises the same hazard as an interrupt: it occurs with the hue live and enclave data in registers, yet must be reported to untrusted software. PRISM does not delegate the enclave-relevant fault causes (the CHERI exception and the HAM’s load /store access faults) to supervisor mode, so they trap to the HMM. If the faulting pcc carries a hue, the HMM invalidates the HAM entry, scrubs the registers, and redirects to the host’s return sentry with a distinguished status—as on the interrupt path, but without saving resumable state, since a fault is fatal. The host sees a defined exit, not a register leak or crash. Faults from non-enclave code carry a non-prismatic capability pcc and are passed unchanged to the kernel. 
+
+Report Generation. The HMM constructs and signs a RE-PORT data structure when a host application issues the TEE_-IOCTL_GEN_ATT ioctl (which drives the SBI_ENCLAVE_-GEN_ATT call, Table 1). The REPORT data structure has the fields:       
+
+> Field Size
+> chal __HASH_SIZE__ hue 8 bytes
+> encl_measurement __HASH_SIZE__ hmm_measurement __HASH_SIZE__ signature __SIG_SIZE__
+
+The host application obtains chal , the remote attestation challenge, over the network and passes it to the HMM call along with hue , the hue of the enclave being reported on. The remaining fields come from HMM private memory: encl_-measurement is read from the hue table entry for that hue, 
+
+hmm_measurement is a static measurement of the HMM’s own initial state, and signature is the digital signature com-puted over the other four fields. hue is 8 bytes; while the re-7maining fields are sized according to the hash function and digital signature algorithm installed in the HMM. Our proto-type uses SHA256 and ED25519, so __HASH_SIZE__ is 32 bytes while __SIG_SIZE__ is 64 bytes. The HMM uses hash and signature algorithms from the formally verified HACL ∗
+
+library [41]. 
+
+Destruction. On a destroy request for a given hue, the HMM decodes and validates the enclave id from its hue, then zeros the enclave’s physical pages (data region, EPVT, and stack), along with the SSA, so that no later occupant of the same pages or hue can observe stale data or resume context. Only after scrubbing does the HMM invalidates the HAM entry, restoring the supervisor mode access and letting the kernel reclaim the pages. Since the scrub runs under the HMM’s M-mode HAM exemption, the enclave pages are never exposed to supervisor mode in an unclean state. Finally, it retires the hue, preventing its reuse until a full-memory sweep by the HMM (§8) revokes any prismatic capabilities which have es-caped the enclave memory. 
+
+## 5.3 CheriBSD Support 
+
+We implement a /dev/tee device in CheriBSD whose 
+
+ioctl s cover the enclave lifecycle: creation, destruction, and attestation-report generation (see Table 1). The kernel’s role is minimal: allocate memory, invoke the HMM, and relay prismatic capabilities between the HMM and userspace. The kernel is explicitly untrusted: it can neither access enclave memory nor forge prismatic capabilities. 
+
+Memory allocation & code transfer. Because a single HAM entry covers one naturally-aligned power-of-two region (§ 5.1), the kernel backs each enclave with exactly such a re-gion. Enclave creation begins with a single TEE_IOCTL_-CREATE request, carrying a caller-supplied struct that con-tains: (1) the entry virtual address and size; (2) the reloca-tion metadata the HMM requires; (3) the EPVT size. After validating that the region size is page-aligned and within the maximum size limit (e.g., 64 MB in our prototype), the ker-nel allocates physically contiguous pages with power-of-two size and natural alignment. For an enclave requesting n pages it allocates 2 ⌈log 2 n⌉ pages (at most a 2 × overhead). Any extra pages are zeroed and protected by the same HAM entry. The kernel also stages the enclave image: it wires the en-clave’s source pages, copies their contents through the ker-nel’s direct-mapped window, and rewrites the page-table en-tries at the enclave’s existing virtual addresses with the wired mappings. This leaves the virtual address unchanged while its physical backing becomes the region the HMM will isolate. Because staging precedes isolation, the region remains ordi-nary userspace memory until the HMM activates the HAM entry during the creation call (§ 5.2), after which the HAM denies access lacking the correct hue. 
+
+The cap_buff protocol. The kernel communicates with the HMM through a fixed-layout shared bu ff er ( cap_buffer ), passed in via an Supervisor Binary Interface (SBI) call. The kernel fills the bu ff er’s input region with each enclave page’s physical address and relocation metadata HMM needs to seal the capability table (the __cap_relocs off set and size, the ELF text virtual address, and the static section size). The HMM operates in place on this bu ff er, and the kernel then copies the results into the ioctl output, along with the allo-            
+
+> Intel SGX Host action HMM call
+> sgx_create_enclave TEE_IOCTL_CREATE ENCLAVE_CREATE
+> enclave call (ECALL) EInvoke —OCALL EExit —remote attestation TEE_IOCTL_GEN_ATT ENCLAVE_GEN_ATT sgx_destroy_enclave close ENCLAVE_DESTROY
+
+Table 1: The SGX life cycle on PRISM .
+
+Figure 4: Processing of an Intel SGX application with 
+
+PRISM ’s SGX-compatibility library cated hue and confirmed entry address. To the kernel, these outputs are opaque bytes it relays but cannot modify or forge. 
+
+Destruction. On an application’s request, the kernel triggers the destruction sequence of §5.2. Since each open /dev/tee 
+
+admits a single enclave, closing the device tears that enclave down. On return, the kernel removes the enclave’s page-table mappings and frees the contiguous bu ff er. 
+
+Attestation. A separate ioctl request handles attestation-report generation (§ 5.2). Here, the kernel is confined to data transport: it allocates a shared bu ff er, copies the caller’s chal-lenge and the target enclave’s hue, and invokes the HMM. On return, it copies the HMM-generated report into the ioctl 
+
+result and frees the bu ff er. The kernel cannot access the pri-vate key used to construct the report, and tampering in transit is detectable by inspecting the report signature. 
+
+## 5.4 Supporting Unmodified SGX Applications 
+
+To support unmodified SGX applications, we provide an SGX-compatibility library that operates over the standard SGX application file structure, as is depicted in Figure 4. The resulting host /enclave interface is small (Table 1): the whole enclave life cycle is two /dev/tee ioctl s plus close , and enclave entry and exit are unprivileged hardware instructions that never trap to the HMM. Intel SGX applications contain two source directories: 
+
+• App : contains the host-side application, which creates and invokes an enclave. 
+
+• Enclave : contains the enclave code itself and an Enclave Definition Language (EDL) file declaring the functions comprising the host-enclave interface. The EDL file declares a set of ECALLs and OCALLs, each annotated with a parameter direction (e.g., [in] , [out] ,or [in-out] ) and parameter semantics (e.g., [string] for string variables or [count=N] for expected bu ff er sizes). We first parse the EDL to identify the ECALL and OCALL functions, signatures, and shared data structs, producing four output files: Enclave_u.h , Enclave_u.c/cpp , Enclave_-
+
+8t.h , Enclave_t.c/cpp . These files implement the un-trusted (_u ) and trusted (_t ) marshaling layers . Each layer defines identical per-ECALL structs describing the packed ar-gument layout, ensuring the host and enclave agree on the data representation across the trust boundary. The untrusted layer implements ECALL wrapper functions and an OCALL dispatcher. The trusted layer implements OCALL stubs and an ECALL dispatcher that reads the ECALL ID, allocates input bu ff ers, and invokes the target function. On return, it copies results back before freeing the temporary bu ff ers. At build time, the marshaling layers are combined with our untrusted and trusted runtime systems (URTS and TRTS). The TRTS is linked directly into the enclave source code and supplies (1) an ECALL trampoline for handling ECALL en-try, OCALL exit, and interrupt resumption; (2) a freestanding bounded heap allocator–adapted from dlmalloc; (3) a linker script; and (4) a freestanding C /math /C++ runtime—objects extracted from CheriBSD kernel. The URTS is linked into the host application and implements enclave management (cre-ation /destruction), the ECALL /OCALL dispatch loop, and an assembly wrapper around EInvoke for entry /re-entry. The TRTS’s allocator additionally enforces temporal-safety, asso-ciating each allocation with a fresh color and triggering a re-vocation sweep on color exhaustion (§5.5). 
+
+Outside calls (OCALLs). An OCALL reaches a host-side service (file I /O, network access, or memory allocation be-yond the enclave’s static heap) without involving the HMM: the enclave exits and re-enters through the normal invoca-tion path. The enclave writes the OCALL request to a shared host-side memory bu ff er. It then saves its callee-saved registers and return address into a dedicated OCALL slot within the SSA (§ 5.2, disjoint from the interrupt save area), writes an OCALL-resume marker value, and executes 
+
+EExit . The URTS detects the OCALL via a distinguished return value, dispatches the requested function, writes the re-sult back into the shared bu ff er, and re-invokes the enclave via 
+
+EInvoke . On re-entry the trampoline detects the OCALL-resume marker value, restores the saved registers, and returns control after the OCALL call site, as if the host function had returned normally. The SSA preserves continuity across this boundary, and the HAM keeps enclave memory locked while host code executes. The shared bu ff er is an untrusted commu-nication channel; the enclave must validate all data returned through it. 
+
+## 5.5 Spatial and Temporal Safety inside TEE 
+
+CHERI provides spatial safety via its default pure capability mode. Temporal safety uses the EPVT (§4): a one-PVB-per-slot bitmap at the top of the enclave’s hue-protected region, unreachable from outside. Each tracked allocation carries a 
+
+color , and each HAM entry holds the metadata to locate the EPVT. At creation, the HMM reserves a fixed 4KB EPVT at the top of the enclave’s hue-protected region. 
+
+Allocation and enforcement. The trusted allocator assigns a color for every allocation; free marks the slot invalid. Since slots are never reused while fresh colors remain, a dan-gling capability can never match a later allocation, and use-after-frees fault immediately. Since validity bits are cached, revoking a slot is followed by a fence for the hardware check to observe it.                          
+
+> Vrf Prv
+> HMM App & OS (1) Request remote attestation:
+> Request :{chal ,hue }
+> (2) HMM.GET_REPORT (chal ,hue ): (3) Construct report:
+> henclave :=HUE_TABLE[ hue ]
+> (4) Sign and finalize report:
+> σ:=Sign (sk HMM ,{chal ,hue ,henclave ,hHMM })
+> REPORT :={chal ,hue ,henclave ,hHMM , σ }
+> (5) Obtain REPORT
+> (6) Send REPORT
+> (7) Verify Report:
+> Verify (pk HMM ,REPORT )
+
+Figure 5: Remote attestation protocol for a running enclave that was assigned hue by HMM. 
+
+Batch revocation. On color exhaustion, the allocator runs one revocation sweep: it scans the enclave’s heap, globals, and live stack, clears the tag of every stored capability whose slot is revoked, and returns those slots for future allocations. The sweep runs inside the enclave’s trusted runtime—the HMM is uninvolved, and unlike per-process CHERI revoca-tion (or system-wide hue revocation), only enclave memory is scanned. 
+
+## 5.6 Remote Attestation Protocol 
+
+Fig. 5 depicts the remote attestation protocol between Vrf and 
+
+Prv . This protocol assumes the following initial state: a) an enclave has been created and assigned a hue; b) the measure-ment of its code /data ( henclave ) has been stored in the hue table; c) Prv has a signing key pair ( pk HMM , sk HMM ), for which the verification key is known by Vrf ; d) measurement of HMM initial code /data ( hHMM ) is in HMM storage. Remote attestation begins in (1) when Vrf sends a re-quest containing chal and the hue of the enclave that should be reported. The request is received by the host appli-cation. To generate a report, the host application makes an HMM call in (2) to HMM.GET_REPORT , passing the re-quest data as inputs. In (3), the HMM assembles the re-port fields specified in § 5.2: it reads henclave from the hue table by indexing with the hue , and fetches hHMM from its own memory. In (4), {chal , hue , henclave , hHMM } are signed us-ing sk HMM to obtain a signature ( σ), finalizing REPORT as 
+
+{chal , hue , henclave , hHMM , σ }. As a result, σ authenticates that this report was generated by Prv ’s HMM at the time of the request. In (5), HMM returns REPORT to the host application, which forwards it to Vrf in (6). On receipt in (7), Vrf verifies 
+
+REPORT by: i) unpacking it into { chal , hue , henclave , hHMM , σ };ii) validating σ against pk HMM ; iii) checking that chal , hue 
+
+match the original request; iv) checking henclave against the expected code /data pages for the enclave; v) checking hHMM 
+
+against the expected configuration. 
+
+# 6 Evaluation 
+
+We evaluate PRISM across three dimensions: performance, security, and hardware area cost. For performance, we use the BESSPIN-GFE security evaluation platform, which sup-ports the CHERI-Toooba softcore out-of-the-box. We re-place the standard core with our PRISM CHERI-Toooba, 9bzip2 gobmk hmmer sjeng libquantum h264ref omnetpp xalancbmk                
+
+> geomean
+> 00.511.51.0 1.0 1.0 1.04 1.01 1.01 1.38 1.02 1.05 1.0 1.0 1.0 1.05 1.09 0.99 1.37 1.03 1.06
+> Overhead Factor (Cycles)
+> PICASSO PRISM Baseline (1.0x)
+
+Figure 6: Comparison of overhead factor between PRISM and 
+
+PICASSO [27] for SPEC CPU 2006 [42] benchmarks. an extension of the CHERI-RISC-V Toooba FPGA softcore (RV64ACDFIMSUxCHERI) built on the open-source Blue-spec RISC-V 64-bit Toooba core. We synthesize the system-on-chip (SoC) at 25MHz (default for BESSPIN-GFE) target-ing the Xilinx Virtex UltraScale + VCU118 FPGA. We an-swer the following research questions: 
+
+RQ1 : How does PRISM impact the baseline processor in terms of performance compared to state-of-the-art capability-based temporal-safety mechanisms (e.g., PI-CASSO [27])? 
+
+RQ2 : How do overheads introduced by PRISM for enclave ex-ecution compare to overhead introduced by Intel SGX? 
+
+RQ3 : How does PRISM impact the baseline processor in terms of fixed hardware, energy, and memory cost? 
+
+RQ4 : How does PRISM security hold against the adversary model defined in Section 3.1? 
+
+## 6.1 Performance 
+
+This section answers RQ1 and RQ2 . For RQ1 , we run a series of test programs from SPEC CPU 2006 [42] bench-marks and compare the performance of PRISM against PI-CASSO [27]. For RQ2 , we evaluate three open-source SGX applications and compare PRISM ’s relative performance over-head to SGX. 
+
+6.1.1 Benchmarks 
+
+Fig. 6 shows the SPEC CPU 2006 comparison between 
+
+PRISM and PICASSO . Despite providing a stronger security guarantee (enclave execution and temporal safety vs. tempo-ral safety alone) compared to PICASSO , PRISM incurs e ff ec-tively the same overhead factor as PICASSO across most ap-plications: a ≈1.06x geomean increase for PRISM compared to ≈1.05x for PICASSO . The one exception is libquan-tum , where PRISM ’s overhead factor departs from PICASSO ’s. These results answer RQ1 : PRISM imposes only modest over-head on baseline execution compared to PICASSO .
+
+6.1.2 SGX Applications 
+
+We evaluate three SGX applications: 
+
+sgx-kmeans [43] runs k-means clustering inside the enclave on points supplied by the host. Using the repository’s gener-ation scripts, we produce input files with sizes ranging from 100K to 1M points in 100K increments. To account for vari-ance across cluster sizes, we average results for each input file while varying the number of clusters ( K = 2 to 8). 
+
+SGX_SQLite [44] hosts a SQL database and runs queries in an enclave. We use a subset of the sqllogictests 
+
+suite [45], specifically the select and index_between (ib )cases. 
+
+CryptoEnclave [46] is an in-enclave cryptographic library supporting SHA256, HMAC-SHA256, and AES. The host application selects an algorithm and the input message, and the enclave calculates and returns the result. Our evaluation set is the repository’s own test cases, which vary the crypto-graphic function, plaintext input type, and key input type. To achieve a fair comparison despite the clock-speed di ff erence between the x86 CPU and the Toooba FPGA softcore, we normalize PRISM run time to PICASSO and SGX enclave run time to non-SGX (x86) enclave execution, then compare the relative increases. Fig. 7 shows the result. Since PRISM does not support memory encryption, we configure tested SGX enclaves in “pre-release” mode to exclude memory encryp-tion. For CryptoEnclave (7a), the input-text variants (T) show the highest relative increase as these operations have the shortest pure execution time and are sensitive to fixed en-clave life-cycle costs (§6.2). On all file-taking operations (F), 
+
+PRISM matches or improves on SGX relative to its baseline. 
+
+PRISM ’s advantage is most evident in SGX_SQLite and 
+
+sgx-kmeans . For SGX_SQLite (Fig. 7c), the increase un-der PRISM is 1.06x–1.15x, compared to 1.67x–1.81x for SGX on the same test cases. For sgx-kmeans (Fig. 7b), the gap is wider: PRISM ranges 0.72x–1.13x against SGX’s 3.90x– 81.8x. We attribute PRISM ’s advantage to two factors: First, 
+
+PRISM ’s lightweight domain transition: enclave entry and ex-its execute as a single unprivileged instruction handled en-tirely by the HAM in hardware, with no trap to the HMM. SGX, in contrast, mediates every EENTER /EEXIT through microcode and page-level EPCM validation [47]. Second, 
+
+PRISM ’s preemption path avoids SGX’s Asynchronous En-clave Exit mechanism, which saves and later restores large CPU state and restores it via the ERESUME path [47]. PRISM 
+
+instead reuses the same fast entry logic for both initial entry and resumption. Since sgx-kmeans and SGX_SQLite issue frequent ECALLs /OCALLs and memory accesses relative to their compute time, these per-transition savings compound into a smaller end-to-end increase than SGX incurs. These results answer RQ2 : PRISM consistently incurs sub-stantially lower overhead than Intel SGX across all evalu-ated applications, owing to its hardware-mediated, trap-free domain transitions in place of SGX’s microcode-mediated entry /exit and exception-handling. Appendix A extends the analysis in §6.1.2 of the PICASSO –PRISM di ff erence. 
+
+## 6.2 Fixed costs 
+
+To answer RQ3 , we analyze PRISM ’s impact on CHERI-Toooba processor logic, energy, and memory. Impact on baseline CHERI-Toooba. We synthesize PRISM CHERI-Toooba for the VCU118 FPGA. Table 2 shows power and resource utilization reported by Xilinx Vivado 2019.1. The overheads over the unmodified CHERI-Toooba are moderate: 
+
+≈16% in logic, ≈11% in registers, ≈8% in memory. 
+
+HMM Memory Footprint. The HMM occupies 273.7KB. It is a modified version of the RISC-V Proxy Kernel and Boot Loader [48]. Our changes account for 6286 lines of 10 SHA256-T SHA256-F HMAC256-T-I HMAC256-T-R HMAC256-F-I HMAC256-F-RAES-ECB-F-R AES-ECB-T-R AES-CBC-F-R AES-CBC-T-R 
+
+00.511.5 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 102.7 1.26 97.9 93.7 1.26 1.26 89.6 3.54 89.9 3.14 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 912.8 1.28 1169 734.5 1.28 1.20 861.8 5.804 874.1 6.16 
+
+> Increase Factor
+
+(a) CryptoEnclave          
+
+> 100K 200K 300K 400K 500K 600K 700K 800K 900K 1M
+
+00.511.5 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.09 1.05 1.02 1.02 1.02 0.72 1.01 1.06 1.00 1.13 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 81.8 41.3 10.1 10.7 8.23 9.15 10.5 8.17 6.16 3.90 
+
+> Increase Factor
+
+(b) sgx-kmeans 
+
+select1 select2 select3 ib_1_0 ib_10_0 ib_100_0 ib_1000_0 
+
+00.511.5 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.13 1.15 1.01 1.15 1.12 1.07 1.06 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.81 1.92 1.77 1.70 1.76 1.75 1.67 
+
+> Increase Factor
+
+Legend: 
+
+PICASSO PRISM 
+
+non-SGX SGX (c) SGX_SQLite 
+
+Figure 7: Normalized run-time comparison: for each application, we compare the end-to-end run-time increase of PI-CASSO →PRISM to non-SGX →SGX. PICASSO and non-SGX execution serve as the two relative baselines. The reported increase factors for PRISM are relative to PICASSO and for SGX are relative to non-SGX execution. Table 2: Area costs of PRISM and PICASSO implemented on the CHERI-Toooba core compared to standalone CHERI-Toooba (baseline). Values are recorded by synthesizing and implementing each design on VCU118 @ 25MHz. 
+
+Baseline PICASSO PRISM 
+
+value value ∆ (%) value ∆ (%) 
+
+LUTs 688096 720347 32251( +4.69) 795776 107680 ( +15.6) Memory 20113 21611 1498( +7.65) 21611 1498( +7.65) Registers 419300 445129 25829( +6.16) 465671 46371( +11.00) 
+
+code, 4354 of which are due to importing supporting files from HACL* [41]. These changes account for a 126.6KB increase of the memory footprint. Per-enclave instance op-erations. Per-instance operations, such as create and destroy, have constant cost. In the evaluated SGX applications this cost was consistent across test cases: enclave creation ranged from 15.63–17.27 seconds and destruction from 1.04–1.71 seconds. Although enclave creation has a per-page operation cost (for hashing code and data to obtain the enclave’s attesta-tion measurement), its cost is dominated by the dlopen of the enclave shared object and the contiguous allocation operation whose cost depends on total DRAM size rather than alloca-tion size. Enclave destruction is dominated by the teardown of enclave page table entries, which scales with page count. 
+
+## 6.3 Security Analysis 
+
+To answer RQ4 , we revisit PRISM ’s desired security proper-ties of from Section 3.2, and argue our design and implemen-tation upholds them. 
+
+[P1] Exclusive Ownership Management. Since Adv con-trols the OS and can invoke arbitrary S-/U-mode operations, hue ownership must be unforgeable from that privilege level. 
+
+PRISM restricts creation of enclave-range otype values to M-mode: any S- or U-mode attempt to access a capability with a hue it does not already hold is rejected, so only the HMM’s creation routine can produce a valid enclave-owned prismatic capability. Combined with CHERI’s monotonicity guarantee: new capabilities can only be narrowed via derivation from a valid capability, Adv cannot synthesize, upgrade, or alias a capability carrying an existing enclave’s hue. Adv may hold and relay prismatic capabilities opaquely (e.g., as a part of SGX-compatibility marshaling), but cannot mint, retype, or widen them. Hue ownership therefore remains rooted exclu-sively in the M-mode HMM, regardless Adv ’s OS-level priv-ileges. 
+
+[P2] Physical Memory Exclusivity . Adv may modify page tables and other OS-managed structures at will, so iso-lation cannot depend on honest virtual-to-physical transla-tion. PRISM ’s HAM checks ownership on the post-translation physical address, authorizing the access by the used capabil-ity’s hue and denying any access whose HAM entry is inac-tive or whose hue mismatches. Since this check occurs post-translation, Adv can neither redirect an enclave’s accesses to attacker-controlled memory through page-table manipula-tion nor remap pages into an active enclave’s protected range. Only M-mode is exempt; it is used solely by the HMM to manage enclave memory during its life cycle. Since Adv 
+
+cannot execute in M-mode, this exemption grants no ability to bypass the checks. 
+
+[P3] Safe Domain Transitions . Since Adv controls OS scheduling and interrupts, domain transitions must not leak enclave state or execute under the wrong hue. Entry and exit via EInvoke /EExit are unprivileged and trap-free, with HAM activation tied to the instruction commit; on out-of-order cores, PRISM suppresses speculative redirects so no in-struction runs under the enclave’s hue before it is active. On 11 exit, the TRTS scrubs general-purpose and capability regis-ters, so no enclave secret in them is exposed to untrusted code. On preemption, the HMM checkpoints the state into the HAM-protected SSA and scrubs those registers before forwarding to the OS. Since the SSA is only reachable via M-mode or a matching hue, Adv learns nothing beyond an ordi-nary timer interrupt. A non-preemptible trampoline boundary and idempotent M-mode resume prevent interrupt racing the enclave entry /exit from capturing inconsistent state. 
+
+[P4] Spatial and Temporal Safety. Spatial safety follows from CHERI’s guarantee that every access is mediated by an unforgeable, narrowing capability, preventing accesses out-side an object’s embedded bounds. Temporal safety comes from the EPVT: each capability to the enclave’s heap car-ries a unique identifier, which are retracted in the EPVT upon 
+
+free , resulting in e ffi cient detection of use-after-frees. Since the EPVT shares the enclave’s HAM entry, Adv cannot alter it. Retraction and full capability revocation runs within the TRTS, without involving untrusted code. 
+
+In-enclave use-after-free detection. We validate temporal memory safety using the heap use-after-free (CWE-416) test cases from the NIST Juliet suite [49], executed unmodified inside a PRISM enclave. All CWE-416 test cases (both C and C++ variants) are compiled into a single enclave. The un-trusted host invokes each vulnerable ( bad ) and benign ( good )function through the standard SGX ECALL interface and records the outcome. PRISM detected all 392 vulnerable cases and produced no false positives across the 392 benign cases. We discover a spatial memory safety violation in the Cryp-toEnclave application, which is further discussed in §8. 
+
+[P5] Secure Measurement and Attestation . We vali-date [P5] by formally modeling the protocol in Fig. 5 (§ 5.6) using Tamarin Prover [50], a symbolic protocol verification tool. Protocol steps and Adv abilities are modeled as a multiset of rules , each rule having its own set of precondi-tions and postconditions ( facts ). Security properties are spec-ified as lemmas . Given the set of rules and lemmas, the Tamarin Prover symbolically evaluates rules in arbitrary or-der, to determine whether all lemmas are upheld (further de-tails in [51]). We prove the following security sub-properties for PRISM ’s attestation protocol, which together support [P5] :1. Report Authenticity : all reports obtained by Vrf only pass verification if signed using Prv ’s secret key; 2. HMM Integrity : the HMM code reported by Prv matches the expected value by Vrf ;3. Enclave Integrity : the pages loaded into an enclave with a particular hue match the expected value by Vrf ;4. Key Secrecy : report data sent by Prv does not allow Adv 
+
+to learn secret key used to sign it; 5. Freshness : Vrf only accepts reports produced with a chal 
+
+sent as a part of their request. Each property maps to a lemma verified by Tamarin. Full specification of our rule-based model of PRISM -based pro-tocol and lemmas specifying these security properties are in Appendix B. All lemmas run in ≈0.45 seconds with ≈168 MiB peak memory usage. This uniformity reflects the shared underly-ing model (e.g., the protocol outlined in Fig. 5), and the di ff er-ence in the proof steps arises from how early pruning occurs. All lemmas except for Key Secrecy require complete explo-ration of the model trace. In contrast, Key Secrecy is com-pleted after two steps since it is resolved by direct absence of attacker knowledge derivations, which is determinable with-out complete protocol exploration. 
+
+# 7 Related Work 
+
+To our knowledge, PRISM is the first capability-based TEE to combine hardware-enforced enclave isolation, in-enclave spatial and temporal safety, and remote attestation under an untrusted paging OS, while running unmodified SGX appli-cations on a real RTL implementation. Prior work achieves only subsets of these: software techniques harden TEE code without architectural enforcement; CHERI extensions add memory safety but no enclave isolation; RISC-V TEEs iso-late enclaves but leave their code’s memory safety to soft-ware; and earlier capability-based TEEs forgo virtual mem-ory, attestation, or a hardware realization. 
+
+Memory Safety for TEEs. Prior work has also targeted memory safety within enclaves. SGXBounds [52] extends LLVM to encode bounds into pointers and instrument ac-cesses with bounds check. MPTEE [53] uses Intel Mem-ory Protection Extension (MPX) with a cross-over memory layout to enable bounds checking across permission regions. RustTEE [54] and Rust-SGX [55] lean on Rust’s memory-safety guarantees. The former provides a Rust compiler for ARM TrustZone, the latter a Rust layer over the Intel SGX SDK, with the Rust-to-C foreign function interface (FFI) formally modeled for safety. Unlike these compiler- and language-based approaches, PRISM enforces both spatial and temporal safety architecturally. 
+
+CHERI extensions . A growing body of work extends CHERI’s baseline capability model to address security chal-lenges beyond spatial safety. Cornucopia [25, 26] integrates a malloc revocation shim into CheriBSD for heap temporal safety, quarantining freed memory and sweeping only when the quarantined reaches a threshold size. PICASSO [27] adds colored capabilities for provenance tracking, enabling more e ffi cient use-after-free protection via bulk retraction. BLACKOUT [23] adds blinded capabilities for added side-channel protection via taint tracking. CapChecker [56] ex-tends the capability model to hardware accelerators, medi-ating their memory interface as if they issued native ca-pabilities. CHERI-SIMT [57] adapts capability protections to GPUs via a capability-metadata register file that exploits redundant metadata across hardware threads to cut storage overhead. CHERI-Crypt [58] adds an encryption engine to a CHERI-RISC-V32 processor for transparent memory en-cryption of sealed capabilities against physical attacks, intro-ducing instruction variants that carry an encryption-required bit. 
+
+RISC-V TEEs. SANCTUM [7] proposes an SGX-like de-sign in which enclaves occupy fixed physical memory ranges, using a dual page-table lookup to keep enclave and OS page tables from referencing each other’s memory. Keystone [6] isolates enclaves using PMP, with an M-mode security mon-itor that creates isolated enclave regions. Timber-V [29] targets embedded systems, using two-bit tagged memory to separate normal and trusted domains with MPU assistance. CURE [30] o ff ers highly configurable enclaves, including 12 Property CHERI-TrEE Capstone PRISM                   
+
+> Exclusive ownership memory sweep tree search O(1) Virtual memory support ✗✗✓
+> Remote attestation ✗✗✓
+> In-enclave temporal safety ✗✓✓
+> Source compatibility with Intel SGX ✗✗✓
+> Hardware (RTL) implementation ✓✗✓
+
+Table 3: Comparison of capability-based enclave designs. 
+
+✓ = supported, ✗ = not supported. exclusive enclave-to-peripheral assignment and cache-based side-channel protection. Penglai [31] introduces a Guarded Page Table and Mountable Merkle Tree for scalable page-level isolation and integrity, supporting thousands of concur-rent enclaves through a lightweight monitor and fast creation via forking of a special-purpose shadow enclave. These de-signs typically place an M-mode monitor at highest privi-lege for enclave management; Dorami [32] instead splits the monitor from the firmware via two isolated M-mode com-partments. All of them isolate enclaves through page tables or PMP, reconfigured by an M-mode monitor on every en-clave switch. PRISM instead checks a capability’s hue at ac-cess time, so entry and exit remain unprivileged and trap-free. PRISM further guarantees spatial and temporal safety 
+
+within the enclave and enforces isolation on physical ad-dresses rather than page-table configuration. 
+
+Capability-based TEEs. Most closely related to PRISM are CHERI-TrEE [12] and Capstone [13]. Both extend CHERI toward TEE-like isolation. Table 3 compares their key as-pects. CHERI-TrEE [12] gives enclaves unique code /data ownership, local attestation, and secure interrupts, but deter-mines ownership via a full memory sweep at enclave creation. 
+
+PRISM instead provides an O(1) check and adds remote attes-tation, in-enclave temporal safety, and support of unmodified SGX applications. Capstone [13] provides exclusive access via linear capabilities (move-only, no copies) and revocation capabilities for sweep-free reclamation, but relies on a cus-tom compiler and hand-written assembly; and its node-tree tracking structure introduces significant performance over-head that PRISM avoids. Since Capstone lacks an RTL imple-mentation, whether maintaining such a node structure is prac-tical in real-world deployments remains unclear. Both PRISM 
+
+and Capstone provide in-enclave temporal safety; PRISM ad-ditionally provides virtual memory support, remote attesta-tion, and SGX portability. 
+
+# 8 Discussion and Future Work 
+
+Hue revocation. Because a hue is encoded in a fixed-width subfield of the otype (§ 5.1), the hue namespace is finite: the default 6-bit id_width allows 63 concurrent enclave in-stances. Retiring a hue at destruction renders the correspond-ing prismatic capabilities unusable, but does not immediately make the hue re-assignable: stale capabilities bearing that hue may still be held by untrusted software, and re-issuing the hue to a new enclave would let those capabilities alias the new instance’s HAM entry. The HMM therefore quaran-tines retired hues and reclaims them in batches. Only once the number of available hues falls below a pre-defined thresh-old does the HMM perform a system-wide sweep, walking all tagged memory—and all register state that may hold capabil-ities—and clearing the tag of every capability whose otype 
+
+encodes a quarantined hue; the reclaimed hues are then re-turned to the hue allocator. Because the sweep is gated on hue pressure rather than on individual enclave destructions, its cost is amortized across many enclave lifetimes and is fully decoupled from the enclave life cycle: destruction it-self remains constant-cost, and no enclave operation blocks on a memory scan. The sweep is also independent of the per-enclave EPVT revocation sweep of §5.5, which is confined to a single enclave’s memory and runs in its trusted runtime. A naïve single-pass sweep is not sound while untrusted software runs concurrently: the host application or OS holds stale prismatic capabilities it may freely copy, so it can read one from a not-yet-swept location and store it into a loca-tion the sweep has already passed, surviving the sweep and aliasing a future enclave that receives the recycled hue. Note this is purely a hue-reuse hazard—a retired hue has no active HAM entry, so the capability cannot be dereferenced. In our current PRISM prototype, the HMM shares a single hart (RISC-V hardware thread) with the host OS, and thus performs the sweep with S-/U-mode execution halted. This approach is trivially sound but requires a pause proportional to physical memory size. We deem this an acceptable limita-tion for the prototype, given that availability is already out of scope §3.1 and the sweep is rare by construction, but it makes worst-case latency visible to non-enclave workloads. We expect multi-core PRISM processors to reduce the latency of the system-wide revocation by parallelizing the sweep, similarly to how Cornucopia Reloaded’s [26] temporal-safety revocation sweep runs in a kernel thread to parallelize its execution relative to userspace code. In PRISM ,the HMM runs in parallel on a hart dedicated for the sweep, while the host OS is scheduled onto another. This configura-tion requires a solution for the above hue-reuse hazard, and we leave evaluating the tradeo ff s between the following ap-proaches to future work: 1. Prismatic capability store barrier. Add an glsm-mode-writable retired-hue mask (a 63-bit CSR, or a retiring bit per HAM entry). On every capability store from U-/S-mode, compare the stored capability’s hue against the mask and clear the tag on a match. This closes the hazard directly: a retired capability can never be written anywhere, so sweep order is irrelevant and no register filtering is needed. The check is a masked lookup on the hue field, parallel to the existing HAM hue check. 2. Prismatic capability load barrier. Apply the same mask check on capability loads , clearing the tag in the destination register. Since the only way to move a ca-pability between memory locations is to load it into a register and store it back, a load barrier likewise makes the sweep single-pass and order-independent, and addi-tionally prevents stale capabilities from re-entering the register file at all. It requires one extra step: capabilities already resident in registers when the sweep begins must be filtered, e.g. the HMM sends a inter-processor inter-rupt (IPI) to each hart and scrubs retired-hue capabilities from its register file, SSAs, and kernel trap frames be-13 fore the sweep starts. Comparing (1) and (2) is largely a question of which path can better absorb the check. 3. Sweep-frontier register. Maintain an machine mode (M-mode) physical-address frontier CSR marking the swept prefix. Stores from U-/S-mode below the fron-tier trap to the HMM, which filters the stored value and completes the store. Only one comparator is added, and the fast path is untouched for the (majority) unswept re-gion; the cost is trap-per-store in the swept region, which grows as the sweep progresses. A HAM-based vari-ant—temporarily assigning swept regions to the HMM’s own reserved hue reuses existing hardware but is limited by the 64-entry, NAPOT-encoded table. 4. Write-tracked iterative sweep. Use coarse write track-ing (a card table over physical pages, or page-table dirty bits) to re-sweep any page that received stores after be-ing swept, iterating to convergence. Avoids datapath changes but an adversarial OS can keep dirtying pages indefinitely, so it needs a bounded number of itera-tions plus a final stop-the-world pass—making it strictly worse than our current stop-the-world sweep unless the tracking granularity is fine enough to make the final pass cheap. 5. Hue epochs. Pair each hue with a generation counter, held in the HAM entry and either carried in spare otype 
+
+bits or in an added capability field, so that a recycled hue does not match capabilities from a previous gener-ation. This does not by itself solve the copying hazard, but it enlarges the e ff ective hue namespace and pushes the threshold-triggered sweep further out; with a wide enough epoch, sweeps become rare enough to be com-fortably a ff ordable. The trade-o ff is otype pressure: bits taken for epochs come out of the 15-bit color space per enclave (§5.1). 
+
+Non-contiguous and dynamically resized enclaves. A
+
+PRISM enclave’s memory is committed once, at creation, and cannot subsequently change. Because a single HAM entry describes exactly one NAPOT region § 5.1, the kernel backs each enclave with one physically contiguous region whose size if fixed by the TEE_IOCTL_CREATE request; the TRTS’s allocator is correspondingly a freestanding allocator over a static arena. An enclave must therefore be provisioned for its worst-case footprint, and over-provisioning is paid for twice: NAPOT rounding contributes up to 2 × internal fragmenta-tion on top of the requested headroom, and the entire region is zeroed and physically pinned for the enclave’s lifetime. Growth beyond the static enclave boundaries is possible only by OCALL to into host-managed memory, which lies out-side the enclave’s hue-protected region and is thus untrusted. This limitation closely mirrors first-generation Intel SGX, in which every Enclave Page Cache (EPC) page had to be added with EADD before EINIT : the heap was sized at build time from enclave configuration’s declared maximum. Intel ad-dresses this in SGX2 with Enclave Dynamic Memory Man-agement (EDMM), which permits pages to be augmented into a running enclave ( EAUG ) subject to explicit in-enclave ac-ceptance ( EACCEPT ). PRISM currently provides no analogous facility. The single-region restriction is an artifact of the one en-try per hue convention ; the HAM’s hue field is per-entry, and nothing in the access check requires hues to be unique across entries. A natural extension for future work is to let hues be associated with a set of NAPOT regions, added in-crementally. We sketch here a candidate design to support non-contiguous and dynamically resized enclaves, but leave implementation and evaluation for future work. The HMM must be permitted to program additional en-tries carruing and existing hue. The hue-check logic is un-changed: all 64 entries are already evaluated in parallel, and access is granted if /emphany matching entry is active with the correct hue. EInvoke and EExit must then activate /de-active every entry bearing the target hue rather than a single entry; on a fully-associate table this is a hue-masked broad-cast set /clear of the active bit, so domain transitions remain trap-free ( [P3] ). Growth is a privileged operation, since only M-mode may program HAM entures (§ 5.1). The enclave requests addi-tional memory from its TRTS; on arena exhaustion it per-forms an OCALL asked the host OS to donate memory; the kernel allocates a NAPOT region and issues an SBI_EN-CLAVE_GROW call over the cap_buffer protocol. The HMM then: i) rejects any region overlapping a valid HAM entry, its own reserved region, or a retired hue’s region; ii) zeroes the region under its M-mode exception before assigning it to the enclave’s hue, so the host OS cannot chosen bytes into the en-clave’s heap; iii) program a new entry with the enclave’s hue and sets it valid; and iv) returns a prismatic capability bound to the new region. AS in SGX EDMM, the host OS must not be able to uni-laterally alter an enclave’s view of its own address space. The TRTS performs an explicit accept step before the region is joined to the enclave’s heap: it validates that the returned pris-matic capability contains the enclave’s hue, that its bounds fall in a virtual range the TRTS itself requested and that it’s disjoint from all existing enclave mappings, and only then links the region into the allocator’s free list. A region the en-clave has not accepted is never dereferences, so an unsolicited growth is inert. Following SGX2’s treatment of augmented pages, grown regions are zero-filled and do not contribute to the enclave measurement, so h_enclave and the verification procedure of § 5.6 are unchanged. The HMM can additionally record per-hue committed-size high-watermark in the hue table and include it in REPORT , letting a verifier bound the enclave’s resource footprint. The EPVT remains at the top of the pri-mary region and need not grow, since the color-space is fixed by pvt_shift (§ 5.1). Encalve temporal-savety revocation sweeps must now traverse all accepted regions. The inverse shrinking operation follows symmetrically and is worth supporting for long-lived enclaves. On an enclave-initiated release, the HMM zeroes the region, invalidates its entry, and lets the kernel reclaim the pages; the same scrub-before-release ordering as destruction (§ 5.2) is applied to a subset of the enclave’s regions. The HMM must prevent the enclave’s primary region from being reclaimed in this man-ner. Beyond removing the worst-case provisioning require-ments, the design should reduce enclave creation latency, the the initial contiguous allocation can start small and grown on 14 demain rather than being sized for the worst case. However, The HAM is a fixed 64-entry resource shared across up to 63 concurrent hues, so unrestricted growth is not viable. HAM utilization can be limited by three complementary measures: 
+
+Geometric growth: each grow doubles the committed size. 
+
+Buddy coalescing: when a new region is the aligned buddy of an existing one, the HMM merges them into a single entry, so the steady-state entry count per enclave stays small. 
+
+Region table with HAM as a cache: for the general case, maintain a per-hue region table in HMM-private memory and treat the HAM as a fully-associative cache over it, filled on miss by a hardware walker or an M-mode fill trap. This is conceptually the same approach as in Confidential VM Ex-tension (CoVE) with its hardware-walked Memory Track-ing Table (MTT) [59] (see below), decoupling the maximum number of regions from the table size at the cost of handling misses. 
+
+Susceptibility of SGX Enclave code to memory-safety is-sues. A key advantage of PRISM is that enclave memory safety is enforced by default for all code, including the o ff -the-shelf SGX applications. Running these atop PRISM sur-faces latent memory-safety bugs that SGX’s lack of hardware bounds enforcement allows to go silently unnoticed. For example, for the examples used in our performance evaluation (in § 6), CryptoEnclave passes miscounted bu ff er lengths into its cryptographic routines: NUL-inclusive lengths, an unstripped strlen+1 key, and its AES decryp-tion loop reads a full 4 KiB block from a ciphertext bu ff er sized to a smaller per-chunk allocation, overreading the heap. Similarly, SGX_SQLite ’s btree integrity checker uses an un-bounded write index into a fixed-size coverage bu ff er, causing 
+
+btreeHeapInsert() to overflow whenever a page’s cell and freeblock count exceeded pageSize/4 . This underscores that the lack of inherent memory-safety measures in the TEE programming model manifests as silent bugs in real-world applications, whereas PRISM ’s capability foundation catches these violations. Our source code changes to address these and other com-patibility issues add or modify the following number of lines for each application: 16 for CryptoEnclave , 25 for sgx-kmeans , and 16 for SGX_SQLite . This excludes minor changes, such as removal of SGX EID’s from function sig-natures, adding extern “C” labels in function declarations for compiling with our runtimes, and renaming of functions to avoid conflicts with C libraries (e.g., printf ). 
+
+Speculative-execution and side-channel threat surface. 
+
+PRISM does not attempt to systematically mitigate microar-chitectural side-channels, and we treat transient-execution and timing leakage as orthogonal to the isolation guarantees established in § 4. This scoping decision warrants justifica-tion, particularly in comparison to SGX. A substantial share of the attacks that have eroded SGX’s security guarantees are not failures of its isolation logic but artifacts of the commodity x86_64 microarchitecture into which SGX is embedded. Transient-execution attacks such as Foreshadow [60], LVI [61], and the broader Spectre /Melt-down family [62, 63, 64, 65] exploit speculative and out-of-order machinery that is shared with the rest of the core; SGX enclaves inherit this attack surface rather than introduce it. SGX is thus perennially exposed to a class of vulnera-bilities that are entangled with decades of accreted x86 mi-croarchitectural complexity and are di ffi cult to retrofit against without invasive changes or steep performance penalties. 
+
+PRISM , by contrast, is built on an open CHERI-RISC-V substrate whose speculative behavior is comparatively con-strained and, crucially, tractable to reason about: recent work on architectural contracts for safe speculation in CHERI [21, 22] show that principled, hardware-enforced mitigation of transient leakage can be integrated into this platform rather than bolted on. We emphasize that this is a di ff erence in the tractability and extent of the threat surface , not a claim of immunity; an out-of-order core such as CHERI-Toooba retains a transient-execution surface, but the absence of SGX’s legacy microar-chitecture means PRISM does not begin from the same dis-advantaged position, and the mitigations above can compose with PRISM .We argue that pushing complete side-channel resistance into the hardware architecture is neither practical nor, in gen-eral, desirable. Enclave workloads di ff er widely in their side-channel objectives: a workload processing only public inputs may reasonably tolerate data-dependent timing, whereas one manipulating long-term secrets demands constant-time exe-cution and data-oblivious memory access. A one-size-fits-all architectural guarantee would either under-serve the lat-ter or impose its cost on the former. This tension is sharpest for cryptographic code, where the appropriate defenses are algorithm- and even implementation-specific. For exam-ple, the side-channel-resistant realization of post-quantum schemes, in particular, remains an open research problem; the leakage surface of lattice-based and other post-quantum con-structions is still being mapped, and constant-time or masked implementations continue to be discovered vulnerable. Fixing a side-channel countermeasure in silicon under these conditions risks entrenching a defense that later proves incomplete. PRISM therefore deliberately factors side-channel resistance out of its isolation primitives and leaves it to enclave software and to composable mechanisms, e.g., data-oblivious computation over blinded capabilities as in BLACKOUT [23], that can be applied selectively according to each enclave’s threat model. This separation of concerns keeps PRISM ’s TCB minimal while leaving the door open to stronger, use-case-appropriate guarantees where they are war-ranted. 
+
+PRISM and RISC-V CVMs. PRISM and RISC-V’s emerging confidential-computing stack occupy complementary points in the isolation design space: the RISC-V Confidential VM Extension (CoVE) [59] provides confidential comput-ing through a TEE Security Manager (TSM) operating in M-mode to mediate transitions between confidential and non-confidential contexts, with the TSM acting as a trusted in-termediary between the hypervisor and its TEE Virtual Ma-chines (TVMs). Memory ownership in CoVE is enforced by a hardware-walked Memory Tracking Table (MTT) with per-domain access permissions, so that once physical memory is converted to confidential it is reachable only by the confiden-tial supervisor domain. A TVM is a coarse-grained, whole-VM abstraction: the unit of protection is a guest OS and its address space, and the TCB inside the TVM is correspond-ingly large. 15 PRISM and CoVE di ff er in three aspects which makes them complementary. First, in granularity : a TVM isolates an en-tire virtual machine (VM) from the host, whereas a PRISM en-clave isolates a sub-region of a single user process (at object-level capability granularity), without a guest OS. Second, in 
+
+isolation mechanism : CoVE partitions physical memory be-tween supervisor domains through the MTT, conceptually analogous to Intel Trust Domain Extension (TDX)’s Secure-EPT or Arm Confidential Computing Architecture (CCA)’s Granule Protection Table, and enforces protection at the gran-ularity of pages assigned to a domain; PRISM instead binds physical ownership to unforgeable, M-mode-rooted hues car-ried in the capabilities themselves, and additionally inherits CHERI’s intra-enclave spatial and temporal memory safety, a guarantee entirely absent from the whole-VM model, whose in-TVM memory-safety posture is no better than a conven-tional guest. Third, in threat surface : CoVE assumes a trusted OS and runtime inside the TVM, whereas PRISM ’s threat model treats even the host OS as adversarial and shrinks the trusted computing base to a minimal M-mode monitor and the enclave code itself. A compelling direction for future work is composing these two mechanism by nesting PRISM enclaves within a CoVE TVM. A nested arrangement would yield defense-in-depth and let a CVM defend against a malicious hypervisor and host, while PRISM enclaves inside it defend sensitive com-ponents against the TVM’s own (potentially compromised) guest OS and against memory-safety exploits. Realizing this composition raises open questions we leave to future work. Chiefly, reconciling the MTT’s and HAM’s views of physical memory ownership, extending PRISM ’s at-testation chain to the CoVE layered-attestation architecture so that a verifier can reason about the enclave, the enclosing TVM, and the platform in a single evidence chain, and defin-ing the interrupt- and world-switch interactions when both the TSM and the HMM contend for M-mode traps. 
+
+# 9 Conclusion 
+
+We introduced prismatic capabilities, a CHERI extension that binds an enclave’s capabilities to an unforgeable, M-mode-rooted hue enforcing exclusive access to physical memory, and PRISM , a TEE architecture realizing them on CHERI-RISC-V. By carrying ownership in the capability itself and check-ing it against a hardware hue-addressed table after transla-tion, PRISM resolves the design challenges that have con-strained prior capability-based TEEs: 1) e ffi cient establish-ment of exclusive-ownership of a set of capabilities without memory sweeps or revocation trees at enclave initialization time, 2) enforcement of physical-memory exclusivity even against a malicious OS that controls address translation, per-forms domain transitions through unprivileged, 3) trap-free enclave entry, 4) and supports remote attestation rooted in a minimal M-mode monitor. We implemented PRISM on both a CHERI-RISC-V QEMU emulator and a CHERI-Toooba FPGA softcore and equipped it with support in CheriBSD and an SGX-compatibility layer that runs unmodified enclaves, and evaluated it across three real-world SGX applications with modest hardware cost ( ≈
+
+16% logic) and low run-time overhead ( ≈ 6 − 15%). A symbolic Tamarin analysis establishes the security of its attestation protocol. Together these results show that strong userspace enclaves can be built as a lightweight, capability-native extension. 
+
+# Acknowledgments 
+
+We thank our colleagues at Ericsson: Daniel Migault and Santeri Paavolainen for their feedback on this manuscript. We are deeply grateful to Hossam ElAtali for his feedback on the design and the numerous discussion we had over the course of the work. This work is supported in part by the Wal-lenberg Visiting Professor Program and the Natural Sciences and Engineering Research Council of Canada (grant number RGPIN-2026- 04826). 
+
+# References 
+
+[1] ARM, “ARM TrustZone for Cortex-A,” https: // www. arm.com /technologies /trustzone-for-cortex-a, 2004. [2] AMD, “AMD secure encrypted virtualization (SEV),” https: // www.amd.com /en /developer /sev.html, 2020. [3] Intel, “Intel Software Guard Extensions (Intel SGX),” https: // www.intel.com /content /www /us /en /developer /
+
+tools /software-guard-extensions /overview.html, 2015. [4] ——, “Intel Trust Domain Extensions (Intel TDX),” https: // www.intel.com /content /www /us /en /developer /
+
+tools /trust-domain-extensions /overview.html, 2023. [5] J. Noorman, P. Agten, W. Daniels, R. Strackx, A. V. Herrewege, C. Huygens, B. Preneel, I. Ver-bauwhede, and F. Piessens, “Sancus: Low-cost trustworthy extensible networked devices with azero-software trusted computing base,” in 22nd USENIX Security Symposium (USENIX Security 13) . Washington, D.C.: USENIX Association, Aug. 2013, pp. 479–498. [Online]. Available: https: // www.usenix.org /conference /usenixsecurity13 /
+
+technical-sessions /presentation /noorman [6] D. Lee, D. Kohlbrenner, S. Shinde, K. Asanovi´ c, and D. Song, “Keystone: An open framework for architect-ing trusted execution environments,” in Proceedings of the Fifteenth European Conference on Computer Sys-tems , 2020, pp. 1–16. [7] V. Costan, I. Lebedev, and S. Devadas, “Sanctum: Min-imal hardware extensions for strong software isolation,” in 25th USENIX Security Symposium (USENIX Security 16) , 2016, pp. 857–874. [8] D. Shen, “Attacking your “Trusted Core”: Ex-ploiting TrustZone on Android,” Las Vegas, NV, USA, Aug. 2015. [Online]. Available: https: // blackhat.com /us-15 /briefings.html#attacking-your-trusted-core-exploiting-trustzone-on-android 16 [9] Laginimaineb, “QSEE privilege escalation vulnera-bility and exploit (CVE-2015-6639),” May 2016. [Online]. Available: https: // bits-please.blogspot.com /
+
+2016 /05 /qsee-privilege-escalation-vulnerability.html [10] ——, “Extracting Qualcomm’s KeyMaster Keys -Breaking Android Full Disk Encryption,” Jun. 2016. [Online]. Available: https: // bits-please.blogspot.com /
+
+2016 /06 /extracting-qualcomms-keymaster-keys.html [11] R. N. M. Watson, P. G. Neumann, J. Woodru ff , M. Roe, H. Almatary, J. Anderson, J. Baldwin, G. Barnes, D. Chisnall, J. Clarke, B. Davis, L. Eisen, N. W. Filardo, F. A. Fuchs, R. Grisenthwaite, A. Joannou, B. Laurie, A. T. Markettos, S. W. Moore, S. J. Murdoch, K. Nienhuis, R. Norton, A. Richardson, P. Rugg, P. Sewell, S. Son, and H. Xia, “Capability Hardware Enhanced RISC Instructions: CHERI Instruction-Set Architecture (Version 9),” University of Cambridge, 15 JJ Thomson Avenue Cambridge CB3 0FD United Kingdom, Technical Report UCAM-CL-TR-987, Sep. 2023. [Online]. Available: https: // www.cl.cam.ac.uk /
+
+techreports /UCAM-CL-TR-987.html [12] T. Van Strydonck, J. Noorman, J. Jackson, L. A. Dias, R. Vanderstraeten, D. Oswald, F. Piessens, and D. De-vriese, “CHERI-TrEE: Flexible enclaves on capability machines,” in 2023 IEEE 8th European Symposium on Security and Privacy (EuroS &P) . IEEE, 2023, pp. 1143–1159. [13] J. Z. Yu, C. Watt, A. Badole, T. E. Carlson, and P. Saxena, “Capstone: A Capability-based Foundation for Trustless Secure Memory Access,” in 32nd USENIX Security Symposium (USENIX Security 23) , 2023, pp. 787–804. [Online]. Available: https: // www.usenix.org /
+
+conference /usenixsecurity23 /presentation /yu-jason [14] CTSRD, “CTSRD-CHERI /Flute,” Nov. 2019. [Online]. Available: https: // github.com /CTSRD-CHERI /Flute [15] R. N. M. Watson, P. G. Neumann, J. Woodru ff , M. Roe, H. Almatary, J. Anderson, J. Baldwin, D. Chisnall, B. Davis, N. W. Filardo, A. Joannou, B. Laurie, A. T. Markettos, S. W. Moore, S. J. Murdoch, K. Nienhuis, R. Norton, A. Richardson, P. Rugg, P. Sewell, S. Son, and H. Xia, “Capability Hardware Enhanced RISC Instructions: CHERI Instruction-Set Architecture (Version 7),” University of Cambridge, 15 JJ Thomson Avenue Cambridge CB3 0FD United Kingdom, Technical Report UCAM-CL-TR-927, Jun. 2019. [Online]. Available: https: // www.cl.cam.ac.uk /
+
+techreports /UCAM-CL-TR-927.pdf [16] J. Woodru ff , A. Joannou, H. Xia, A. Fox, R. M. Norton, D. Chisnall, B. Davis, K. Gudka, N. W. Filardo, A. T. Markettos, M. Roe, P. G. Neumann, R. N. M. Watson, and S. W. Moore, “CHERI Concentrate: Practical Compressed Capabilities,” IEEE Transactions on Computers , vol. 68, no. 10, pp. 1455–1469, Oct. 2019. [Online]. Available: https: 
+
+// ieeexplore.ieee.org /document /8703061 [17] D. Chisnall, B. Davis, K. Gudka, D. Brazdil, A. Joannou, J. Woodru ff , A. T. Markettos, J. E. Maste, R. Norton, S. Son, M. Roe, S. W. Moore, P. G. Neumann, B. Laurie, and R. N. Watson, “CHERI JNI: Sinking the Java Security Model into the C,” in Proceedings of the Twenty-Second International Conference on Architectural Support for Programming Languages and Operating Systems , ser. ASPLOS ’17. New York, NY, USA: Association for Computing Machinery, Apr. 2017, pp. 569–583. [Online]. Available: https: // dl.acm.org /doi /10.1145 /
+
+3037697.3037725 [18] A. L. Georges, A. Guéneau, T. Van Strydonck, A. Timany, A. Trieu, S. Huyghebaert, D. Devriese, and L. Birkedal, “E ffi cient and provable local capa-bility revocation using uninitialized capabilities,” in 
+
+Proceedings of the 48th ACM SIGPLAN Symposium on Principles of Programming Languages , ser. POPL ’21, vol. 5, Jan. 2021, pp. 6:1–6:30. [Online]. Available: https: // dl.acm.org /doi /10.1145 /3434287 [19] M. Gülmez, H. Englund, J. T. Mühlberg, and T. Nyman, “Mon CHÉRI: Mitigating Uninitialized Memory Access with Conditional Capabilities,” in 
+
+46th IEEE Symposium on Security and Privacy ,ser. S&P ’15. San Francisco, CA, USA: IEEE Computer Society, Apr. 2025, pp. 829–847. [Online]. Available: https: // www.computer.org /csdl /proceedings-article /sp /2025 /223600a791 /26hiTWeltII [20] Y. Wang, J. Woodru ff , A. Mazzinghi, P. Rugg, A. Joannou, S. W. Stark, R. N. M. Watson, and S. W. Moore, “Poisoncap: Effi cient hierarchical temporal safety for cheri,” 2026. [Online]. Available: https: // arxiv.org /abs /2605.13210 [21] F. A. Fuchs, J. Woodru ff , P. Rugg, A. Richardson, J. Clarke, N. W. Filardo, B. Davis, J. Baldwin, P. G. Neumann, S. W. Moore, and R. N. M. Watson, “Architectural Contracts for Safe Speculation,” in Proceedings of the 41st International Conference on Computer Design , ser. ICCD ’23. Washington, DC, USA: IEEE Computer Society, Nov. 2023, pp. 578–586. [Online]. Available: https: // doi.org /10.1109 /
+
+ICCD58817.2023.00093 [22] F. A. Fuchs, J. Woodru ff , P. Rugg, A. Joannou, J. Clarke, J. Baldwin, B. Davis, P. G. Neumann, R. N. M. Watson, and S. W. Moore, “Safe Speculation for CHERI,” in 
+
+Proceedings of the 42nd IEEE International Conference on Computer Design , ser. ICCD ’24. Milan, Italy: IEEE, Nov. 2024, pp. 364–372. [Online]. Available: https: // ieeexplore.ieee.org /document /10818045 [23] H. ElAtali, M. Gülmez, T. Nyman, and N. Asokan, “BLACKOUT: Data-Oblivious Computation with Blinded Capabilities,” in Proceedings of the 2025 ACM SIGSAC Conference on Computer and Com-munications Security , ser. CCS ’25. New York, NY, USA: Association for Computing Machinery, Nov. 2025, pp. 2039–2053. [Online]. Available: https: // dl.acm.org /doi /10.1145 /3719027.3765169 17 [24] B. Davis, R. N. M. Watson, A. Richardson, P. G. Neumann, S. W. Moore, J. Baldwin, D. Chisnall, J. Clarke, N. W. Filardo, K. Gudka, A. Joannou, B. Laurie, A. T. Markettos, J. E. Maste, A. Mazzinghi, E. T. Napierala, R. M. Norton, M. Roe, P. Sewell, S. Son, and J. Woodru ff , “CheriABI: Enforcing Valid Pointer Provenance and Minimizing Pointer Privilege in the POSIX C Run-time Environment,” in Proceedings of the Twenty-Fourth International Conference on Architectural Support for Programming Languages and Operating Systems , ser. ASPLOS ’19. New York, NY, USA: Association for Computing Machinery, Apr. 2019, pp. 379–393. [Online]. Available: https: 
+
+// dl.acm.org /doi /10.1145 /3297858.3304042 [25] N. Wesley Filardo, B. F. Gutstein, J. Woodru ff ,S. Ainsworth, L. Paul-Trifu, B. Davis, H. Xia, E. Tomasz Napierala, A. Richardson, J. Baldwin, D. Chisnall, J. Clarke, K. Gudka, A. Joannou, A. Theodore Markettos, A. Mazzinghi, R. M. Norton, M. Roe, P. Sewell, S. Son, T. M. Jones, S. W. Moore, P. G. Neumann, and R. N. M. Watson, “Cornucopia: Temporal Safety for CHERI Heaps,” in Proceedings of the 41st IEEE Symposium on Security and Privacy , ser. S&P ’20. IEEE, May 2020, pp. 608–625. [Online]. Available: https: 
+
+// ieeexplore.ieee.org /document /9152640 [26] N. W. Filardo, B. F. Gutstein, J. Woodru ff , J. Clarke, P. Rugg, B. Davis, M. Johnston, R. Norton, D. Chisnall, S. W. Moore, P. G. Neumann, and R. N. M. Watson, “Cornucopia Reloaded: Load Barriers for CHERI Heap Temporal Safety,” in Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems , ser. ASPLOS ’24, vol. 2. La Jolla CA USA: ACM, Apr. 2024, pp. 251–268. [Online]. Available: https: // dl.acm.org /doi /10.1145 /3620665.3640416 [27] M. Gülmez, R. Sturm, H. ElAtali, H. Englund, J. Woodru ff , N. Asokan, and T. Nyman, “PICASSO: Scaling CHERI Use-After-Free Protection to Millions of Allocations using Colored Capabilities,” Feb. 2026. [Online]. Available: http: // arxiv.org /abs /2602.09131 [28] A. Limited, “Overview: Realms,” https: 
+
+// learn.arm.com /learning-paths /servers-and-cloud-computing /cca-container /overview /.[29] S. Weiser, M. Werner, F. Brasser, M. Malenko, S. Man-gard, and A.-R. Sadeghi, “Timber-v: Tag-isolated mem-ory bringing fine-grained enclaves to risc-v,” in Pro-ceedings 2019-Network and Distributed System Secu-rity Symposium (NDSS) . Internet Society, 2019. [30] R. Bahmani, F. Brasser, G. Dessouky, P. Jauernig, M. Klimmek, A.-R. Sadeghi, and E. Stapf, “CURE: A security architecture with CUstomiz-able and resilient enclaves,” in 30th USENIX Secu-rity Symposium (USENIX Security 21) . USENIX Association, Aug. 2021, pp. 1073–1090. [On-line]. Available: https: // www.usenix.org /conference /
+
+usenixsecurity21 /presentation /bahmani [31] E. Feng, X. Lu, D. Du, B. Yang, X. Jiang, Y. Xia, B. Zang, and H. Chen, “Scalable memory protection in the PENGLAI enclave,” in 15th USENIX Symposium on Operating Systems Design and Implementation (OSDI 21) , 2021, pp. 275–294. [32] M. Kuhne, S. Volos, and S. Shinde, “Dorami: Privilege separating security monitor on RISC-V TEEs,” in 34th USENIX Security Symposium (USENIX Security 25) .Seattle, WA: USENIX Association, Aug. 2025, pp. 1149–1166. [Online]. Available: https: // www.usenix. org /conference /usenixsecurity25 /presentation /kuhne [33] J. M. McCune, B. J. Parno, A. Perrig, M. K. Reiter, and H. Isozaki, “Flicker: an execution infrastructure for tcb minimization,” SIGOPS Oper. Syst. Rev. , vol. 42, no. 4, p. 315–328, Apr. 2008. [Online]. Available: https: // doi.org /10.1145 /1357010.1352625 [34] F. Brasser, D. Gens, P. Jauernig, A.-R. Sadeghi, and E. Stapf, “SANCTUARY: Arming trustzone with user-space enclaves.” in NDSS , vol. 100, 2019, p. 102. [35] P. Koeberl, S. Schulz, A.-R. Sadeghi, and V. Varad-harajan, “Trustlite: A security architecture for tiny em-bedded devices,” in Proceedings of the Ninth European Conference on Computer Systems , 2014, pp. 1–14. [36] A. Louka, J. De Meulemeester, S. Keuchel, I. Ver-bauwhede, and J. Van Bulck, “Physical memory please: Practical memory-aliasing attacks on RISC-V PMP,” in 2nd Microarchitecture Security Conference (uASC) ,Feb. 2026. [37] J. Henes, M. Bowden, M. Ordean, and D. Os-wald, “DisARMed: Attacking ARM TrustZone from userspace with memory aliasing,” in 20th USENIX WOOT Conference on O ff ensive Technologies (WOOT 26) . Baltimore, MD: USENIX Association, Aug. 2026, pp. 31–48. [Online]. Available: https: // www. usenix.org /conference /woot26 /presentation /henes [38] J. De Meulemeester, D. Oswald, I. Verbauwhede, and J. Van Bulck, “Battering RAM: Low-cost interposer at-tacks on confidential computing via dynamic memory aliasing,” in 47th IEEE Symposium on Security and Pri-vacy (S &P) , May 2026. [39] J. De Meulemeester, L. Wilke, D. Oswald, T. Eisen-barth, I. Verbauwhede, and J. Van Bulck, “BadRAM: Practical memory aliasing attacks on trusted execution environments,” in 46th IEEE Symposium on Security and Privacy (S &P) , May 2025. [40] D. Dolev and A. Yao, “On the security of public key protocols,” IEEE Transactions on Information Theory ,vol. 29, no. 2, pp. 198–208, Mar. 1983. [Online]. Avail-able: https: // ieeexplore.ieee.org /document /1056650 [41] J.-K. Zinzindohoué et al. , “Hacl*: A verified modern cryptographic library,” in Proceedings of the 2017 ACM SIGSAC Conference on Computer and Communications Security . ACM, 2017, pp. 1789–1806. 18 [42] “SPEC CPU 2006.” [Online]. Available: https: 
+
+// spec.org /cpu2006 /
+
+[43] F. Wang, “sgx-kmeans github repository,” https: // github. com /dsc-sgx /sgx-kmeans, 2019. [44] Y. Mazhkenov, “Sgx_sqlite github repository,” https: // 
+
+github.com /yerzhan7 /SGX_SQLite, 2018. [45] SQLite, “Documentation for sqllogictest ,” https: // 
+
+sqlite.org /sqllogictest /, [Accessed] 2026. [46] M. H. Mofrad, “Cryptoenclave github repository,” https: 
+
+// github.com /hmofrad /CryptoEnclave /, 2018. [47] V. Costan and S. Devadas, “Intel sgx explained,” Cryp-tology ePrint Archive , 2016. [48] R. Software, “RISC-V proxy kernel and boot loader github repository,” https: // github.com /riscv-software-src /riscv-pk, [Accessed] 2026. [49] NIST, “Juliet C /C++ 1.3,” 2017. [Online]. Available: https: // samate.nist.gov /SARD [50] S. Meier, B. Schmidt, C. Cremers, and D. Basin, “The TAMARIN prover for the symbolic analysis of secu-rity protocols,” in International conference on computer aided verification . Springer, 2013, pp. 696–701. [51] T. T. Team, “Tamarin manual,” https: // tamarin-prover. com /manual /, 2016. [52] D. Kuvaiskii, O. Oleksenko, S. Arnautov, B. Trach, P. Bhatotia, P. Felber, and C. Fetzer, “SGXBOUNDS: Memory safety for shielded execution,” in Proceedings of the Twelfth European Conference on Computer Systems , ser. EuroSys ’17. New York, NY, USA: Association for Computing Machinery, 2017, p. 205–221. [Online]. Available: https: // doi.org /10.1145 /
+
+3064176.3064192 [53] W. Zhao, K. Lu, Y. Qi, and S. Qi, “Mptee: bringing flexible and e ffi cient memory protection to intel sgx,” in 
+
+Proceedings of the Fifteenth European Conference on Computer Systems , ser. EuroSys ’20. New York, NY, USA: Association for Computing Machinery, 2020. [Online]. Available: https: // doi.org /10.1145 /3342195. 3387536 [54] S. Wan, M. Sun, K. Sun, N. Zhang, and X. He, “Rustee: developing memory-safe arm trustzone applications,” in 
+
+Proceedings of the 36th Annual Computer Security Ap-plications Conference , 2020, pp. 442–453. [55] H. Wang, P. Wang, Y. Ding, M. Sun, Y. Jing, R. Duan, L. Li, Y. Zhang, T. Wei, and Z. Lin, “Towards memory safe enclave programming with rust-sgx,” in 
+
+Proceedings of the 2019 ACM SIGSAC Conference on Computer and Communications Security , ser. CCS ’19. New York, NY, USA: Association for Computing Machinery, 2019, p. 2333–2350. [Online]. Available: https: // doi.org /10.1145 /3319535.3354241 [56] J. Cheng, A. T. Markettos, A. Joannou, P. Metzger, M. Naylor, P. Rugg, and T. M. Jones, “Adaptive CHERI compartmentalization for heterogeneous accelerators,” in Proceedings of the 52nd Annual International Symposium on Computer Architecture , ser. ISCA ’25. New York, NY, USA: Association for Computing Machinery, 2025, p. 2002–2016. [Online]. Available: https: // doi.org /10.1145 /3695053.3731062 [57] M. Naylor, A. Joannou, A. T. Markettos, P. Metzger, S. W. Moore, and T. M. Jones, “CHERI-SIMT: Imple-menting capability memory protection in gpus,” in Pro-ceedings of the 31st ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 , 2026, pp. 50–66. [58] J. Jackson, M. Jiang, and D. Oswald, “CHERI-Crypt: Transparent memory encryption on capability architec-tures,” IACR Transactions on Cryptographic Hardware and Embedded Systems , vol. 2025, no. 2, pp. 268–292, 2025. [59] R. Sahita, V. Shanbhogue, A. Bresticker, A. Khare, A. Patra, S. Ortiz, D. Reid, and R. Kanwal, “CoVE: Towards Confidential Computing on RISC-V Platforms,” in Proceedings of the 20th ACM International Conference on Computing Frontiers ,ser. CF ’23. New York, NY, USA: Association for Computing Machinery, Aug. 2023, pp. 315–321. [Online]. Available: https: // dl.acm.org /doi /10.1145 /
+
+3587135.3592168 [60] J. Van Bulck, D. Genkin, B. Kasikci, KU. Leu-ven, M. Silberstein, T. F. Wenisch, and Y. Yarom, “Foreshadow: Extracting the Keys to the Intel SGX Kingdom with Transient Out-of-Order Execution,” in 
+
+Proceedings of the 27th USENIX Security Symposium ,ser. USENIX Security ’18. Baltimore, MD, USA: USENIX Association, Aug. 2018, pp. 991–1008. [On-line]. Available: https: // www.usenix.org /conference /
+
+usenixsecurity18 /presentation /bulck [61] J. Van Bulck, D. Moghimi, M. Schwarz, M. Lippi, M. Minkin, D. Genkin, Y. Yarom, B. Sunar, D. Gruss, and F. Piessens, “LVI: Hijacking Transient Execution through Microarchitectural Load Value Injection,” in 
+
+Proceedings of the 41st IEEE Symposium on Security and Privacy , ser. S&P ’20. IEEE, May 2020, pp. 54–72. [Online]. Available: https: // ieeexplore.ieee.org /
+
+document /9152763 [62] P. Kocher, J. Horn, A. Fogh, D. Genkin, D. Gruss, W. Haas, M. Hamburg, M. Lipp, S. Mangard, T. Prescher, M. Schwarz, and Y. Yarom, “Spectre Attacks: Exploiting Specula-tive Execution,” in Proceedings of the 40th IEEE Symposium on Security and Privacy , ser. S&P ’19, May 2019, pp. 1–19. [Online]. Available: https: // ieeexplore.ieee.org /document /8835233 [63] M. Lipp, M. Schwarz, D. Gruss, T. Prescher, W. Haas, J. Horn, S. Mangard, P. Kocher, D. Genkin, Y. Yarom, M. Hamburg, and R. Strackx, “Meltdown: 19 Reading kernel memory from user space,” in 27th USENIX Security Symposium , ser. USENIX Security ’18. Baltimore, MD: USENIX Association, Aug. 2018, p. 19. [Online]. Available: https: // www.usenix. org /conference /usenixsecurity18 /presentation /lipp [64] J. Horn, “Speculative execution, variant 4: Speculative store bypass,” Feb. 2018. [Online]. Available: https: 
+
+// project-zero.issues.chromium.org /issues /42450580 [65] J. Wikner and K. Razavi, “Breaking the Barrier: Post-Barrier Spectre Attacks,” in Proceedings of the 2025 IEEE Symposium on Security and Privacy , ser. S&P ’25. San Francisco, CA, USA: IEEE, May 2025, pp. 3516–3533. [Online]. Available: https: 
+
+// ieeexplore.ieee.org /document /11023301 /
+
+# A Additional Performance Evaluation 
+
+We extend the evaluation from Section 6 to also compare the additional end-to-end run-time cost of PRISM (enclave cre-ation, temporally safe execution, enclave destruction) to run-ning the same application atop PICASSO (which enables tem-porally safe execution). To obtain the non-enclave baseline application, we modify the source code to remove the en-clave creation and destruction operations, and adjust the C-file header inclusions so that all code paths remain reachable. Figure 8 compares run time of the example SGX applica-tions on PRISM vs. PICASSO . For PRISM ’s run time, we report two measurements: 
+
+• end-to-end run time: enclave creation, temporally safe execution, and enclave destruction (denoted “ PRISM To-tal”); 
+
+• execution time: the temporally safe and isolated execu-tion time alone (denoted “ PRISM Exec.”). For PICASSO , we report only execution time, since it does not support enclave-specific operations by default. For CryptoEnclave , shown in Figure 8a, the performance overhead varies greatly depending on the particular config-uration. When the cryptographic operation takes input text via command line (denoted with “T”), execution time itself is negligible. This demonstrates that for simpler executions, the majority of PRISM overhead stems from life-cycle operations (e.g., enclave creation and destruction). For the variants that take input files (denoted with “F”), the execution time is more significant, reflected in the smaller gap between PRISM ’s end-to-end time and execution time. For the file-taking opera-tions, PRISM introduces 0.95%–4.46% overhead onto the ex-ecution time, whereas enclave life-cycle operations raise end-to-end run-time overhead to 20.7%–71.7%. For SGX_SQLite test cases, shown in Figure 8c, PRISM 
+
+adds 4.9%–5.7% execution overhead to select tests, while reducing execution overhead for ib tests by 5.6%–6.4%. In-cluding the additional costs for enclave creation and destruc-tion, the end-to-end overhead accounts for a 1.19%-13.3% increase. A similar pattern is observed in sgx-kmeans , shown in Figure 8b: for pure execution time, PRISM reduces overhead by 0.33%–0.70% for N = 100K, 700K, and 900K, while adding overhead of up to 11.7% for other input sizes. This minimal variation shows that for these test cases, execution overhead is essentially negligible. The end-to-end overhead of PRISM for sgx-kmeans test cases ranges from 0.01%– 11.7%, heavily influenced by the marshaling of extracted data points via ECALL from the host application into the enclave. 
+
+# B Tamarin Model 
+
+We model PRISM ’s measurement and remote attestation pro-cess in Tamarin. We model the mechanisms and proto-col steps from Section 5.6 as a multiset of rules, and each sub-security property of [P5] from Section 6.3 using lem-mas. We use the hashing , signing , and natural-numbers 
+
+Tamarin built-ins, providing modeling of a collision-resistant hash function, digital signature functions, and natural-number arithmetic, respectively. The rule-based model is shown in Figure 9, and the lemmas are shown in Figure 10. 
+
+## B.1 Rule-based Model. 
+
+Each rule follows the following structure: (1) has a set of pre-condition facts that are required to be true before the rule can be evaluated, (2) a set of action facts in the middle which are recorded when the precondition facts exist, and (3) a set of postcondition facts that are produced to complete the evalua-tion of the rule. Rule 5 models the initial step for installing the HMM into the system. The precondition shows that two fresh values (de-noted with Fr ) must be generated: one for the Prv ’s secret key (sk_prv ) and another for the HMM software itself ( S_HMM ). When this precondition is met, two action facts are recorded. First, HMM_Install is recorded to show that the HMM itself was indeed installed with S_HMM and SecretKey to show that the HMM exists with sk_prv . Four facts comprise the post-condition of this rule, which can then be used as preconditions for other rules: 
+
+• System_Init , used to signal that the system is initial-ized with S_HMM and sk_prv ;
+
+• Pk , signaling that a public key symbol corresponding to 
+
+sk_prv exists; 
+
+• Out , a built-in fact supplied by Tamarin to represent when a symbol is output to the network. In this case, the public key of sk_prv is broadcast into the network; 
+
+• HueTable to demonstrate that an empty but initialized hue table was generated. In Tamarin, natural-numbers start at 1, so the counter representing no entries in the HueTable uses %1 .Rule 6 models enclave creation. The precondition for this rule is that a fresh enclave software ( S_encl ) exists, and a 
+
+HueTable fact exists with an arbitrary last_hue assigned. This means that the creation of an enclave cannot occur unless a HueTable was initialized. When these preconditions are met, this rule logs one action fact used later for verification of lemmas: Encl_install , recording the software and the hue that will be assigned to it, by incrementing last_hue .The post condition is that another HueTable fact is generated for the created enclave, logging the hue and the hash of the enclave code ( h(S_encl) ). 20 SHA256-T 0510 15 Milliseconds (ms) SHA256-F 020 40 60 80 HMAC256-T-I 0510 15 HMAC256-T-R 0510 15 HMAC256-F-I 020 40 60 80 HMAC256-F-R 020 40 60 80 AES-ECB-F-R 0510 15 AES-ECB-T-R 010 20 AES-CBC-F-R 0510 15 AES-CBC-T-R 010 20 
+
+(a) Run-time of CryptoEnclave test cases in milliseconds (ms). Test cases vary based on the particular cryptographic operation, command line text (T) or file (F) input, and a random (R) or input (I) key. 
+
+> N=100K 050 100 150 200 Seconds(s) N=200K 0100 200 300 N=300K 0500 1,000 1,500 N=400K 0500 1,000 N=500K 0500 1,000 1,500 N=600K 0500 1,000 1,500 N=700K 0500 1,000 1,500 N=800K 0500 1,000 1,500 2,000 N=900K 01,000 2,000 3,000 N=1M 01,000 2,000 3,000
+
+(b) Run-time of sgx-kmeans test cases in milliseconds. Test cases use randomly generated input files of sizes 100K to 1M varying by 100K. The average time for K from 2 to 8 is reported.     
+
+> select1
+> 050 100 Milliseconds(s)
+> select2
+> 050 100
+> select3
+> 0100 200
+> ib_1_0
+> 0100 200
+> ib_10_0
+> 0100 200 300
+> ib_100_0
+> 0500 1,000
+> ib_1000_0
+> 0500 1,000 1,500 2,000 Legend:
+> PICASSO Total
+> PRISM Total
+> PRISM Exec.
+
+(c) Run-time of SGX_SQLite shown in seconds for select and index_between (ib ) examples from sqllogictest [45] test suite. 
+
+Figure 8: Comparison between execution of enclave applications atop PICASSO vs. PRISM . Three times are presented: 
+
+PICASSO total end-to-end time, PRISM total end-to-end time, and PRISM execution time (excluding enclave create and destroy times). Rule 7 corresponds to Prv receiving an attestation request from Vrf . A precondition is that a hue and chal value must be received together over the network. When this occurs, the action fact ReceivedRequest is created to log them. A post-condition of this rule is the generation of the fact Get_Re-port , symbolizing that the host has requested a report upon receipt of the request. Rule 8 models the generation of the report by the HMM. The precondition of this rule is that (1) the PRISM system was initialized, (2) a request was received, and (3) an enclave with the requested hue was created. These three are repre-sented by the System_Init , Get_Report , and HueTable 
+
+precondition facts, respectively. When these preconditions are met, a report can be generated by producing a signature over the contents: %hue, chal, h_hmm, h_encl . This is logged with the action fact Signed , which records the con-tents that the signature sig is computed over. The postcon-dition of this rule is that the packed report is sent Out into an untrusted channel. Finally, Rule 9 has two preconditions: it receives some packed input structure via In containing some arbitrary re-port_data and sig , and the public key of a prover exists (e.g., Pk fact from Rule 5). When this precondition is met, an action fact Verified is logged to acknowledge the verifi-cation attempt. This records the report_data that is being verified, the public key used for verification pk_prv , and the verification result, using the built-in function verify . This rule has no postcondition, as it models the protocol’s last step. 
+
+## B.2 Security Sub-properties. 
+
+Figure 10 shows the Tamarin lemmas modeling the sub-security properties of [P5] . Lemma 0 is used to check report authenticity. It specifically outlines: a report verification re-sult returning as true implies that PRISM HMM produced that report. Lemma 1 is used to check HMM integrity. This spec-ifies that if a report verification including an HMM hash of 
+
+h_hmm returns as true, there must have been an HMM soft-ware installed at a prior point with a hash h_hmm_exp , and 
+
+h_hmm_exp must equal h_hmm . Lemma 2 checks enclave in-tegrity and follows a similar structure. It checks that if a re-port verification returning true contains enclave hash h_encl 
+
+and hue , there must exist an enclave installation by the HMM that has the same hue-hash pair. Lemma 3 models that a secret key is neither exposed over an Adv -observable channel nor is derivable from data ob-served on these channels. This is expressed by checking: if there exists a SecretKey(k) , there does not exist any time when Adv can learn k. This is modeled with Tamarin built-in rule K to model Adv ’s knowledge of a symbol. Finally, Lemma 4 ensures that any response that passes verification uses a fresh attestation challenge, showing that responses must be produced per-request. This is modeled in a similar manner to Lemmas 1 and 2: a verification result re-turning true using an attestation challenge chal implies there must exist a prior attestation request containing Vrf ’s chal-lenge ( vrf_chal ), and vrf_chal equals chal .These lemmas all pass verification with the results de-scribed in Section 6.3. 21 Rule 0: Install HMM rule Install_HMM: 
+
+let 
+
+h_exp_hmm = h(~S_HMM) 
+
+in 
+
+[Fr (~sk_prv), Fr (~S_HMM)] --[HMM_Install(~sk_prv, h_exp_hmm), SecretKey(~sk_prv)]-> [!System_Init(~sk_prv, ~S_HMM),!Pk( pk (~sk_prv)), 
+
+Out (pk (~sk_prv)), !HueTable( 
+
+Rule 1: Create Encalve rule Create_enclave: [Fr (~S_encl), !HueTable( --[Encl_Install(~S_encl, [!HueTable( 
+
+Rule 2: Attestation Request rule Attestation_Request: [In (< --[ReceivedRequest( [Get_Report( 
+
+Rule 3: Generate Report rule Generate_Report: 
+
+let 
+
+h_hmm = h(S_HMM) sig = sign(< 
+
+in 
+
+[!System_Init(k, S_HMM), Get_Report( --[ Signed( [ Out (<< 
+
+Rule 4: Verify Signature rule Verify_Signature: [In (<report_data, sig>), !Pk(pk_prv)] --[Verified(report_data, verify(sig, report_data, pk_prv) , pk_prv)]-> [] 
+
+Rule 5: Install HMM rule Install_HMM: 
+
+let 
+
+h_exp_hmm = h(~S_HMM) 
+
+in 
+
+[Fr (~sk_prv), Fr (~S_HMM)] --[HMM_Install(~sk_prv, h_exp_hmm), SecretKey(~sk_prv)]-> [!System_Init(~sk_prv, ~S_HMM),!Pk( pk (~sk_prv)), 
+
+Out (pk (~sk_prv)), !HueTable( 
+
+Rule 6: Create Encalve rule Create_enclave: [Fr (~S_encl), !HueTable( --[Encl_Install(~S_encl, [!HueTable( 
+
+Rule 7: Attestation Request rule Attestation_Request: [In (< --[ReceivedRequest( [Get_Report( 
+
+Rule 8: Generate Report rule Generate_Report: 
+
+let 
+
+h_hmm = h(S_HMM) sig = sign(< 
+
+in 
+
+[!System_Init(k, S_HMM), Get_Report( --[ Signed( [ Out (<< 
+
+Rule 9: Verify Signature rule Verify_Signature: [In (<report_data, sig>), !Pk(pk_prv)] --[Verified(report_data, verify(sig, report_data, pk_prv) , pk_prv)]-> [] 
+
+Figure 9: Rule-based model of PRISM measurement and attestation mechanism. 22 Lemma 0: Signature Check lemma signature_check: "All hue chal h_hmm h_encl pk_prv #j. Verified(<hue, chal, h_hmm, h_encl>, true, pk_prv) @ j & not (hue = ==> ( 
+
+Ex #i. Signed(hue, chal, h_hmm, h_encl) @ i & i < j )" 
+
+Lemma 1: HMM Code Check lemma hmm_code_check: "All hue chal h_hmm h_encl pk_prv #j. Verified(<hue, chal, h_hmm, h_encl>, true, pk_prv) @ j ==> ( 
+
+Ex #i sk_prv h_hmm_exp. HMM_Install(sk_prv, h_hmm_exp) @ i & (h_hmm = h_hmm_exp) & i < j )" 
+
+Lemma 2: Enclave Code Check lemma encl_code_check: "All hue chal h_hmm h_encl pk_prv #j. Verified(<hue, chal, h_hmm, h_encl>, true, pk_prv) @ j & not (hue = ==> ( 
+
+Ex s_encl_exp #i. Encl_Install(s_encl_exp, hue) @ i & (h_encl = h(s_encl_exp)) & i < j )" 
+
+Lemma 3: Key Secrecy lemma key_secrecy: "All k #i. SecretKey(k) @ #i ==> not (Ex #j. K(k) @ #j)" 
+
+Lemma 4: Freshness lemma freshness: "All hue chal h_hmm h_encl pk_prv #j. Verified(<hue, chal, h_hmm, h_encl>, true, pk_prv) @ j ==> 
+
+Ex vrf_chal #i. ReceivedRequest(hue, vrf_chal) @ i & (chal = vrf_chal) & i < j "
+
+Figure 10: Tamarin Lemmas, each corresponding to a sub-security property, which all together provide [P5] .23

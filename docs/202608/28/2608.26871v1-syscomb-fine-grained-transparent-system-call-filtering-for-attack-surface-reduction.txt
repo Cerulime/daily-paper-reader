@@ -1,0 +1,585 @@
+Title: SysComb: Fine-Grained Transparent System Call Filtering for Attack Surface Reduction
+
+URL Source: https://arxiv.org/pdf/2608.26871v1
+
+Published Time: Fri, 28 Aug 2026 00:48:44 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# SysComb: Fine-Grained Transparent System Call Filtering for Attack Surface Reduction 
+
+Matthew Rossi, Marco Abbadini, Michele Beretta, Dario Facchinetti, and Stefano Paraboschi 
+
+Universit` a degli Studi di Bergamo, Bergamo, Italy 
+
+name.surname@unibg.it 
+
+Abstract. Restricting the system calls available to applications shrinks the kernel’s attack surface and greatly mitigates the impact of com-promised programs. Recent approaches showcase techniques to generate system call filters, however, all existing solutions require either kernel or application modifications to activate them at runtime. This is in-trusive, error-prone, and often impractical, especially when the code is maintained by external parties. This paper presents SysComb , a novel eBPF-based solution to enforce temporally-specialized system call filters based on the application state, without requiring any modification to the application or the kernel code, and thus addressing the above limitations. Moreover, SysComb lets the developer choose between two distinct en-forcement strategies: seccomp-like , ensuring no new privileges are gained after a state transition is performed, and least-privilege , which applies to each state the most restrictive filter. We evaluated SysComb using widely used software, showcasing accurate state-aware system call filtering and an overhead comparable to built-in kernel solutions, demonstrating the practicality of our approach. 
+
+Keywords: System Call Filtering · Temporal Specialization · Attack Surface Reduction · eBPF · Seccomp 
+
+# 1 Introduction 
+
+Restricting the interface between the kernel and userland is essential for safe-guarding the operating system integrity. This approach serves a dual purpose: it reduces the kernel’s attack surface by denying access to potentially vulnerable code paths [23], including new kernel functions that are more susceptible to vul-nerabilities [38], and it limits the capabilities of compromised applications [47]. The significance of this defense-in-depth practice is evident in its widespread adoption across critical applications such as web browsers, service managers, and container runtimes, which restrict the functions available to applications before their execution (e.g., [32,45,20]). In Linux systems, the restriction of the available system calls (or syscalls )is achieved using seccomp [42], which defines the set of allowed system calls through the specification of a filter . The effectiveness of this solution strictly arXiv:2608.26871v1 [cs.CR] 27 Aug 2026 2 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+depends on the granularity of the filter [25]. Ideally, an application should only be granted the system calls necessary for its current (and future) operations. This requires transitioning to a more restrictive filter whenever feasible, or even partitioning the application functionality into distinct threads each restricted by a dedicated, tight filter. However, in practice, most production applications adopt an overly permissive filter at startup and rarely modify it afterwards [6]. This is due to multiple reasons, such as (i) limited knowledge of the invoked system calls, (ii) effort required to restructure applications to support multiple filters, and (iii) prioritization of rapid development and deployment over security. Recognizing these challenges, substantial research effort has been dedicated to generate seccomp-compatible filters using both static and dynamic analysis techniques [27,26,28,9,54,48,18]. Some influential works [37,27,48] pushed the concept even further with the generation of two system call filters for the same server application, one for the initialization phase and another for the serving 
+
+phase, demonstrating that the security of server applications can greatly benefit from the enforcement of distinct system call sets. While these works paved the way to the concept of temporal specialization of system call filters, the effec-tive and efficient activation of these filters at runtime still poses a significant challenge. Indeed, existing solutions exhibit one or more of the following limita-tions: (i) they require application modifications to explicitly trigger filter tran-sitions, (ii) they need to maintain an alternative patched version of the kernel with ad hoc features, or (iii) they delegate the enforcement of filters to a trusted user-space component, which represents an additional attack surface. In this paper, we propose a novel solution to automatically identify and transparently activate specialized system call filters based on the application execution state. We also refine the concept of temporal specialization, enabling the enforcement of per-thread system call filters. To the best of our knowledge, this is the first proposal to achieve this result without requiring application changes, kernel patches, and delegation to user-space components. Our solution operates within the kernel boundaries by leveraging the eBPF subsystem. This allows us to automatically detect application state transitions at runtime using user-space probes, observe all system call events, and enforce security decisions. The proposed technique is flexible and supports two strategies: (i) seccomp– like , which restricts application threads to progressively more restrictive filters, and (ii) least-privilege , which associates each application state with the most restrictive filter possible. Additionally, SysComb automatically validates appli-cation state transitions at runtime, enabling early detection and blocking of unexpected execution patterns. We evaluate SysComb on widely used applica-tions. From a security perspective, we demonstrate that our approach identifies fine-grained, state-aware filters that more effectively mitigate kernel vulnerabil-ity exploitation, and blocks a larger number of shellcodes when compared to solutions based on a single filter. From a performance standpoint, we show that SysComb introduces an overhead comparable to seccomp. SysComb 3
+
+Fig. 1: Overview of the eBPF architecture. 
+
+# 2 Background 
+
+This section overviews the use of seccomp for system call filtering and provides an essential background on eBPF, a foundational technology used by SysComb. 
+
+Seccomp. Seccomp BPF [42], or simply seccomp , is a Linux kernel security mechanism that allows a process to define a syscall filter . This filter is a state-less program, evaluated by the kernel upon syscall invocation, that is primarily used to implement an allow list, permitting the execution of a system call only when its identifier (and occasionally its primitive arguments) matches the spec-ified rules. Critically, once a filter is set, it is inherited by all child threads and processes, and it can only be tightened, never relaxed. To install a filter, an application process must configure it and then load it into the kernel. There are two options for filter setup: (i) directly write it with a sequence of Berkeley Packet Filters rules and then activate it invoking seccomp syscall, or (ii) use a platform-independent high-level library like libseccomp . In either case, it is nec-essary to modify the application, potentially requiring significant architectural restructuring [11]. To reduce the effort of developers, several solutions permit to explicitly declare the system calls available to an application only once, before it is started (e.g., [32,20,53]). Although pragmatic, this approach inevitably re-duces effectiveness, as complex software needs many system calls, and there is a concrete security risk when all of them are available to every internal component. 
+
+eBPF. eBPF [17] is a technology designed to securely and dynamically extend the operating system kernel’s functionality without the need of source code mod-ifications or loading new kernel modules. Fundamentally, it enables user-defined 
+
+eBPF programs to execute within an in-kernel abstract Virtual Machine. These programs are triggered when the execution flow reaches designated hook points ,which include pre-defined locations such as network sockets and kernel trace 4 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+points, and arbitrary kernel and user-space functions when attachment is per-formed using kprobes and uprobes , which are enabled by default in major Linux distribution. This design permits the non-intrusive inspection of arguments and return values, and for certain hook points it also allows programs to override how the kernel reacts to events. To manage state persistently across invoca-tions, programs use shared data structures known as eBPF maps (e.g., hash tables, arrays). Importantly, to mitigate the risk of kernel instability, every pro-gram undergoes a rigorous verification process prior to loading which ensures fundamental safety properties, such as guaranteed termination, prevention of out-of-bounds memory access, and adherence to system-defined resource limits. Figure 1 presents the eBPF architecture, highlighting the user-space compo-nent responsible for loading and interacting with eBPF programs and maps. As shown, eBPF-aware applications rely on user-space libraries to abstract the com-plexity of the low-level bpf system call, as well as enable the eBPF programs to reliably target a wide range of kernel versions without requiring recompilation. 
+
+# 3 Requirements and Existing Solutions 
+
+In this section we briefly formulate our objectives, clarify the threat model, and discuss the existing research works, highlighting their strengths and limitations. 
+
+3.1 Objectives O1 Fine-grained temporal filters. We aim to introduce system call filters that are tailored to the specific execution states of each application thread, thereby restricting the available actions in potentially dangerous situations, such as when processing third-party data or code. 
+
+O2 No application changes. Temporal policies must not require the developer to refactor the application source code to activate the system call filters. This facilitates adoption, especially when third-party code needs to be restricted. 
+
+O3 No kernel changes. Unless patches are accepted by the kernel commu-nity and merged into mainstream, they must be re-applied (and potentially adapted) whenever a kernel update is available, introducing a considerable maintenance overhead. Also, errors in this code can lead to system instabil-ity. 
+
+O4 No user-space delegation. Delegating security decisions to external moni-tors often adds significant delay due to recurrent context switches. Moreover, it always relies on trusted user-space components, which extend the attack surface. 
+
+O5 Full support of dependencies. We seek to design a solution that fully supports dynamic libraries and execution of external binaries. In detail, we want to (i) avoid over-approximation and exclude from filters all system calls that, although present in dynamic libraries, are not actually used by the application, and (ii) maintain the ability to manage temporal filters even inside dynamic libraries and external binaries. SysComb 5
+
+O6 Synchronous enforcement. Enforcement must effectively interpose be-tween system call invocation and execution, blocking forbidden system calls before dangerous actions can affect the system. 
+
+3.2 Threat Model 
+
+We consider the kernel inherently trusted but potentially affected by vulnerabil-ities, while user-space applications (or specific critical states of their execution) may be untrusted and/or potentially vulnerable to code execution attacks. Ex-amples include a web server processing user requests, or a DBMS executing user-provided queries. The identification of these application states depends on the specific application logic, and hence is information provided by the developer. Equivalently to seccomp, the goal of SysComb is to restrict the application-kernel interface by strictly limiting the permissible system calls available to ap-plications, effectively reducing the capabilities of potentially compromised soft-ware, and minimizing the kernel’s attack surface [38,42]. We highlight that the effectiveness of a system call filtering solution depends on its ability to interpose between the application and the kernel to prevent forbidden system calls. In SysComb, security checks are synchronous and not bypassable. 
+
+3.3 Existing Solutions 
+
+We systematically analyze existing system call filtering solutions, highlighting why they do not satisfy all our requirements. Table 1 summarizes the analysis. 
+
+User-Space System Call Filtering. There exist several approaches that can be used to filter system calls in user-space. For example, LD_PRELOAD [43] is an environment variable used to specify a custom shared library to be loaded before any other, which can then implement its own version of functions and system call wrappers. The ptrace [44] system call allows a parent process to observe and control the execution of another process. Syscall User Dispatch 
+
+(SUD) [14] allows an application to capture its own system calls. However, all these methods present downsides: the scope of LD_PRELOAD is limited to dynamic libraries, ptrace introduces high overhead due to frequent context switches [57], and SUD is not meant to be a security mechanism, as it can be easily bypassed by jumping to non-restricted memory regions prior to system call invocation. Another line of research studies binary rewriting techniques. For instance, 
+
+zpoline [56] rewrites every syscall and sysenter instruction with a call to user-defined code; bpftime [58] uses the same technique. Although the overhead is minimal, this approach cannot trap all system calls, as it does not support dynamic libraries. To overcome these limitations, lazypoline [34] proposes the use of SUD to catch all the system calls issued by the application, then rewrites any encountered system call instruction by leveraging zpoline. However, being based on SUD, this approach is not suitable to implement a security overlay. 
+
+Seccomp-based Solutions. Several research works focus on the generation of accurate system call filters, and then rely on seccomp for their enforcement either by using application wrappers or by injecting binary code. 6 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+Many proposals generate a single seccomp filter for the entire application, and then apply it at startup time. For example, sysfilter [18] uses static anal-ysis to generate a function call graph from a binary, and then derives a single filter using all reachable system calls; however, it over-approximates when deal-ing with dynamic libraries, degrading the accuracy. To improve on this aspect, 
+
+Chestnut [9] employs a two-step approach: first, it statically derives a preliminary system call list, and then refines it through dynamic analysis. In order to extend the approach to containers, Confine [26] applies dynamic analysis to discover the list of binaries run, and then performs static analysis on each one to derive a system call filter. Lastly, C2C [28] proposes to statically analyze the source code of an application in conjunction with its configuration options to identify dead code and disable all unreachable system calls: this approach is mostly suitable to perform application debloating, is configuration-dependent, and similarly to others is associated with low accuracy when dealing with dynamic code. Due to their construction, all proposals in this category generate a single lax seccomp filter, comprised of every possible system call needed by the application, and consequently cannot support temporal policies. On the other hand, interesting research describes novel approaches to gener-ate stricter filters based on the application state. Ghavamnia et al. [27] ( TSP )introduce temporal system call filters for server applications using static anal-ysis on their source code. However, this approach only supports two execution phases (initialization and serving), and requires a patched compiler to recompile all application code, including third-party libraries. SysPart [48] takes inspira-tion from this work and substantially improves the generation of filters for binary applications by also taking into consideration dynamic modules. Despite the im-provements, both works still rely on seccomp to install the filters, and therefore inherit all its limitations (see Section 2). 
+
+Solutions Requiring Kernel Changes. To overcome seccomp’s limitations, several approaches propose to change the kernel implementation. SysXCHG [22] allows a program to change its seccomp filters every time an execve is per-formed, in accordance with the least-privilege principle. However, it requires to extensively modify the seccomp inheritance policy and has to embed filters in ELF files. Jia et al. [35] propose a modification of the seccomp and eBPF sub-systems to implement programmable system call filtering, thereby enabling the enforcement of temporal policies. However, the proposed patch did not gain suf-ficient consensus within the Linux kernel community, and was ultimately not incorporated into the mainline kernel. Lastly, B-Side [54] focuses on static anal-ysis of binaries to detect states and related filters with relatively high accuracy, but does not support filter enforcement, recommending either kernel changes or the introduction of user-space monitors. Although kernel modification unlocks a plethora of opportunities, it also introduces significant drawbacks. Unmerged changes require constant application and revision of patches across kernel updates, leading to a considerable and costly maintenance burden. SysComb 7
+
+Table 1: Objectives-based comparison of recent system call filtering proposals.             
+
+> O1: Temporal filters, O2: No app changes, O3: No kernel changes, O4: No delegation, O5: Dependency support, O6: Synchronous
+> Proposal O1 O2 O3 O4 O5 O6
+> LD_PRELOAD [43]
+> ptrace [44] Syscall User Dispatch [14] zpoline [56] lazypoline [56] bpftime [58] sysfilter [18] TSP [27] Chestnut [9] C2C [28] SysPart [48] Confine [26] SysXCHG [22] Jia et al. [35] B-Side [54] ∗
+> Optimus [55] KubeRosy [33]
+> μPolicyCraft [8] GoLeash [10] Tetragon [12], KubeArmor [5] Tracee [7], Falco [51], SysDig [52] Our solution not supported, partially supported, supported,
+> ∗implementation-dependent
+
+eBPF-based Solutions. A novel line of research focuses on containerized ap-plications and uses eBPF to improve system call filtering [55,33,8,10,49,1]. Op-timus [55] detects the list of system calls required by an application, while 
+
+KubeRosy [33] continuously enforces developer-provided seccomp filters. How-ever, both do not support temporal policies. μPolicyCraft [8] goes beyond this limitation, allowing for the generation and enforcement of temporal policies through a user-space monitor. Yet, as security decisions are deferred until the monitor processes the event, enforcement occurs only after potentially danger-ous actions have already been executed. Focusing on Go programs, GoLeash [10] generates and enforces per-package system call filters. Although it supports tem-poral specialization, it delegates the enforcement to an asynchronous user-space component. Nowadays, many cloud-native solutions such as Falco [51], KubeArmor [5], 
+
+Sysdig [52], Tetragon [12], and Tracee [7] use eBPF to monitor and restrict 8 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+workloads. While KubeArmor and Tetragon provide in-kernel enforcement ca-pabilities, the others focus on the detection of events, leaving enforcement to user-space modules. All of them configure a single filter for an entire container, do not support temporal specialization, and employ block-list strategies, which are inherently less robust than allow-list approaches. For instance, a pre-existent filter does not block newly-introduced system calls. 
+
+# 4 SysComb Architecture 
+
+We first present an overview of our solution by highlighting its properties in Section 4.1, then describe in detail each component in dedicated sections. 
+
+4.1 Function Overview 
+
+In this paper, we refine the temporal specialization concept by associating each application thread (or process) with an execution state, which can evolve at run-time ( O1 ). Indeed, we ensure transitions to new states occur when the thread reaches one of the developer-specified code locations that we refer to as transition points . To detect them, we set eBPF user probes in application binaries (includ-ing external dependencies, O5 ), to trigger the execution of eBPF programs with-out requiring any modification to the application source code or binary ( O2 ). This permits to transparently track the current state for each application thread, and evaluate the state management logic whenever a transition point is reached. 
+
+Fig. 2: State graph To capture system call events and enforce secu-rity decisions, we configure eBPF kernel probes and programs on system call handlers. During filter iden-tification, in tracing mode , this setup records all sys-tem calls issued by the application threads and as-sociates them with the current application state. In 
+
+enforcement mode , it detects system calls denied by the current filter and triggers an enforcement action (i.e., logging the event, returning a permission-denied error, or killing the target thread). All these opera-tions are seemlessly performed in kernel-space before the system call is executed ( O4 , O6 ). No modifica-tions to the kernel or the eBPF subsystem are required; hence, our solution is readily deployable on any Linux system running kernel v6.6 or later ( O3 ). SysComb supports two enforcement strategies: (i) seccomp-like mimics the seccomp security model by always transitioning to more restrictive filters, but does so transparently, and (ii) least-privilege binds each application state to the smallest set of system calls, yielding finer-grained filters. In tracing mode, the former leverages a post-processing procedure we called flow-based backpropaga-tion of system calls , which ensures that no new privileges are gained due to a state transition, while the latter does not. However, both strategies rely on the state management logic to record the state transitions of the application in a SysComb 9States System calls S0 S1 S2 S3 0467         
+
+> (a) Least-privilege States System calls S0 S1 S2 S3 0467 (b) Backpropagation States System calls S0 S1 S2 S3 0467 (c) Seccomp-like
+
+Fig. 3: Visualization of the system calls allowed for each application state in the least-privilege and seccomp-like strategies. The effect of flow-based backpropa-gation is highlighted with dashed arrows and the yellow areas. directed graph. This is key to ensure an attacker hijacking the control flow of the program cannot abuse state transitions to deliberately gain privileges. Figures 2 and 3 showcase a simple application state graph and their associated system call filters, highlighting the effect of the flow-based backpropagation of system calls. 
+
+4.2 Application State Management Application Tracking. To simplify the description, we call the monitoring component the tracer and any application thread or process being tracked a 
+
+tracee . The tracer provides an interface to start tracking tracees that are already running on the host, as well as new processes. Existing threads are identified using the group of threads to trace (i.e., user, process, or thread ID), while new processes are tracked via fork-exec pattern and an eBPF program attached to the ELF entry point of the application binary. To distinguish between tracees and other tasks, the tracer annotates the identity and execution state of each tracee into an eBPF map named tracee map . Over the tracer’s lifetime, this map is updated with new insertions and deletions. New tracees, created with clone and fork system calls, inherit the same properties of the parent task, while tracees that terminate are removed. To this end, the tracer attaches eBPF programs to the kernel raw tracepoint associated with the sched_process_fork and sched_process_exit events, respectively. 
+
+Detection of Transitions. To implement the support for multiple states, we first expect the developer to specify the transition points. These can be located in the application, as well as its dependencies, and can be either (i) a symbol, i.e., the name of the function, (ii) an offset from a symbol, or (iii) an absolute address. The tracer relies on the blazesym library [39] to resolve symbols from the .symtab and .dynsym sections of the ELF binary, as well as from debugging symbol packages available on the system that can be separately installed. Then, the tracer loads into the kernel an eBPF map called application state map , which 10 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi User Kernel        
+
+> State
+> 0 1 …
+> Task
+> 123 …
+> program
+> Application state map
+> State
+> 01…
+> Next
+> 0: ,1: , 2: , … 0: ,1: , 2: , … …Tracee map
+> uprobe/transition
+> Tracee 123
+> uprobe event
+> uprobe/entry
+> 1
+> Syscalls
+> ………
+
+Fig. 4: Application state management in tracing mode. SysComb tracks thread state by attaching eBPF uprobes at transition points and builds the application state graphs. stores system call filters and valid transitions for each execution state. This map is populated in tracing mode, and is read-only in enforcement mode. Writes and reads to this eBPF map occur any time a tracee reaches a transition point. To implement this, the tracer attaches a uprobe eBPF program to all application transition points. As transition points can be many, rather than performing single attachments, the kernel provides the means to create a single eBPF program that can be attached to multiple uprobes, as well as to specify an integer number called cookie for each attachment point, allowing us to unambiguously detect the transition points and consequently know the application states they lead to. This allows to keep the execution state in the tracee map up to date. Moreover, by tracking states and transitions the tracer is able to build the application state graph when in tracing mode (Figure 4), and to validate transitions when in enforcing mode (Figure 5). Indeed, during enforcement, any transition that does not match the application state graph is considered invalid and reported as a flow-integrity error. This permits to detect and prevent attacks that alter the control flow of a vulnerable application with the goal of reaching a set of filters that is more permissive than the ones reachable from the current state. 
+
+Detachment. When all tracees terminate, the tracer can collect the informa-tion recorded (if in tracing mode), and then unlink the loaded eBPF maps and programs. To implement this, the tracer keeps an atomic counter representing the number of tracee tasks alive. The counter is incremented whenever a new tracee is created, and decremented whenever one terminates. Besides natural termination, early termination of the tracer is also supported either by sending a SIGINT signal to the tracer process (i.e., Ctrl+C) or, only in the case of trac-ing, with the expiration of a maximum duration timer. Based on the type of tracee (i.e., started using an entry point vs previously running processes), the early termination of the tracer leads to different outcomes. In the case where an application entry point is specified, the tracer stops all the associated tracees by SysComb 11 State       
+
+> 01…
+> Next
+> 0: ,1: , 2: , … 0: ,1: , 2: , … …
+> Syscalls
+> ………
+
+User Kernel 
+
+> State
+> 0 1 1
+> Task
+> 123 456
+
+Application state map 
+
+Tracee map 
+
+Thread 123 
+
+uprobe events 
+
+> uprobe/entry
+
+1 2
+
+> LOG
+> ……
+
+Thread 456 uprobe/entry 
+
+> uprobe/transition
+> program
+
+Tracee 
+
+> uprobe/transition
+
+Fig. 5: Application state management in enforcement mode. At runtime, SysComb validates transitions against the state graph built during tracing. sending a SIGTERM signal, and then it waits for their termination. This ensures that all tracee tasks are properly terminated, and all the system call invoked in their termination procedures are captured. On the other hand, when the tracer monitors processes already running on the hosts, the tracer stops tracing them without disrupting their execution. 
+
+4.3 Identification of System Call Filters System Call Tracing. System call events are captured by attaching an eBPF program to the sys_enter kernel raw tracepoint. As shown by the tracepoint format in Listing 1.1, this allows the eBPF program to receive information about the system call number and its arguments. Hence, for tracee tasks, the eBPF program retrieves the current state from the tracee map, then uses it as an in-dex to the application state map to retrieve the associated system call bitmap, and finally sets the corresponding bit based on the system call number (see Fig-ure 6). Currently, the tracer records only the system call identifier. However, the approach can be extended to track primitive-type arguments as well, similarly to seccomp (i.e., without pointer dereference to avoid TOCTTOU issues). 
+
+Post-processing of the Filter Set. After the tracing terminates, the tracer starts post-processing the information recorded to generate the filter set. First, unused transition points are detected and prompted to the developer, as they are not useful in the definition of the filter set. Then, if the developer opted for the seccomp-like strategy, the tracer performs an additional step, the flow-based backpropagation of system calls . This process ensures that, following a sequence of valid transitions, the application is associated with a progressively more re-strictive filter (i.e., no new privileges are ever gained). The implementation takes 12 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi syscalls User Kernel 
+
+> Resource tracing/sys_enter
+> State
+> 1…
+> Task
+> 123 …
+
+read() 
+
+> program
+
+Tracee map 
+
+> uprobe/entry,transition
+
+Tracee 123 
+
+Application state map     
+
+> Syscalls
+> …
+> State
+> 0…
+> Next
+> …
+> ……read: ,write: , … read: ,write: , … 1
+
+Fig. 6: Tracing system calls used by each application state. Listing 1.1: Format of the raw tracepoint for system call entry.                     
+
+> 1field : long id ; offset : 8; size : 8; signed : 1;
+> 2field : unsigned long args [6]; offset : 16; size : 48; signed : 0;
+> 3print fmt : " NR % ld (% lx , % lx , % lx , % lx , % lx , % lx ) " , REC - > id , REC - > args [0] , REC - > args [1] , REC - > args [2] , REC - > args [3] , REC - > args [4] , REC - > args [5]
+
+into account the potential existence of cycles in the application state graph by re-trieving the strongly connected components in reverse topological order, merging all system calls sets belonging to the same connected component, and backpropa-gating system calls to source nodes (see Algorithm 1 in Appendix A). The graph is subsequently reduced by pruning redundant states that have the same system call set as every node that precedes them. This simplifies the application state graph, and consequently decreases the size of the application state map and the number of uprobes attached to the application binary. Finally, the tracer exports the result to a JSON policy file (exemplified in Listing 1.2) reporting information about (i) the application and entry point if available, (ii) the strategy ( seccom-p-like vs least-privilege ), and (iii) a list of application states comprised of state identifier, transition point (i.e., path, symbol name, offset, or absolute address), allowed system calls in human-readable format, and reachable states. It is worth noting that, when employing the least-privilege strategy, the flow-based backpropagation of system calls is not performed, and hence the identified system call filters can be significantly more restrictive. However, valid state tran-sitions may lead to the activation of more permissive filters. While this may be considered a risk, we remind that filters are not set by the application itself, but rather by the trusted in-kernel eBPF programs according to the security policy. Moreover, even applications affected by control-flow hijacking attacks cannot SysComb 13 
+
+Listing 1.2: Seccomp-like policy generated for the Nginx web server.                                                
+
+> 1{
+> 2" mode " : " seccomp " ,
+> 3" states " : [
+> 4{
+> 5" id " : 0 ,
+> 6" syscalls " : [
+> 7" read " , " write " , " close " , " sendto " ,
+> 8" listen " , " getsockname " , ...
+> 9] ,
+> 10 " next " : [ 1 ]
+> 11 },
+> 12 {
+> 13 " id " : 1 ,
+> 14 " probe " : {
+> 15 " path " : "/ usr / bin / nginx " ,
+> 16 " symbol " : " ngx_master_process_cycle "
+> 17 },
+> 18 " syscalls " : [
+> 19 " read " , " write " , " close " , " sendto " ,
+> 20 " getsockname " , ...
+> 21 ] ,
+> 22 " next " : [ ]
+> 23 }
+> 24 ]
+> 25 }
+
+escape system call filters. Indeed, the implemented control-flow integrity checks ensure that system calls can only be exercesed based on the sequence of reachable states. 
+
+4.4 Enforcement of System Call Filters Policy Loading. In enforcement mode, the tracer expects as input a JSON policy file declaring the filters (e.g., Listing 1.2). After parsing and validating the file format, its content is loaded into the application state map. Note that, while SysComb operating in tracing mode supports the generation of such syscall filters, they can also be produced by other tools or even written manually. 
+
+Enforcement Actions. Based on the selected configuration, the tracer can re-act to policy violations in three different ways: (i) log the event, (ii) inject and return an error code, or (iii) kill the tracee. These are common actions imple-mented by existing system calls filtering solutions such as seccomp [42], and can accommodate for several application requirements. For instance, with logging it is possible to keep track of violation events without altering the application flow, 14 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+Listing 1.3: Macro for system calls with no arguments [40].                 
+
+> 1# define SYSCALL_DEFINE0 ( sname ) \
+> 2SYSCALL_METADATA ( _ ## sname , 0) ; \
+> 3asmlinkage long sys_ ## sname ( void ) ; \
+> 4ALLOW_ERROR_INJECTION ( sys_ ## sname , ERRNO ) ; \
+> 5asmlinkage long sys_ ## sname ( void )
+
+Listing 1.4: Macro for system calls with arguments [40].                                     
+
+> 1# define SYSCALL_DEFINEx ( x , sname , ...) \
+> 2SYSCALL_METADATA ( sname , x , __VA_ARGS__ ) \
+> 3__SYSCALL_DEFINEx ( x , sname , __VA_ARGS__ )
+> 45# define __SYSCALL_DEFINEx ( x , name , ...) \
+> 6[...] \
+> 7asmlinkage long \
+> 8sys ## name ( __MAP ( x , __SC_DECL , __VA_ARGS__ ) ) \
+> 9[...]; \
+> 10 ALLOW_ERROR_INJECTION ( sys ## name , ERRNO ) ; \
+> 11 [...] \
+> 12 static inline long \
+> 13 __do_sys ## name ( __MAP ( x , __SC_DECL , __VA_ARGS__ ) )
+
+a useful feature when prototyping or fine-tuning filters. On the other hand, re-turning an error code permits to enforce the security restriction, and, at the same time, lets the application recover from the error and continue its execution. This is convenient for critical applications that need to be highly available. Finally, killing the tracee ensures termination after a security violation is detected. 
+
+Action-based Attachment. Based on the action requested by the developer, the eBPF program responsible to perform the security enforcement is attached to different hook points. When the action requested is logging, the eBPF program is directly attached to system call entry kernel tracepoint, namely sys_enter .When the selected actions are instead returning an error code or killing, the process is more elaborate and requires more explanation. For safety reasons, there are limitations on the hook points where eBPF pro-grams can alter the normal kernel execution flow, and tracepoints (used with the logging action) are subject to these restrictions. Fortunately, the Linux kernel allows to inject errors and modify the return value of all functions implementing the entry to each system call. The complete coverage of system calls can then be assessed by inspecting the kernel source code and, specifically, by checking the use of the ALLOW_ERROR_INJECTION macro in the declaration of the system call functions (Listings 1.3 and 1.4). 1 While this approach ensures all system calls are   
+
+> 1Similar declarations are used for compatibility system call functions. SysComb 15
+
+Fig. 7: Enforcement of temporally-specialized system call filters. Any system call denied by the state map causes the eBPF program to execute the enforcement action (e.g., an error is returned when write is invoked). covered, the lack of a single hook point for all system calls means that the tracer needs to deal with numerous hook points (currently about 1000 different func-tions). Luckily, the kernel allows to perform this operation in a scalable manner by creating a single eBPF program that is attached to multiple kprobes , using again an integer cookie to discriminate among the hook points, which in this case is parameterized with system call numbers. To retrieve this number, the tracer builds a mapping based on (i) the list of error injection functions supported by the kernel, and (ii) the relation between the functions implementing system calls and their system call numbers. The former is provided by the kernel through 
+
+sysfs , a pseudo file system exporting information about various kernel subsys-tems. Hence, user-space processes can read the complete list of error injection functions at /sys/kernel/debug/tracing/events/error_injection . The latter is generated during kernel compilation, and is either available in the Linux header files, or can be downloaded from the kernel code repository. Independently of the action-based attachment, the tracer is able to interpose all system calls. Yet, not all attachment methods are equally performant, as when a raw tracepoint is used, the tracer loads an eBPF tracing program , a more modern alternative to kprobes and tracepoints, which relies on eBPF trampolines to reduce latency (more details in Section 7). 
+
+Enforcement. When a system call is invoked, an eBPF program responsible for enforcement is triggered. First it determines whether the task issuing the system call is a tracee. If so, it reads the current task’s application state from the tracee map, and then retrieves the bitmap encoding the filter associated with it. Finally, it uses the system call identifier, that is either given as an argument to the eBPF program, or from the invocation of the bpf_get_attach_cookie 
+
+helper function, as an index to test the system call bitmap. If the filter allows the system call, the eBPF program returns and the kernel continues its normal 16 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+execution path. Otherwise, the enforcement action selected by the developer is performed. A simplified visualization of the process is depicted in Figure 7. Note that, when sending the kill signal to the application, the kernel still continues with the execution of the system call until a signal handling safe point is reached. On the other hand, when an error is injected, the system call entry function is overridden, and its code is not executed at all. This behavior comes with security implications. Indeed, while killing the tracee may seem effective, it does not prevent the system call code from being at least partially executed, and this may result in undesired side-effects. Hence, in the implementation we opted to always inject an error code when a kill signal is sent to the tracee. This ensures that the system call code is never executed, and prevents side-effects. 
+
+4.5 Limitations Green Threads. Some programming languages implement green threads , i.e., lightweight threads managed by a runtime library or a virtual machine. Green threads generally incur lower overhead than operating system threads during a context switch, since the operation does not involve the kernel. Indeed, green threads are typically multiplexed into a single operating system thread. Cur-rently, our proposal assigns a state to each operating system thread, hence it cannot be directly applied to green threads as is. However, green threads can be supported by attaching uprobes to the runtime library or virtual machine functions responsible for their creation and multiplexing. 
+
+Interpreted Programming Languages. Not all programming languages com-pile to native code at build-time, as some (e.g., Java, JavaScript, Python) are ei-ther interpreted or just-in-time compiled, and execute within a runtime. SysComb is not directly compatible with these languages, as it relies on the attachment of user probes to the application binary to transparently transition the execution state. However, since the runtime itself is always written in native code, it is possible to attach user probes to the runtime functions, and perform state tran-sitions based on their arguments. The identification of the attachment points and the assessment of the relationship between the runtime and application op-erations unfortunately requires knowledge of the runtime internals. 
+
+Privileged Tracer. Contrary to seccomp, which lets unprivileged users shrink their filters, part of SysComb requires superuser privileges to load eBPF pro-grams and maps. It is important to note that this only applies to the tracer, and that after eBPF objects are loaded, superuser privileges are no longer required and are automatically released before the application is executed. 
+
+# 5 Discussion 
+
+We discuss potential attacks and countermeasures implemented by SysComb. 
+
+Tampering with eBPF Objects. Contrary to seccomp, which guarantees system call filter persistence until process termination, the correct operation of SysComb 17 
+
+our approach depends on the integrity of eBPF programs and maps. The attacker can attempt to tamper with filters either by (i) directly changing these eBPF objects through the bpf system call, or (ii) by indirectly triggering their removal forcefully terminating the tracer process that holds their references. 2 To explain possible defenses, we discern between unprivileged and privileged attackers. An unprivileged attacker cannot directly use the eBPF subsystem, hence can only perform an indirect attempt. To thwart their attempts, SysComb pins all eBPF objects to the eBPF filesystem ( bpffs ) [21]. Instead, to prevent direct changes by a privileged attacker, we configure additional security mechanisms through Linux Security Modules (LSMs). Indeed, LSMs apply to unprivileged and privileged processes, and can restrict access to kernel resources (including eBPF objects) through mandatory access control policies. Currently, beside common LSMs like SELinux [50] and AppArmor [41], several recent works [5,3,2,4] leverage eBPF programs [24] to implement ad-hoc mandatory access control solutions. 
+
+Control-Flow Hijack Attacks. While both seccomp and SysComb reduce the impact of compromised applications by restricting the allowed system calls, neither prevent the exploitation of user-space vulnerabilities that divert their control flow. In SysComb this could lead to jumping to arbitrary transition points with the intent of installing more permissive filters. To circumvent this threat, when in enforcing mode, we only allow the state transitions defined in the application state graph. Hence, an attacker cannot gain access to system calls that are unreachable from the current state. Moreover, while not the primary goal of our proposal, it enables coarse-grained detection of control-flow integrity violations, and triggers enforcement actions. 
+
+# 6 Effectiveness Evaluation 
+
+To assess the effectiveness of our solution, we (i) validated the ability to trace all system calls invoked by an application, (ii) evaluated how the size of filters evolves during the lifecycle of server applications, and finally (iii) showcased the security benefits by analyzing the ability to block recent kernel vulnerabilities. 
+
+6.1 Accurate System Call Detection 
+
+We assessed the accuracy of system call detection by tracing the execution of common server applications with both strace [13] and SysComb. Specifically, we tested Apache Httpd, Lighttpd, Nginx, Memcached, MongoDB, Redis, MySQL, PostgreSQL and Bind by running their respective test suites. 3 We then mea-sured the filter size, defined as the number of system calls permitted. Results are shown in Figure 8. At first glance, a comparison between strace and SysComb without specialization ( SC mono ) may suggest that SysComb misses some system    
+
+> 2Like other kernel resources, eBPF objects are reference counted; the kernel automat-ically frees them when all references are dropped.
+> 3The test coverage averages 79.3% across applications. 18 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi
+
+calls captured by strace. However, further analysis reveals that this discrepancy stems from the specific operational behavior of strace, which begins tracing be-fore the invocation of the execve required to start the monitored application, thus capturing all system calls involved in loading and initializing the binary, including those invoked by libc within __libc_start_main . These system calls are recorded even if they are not required by thee application logic, leading to overly-permissive filters. By contrast, SysComb begins monitoring from the ap-plication entry point. This produces tighter system call filters, and is aligned with existing sandboxing tools such as Minijail [31], which executes __libc_-start_main before activating the sandbox [30]. To validate this, we re-ran the applications within Minijail sandbox using the filters identified by SysComb. As expected, all applications successfully completed their test suites without errors. 
+
+6.2 Fine-Grained Specialized Filters 
+
+To evaluate the benefits of state-aware filtering, we compared the system call fil-ters generated by SysComb with and without temporal specialization. Our goal was to determine whether incorporating execution context yields more restrictive policies. For each application mentioned in Section 6.1, we identified three key transition points, partitioning task execution into four states corresponding to major server execution phases: Startup , Listen , Serve , and Cleanup . The states capture (i) initialization prior to accepting requests, (ii) waiting for connection requests from the client, (iii) serving a specific request, and (iv) termination. Fig-ure 8 summarizes the results. Overall, state-aware filtering consistently produces more restrictive policies. Indeed, although the seccomp-like strategy ( SC sec ) ini-tially applies a filter identical to the case without specialization ( SC mono ), it progressively transitions to stricter filters, reducing the number of allowed sys-tem calls across all applications on average by 11.82% at Listen, 20.77% at Serve, and 76.34% at Cleanup. The least-privilege strategy ( SC lp ) instead, compared to 
+
+SC mono , further reduces the number of system calls by 35.22% at Startup (which does not need to include system calls required by subsequent states), by 47.97% at Listen, 22.05% at Serve, and again 76.34% at Cleanup. This is also visible by comparing SC sec and SC lp in Figure 8, which clearly shows that different states (with the exception of the last one, Cleanup) rely on different subsets of system calls, highlighting the advantages of minimal filters. 
+
+6.3 Attack Surface Reduction 
+
+To showcase the attack surface reduction, we focused on the ability to block kernel vulnerabilities. To this end, we first selected a sample of 45 recent kernel CVEs (shown in Table 5 of Appendix B) that are exploited through specific system calls. Then, we re-examined the applications discussed in Section 6.1, and counted how many of them are protected when (i) a single filter is used, set by either seccomp or SysComb without specialization, and when (ii) a specialized fiter is used for the Serve state. The data show that a specialized filter leads to better protection in 17 out of 45 cases (37.8% of CVEs). This result originates SysComb 19 strace SC mono SC sec SC lp Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls 
+
+(a) Apache Httpd Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls (b) Lighttpd Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls 
+
+(c) Nginx Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls (d) Memcached Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls 
+
+(e) MongoDB Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls (f) Redis Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls 
+
+(g) MySQL Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls (h) PostgreSQL Startup Listen Serve Cleanup 025 50 75 100 125 # syscalls 
+
+(i) Bind 
+
+Fig. 8: Number of system calls allowed in execution states of representative ap-plications by strace, SysComb without specialization ( SC mono ), and SysComb with the seccomp-like (SC sec ) and least-privilege (SC lp ) strategies. 20 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+Table 2: Blocked security-sensitive system calls. 
+
+Application 
+
+> accept accept4 bind chmod clone connect execve execveat fork listen mprotect ptrace recvfrom setgid setreuid setuid socket
+
+Apache Httpd ✓✓ ✓ ✓ ✓✓ ✓ ✓ ✓ ✓
+
+Lighttpd ✓✓ ✓✓ ✓ ✓ ✓ ✓ ✓✓ ✓ ✓ ✓ ✓
+
+Nginx ✓ ✓✓ ✓ ✓ ✓ ✓✓ ✓ ✓ ✓ ✓ ✓ ✓
+
+Memcached ✓ ✓✓ ✓ ✓✓ ✓ ✓ ✓ ✓ ✓ ✓✓ ✓ ✓ ✓ ✓
+
+MongoDB ✓✓ ✓ ✓✓ ✓ ✓ ✓ ✓✓ ✓ ✓ ✓ ✓✓ ✓ ✓ ✓ ✓ ✓ ✓✓
+
+Redis ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+
+MySQL ✓ ✓✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+
+PostgreSQL ✓✓ ✓ ✓✓ ✓ ✓ ✓✓ ✓ ✓ ✓ ✓
+
+Bind ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+
+Filtered ✓✓ with specialization, ✓ without specialization, and by no method Apache Httpd Lighttpd Nginx Memcached MongoDB Redis MySQL PostgreSQL Bind 0100 200 300 400 500 600 Shellcode count  Seccomp/ SC mono SC sec/lp 
+
+Fig. 9: Shellcodes blocked over a total of 535 shellcodes. from the ability to more effectively filter security-sensitive system calls, defined in [27] as those frequently leveraged in shellcodes. Indeed, across the 9 tested applications, the 17 security-sensitive system calls reported in Table 2 are blocked only in 55.9% of cases by SysComb without specialization, and in 72.8% cases when specialization is used (+16.9%). With reference to the set of 535 shellcodes identified by previous research [27,48], this translates to blocking on average 98 more shellcodes per application (+27.8%), as shown in Figure 9. We remind that, while SysComb provides a unique solution to both identify and enforce specialized filters, it can also enforce the filters generated by other approaches [27,48,18]. Moreover, it removes the need to inject calls to seccomp for the activation, it can work with more than two states, and it supports least-privilege filters. No user-space monitors and kernel modifications are required. 
+
+# 7 Performance Evaluation 
+
+To assess SysComb’s performance we employed (i) microbenchmarks, to measure the absolute system call interposition overhead, and (ii) macrobenchmarks, to SysComb 21 
+
+Table 3: Average execution time of getpid over 1 million invocations with dif-ferent interposition solutions.                    
+
+> Interposition mechanism Tracing ( ns )Enforcing ( ns )
+> ptrace 11931 12019
+> LD_PRELOAD 200 201
+> int3 2880 3157 SUD 2658 2731 zpoline 198 199 seccomp 5167 217 SysComb (Raw tracepoint) 297 303 SysComb (Kprobes) n.a. 487 Native execution (without interposition) has an average execution time of 166 ns
+
+evaluate the impact on common software. Tests were run on a server with Linux kernel 6.8.0, Threadripper 2950X CPU, 128 GiB RAM, and 1 TiB SSD. 
+
+Microbenchmarks. We compared different system call interposition approaches measuring the execution time of the getpid system call, known for its minimal kernel execution path and thus ideal to isolate the overhead. To increase the accu-racy, we employed high-resolution timers, executed 1 million consecutive getpid 
+
+calls, and finally calculated the average. The test was repeated for ptrace [44], 
+
+LD_PRELOAD [15], interrupt-based instrumentation ( int3 ), SUD [14], zpoline [56], seccomp [42], and SysComb. Results are shown in Table 3. As expected, all interposition techniques introduce some overhead compared to the native execution, which takes 166 ns on average. The solutions that require a context-switch to a user-space monitor ( ptrace , interrupt-based instrumenta-tion, SUD, and seccomp in user-space notification mode) introduce the highest overhead, with execution times ranging from 2658 ns to 12019 ns per system call on average (a slowdown of one to two orders of magnitude). Instead, tech-niques that operate entirely in user-space ( LD_PRELOAD , zpoline) or entirely in kernel-space (seccomp in enforcing mode, SysComb) add lower overhead, rang-ing from 198 ns to 487 ns . Despite being performant, user-space solutions are easily bypassed (see Section 3.3), while kernel-based ones provide robust pro-tection. Overall, SysComb exhibits competitive performance, with an average execution time of 297 ns in tracing mode, 303 ns in enforcement mode with raw tracepoints, and 487 ns in enforcement mode with kprobes. 
+
+Macrobenchmarks. In real scenarios, applications do not spend most of their lifetime invoking system calls, so the interposition overhead is amortized by the user-space and kernel-space execution time. To assess this, we ran several mac-robenchmarks, measuring the native execution time (the baseline) and the exe-cution time under seccomp and SysComb interposition. The tested applications include Apache Httpd, Lighttpd, Nginx, Memcached, MongoDB, Redis, MySQL, PostgreSQL, and Bind. For benchmarking, we used (i) Wrk [29] to send HTTP requests, (ii) YCSB [16] to submit key-value read and write queries, (iii) Sys-22 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+Table 4: 90th percentile response time with different interposition techniques. All values are in milliseconds.                                                   
+
+> Application Baseline seccomp SysComb (tr.) SysComb (enf.) Raw T. Kprobes
+> Apache Httpd 7.731 7.743 8.317 8.327 8.531 Lighttpd 11.442 12.578 12.631 12.790 12.852 Nginx 7.407 7.414 8.138 8.169 8.411 Memcached 0.075 0.077 0.077 0.078 0.080 MongoDB 0.163 0.166 0.169 0.170 0.169 Redis 0.104 0.106 0.108 0.109 0.108 MySQL 27.165 28.673 28.673 28.673 29.194 PostgreSQL 5.034 5.101 5.111 5.141 5.107 Bind 312.776 326.209 327.372 328.116 328.442
+
+Bench [36] and pgbench [46] to execute SQL queries, and (iv) dnsperf [19] to resolve DNS names. Table 4 shows the 90th percentiles of request latency. Overall, in tracing mode, compared to the baseline SysComb adds a mini-mum of 0.002 ms (Memcached) and a maximum of 14.596 ms (Bind), with the latter accounting for only 4.46% of Bind’s request time. In enforcement mode, SysComb’s overhead ranges from 0.000 ms (MySQL with raw tracepoints) to 2.233 ms (Bind with kprobes) compared to seccomp, with the latter accounting for only 0.68% of Bind’s request time. The results demonstrate low overhead, suggesting the viability of our approach in production environments. To conclude, we highlight the impact of the enforcement action. When errors are injected and returned to the application, the overhead is slightly higher. This is caused by the use of kprobes over raw tracepoints, which require a different eBPF program type with dedicated safety checks, and additional steps to retrieve the system call number (e.g., cookie-based lookup). Nevertheless, the impact remains limited, with a maximum measured latency of 0 .521 ms (MySQL). 
+
+# 8 Conclusions 
+
+We presented SysComb, a novel solution to support the activation of specialized system call filters. Unlike existing work, SysComb requires no modification of application and kernel code, and introduces no user-space monitors. Indeed, by leveraging eBPF, SysComb operates entirely within the kernel to automatically track application behavior and enable the fully transparent, synchronous, non-bypassable enforcement of per-thread system call filters for any application state. We implemented and evaluated SysComb on nine widely deployed applications, including web servers, relational and NoSQL DBMSs, and a DNS resolver. The results show accurate system call detection and increased filter selectivity, lead-ing to improved protection against kernel vulnerabilities and exploit payloads. Standard benchmarks indicate comparable performance to seccomp. Overall, SysComb 23 
+
+SysComb offers an effective, low-overhead solution that reduces the kernel at-tack surface and robustly mitigates attacks in real-world applications. 
+
+# References 
+
+1. Abbadini, M., Beretta, M., Facchinetti, D., Oldani, G., Rossi, M., Paraboschi, S.: Lightweight cloud application sandboxing. In: IEEE CLOUDCOM (2023) 2. Abbadini, M., Beretta, M., Facchinetti, D., Oldani, G., Rossi, M., Paraboschi, S.: POSTER: Leveraging eBPF to enhance sandboxing of WebAssembly runtimes. In: ACM ASIACCS (2023) 3. Abbadini, M., Facchinetti, D., Oldani, G., Rossi, M., Paraboschi, S.: Cage4Deno: A Fine-Grained Sandbox for Deno Subprocesses. In: ACM ASIACCS (2023) 4. Abbadini, M., Facchinetti, D., Oldani, G., Rossi, M., Paraboschi, S.: NatiSand: Native Code Sandboxing for JavaScript Runtimes. In: RAID (2023) 5. AccuKnox: KubeArmor: Runtime Security Enforcement System. https:// kubearmor.io (2026) 6. Alhindi, M., Hallett, J.: Playing in the sandbox: A study on the usability of sec-comp. USENIX SOUPS (2025) 7. Aqua Security: Tracee: Linux Runtime Security and Forensics using eBPF. https: //aquasecurity.github.io/tracee (2026) 8. Blair, W., Araujo, F., Taylor, T., Jang, J.: Automated Synthesis of Effect Graph Policies for Microservice-Aware Stateful System Call Specialization. In: IEEE S&P (2024) 9. Canella, C., Werner, M., Gruss, D., Schwarz, M.: Automating Seccomp Filter Gen-eration for Linux Applications. In: CCSW (2021) 10. Cesarano, C., Monperrus, M., Natella, R.: GoLeash: Mitigating Golang Software Supply Chain Attacks with Runtime Policy Enforcement (2025), https://arxiv. org/abs/2505.11016 
+
+11. Chromium: renderer main. https://github.com/chromium/chromium/blob/ main/content/renderer/renderer_main.cc (2026) 12. Cilium Project: Tetragon: eBPF-based Security Observability and Runtime En-forcement. https://tetragon.io (2025) 13. strace community: strace. https://strace.io/ (2026) 14. kernel community, L.: Syscall User Dispatch. https://docs.kernel.org/ admin-guide/syscall-user-dispatch.html (2026) 15. community, P.M.P.: syscall intercept. https://github.com/pmem/syscall_ intercept (2025) 16. Cooper, B.F., Silberstein, A., Tam, E., Ramakrishnan, R., Sears, R.: Benchmarking cloud serving systems with YCSB. In: SoCC (2010) 17. Corbet, J.: Bpf: the universal in-kernel virtual machine. https://lwn.net/ Articles/599755/ (2014) 18. DeMarinis, N., Williams-King, K., Jin, D., Fonseca, R., Kemerlis, V.P.: sysfilter: Automated System Call Filtering for Commodity Software. In: 23rd International Symposium on Research in Attacks, Intrusions and Defenses (RAID 2020) (2020) 19. DNS-OARC: dnsperf: DNS Performance Testing Tools. https://codeberg.org/ DNS-OARC/dnsperf (2026) 20. Docker Inc.: Seccomp security profiles for Docker. https://docs.docker.com/ engine/security/seccomp (2026) 21. eBPF Docs: Pinning. https://docs.ebpf.io/linux/concepts/pinning/ (2024) 24 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 22. Gaidis, A.J., Atlidakis, V., Kemerlis, V.P.: SysXCHG: Refining Privilege with Adaptive System Call Filters. In: CCS (2023) 23. Garfinkel, T., Pfaff, B., Rosenblum, M., et al.: Ostia: A delegating architecture for secure system call interposition. In: NDSS (2004) 24. Gbadamosi, B., Leonardi, L., Pulls, T., Høiland-Jørgensen, T., Ferlin-Reiter, S., Sorce, S., Brunstr¨ om, A.: The ebpf runtime in the linux kernel (2024), https: //arxiv.org/abs/2410.00026 
+
+25. Gelderie, M., Barth, V., Luff, M., Birami, J.: Seccomp Filters from Fuzzing. In: SECRYPT (2022) 26. Ghavamnia, S., Palit, T., Benameur, A., Polychronakis, M.: Confine: Automated System Call Policy Generation for Container Attack Surface Reduction. In: RAID (2020) 27. Ghavamnia, S., Palit, T., Mishra, S., Polychronakis, M.: Temporal System Call Specialization for Attack Surface Reduction. In: USENIX Security (2020) 28. Ghavamnia, S., Palit, T., Polychronakis, M.: C2C: Fine-grained Configuration-driven System Call Filtering. In: CCS (2022) 29. Glozer, W.: wrk: Modern HTTP Benchmarking Tool. https://github.com/wg/wrk 
+
+30. Google: libminijailpreload: minijail preload library. https://github.com/google/ minijail/blob/main/libminijailpreload.c (2025) 31. Google: minijail: sandboxing and containment tool used in ChromeOS and An-droid. https://google.github.io/minijail/ (2026) 32. Google: Sandboxing ChromeOS system services. https://www.chromium.org/ chromium-os/developer-library/guides/development/sandboxing (2026) 33. Her, J., Jo, C.H., Park, T., Lee, S.: KUBEROSY: A Dynamic System Call Filtering Framework for Containers . IEEE Access (2024) 34. Jacobs, A., G¨ ulmez, M., Andries, A., Volckaert, S., Voulimeneas, A.: System Call Interposition Without Compromise. In: IEEE DSN (2024) 35. Jia, J., Zhu, Y., Williams, D., Arcangeli, A., Canella, C., Franke, H., Feldman-Fitzthum, T., Skarlatos, D., Gruss, D., Xu, T.: Programmable system call security with ebpf (2023), https://arxiv.org/abs/2302.10366 
+
+36. Kopytov, A.: sysbench: Scriptable database and system performance benchmark. 
+
+https://github.com/akopytov/sysbench 
+
+37. Lei, L., Sun, J., Sun, K., Shenefiel, C., Ma, R., Wang, Y., Li, Q.: SPEAKER: Split-Phase Execution of Application Containers. In: DIMVA (2017) 38. Li, Y., Dolan-Gavitt, B., Weber, S., Justin, J.: Lock-in-Pop: Securing Privileged Operating System Kernels by Keeping on the Beaten Path. In: USENIX ATC (2017) 39. libbpf: blazesym: a library for address symbolization and related tasks. https: //github.com/libbpf/blazesym 
+
+40. Linux kernel community: Linux kernel macros for system call definitions. https: //github.com/torvalds/linux/blob/master/include/linux/syscalls.h (2025) 41. Linux kernel community: AppArmor. https://apparmor.net/ (2026) 42. Linux kernel community: Seccomp BPF. https://www.kernel.org/doc/html/ latest/userspace-api/seccomp_filter.html (2026) 43. Linux man-pages project: ld.so. https://man7.org/linux/man-pages/man8/ld. so.8.html (2026) 44. Linux man-pages project: ptrace. https://man7.org/linux/man-pages/man2/ ptrace.2.html (2026) 45. Linux man-pages project: systemd.exec. https://man7.org/linux/man-pages/ man5/systemd.exec.5.html (2026) SysComb 25 46. PostgreSQL team: pgbench. https://www.postgresql.org/docs/current/ pgbench.html 
+
+47. Provos, N.: Improving host security with system call policies. In: USENIX Security (2003) 48. Rajagopalan, V.L., Kleftogiorgos, K., G¨ oktas, E., Xu, J., Portokalidis, G.: SysPart: Automated Temporal System Call Filtering for Binaries. In: CCS (2023) 49. Rossi, M., Beretta, M., Facchinetti, D., Paraboschi, S.: POSTER: Transparent Temporally-Specialized System Call Filters. In: ACM ASIACCS (2025) 50. Smalley, S., Vance, C., Salamon, W.: Implementing SELinux as a Linux Security Module. NAI Labs Report (2001) 51. Sysdig: Falco: Cloud Native Runtime Security. https://falco.org (2026) 52. Sysdig: Sysdig: Cloud-Native Application Protection Platform. https://sysdig. com (2026) 53. The Kubernetes Authors: Restrict a Container’s Syscalls with seccomp. https: //kubernetes.io/docs/tutorials/security/seccomp (2026) 54. Th´ evenon, G., Nguetchouang, K., Lazri, K., Tchana, A., Olivier, P.: B-Side: Binary-Level Static System Call Identification. In: MIDDLEWARE (2024) 55. Yang, S., Kang, B.B., Nam, J.: Optimus: association-based dynamic system call filtering for container attack surface reduction. Journal of Cloud Computing 13 (1) (2024) 56. Yasukata, K., Tazaki, H., Aublin, P.L., Ishiguro, K.: zpoline: a system call hook mechanism based on binary rewriting. In: USENIX ATC (2023) 57. Young, E.G., Zhu, P., Caraza-Harter, T., Arpaci-Dusseau, A.C., Arpaci-Dusseau, R.H.: The true cost of containing: A {gVisor } case study. In: USENIX HotCloud (2019) 58. Zheng, Y., Yu, T., Yang, Y., Hu, Y., Lai, X., Quinn, A.: bpftime: userspace ebpf runtime for uprobe, syscall and kernel-user interactions (2023), https://arxiv. org/abs/2311.07923 26 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+# A Backpropagation Algorithms 
+
+We provide a high-level representation of the algorithms: Algorithm 1 details the flow-based backpropagation of system calls, Algorithm 2 reports the Kosaraju-Sharir’s algorithm to find the the strongly connected components, Algorithm 3 performs a Depth-First Search visit, and Algorithm 4 transposes the graph. 
+
+Algorithm 1 Flow-based backpropagation of system call profiles. 
+
+1: procedure Backpropagation (states )2: sccs ← StronglyConnectedComponents (states )3: for all scc in Reverse (sccs ) do 
+
+4: syscalls ← ∅
+
+5: for all state in scc do 
+
+6: syscalls ← syscalls ∪ state.syscalls 
+
+7: end for 
+
+8: for all state in scc do 
+
+9: state.syscalls ← syscalls 
+
+10: for all prev in state.prev do 
+
+11: prev.syscalls ← prev.syscalls ∪ state.syscalls 
+
+12: end for 
+
+13: end for 
+
+14: end for 
+
+15: end procedure 
+
+Algorithm 2 Identification of strongly connected components. 
+
+1: procedure StronglyConnectedComponents (states )2: visited ← ∅
+
+3: stack ← ∅
+
+4: for all state in states do 
+
+5: if state / ∈ visited then 
+
+6: DFS (states , state , visited , stack )7: end if 
+
+8: end for 
+
+9: transposed ← TransposeGraph (states )10: visited ← ∅
+
+11: sccs ← ∅
+
+12: while stack ̸ = ∅ do 
+
+13: state ← stack.pop () 14: if state / ∈ visited then 
+
+15: component ← ∅
+
+16: DFS (transposed , state , visited , component )17: sccs.append (component )18: end if 
+
+19: end while 
+
+20: return sccs 
+
+21: end procedure SysComb 27 
+
+Algorithm 3 DFS from a given state. 
+
+1: procedure DFS (states , state , visited , stack )2: visited ← visited ∪ { state }
+
+3: for all next in states [state ].next do 
+
+4: if next / ∈ visited then 
+
+5: DFS (states , next , visited , stack )6: end if 
+
+7: end for 
+
+8: stack.push (state )9: end procedure 
+
+Algorithm 4 Graph transposition. 
+
+1: procedure TransposeGraph (states )2: trans ← new graph 3: for all state in states do 
+
+4: for all next in states [state ].next do 
+
+5: trans [next ].next ← trans [next ].next ∪ { state }
+
+6: end for 
+
+7: end for 
+
+8: return trans 
+
+9: end procedure 28 M. Rossi, M. Abbadini, M. Beretta, D. Facchinetti, S. Paraboschi 
+
+# B Kernel CVEs Blocked 
+
+Table 5: Number of application-specific system call filters identified by SysComb that successfully mitigates Kernel CVEs using a single or a specialized filter. Further details in Section 6.3. 
+
+CVE System calls SC mono SC sec/lp 
+
+2010-4243 uselib, execve(at) 6 6
+
+2011-1082 epoll ctl, epoll pwait 0 2
+
+epoll wait 2012-3375 epoll ctl 0 2
+
+2013-1959 write 0 02013-1979 recvfrom, recvmsg 0 1
+
+3014-4699 fork, clone, ptrace 3 6
+
+2014-5207 mount 9 9
+
+2014-7970 pivot root 9 9
+
+2015-8543 socket 0 1
+
+2014-9529, 2016-0728 keyctl 9 9
+
+2016-2383 bpf 9 9
+
+2017-6001 perf event open 9 9
+
+2017-14954 waitid 9 9
+
+2017-17712 sendto, sendmsg 0 2
+
+2017-18509 setsockopt, getsockopt 0 2
+
+2008-3527, 2010-3858, 2010-4346 execve(at) 6 6
+
+2012-4530, 2013-0914, 2014-9585 2015-1593, 2015-3339, 2016-3672 2018-14634 2018-11508 adjtimex 9 9
+
+2018-12233 setxattr 9 9
+
+2018-18281 execve(at), mremap 5 5
+
+2019-10125 io submit 8 8
+
+2019-11815 clone, unshare 3 6
+
+2018-1000199, 2019-13272 ptrace 9 9
+
+2016-4998, 2016-4997 setsockopt 1 3
+
+2016-3134, 2021-32606 2021-3609 sendmsg 5 6
+
+2021-44879 openat2 9 9
+
+2022-1198 sendmsg, bind 0 3
+
+2022-1204 connect, bind 0 2
+
+2022-47929 sendto 0 3
+
+2022-47943 preadv2 9 9
+
+2023-23454 connect, sendto 0 2
+
+2023-25012 bind 0 4
