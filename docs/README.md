@@ -4,6 +4,13 @@
     <a class="dpr-home-notice-tutorial" href="#/tutorial/README">使用教程 <span aria-hidden="true">›</span></a>
   </div>
   <div class="dpr-home-notice-entry">
+    <time class="dpr-home-notice-date" datetime="2026-08-28">08.28</time>
+    <div>
+      <strong class="dpr-home-notice-entry-title">区间日报可正常点开</strong>
+      <span class="dpr-home-notice-entry-summary">长时间窗日报会挂在结束日那天的日历格上，此前点击没有反应，现在可以正常展开查看。</span>
+    </div>
+  </div>
+  <div class="dpr-home-notice-entry">
     <time class="dpr-home-notice-date" datetime="2026-07-20">07.20</time>
     <div>
       <strong class="dpr-home-notice-entry-title">反馈功能上线</strong>
@@ -44,14 +51,14 @@
       <span class="dpr-home-dashboard-kicker">2026-08-29</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 7 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
-    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>2 次</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>4</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-29 02:22:37 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-29 22:20:37 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,9 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日4篇论文聚焦硬件安全：精读硬件黑客竞赛验证技术与工业Rowhammer缓解，速读LLM芯片代码生成与AI扫描器评估。</p>
-<p>最值得关注：硬件竞赛中的验证技巧与真实漏洞发现，以及工业级Rowhammer防御仍存复杂性与安全隐患。</p>
-<p>建议从硬件侧验证与缓解机制入手，后续可关注AI生成代码的隐性安全义务与扫描工具的恢复能力。</p>
+<p>今日精读聚焦硬件黑客竞赛与AI代码生成安全，速读覆盖LLM代码弱点、智能体监控及扫描器评估。最值得关注硬件验证技术实战洞察，以及多代理协作在代码正确性与安全性上的潜力。建议优先翻阅两篇8分精读，速读可快速浏览提炼的弱点分布与监控策略。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -73,12 +78,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Fleet to Lab: Revisiting the Security and Complexity of Industrial Rowhammer Mitigation">From Fleet to Lab: Revisiting the Security and Complexity of Industrial Rowhammer Mitigation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="MACGen: Toward Functionally Correct and Secure Code Generation via Multi-Agent Collaboration">MACGen: Toward Functionally Correct and Secure Code Generation via Multi-Agent Collaboration</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Fleet to Lab: Revisiting the Security and Complexity of Industrial Rowhammer Mitigation">From Fleet to Lab: Revisiting the Security and Complexity of Industrial Rowhammer Mitigation</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -86,12 +91,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Unsaid, Unsafe? Implicit Security Obligations in LLM-Based RTL Code Generation">Unsaid, Unsafe? Implicit Security Obligations in LLM-Based RTL Code Generation</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond F1: Evaluating Coverage and Failure Recovery in AI Model Security Scanners">Beyond F1: Evaluating Coverage and Failure Recovery in AI Model Security Scanners</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Prompt Structure Redistributes, Not Reduces: An Empirical Analysis of Security-Weaknesses in LLM-Generated Python Code">Prompt Structure Redistributes, Not Reduces: An Empirical Analysis of Security-Weaknesses in LLM-Generated Python Code</span></li><li><span class="dpr-home-dashboard-paper-title" title="ClawSentry: A Progressive Multi-Tier Security Monitor for Safeguarding Autonomous LLM Agents">ClawSentry: A Progressive Multi-Tier Security Monitor for Safeguarding Autonomous LLM Agents</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond F1: Evaluating Coverage and Failure Recovery in AI Model Security Scanners">Beyond F1: Evaluating Coverage and Failure Recovery in AI Model Security Scanners</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 </div>
 
