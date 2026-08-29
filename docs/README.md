@@ -41,17 +41,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-28</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-29</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 16 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>6</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>10</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-28 03:32:24 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-29 02:22:37 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -62,7 +62,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精读6篇、速读10篇，共处理16篇论文，聚焦系统安全与硬件验证。最值得关注的是GPU信息流追踪实现用户数据隔离的GIFT，以及CHERI处理器时间安全验证框架FRESCO，均获9.0高分。建议普通读者优先浏览速读中的硬件竞赛经验与漏洞诊断方法，快速扩展视野。</p>
+<p>今日4篇论文聚焦硬件安全：精读硬件黑客竞赛验证技术与工业Rowhammer缓解，速读LLM芯片代码生成与AI扫描器评估。</p>
+<p>最值得关注：硬件竞赛中的验证技巧与真实漏洞发现，以及工业级Rowhammer防御仍存复杂性与安全隐患。</p>
+<p>建议从硬件侧验证与缓解机制入手，后续可关注AI生成代码的隐性安全义务与扫描工具的恢复能力。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -71,12 +73,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">6 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Here is a GIFT: Enforcing User Data Isolation in LLM Serving via GPU Information Flow Tracking">Here is a GIFT: Enforcing User Data Isolation in LLM Serving via GPU Information Flow Tracking</span></li><li><span class="dpr-home-dashboard-paper-title" title="FRESCO: Complete and Scalable Temporal Safety for CHERI Application Processors">FRESCO: Complete and Scalable Temporal Safety for CHERI Application Processors</span></li><li><span class="dpr-home-dashboard-paper-title" title="PRISM: Lightweight Enclave Isolation with Prismatic Capabilities">PRISM: Lightweight Enclave Isolation with Prismatic Capabilities</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Fleet to Lab: Revisiting the Security and Complexity of Industrial Rowhammer Mitigation">From Fleet to Lab: Revisiting the Security and Complexity of Industrial Rowhammer Mitigation</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -84,12 +86,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">10 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Verdict to Diagnosis: Attributable Security Review of Pull Requests">From Verdict to Diagnosis: Attributable Security Review of Pull Requests</span></li><li><span class="dpr-home-dashboard-paper-title" title="Answer Is Cheap, Show Me the Evidence! Augmenting Automated Vulnerability Assessment with Evidence">Answer Is Cheap, Show Me the Evidence! Augmenting Automated Vulnerability Assessment with Evidence</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Unsaid, Unsafe? Implicit Security Obligations in LLM-Based RTL Code Generation">Unsaid, Unsafe? Implicit Security Obligations in LLM-Based RTL Code Generation</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond F1: Evaluating Coverage and Failure Recovery in AI Model Security Scanners">Beyond F1: Evaluating Coverage and Failure Recovery in AI Model Security Scanners</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>10</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 </div>
 
