@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-29</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-30</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 7 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
-    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>2 次</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>4</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-29 22:20:37 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-08-30 22:53:22 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,7 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精读聚焦硬件黑客竞赛与AI代码生成安全，速读覆盖LLM代码弱点、智能体监控及扫描器评估。最值得关注硬件验证技术实战洞察，以及多代理协作在代码正确性与安全性上的潜力。建议优先翻阅两篇8分精读，速读可快速浏览提炼的弱点分布与监控策略。</p>
+<p>今日共处理5篇论文，精读2篇高分研究，速读2篇，聚焦边缘AI安全与密码学检测。</p>
+<p>最值得关注的是《TEE-X》提出的边缘大模型TEE加速框架，以及《Static Detection》对剥离二进制中后量子密码算法的静态检测方法。</p>
+<p>建议普通读者优先了解边缘设备上的可信执行环境应用，并关注后量子密码迁移的自动化审计工具。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -81,7 +83,7 @@
     <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="MACGen: Toward Functionally Correct and Secure Code Generation via Multi-Agent Collaboration">MACGen: Toward Functionally Correct and Secure Code Generation via Multi-Agent Collaboration</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Fleet to Lab: Revisiting the Security and Complexity of Industrial Rowhammer Mitigation">From Fleet to Lab: Revisiting the Security and Complexity of Industrial Rowhammer Mitigation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="TEE-X: TEE-aware Acceleration Framework for Large Vision Models at the Edge">TEE-X: TEE-aware Acceleration Framework for Large Vision Models at the Edge</span></li><li><span class="dpr-home-dashboard-paper-title" title="Static Detection of Post-Quantum Cryptographic Algorithms in Stripped Binaries for Digital Forensic Examination and Migration Assurance">Static Detection of Post-Quantum Cryptographic Algorithms in Stripped Binaries for Digital Forensic Examination and Migration Assurance</span></li><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
@@ -91,12 +93,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">4 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Prompt Structure Redistributes, Not Reduces: An Empirical Analysis of Security-Weaknesses in LLM-Generated Python Code">Prompt Structure Redistributes, Not Reduces: An Empirical Analysis of Security-Weaknesses in LLM-Generated Python Code</span></li><li><span class="dpr-home-dashboard-paper-title" title="ClawSentry: A Progressive Multi-Tier Security Monitor for Safeguarding Autonomous LLM Agents">ClawSentry: A Progressive Multi-Tier Security Monitor for Safeguarding Autonomous LLM Agents</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond F1: Evaluating Coverage and Failure Recovery in AI Model Security Scanners">Beyond F1: Evaluating Coverage and Failure Recovery in AI Model Security Scanners</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="LLMscope: Extracting LLM Assets from Edge AI Chips via Optical Probing">LLMscope: Extracting LLM Assets from Edge AI Chips via Optical Probing</span></li><li><span class="dpr-home-dashboard-paper-title" title="What&#x27;s Your NIC Whispering? Network Threat Behavior Recognition via NIC Electromagnetic Side-Channel Leakage">What&#x27;s Your NIC Whispering? Network Threat Behavior Recognition via NIC Electromagnetic Side-Channel Leakage</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 </div>
 
