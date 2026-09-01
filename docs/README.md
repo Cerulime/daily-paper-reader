@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-08-30</span>
+      <span class="dpr-home-dashboard-kicker">2026-08-31</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 11 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>4</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-08-30 22:53:22 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-01 00:14:15 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共处理5篇论文，精读2篇高分研究，速读2篇，聚焦边缘AI安全与密码学检测。</p>
-<p>最值得关注的是《TEE-X》提出的边缘大模型TEE加速框架，以及《Static Detection》对剥离二进制中后量子密码算法的静态检测方法。</p>
-<p>建议普通读者优先了解边缘设备上的可信执行环境应用，并关注后量子密码迁移的自动化审计工具。</p>
+<p>今日精读4篇、速读7篇，共11篇论文，重点关注系统安全与漏洞分析。最值得看的是eBPF安全机制综述（9.0分）和硬件黑客竞赛实战经验（8.0分）。建议优先精读这两篇，速读可留意自动化漏洞合成与Dockerfile安全基准生成。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -80,12 +78,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="TEE-X: TEE-aware Acceleration Framework for Large Vision Models at the Edge">TEE-X: TEE-aware Acceleration Framework for Large Vision Models at the Edge</span></li><li><span class="dpr-home-dashboard-paper-title" title="Static Detection of Post-Quantum Cryptographic Algorithms in Stripped Binaries for Digital Forensic Examination and Migration Assurance">Static Detection of Post-Quantum Cryptographic Algorithms in Stripped Binaries for Digital Forensic Examination and Migration Assurance</span></li><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="eBPF-Based Cybersecurity Mechanisms: A Systematic Literature Review">eBPF-Based Cybersecurity Mechanisms: A Systematic Literature Review</span></li><li><span class="dpr-home-dashboard-paper-title" title="Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights">Lessons from the Hardware Hacking Competitions: Verification Techniques, Findings, and Insights</span></li><li><span class="dpr-home-dashboard-paper-title" title="Decoupling is a Necessity: Transformation-Agnostic Decompiled Code Recovery under Optimization and Obfuscation">Decoupling is a Necessity: Transformation-Agnostic Decompiled Code Recovery under Optimization and Obfuscation</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -93,12 +91,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">7 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="LLMscope: Extracting LLM Assets from Edge AI Chips via Optical Probing">LLMscope: Extracting LLM Assets from Edge AI Chips via Optical Probing</span></li><li><span class="dpr-home-dashboard-paper-title" title="What&#x27;s Your NIC Whispering? Network Threat Behavior Recognition via NIC Electromagnetic Side-Channel Leakage">What&#x27;s Your NIC Whispering? Network Threat Behavior Recognition via NIC Electromagnetic Side-Channel Leakage</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="GraftyVul: Synthesising Insecure Programs Through Real-World Vulnerability Grafting">GraftyVul: Synthesising Insecure Programs Through Real-World Vulnerability Grafting</span></li><li><span class="dpr-home-dashboard-paper-title" title="Metis: Typed Runtime Mediation for Tool-Using Software Agents">Metis: Typed Runtime Mediation for Tool-Using Software Agents</span></li><li><span class="dpr-home-dashboard-paper-title" title="Closing the Gap: Automated Discovery of Secure Dockerfile Reference Standards via Semantic Clustering in Enterprise Inner Source">Closing the Gap: Automated Discovery of Secure Dockerfile Reference Standards via Semantic Clustering in Enterprise Inner Source</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
 </section>
 </div>
 
