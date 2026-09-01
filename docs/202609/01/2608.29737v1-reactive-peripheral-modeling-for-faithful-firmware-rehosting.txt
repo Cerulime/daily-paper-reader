@@ -1,0 +1,582 @@
+Title: Reactive Peripheral Modeling for Faithful Firmware Rehosting
+
+URL Source: https://arxiv.org/pdf/2608.29737v1
+
+Published Time: Tue, 01 Sep 2026 01:19:48 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Reactive Peripheral Modeling for Faithful Firmware Rehosting 
+
+# Qinying Wang ∗, Florian Hofhammer ∗, Eduard Vlad ∗, Jianqiang Wang † Marcel Busch ∗,Shouling Ji ‡ and Mathias Payer ∗
+
+> ∗
+
+École Polytechnique Fédérale de Lausanne (EPFL) 
+
+> †
+
+Max Planck Institute for Security and Privacy 
+
+> ‡
+
+Zhejiang University 
+
+## Abstract 
+
+Embedded BLE stacks are ubiquitous and therefore security critical. Rehosting enables tight control and introspection during testing but existing approaches largely fail to reach deeper protocol states and cannot drive the stacks beyond early-stage initialization. This limitation is not specific to BLE, but reflects a more fundamental limitation in existing rehosting approaches: their inability to faith-fully model complex peripheral semantics and dependencies. In particular, existing work typically relies on passive approximations of peripheral behavior, overlooking three key aspects of peripheral semantics: (i) the interplay among interrupts, MMIO, and DMA; (ii) implicit state transitions within peripherals; (iii) and interactions across multiple peripherals. To address this challenge, we propose Reactive Peripheral Mod-eling (RPM), an abstraction that models hardware peripherals as reactive and stateful systems. RPM captures peripheral behavior through event-condition-action semantics, enabling faithful rep-resentation of interrupt, MMIO, DMA scheduling, implicit state transitions and cross-peripheral interactions. We implement RPM in Bluezz for BLE firmware rehosting and fuzzing, and show that such reactive modeling is necessary to reach deep protocol states, including connection establishment, service discovery, and post-connection processing. We evaluate Bluezz on representative BLE stacks, including NimBLE, Zephyr, and Nordic SoftDevice, a closed-source commercial stack. Across 18 targets, Bluezz achieves over 2.6 × the basic-block coverage of prior state-of-the-art rehosting approaches on average. Unlike prior approaches that remain largely confined to advertising and scanning logic, Bluezz reliably exer-cises connected BLE states and uncovers five previously unknown vulnerabilities that manifest only after connection establishment. Finally, we show that RPM generalizes beyond BLE to other em-bedded firmware across different MCUs. 
+
+## CCS Concepts 
+
+• Do Not Use This Code → Generate the Correct Terms for Your Paper .
+
+> Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and the full citation on the first page. Copyrights for components of this work owned by others than the author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires prior specific permission and/or a fee. Request permissions from permissions@acm.org.
+> Conference acronym ’XX, Woodstock, NY
+> © 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM. ACM ISBN 978-1-4503-XXXX-X/2018/06 https://doi.org/XXXXXXX.XXXXXXX
+
+## Keywords 
+
+Faithful rehosting, firmware fuzzing 
+
+ACM Reference Format: 
+
+Qinying Wang ∗, Florian Hofhammer ∗, Eduard Vlad ∗, Jianqiang Wang †
+
+Marcel Busch ∗,, Shouling Ji ‡ and Mathias Payer ∗. 2018. Reactive Periph-eral Modeling for Faithful Firmware Rehosting. In Proceedings of Make sure to enter the correct conference title from your rights confirmation email (Conference acronym ’XX). ACM, New York, NY, USA, 16 pages. https: //doi.org/XXXXXXX.XXXXXXX 
+
+## 1 Introduction 
+
+Bluetooth Low Energy (BLE) powers billions of devices and un-derpins security-critical applications ranging from wearables and smartphones to vehicles and smart home systems [3, 4]. As these de-vices handle sensitive data, vulnerabilities in embedded BLE stacks can have serious consequences. Prior work demonstrated how flaws in BLE stacks can allow remote attackers to gain code execution using crafted over-the-air packets, often without physical access [8, 9, 12, 34, 37, 38]. Detecting such vulnerabilities, however, remains challenging be-cause BLE firmware is typically closed-source, tightly coupled with specific hardware, and difficult to control during over-the-air BLE stack testing. Firmware rehosting is a promising approach for such testing because it enables controlled execution, fine-grained intro-spection, and scalable input generation without requiring physical devices. However, existing rehosting approaches fail to effectively explore the reachable attack surface of firmware. First , existing approaches [2, 7, 19, 22, 26–28, 33] fail to drive firmware beyond early initialization stages. In BLE, existing systems remain largely confined to advertising and scanning logic, and rarely reach connec-tion establishment or post-connection processing, where much of the security-critical protocol handling is implemented. This leaves much of the remote attack surface unreachable. Second , they ex-pose peripheral interfaces such as Memory-Mapped I/O (MMIO) val-ues and interrupt schedules as generic fuzzing inputs, even though these interfaces are not attacker-controllable in practice. This can drive execution into infeasible or spurious states that do not corre-spond to realistic attack scenarios. As a result, the effective attack surface is both inaccurately modeled and largely unreachable, lead-ing to misleading testing results and missed vulnerabilities. Importantly, this limitation is not unique to BLE. Rather, it stems from a more fundamental challenge in peripheral modeling for em-bedded firmware analysis. Existing emulators commonly approx-imate peripherals as passive MMIO endpoints that simply return expected values or trigger isolated events. Real world peripherals, however, are reactive and stateful systems whose behavior is driven by causal event chains across MMIO accesses, DMA transfers, and arXiv:2608.29737v1 [cs.CR] 30 Aug 2026 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+interrupts. When these causal semantics are missing or violated, rehosted execution becomes semantically invalid. Expected hard-ware events may never occur, preventing firmware from reaching deep states. Conversely, impossible events or values may be intro-duced, driving firmware into infeasible states and causing spurious crashes. This raises a pressing question: how can we faithfully rehost embedded firmware while preserving the reactive hardware semantics needed to reach attacker-relevant states? 
+
+We identify three challenges to answer this question. Chal-lenge 1: Modeling causal hardware events. Peripheral behavior is not determined by MMIO accesses alone, but by the interplay among MMIO accesses, interrupts, and DMA transfers. Challenge 2: 
+
+Modeling implicit peripheral state transitions. Peripherals per-form implicit state transitions driven by hardware logic rather than explicit firmware instructions. Challenge 3 : Modeling cross-peripheral coordination. Peripheral behavior often spans multiple components: timers, radios, DMA engines, and interrupt controllers must coordinate to produce the events observed by firmware. To-gether, these complex and fundamental peripheral characteristics make it difficult to reconstruct the causal hardware behavior re-quired for semantically valid execution. 
+
+Our solution. To address this gap, we propose Reactive Peripheral Modeling (RPM) , an abstraction that models hardware peripherals as reactive systems through event-condition-action (ECA) semantics. RPM represents peripheral semantics as a set of ECA rules derived from hardware reference manuals. Each rule specifies the triggering 
+
+event , the hardware conditions under which the rule applies, and the resulting actions performed by the peripheral. These elements are grounded in concrete hardware artifacts, including MMIO reg-isters, interrupt lines, DMA descriptors, and, when needed, internal peripheral states. This design provides two key benefits. First, RPM captures not only MMIO interactions, but also the causal event chains expected by the firmware, enabling faithful rehosting and semantically valid progression into deeper states. Second, RPM aligns fuzzing with the realistic attack surface. Since fuzzed inputs are propagated through hardware mechanisms rather than injected as arbitrary MMIO values or interrupts, RPM enables testing the firmware paths that are actually reachable by attacker-controlled wireless packets or serial inputs. We instantiate RPM in Bluezz and use embedded BLE stacks as a challenging case study, since BLE requires tight coordina-tion across multiple peripherals and protocol stages. In BLE, the attacker-controlled inputs are over-the-air radio packets and the target states include connection establishment, service discovery, and post-connection processing. To make RPM practical in Bluezz, we expose events, conditions, and actions as composable primitives, allowing users to build peripheral models by assembling reusable building blocks. Bluezz further automates the low-level binding between RPM rules and hardware artifacts: it parses the official CMSIS-SVD (System View Description) files to recover peripheral register layouts and access patterns, and hooks firmware register ac-cesses at runtime. When firmware writes to registers that configure or trigger peripheral behavior, Bluezz dispatches the correspond-ing RPM rules to update peripheral state, schedule DMA transfers, or fire interrupts. 
+
+Evaluation. We evaluate Bluezz on 18 BLE firmware samples spanning three major BLE stacks: NimBLE, Zephyr, and Nordic SoftDevice. Notably, Nordic SoftDevice is a commercial closed-source BLE stack. Our evaluation shows that Bluezz substantially improves deep-state coverage and vulnerability discovery over prior rehosting approaches. Specifically, Bluezz achieves over 2.6 × basic-block coverage and over 4.9 × BLE stack-related basic-block cover-age compared to state-of-the-art (SOTA). As far as we know, Bluezz is the first rehosting-based framework to systematically exercise all phases of the BLE protocol stack, including scanning, advertising, connection, and data exchange. More importantly, Bluezz identifies five previously unknown vulnerabilities in post-connection states, including improper input validation and double-free bugs. Alarmingly, these vulnerabilities can be triggered by remote attackers using malformed over-the-air packets, leading to denial of service or unstable controller states. Since they reside in widely deployed BLE stack implementations, which are reused across multiple vendors and products, they po-tentially impact a large number of devices. We have responsibly disclosed all issues, and one has already been fixed. Finally, we evaluate the generality of RPM beyond BLE. Bluezz models nine commonly used peripherals required by BLE firmware, most of which are not supported by existing emulators. We further apply RPM to Grbl [10], a widely used serial-protocol firmware for Computer Numerical Control (CNC) milling. We extend Bluezz to model seven types of peripherals from a different MCU family required by the firmware, and fuzz the firmware through its serial interface as a practical attack interface. The results show that RPM achieves coverage comparable to the SOTA on Grbl after about four hours of manual effort to adapt its ECA rules. This demonstrates that RPM is extensible and can generalize beyond BLE firmware with manageable manual effort. In summary, our contributions are as follows: 
+
+• Novel insights . We identify attack-surface exploration as a key limitation of existing firmware rehosting. We propose a new modeling method, an event-condition-action abstrac-tion that models peripherals as reactive systems and captures causal hardware event chains, implicit peripheral state tran-sitions, and cross-peripheral coordination. 
+
+• Pratical tool. We implement RPM in Bluezz, a BLE firm-ware rehosting and fuzzing framework for comprehensive BLE stack testing. With RPM rules and protocol-aware in-put models, Bluezz can rehost and fuzz diverse BLE stacks, including closed-source stacks without symbols. 
+
+• Extensive evaluation. We evaluate Bluezz on 18 BLE firm-ware samples across NimBLE, Zephyr, and Nordic SoftDevice. Our results show that Bluezz outperforms prior rehosting approaches, reaches connection and post-connection states, and uncovers five previously unknown vulnerabilities. 
+
+• Open source. We will release Bluezz and a BLE firmware benchmark suite covering major BLE stacks, roles, and pro-tocol phases to support future research. 
+
+## 2 Background 2.1 Rehosting-based Firmware Fuzzing 
+
+Firmware running on a microcontroller unit (MCU) relies on hard-ware peripherals, such as timers, radios, and UARTs, to interact with the physical environment and communicate with external Reactive Peripheral Modeling for Faithful Firmware Rehosting Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+devices. Firmware interacts with these peripherals mainly through three mechanisms: memory-mapped I/O (MMIO), interrupts, and direct memory access (DMA). Through MMIO , firmware reads and writes peripheral registers to configure hardware behavior, issue commands, and observe hardware status. Peripheral MMIO reg-isters can be broadly classified into three types: control registers, which firmware writes to configure peripheral behavior or trigger hardware tasks; status registers, which firmware reads to observe hardware states or event flags; and data registers, which carry in-put or output data between firmware and peripherals. In practice, some registers may combine control and status fields, but they still serve these basic interaction purposes. Through interrupts , periph-erals asynchronously notify firmware when hardware events occur, such as timer expiration, packet reception, or transfer completion. 
+
+Through DMA , peripherals directly read from or write to memory buffers without requiring the CPU to explicitly move each byte. To enable security analysis with high introspection, firmware rehosting runs firmware off-device in a virtual environment, and emulate the peripherals to advance the firmware execution. Exist-ing rehosting-based fuzzing approaches typically emulate hardware at two different abstraction layers. At the high-level abstraction layer (HAL) [6, 14, 20, 30], the emulator redirects calls to HAL functions to custom handlers that provide equivalent peripheral behaviors in the virtual environment. This approach avoids modeling low-level hardware accesses, such as DMA transfers and MMIO accesses, with manageable manual effort. However, it is difficult to apply to firm-ware without clearly identifiable HAL functions. At the hardware layer [7, 15, 22, 26–28, 33], the emulator models low-level hardware mechanisms such as MMIO accesses, interrupts, and DMA transfers. Existing approaches commonly supply values for MMIO reads or DMA buffers using fuzzed inputs, heuristics, or symbolic execution to infer firmware-expected values. They also trigger interrupts ran-domly, periodically, or approximately based on firmware analysis. This layer is more scalable than HAL-level emulation and can be effective for firmware that depends on relatively simple peripheral behaviors. However, it becomes less effective for firmware that relies on complex, timing-sensitive, or interdependent peripheral semantics. In such cases, firmware-centric models may miss hard-ware behaviors that are implicit in peripherals and not directly visible from firmware execution. As a result, execution may fail to progress into deeper states. Moreover, exposing MMIO values, DMA buffers, or interrupt schedules as fuzzing inputs may cause the fuzzer to explore states that are not reachable through realistic attacker-controlled interfaces. 
+
+## 2.2 Realistic Attack Surface for BLE Firmware 
+
+We consider a nearby wireless adversary that sends crafted BLE packets over the air to a target device. This threat model is prac-tical and consistent with prior BLE attacks [1, 9, 17]. Under this threat model, the adversary controls only protocol-level wireless inputs, and cannot directly control MMIO registers, DMA descrip-tors, interrupt schedules, or other internal hardware events. and post-connection data exchange. Realistic BLE firmware testing should therefore exercise firm-ware through over-the-air packets. As shown in Figure 1, BLE communication involves three main phases: 1 scanning/advertis-ing, 2 connection establishment, and 3 data exchange. During scanning and advertising, devices discover each other through ad-vertisements, scan requests, and scan responses. Connection estab-lishment begins when a central device sends a connection request and the peers negotiate link parameters such as connection interval and latency. After connection establishment, devices enter post-connection data exchange, where higher-layer BLE logic such as service discovery and attribute access processes attacker-controlled packets. Thus, the realistic remote attack surface of BLE firmware is de-fined by the protocol states and packet types reachable through over-the-air communication. In particular, connection and post-connection phases are critical because they exercise security-relevant logic beyond early discovery. Appendix C summarizes the BLE stack layers and representative packet structures. ADV CONN_IND DATA DATA      
+
+> Connection established
+> ac
+> Set central role Create connection
+> ab
+> Set peripheral role Start advertisement
+> …
+> Device A Device B
+> bStart scanning ①Scanning/ Advertisement
+> ②Connection establishment
+> ③Data exchange
+
+Figure 1: Major BLE phases, including scanning/advertise-ment, connection establishment, and data exchange. 
+
+## 3 Motivation and New Modeling Paradigm 3.1 Why Existing Approaches Fail 
+
+Our goal is to enable realistic attack-surface exploration while retaining the scalability and applicability of hardware-layer emu-lation, especially for firmware without clear HAL functions. How-ever, existing emulation approximates hardware-layer behaviors, and thus struggles when firmware depends on complex, timing-sensitive, and interdependent peripheral behavior. In the following, we use peripherals required by BLE firmware as concrete examples to illustrate the behaviors that firmware depends on and why existing hardware-layer approaches [2, 7, 26–28, 33, 41] fail to support them faithfully. These limitations prevent rehosting systems from reaching deep firmware states and limit realistic attack-surface exploration. 
+
+Challenge 1. Modeling causal hardware events. Peripherals raise hardware events when specific conditions occur, such as data reception, transmission completion, or timer expiration. In real hardware, firmware-visible interrupts are raised only when the corresponding peripheral event occurs and its interrupt source is enabled. The interrupt is gated by both the global interrupt con-troller, e.g., the Nested Vectored Interrupt Controller (NVIC), and Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+by local interrupt-enable fields in peripheral MMIO registers. Exist-ing approaches often treat interrupts as generic execution-driving inputs: once an interrupt is enabled in the NVIC, they may trigger it randomly and then supply MMIO values on demand. This ignores the causal relation among peripheral events, MMIO state, and inter-rupt delivery, leading to interrupts that may be inconsistent with real hardware behavior. Moreover, delivering an interrupt alone is insufficient to ad-vance firmware execution correctly. On interrupt delivery, the in-terrupt service routine (ISR) expects the corresponding MMIO state and DMA-propagated data to be consistent with that event. For instance, in Listing 1, the RADIO interrupt line invokes the ISR 
+
+ble_phy_isr() . In Steps 1 and 2, the firmware continues process-ing BLE packets only if the MMIO status registers indicate that 
+
+EVENTS_ADDRESS or EVENTS_DISABLED has been raised. Moreover, the packet itself must already have been propagated to the receive buffer via DMA.                                                                                                             
+
+> 1/* Interrupt service routine for RADIO interrupt . */
+> 2static void ble_phy_isr ( void )
+> 3{
+> 4/* Read the MMIO status register for interrupt . */
+> 5uint32_t irq =NRF_RADIO -> INTENSET ;
+> 67/* 1. Check if RADIO raised EVENTS_ADDRESS */
+> 8if (( irq &RADIO_INTENCLR_ADDRESS_Msk ) &&
+> 9NRF_RADIO -> EVENTS_ADDRESS ) {
+> 10 /* 1.1 Process RX packets , update PHY state */
+> 11 if ( ble_phy_rx_start_isr () ) {
+> 12 irq &= ~ RADIO_INTENCLR_DISABLED_Msk ;
+> 13 }
+> 14 }
+> 15 /* 2. Check if RADIO raised EVENTS_DISABLED */
+> 16 if (( irq &RADIO_INTENCLR_DISABLED_Msk ) &&
+> 17 NRF_RADIO -> EVENTS_DISABLED ) {
+> 18 NRF_RADIO -> EVENTS_END =0;
+> 19 NRF_RADIO -> EVENTS_DISABLED =0;
+> 20 /* 2.1 check PHY state */
+> 21 switch ( g_ble_phy_data . phy_state ) {
+> 22 case BLE_PHY_STATE_RX :
+> 23 if ( g_ble_phy_data . phy_rx_started ) {
+> 24 /* 2.2 Process RX packets , update PHY state */
+> 25 ble_phy_rx_end_isr () ;
+> 26 }
+> 27 break ;
+> 28 case BLE_PHY_STATE_TX :
+> 29 /* 2.2 Process TX packets , update PHY state */
+> 30 ble_phy_tx_end_isr () ;
+> 31 break ;
+> 32 default :
+> 33 BLE_LL_ASSERT (0) ;
+> 34 }
+> 35 }
+> 36 }
+
+Listing 1: Simplified Nimble BLE controller code snippet. 
+
+Existing rehosting approaches typically ignore the interrupt trig-gering conditions and do not model these dependencies jointly. Interrupt delivery, MMIO values, and DMA data are often approx-imated independently, even though firmware expects them to be mutually consistent. As a result, the emulator may deliver interrupts that should not occur or fail to deliver interrupts that firmware is waiting for, wasting fuzzing effort on infeasible execution paths. Even when an interrupt is delivered, the handler may execute with-out the corresponding MMIO state or DMA-propagated packet data. In our example, BLE firmware may read stale or garbage data from the receive buffer, so the real attacker-controlled packet is never processed. Consequently, the realistic attack surface remains untested and firmware execution may fail to progress. 
+
+Takeaway 1: Trigger interrupts only when the corresponding peripheral event occurs and the event-specific interrupt configu-ration is enabled. Model MMIO updates, interrupt delivery, and DMA transfers jointly rather than independently. 
+
+Challenge 2. Modeling implicit peripheral state transitions. 
+
+Additionally, hardware events also have ordering dependencies. A later event is meaningful only after earlier events have advanced the peripheral and firmware-maintained state. As shown in Listing 1, the firmware must first execute the func-tion in line 11 of Step 1.1. This handler processes the beginning of packet reception and updates PHY state, including whether recep-tion has started. Only after this state transition should the ISR be triggered again with the EVENTS_DISABLED event in Step 2, corre-sponding to a valid receive completion. The firmware then calls 
+
+ble_phy_rx_end_isr() in Step 2.2, allowing the packet to enter BLE link-layer processing and further advance the controller state. Inferring these ordering and state dependencies is difficult be-cause they are encoded across multiple function calls, control-flow transitions, and data-flow dependencies that jointly update the firmware-maintained peripheral state. Existing symbolic-execution-based approaches struggle to recover such temporal constraints. Moreover, their modeling templates typically construct fixed value models for MMIO accesses at specific firmware execution addresses, and therefore do not natively support temporal constraints. As a re-sult, they corrupt firmware-maintained state, causing packets to be dropped, misprocessed, or never delivered to deep BLE logic. Even worse, they may provide fresh fuzzed data whenever the firmware reads an MMIO register or DMA buffer. This breaks packet consis-tency: Steps 1 and 2 in Listing 1 are expected to process the same received packet. Consequently, the firmware no longer observes a coherent packet reception, and the fuzzer gets stuck. 
+
+Takeaway 2: Model peripheral events as ordered state transi-tions. 
+
+Challenge 3. Modeling cross-peripheral coordination. A fur-ther challenge is that some peripheral state transitions can be com-pletely invisible to the firmware. For example, BLE firmware often uses a timer to drive radio packet transmission and reception. From the firmware code, one may and then becomes idle. However, when the configured timer event fires, it can directly trigger the radio to start receiving a packet without any firmware intervention through PPI. This in turn causes a sequence of radio state transitions and interrupts. Such peripheral-to-peripheral coordination is supported across vendors, implemented in, e.g., Nordic’s PPI [23], Silicon Labs’ Peripheral Reflex System [31], and Renesas’ Event Link Controller [24]. Existing firmware-centric approaches cannot infer this hid-den cross-peripheral coordination because the key state transition does not appear as an explicit firmware action. Consequently, they fail to trigger the IRQs expected by the firmware and cannot drive execution into the intended BLE logic. Reactive Peripheral Modeling for Faithful Firmware Rehosting Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+Takeaway 3: Go beyond firmware-centric modeling and capture hardware-level cross-peripheral event propagation. 
+
+## 3.2 Reactive Peripheral Modeling 
+
+Taken together, these challenges and takeaways show that modeling such peripheral behaviors is non-trivial. Moreover, existing passive peripheral modeling approaches are insufficient for capturing the temporal, stateful, and cross-peripheral dependencies required by complex wireless protocols. This calls for a new modeling perspec-tive, which we call Reactive Peripheral Modeling (RPM) . RPM treats peripherals as stateful and reactive systems and represents their observable behaviors through composable Event-Condition-Action (ECA) rules. We have the following insights. 
+
+#1. Peripherals are stateful and reactive systems. A key insight behind RPM is that a peripheral should not be modeled as a collection of independent MMIO responses or randomly/ap-proximately injected interrupts. Instead, it should be treated as a stateful and reactive system whose behavior evolves as firmware issues commands to the peripheral through control-register writes and later observes the peripheral’s responses through status regis-ters, buffers, and interrupts. For instance, firmware may write to a command register to start a radio operation. The peripheral then changes its internal state, updates status registers, fills or consumes buffers, and raises one or more interrupts to notify firmware of progress or completion. Faithfully modeling these behaviors en-ables fuzzing to exercise realistic firmware-peripheral interactions and focus on the actual attack surface exposed by OTA packets. 
+
+#2. All observable behaviors can be captured through Event-Condition-Action (ECA) rules. We further observe that although peripheral reactions may appear complex, their firmware-observable behaviors can be decomposed into a unified Event-Condition-Action (ECA) abstraction. An ECA rule has the general form: on event if condition(s) do action(s) . In our setting, an event captures the trigger of a peripheral reaction, a condition captures the register-visible or implicit state that enables the reaction, and an action captures the resulting state update or observable effect. Events can originate from multiple sources. While firmware writes to peripheral registers are the most direct triggers, peripheral actions can also generate new events. For example, an action may update the peripheral’s internal state, start a follow-up task, or notify another peripheral. These generated events may then enable subsequent ECA rules, forming a chain of reactions. Such composable rule chaining allows RPM to explicitly address the three challenging behavioral patterns identified earlier. First, it captures causal hardware events (Challenge 1). In RPM, an interrupt is not modeled as an independent input. Instead, it is produced as the action of an ECA rule, whose event and condition encode the underlying hardware cause. For example, when a packet is re-ceived and the corresponding interrupt-enable bit is set, the rule updates status registers, propagates data via DMA, and raises the interrupt. This ensures that interrupts are delivered only when the corresponding hardware event occurs and the required MMIO configurations are satisfied. Second, it captures sequential reactions and state transitions (Challenge 2), where one peripheral action changes internal state or generates a new event that enables a later reaction within the same peripheral. This allows RPM to model 
+
+Table 1: Categorization of events, conditions, and actions in ECA modeling. Component Types     
+
+> Event MMIO register (e.g., control, status or control-and-status registers) updates initiated by either the firmware or the peripheral.
+> Condition 1. A specific value in a peripheral register (e.g., status or control-and-status registers). 2. An implicit peripheral state (e.g., counter val-ues, timer expirations).
+> Action
+> 1. Start or stop specific tasks (e.g., packet trans-mission/reception, timer or counter activation). 2. Trigger an interrupt. 3. Update specific MMIO values in peripheral registers. 4. Modify implicit peripheral states (e.g., internal counters or states). RXRU RXIDLE RX DISABLED RXDISABLE TASKS _RXEN
+> TASKS_RXEN
+> TASKS_START
+> EVENTS_ADDRESS
+> EVENTS_PAYLOAD EVENTS_END / TASKS_STOP TASKS_DISABLE EVENTS_DISABLED EVENTS_READY
+
+Figure 2: The state machine of the Nordic NRF52 series RA-DIO peripheral. Each box represents a state of the peripheral, which is reflected in the STATE MMIO register. Arrows de-note state transitions triggered either by MMIO writes or by hardware events. These MMIO writes target control registers typically prefixed with TASKS_ , while hardware events are reflected in MMIO registers prefixed with EVENTS_ . The ’/’ symbol denotes that the state transition can be triggered by either a hardware event or a task command. 
+
+delayed and multi-step peripheral behaviors as chains of smaller reactive rules. Third, it captures cross-peripheral dependencies (Chal-lenge 3), where an action in one peripheral triggers, configures, or enables behavior in another peripheral. This allows RPM to model interactions among peripherals, such as timers, DMA engines, in-terrupt controllers, and radio modules, without collapsing them into a monolithic model. We further categorize and formalize the common types of events, conditions, and actions, as summarized in Table 1. 
+
+## 3.3 RADIO Modeling with RPM 
+
+We use the RADIO peripheral as a concrete example to illustrate RPM. Figure 2 shows the sequence of peripheral reactions trig-gered when firmware configures the RADIO peripheral and issues a command to start packet reception. Figure 3 then shows how RPM Conference acronym ’XX, June 03–05, 2018, Woodstock, NY A2: The radio is ramping up to receive mode. After ramping up, triggered EVENTS_READY    
+
+> A1: STATE = RXRU
+> TASKS_RXEN ECA Rule 2
+> STATE = DISABLED
+> A1: STATE = RXIDLE
+> EVENTS_READY ECA Rule 3
+> A2: Write packets to PACKETPTR.
+> EVENTS_ADDRESS,
+> EVENTS_PAYLOAD ,EVENTS_END
+> are triggered in order.
+> C2: INTENSET = READY_ENABLED
+> A2: Trigger RADIO interrupt
+> C1: STATE = RXRU
+> A1: STATE = RX
+> TASKS_START
+> ECA Rule 4
+> STATE = RXIDLE EVENTS_ADDRESS
+> ECA Rule 5
+> INTENSET = ADDRESS_ENABLED Trigger RADIO interrupt
+> EVENTS_PAYLOAD
+> INTENSET = PAYLOAD_ENABLED
+> ECA Rule 6
+> Trigger RADIO interrupt
+> TASKS_RXEN
+> EVENTS_COMPARE0 (from TIMER)
+> ECA Rule 1
+> Channel enabled in PPI
+
+Figure 3: Examples of the Event-Condition-Action (ECA) model for the RADIO peripheral. The model illustrates how the peripheral transitions states based on triggers from the firmware or other peripherals under conditions. Solid arrows denotes a trigger leading to one or multiple actions. A trigger may yield multiple actions when its condition holds (Rules 2 and 4), or be associated with different condition–action pairs (Rule 3). In Rule 1, both the trigger and condition originate from other peripherals (TIMER, PPI). In Rule 4, writing to PACKETPTR denotes a DMA transfer: the register stores a firmware-assigned memory address, and the DMA engine writes packet data to that location. 
+
+captures these reactions as chained ECA rules, where firmware com-mands, peripheral states, and observable effects are explicitly linked. In ECA Rule 1, a hardware event from TIMER triggers a RADIO task, conditioned on a status value in the PPI peripheral. ECA rules can also be chained to represent internal peripheral progressions. Specifically, the action of one rule may update a status register, which then serves as the event for a subsequent rule. For instance, Rule 2 and Rule 3 are sequentially activated: in Rule 2, the RADIO transitions from DISABLED to RXRU when TASKS_RXEN is set, and an action generates a hardware event EVENTS_READY . This hard-ware event then serves as the event in ECA Rule 3 to transition from RXRU to RXIDLE. Moreover, a single rule may contain multiple actions, each encoding temporally ordered behavior. For instance, in Rule 4, the packet reception process involves a series of steps that sequentially generate EVENTS_ADDRESS , EVENTS_PAYLOAD , and 
+
+EVENTS_END , reflecting the progress of a DMA transfer. These hard-ware events, in turn, serve as ordered events for chained ECA Rules 5 and 6, which must be activated in sequence to faithfully reflect the peripheral’s behaviors. Moreover, based on these ECA rules, we further observe that events, conditions, and actions follow a limited set of recurring patterns, which can be instantiated using reusable, MMIO regis-ter–centered templates. Together, these features demonstrate the ECA model’s expressiveness in capturing both internal and cross-peripheral logic, including sequential dependencies and implicit internal state transitions. 
+
+## 4 Design of Bluezz 
+
+Overview. The previous section introduces RPM as the core ab-straction for modeling reactive peripheral behavior. In this section, we present Bluezz, which instantiates RPM into a practical system for BLE firmware rehosting and fuzzing. As shown in Figure 4, Bluezz consists of two phases: offline peripheral model construc-tion, followed by emulation and fuzzing. The main workflow is as follows. Bluezz first builds RPM-based peripheral models from hardware manuals and SVD files, captur-ing peripheral behaviors as ECA rules. At runtime, these models are loaded into the emulator, where firmware interactions are in-tercepted and translated into events. The RPM runtime processes these events to update state, trigger interrupts, and propagate inputs through realistic hardware semantics. A fuzzing engine feeds inputs (e.g., BLE packets) and uses coverage feedback to guide exploration of deeper firmware states. 
+
+## 4.1 Offline Peripheral Model Construction 
+
+Inputs for peripheral model construction. Bluezz takes two inputs, including the official reference manual and CMSIS-SVD files. These artifacts provide complementary information for build-ing peripheral models. First, CMSIS-SVD files provide a structured and machine-readable description of peripherals, including register layouts, address mappings, bit fields, and access permissions. This structured representation enables automatic parsing and serves as a reliable foundation for constructing the skeleton of the model. Second, the official reference manual offers detailed semantic in-formation that is typically absent from SVD files, such as register behaviors, side effects, state transitions, timing constraints, and usage conditions. These descriptions allow us to enrich the struc-tural model with peripheral semantics and further derive ECA rules to enable reactive peripheral modeling. In addition, these arti-facts are generally publicly available because they are released by the hardware vendor for downstream IoT vendors and developers. Downstream vendors rely on them to configure peripherals, port device drivers, and develop their own firmware and applications. 
+
+SVD-derived peripheral skeleton construction. Bluezz first constructs peripheral skeletons from the CMSIS-SVD file. This step is fully automatic because the SVD file provides a machine-readable description of the MCU’s peripheral layout. For each peripheral instance, Bluezz extracts its base address, register map, register offsets relative to the peripheral base, access permissions, access patterns, and reset values. Conceptually, this process resembles generating the macros, structures, and register definitions used by vendor-provided header files. In Bluezz, however, the regis-ter map is materialized as an emulator-side data structure, whose fields are initialized according to the reset values specified in the SVD file. During emulation, firmware–peripheral interactions are represented as reads and writes to this data structure. Bluezz in-stalls hooks for every generated register access. On a read, the hook returns the current value of the corresponding register to the firmware. On a write, Bluezz updates the register state by default according to the register’s access type and observed access pattern. 
+
+ECA rule generation. This step takes the peripheral reference manual as input and enriches the SVD-derived skeleton with ECA rules, thereby completing the peripheral model. As summarized in Reactive Peripheral Modeling for Faithful Firmware Rehosting Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Reference Manual          
+
+> CMSIS-SVD Files
+> •Register Map
+> •Register type
+> •Access Type
+> •Access Pattern
+> •Reset Values
+> Peripheral Struct
+> RPM-based Peripheral Model Constructor (Offline)
+> Peripheral Models
+> …
+> RADIO RTC
+> TIMER RNG
+> PPI AAR
+> GPIOTE CCM
+> Emulator
+> BLE Firmware
+> Mutated BLE Packet sequence
+> Fuzzing Engine
+> MMIO Write
+> MMIO Read, IRQ Trigger(s),
+> DMA Transfer
+> ECA Engine
+> Load
+> ECA Rules
+> MMIO Hook
+> Event Dispatch
+> Action Exectuion
+> Coverage Feedback Event
+> Condition(s)
+> Action(s)
+> .h
+
+Figure 4: Overview of Bluezz. Bluezz first builds RPM-based peripheral models from hardware artifacts. The constructed models are then loaded into the emulator to facilitate firmware fuzzing with realistic attack surfaces. 
+
+Table 1, an event typically corresponds to a firmware operation on an MMIO register, such as writing a control register; a condition is encoded as a predicate over register values or runtime state; and an action is implemented using a fixed set of reusable execution primitives. Thus, ECA rule generation amounts to enumerating, for each MMIO write hook, the possible triggering events, their applicable constraints, and the side effects that should be performed when the rule fires. Although this step requires manual inspection of the reference manual, the effort is manageable for two reasons. First, Bluezz provides a small set of reusable action primitives that cover com-mon peripheral behaviors, such as updating registers, starting or canceling timers, transferring data, propagating hardware events, and injecting interrupts. As a result, analysts only need to instan-tiate these primitives with peripheral-specific parameters, rather than implementing new handlers from scratch. More details about the ECA action primitives and their semantics can be found in Appendix D. Second, we propose a register-centric and side-effect-guided rule extraction methodology. Specifically, for each peripheral, we first identify its control registers and collect all manual descriptions related to these registers. We then derive ECA rules by analyzing which values can be written to the register and what behavior the peripheral performs under each value. After modeling the direct behavior of a control register, we further inspect its side effects. If a behavior updates another register, triggers a hardware event, starts a timer, or injects an interrupt, we recursively construct the corresponding ECA rules for the affected register or runtime signal. This process continues until all reachable registers and side effects have been covered. For example, an RNG peripheral may expose two control registers, TASKS_START and TASKS_STOP . Writing 1 to these registers starts and stops random-number generation, respec-tively. Bluezz models the start operation using a timer-based action primitive: after a specified delay, the primitive writes a generated value to the peripheral’s data register and raises the corresponding event. The primitive is therefore parameterized by the delay, desti-nation register, and write size. Since the data register update itself causes additional observable behavior, we further inspect the data register and event register descriptions, and add rules that prop-agate the generated hardware event. In this way, the extraction process follows the side effects induced by each modeled behavior until the peripheral’s reactive semantics are fully captured. 
+
+Binding ECA rules into executable handlers. After the seman-tic rules and structural layouts are prepared, Bluezz binds them together by resolving the symbolic register references appearing in each ECA rule to concrete fields in the generated Peripheral 
+
+structure. This step is fully automated once the rules are specified in the structured ECA form, as all register names can be resolved against the SVD-derived layout and all actions correspond to pre-defined execution primitives. Concretely, events are attached to the corresponding MMIO locations or internal signals that can trigger them; conditions are compiled into predicates over register fields and runtime state; and actions are mapped to built-in handlers that update registers, start timers, perform DMA-like memory trans-fers, route hardware events across peripherals, or inject interrupts. Through this process, each declarative ECA rule is translated into an executable event-driven handler. At runtime, these handlers are indexed by the accessed register or triggering signal. When firm-ware performs an MMIO access, the emulator resolves the target peripheral instance, dispatches the associated handlers, evaluates their conditions, and applies the resulting side effects with the correct state and timing context. This design effectively reduces pe-ripheral emulation to a table-driven dispatch over register-indexed handlers, enabling efficient and reactive execution. 
+
+## 4.2 Runtime Emulation and Fuzzing 
+
+ECA engine runtime. After the peripheral models are constructed offline, Bluezz uses them to rehost and fuzz BLE firmware in an emulator. At runtime, the emulator executes the firmware binary and intercepts all MMIO accesses to modeled peripherals. For each access, Bluezz locates the corresponding peripheral instance using the SVD-derived layout, updates the register state according to the default access semantics, and dispatches the bound ECA handlers associated with the accessed register or internal signal. The han-dlers then evaluate their conditions and perform the corresponding actions, such as updating registers, scheduling timers, propagating hardware events, or injecting interrupts. This runtime design allows peripheral behavior to be modeled reactively. Instead of emulating an entire peripheral as a monolithic device model, Bluezz executes only the rules triggered by firmware-visible events. This makes the emulation lightweight while still preserving the causal relationship between firmware operations and peripheral responses. In partic-ular, delayed behaviors are realized through emulator-managed timers, and chained behaviors are handled by allowing actions to trigger internal events that may activate additional ECA rules. Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+Fuzzing interface and fuzzing loop. During fuzzing, Bluezz drives the rehosted firmware with mutated BLE packets. Because firmware–peripheral interactions are mediated by the generated peripheral model, the values read by the firmware are produced by prior firmware-issued commands and the resulting ECA-rule executions. This allows Bluezz to focus fuzzing on realistic external attack surfaces rather than arbitrarily perturbing internal register state. For BLE firmware, the primary fuzzing interface is the packet-reception path of the radio peripheral. Bluezz exposes fuzzed inputs through reusable action primitives, such as a primitive that fetches mutated packet bytes and writes them into the peripheral receive buffer or data register. These primitives are invoked by ECA rules that model packet-reception behavior, allowing fuzzed BLE packets to enter the firmware through the same peripheral-facing interface used during real-world execution. As the firmware processes each input, Bluezz collects code coverage and crash signals, and uses this feedback to guide subsequent mutations. In this way, Bluezz supports faithful firmware execution while focusing testing on realistic firmware attack surfaces. 
+
+## 5 Implementation 
+
+We implement Bluezz on top of Fuzzware, which itself builds on the Unicorn engine. The ECA engine is integrated into Fuzzware’s harness, allowing Bluezz to reuse Fuzzware’s interrupt and Nested Vectored Interrupt Controller (NVIC) subsystems for faithful firm-ware execution. Bluezz targets the Nordic nRF52840 board. For this platform, Bluezz models nine commonly used peripherals that are not fully supported by existing firmware emulators. The implementation consists of both C and Python code. The Python components mainly automate SVD-derived peripheral skeleton con-struction, while the C components implement the runtime ECA engine, reusable action primitives, and rule binding logic. The above core framework contains over 11K lines of code. In addition, Bluezz generates over 10K lines of peripheral model code for the nRF52840 platform, among which roughly 2K lines are manually written ECA rules. This code-size breakdown shows that most peripheral model structure can be generated automatically from SVD files, while manual effort is primarily limited to encoding missing behavioral semantics from the reference manual. 
+
+## 6 Evaluation 
+
+In this section, we comprehensively evaluate Bluezz and demon-strate the effectiveness of RPM in improving the rehosting and fuzzing of embedded BLE firmware. In particular, we aim to answer the following research questions. 
+
+RQ1: How does Bluezz compare with existing approaches in fuzzing capability for vendor embedded BLE stacks? 
+
+RQ2: Can Bluezz systematically drive embedded BLE stacks into deeper protocol phases and code paths compared to existing fuzzers? 
+
+RQ3: Can Bluezz discover BLE stack-related vulnerabilities that are missed by existing approaches? 
+
+RQ4: Can Bluezz be extended beyond BLE firmware to support other protocol-driven embedded firmware? 
+
+Table 2: Real-world BLE stacks in our collected samples.                 
+
+> Name Version Description GitHub Stars Samples NimBLE v1.5.0 Open-source BLE stack 866 6Zephyr v4.2.1 Open-source BLE stack 15.1k 6Nordic SoftDevice v2.9.1 Commercial BLE stack 1.3k 6
+
+## 6.1 Experiment Setup. 
+
+Collected samples. We evaluate Bluezz on 18 firmware samples built on three representative real-world BLE stacks, as summarized in Table 2. Specifically, we include NimBLE, Zephyr, and Nordic SoftDevice. These stacks are representative of both open-source and commercial BLE deployments: NimBLE is used in Apache Mynewt and Espressif platforms, Zephyr is a widely adopted RTOS stack for embedded devices, and SoftDevice powers many commercial Nordic BLE SoCs used in wearables and sensors. Notably, SoftDevice is closed-source and obfuscated, making it an important target for evaluating Bluezz beyond source-available stacks. To test the BLE stack comprehensively, we distill five represen-tative use cases from the BLE core specification [35] (Table 6 in Appendix E) and implement corresponding drivers on target BLE stacks. We finally have 18 firmware samples, with six samples per stack. They collectively cover the full range of BLE roles, including scanner, advertiser, central, peripheral, GATT client, and GATT server, as well as major protocol functionalities such as connec-tion establishment, parameter negotiation, service discovery, and L2CAP communication. For each sample, we additionally construct a role-aligned input model that captures the expected packet for-mats and interaction patterns. To construct these models, we collect BLE interaction traces using an Ubertooth One from Great Scott Gadgets, parse the captured packets with Scapy, and derive input models from the parsed packet sequences. Together, these samples provide a realistic and diverse benchmark for evaluating Bluezz across BLE stacks. 
+
+Experiment settings. We perform our evaluation on a 16 core Intel Xeon Gold 5218 CPU @ 2.20GHz with a 64 GB RAM server running a Ubuntu 22.04 LTS OS. For each target, we gave each fuzzer one physical CPU core and performed the fuzzing ten times according to the fuzzing evaluation guidelines [18, 29]. 
+
+## 6.2 Fuzzing Capability Comparison (RQ1) 
+
+To characterize the trade-off between hardware-layer rehosting and faithful peripheral modeling, we collect and analyze recent state-of-the-art studies on BLE stack fuzzing and rehosting-based firmware fuzzing. We compare these fuzzing tools along two dimensions: 
+
+target scalability and practical fuzzing capability . Target scalability captures whether a tool can be applied to vendor BLE firmware, es-pecially closed-source targets, without depending on device-specific manual effort. We consider three requirements: (i) closed-source tar-get support , meaning the tool can fuzz proprietary BLE stacks; (ii) 
+
+hardware independence , meaning the tool does not rely on real hard-ware, memory dumps, or externally captured device state during testing; and (iii) universal fuzzing harness , meaning fuzzing new stacks does not require manually defining stack-specific fuzz entry points or custom packet injection logic. Practical fuzzing capability Reactive Peripheral Modeling for Faithful Firmware Rehosting Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+Table 3: Comparison with BLE stack and rehosting-based fuzzers. ✔: full support. ▲: partial support. ✘: no support.                                                                 
+
+> Fuzzers Closed-source target support Hardware independent Universal fuzzing harness Fully featured runtime (MMIO/DMA/IRQ) Pratical attack surface Coverage guidance Bug introspection BrakTooth[8] ✔✘✔✔✔✘✘
+> BLEDiff[17] ✔✘✔✔✔✘✘
+> Frankenstein[25] ▲✘✘✘✔✔✔
+> BluEMan[16] ✘✔✘▲✔✔✔
+> Fuzzware[26] ✔✔✔▲✘✔✔
+> Hoedur[28] ✔✔✔▲✘✔✔
+> PEMU[2] ✔✔✔▲✘✔✔
+> SEmu[41] ✔✔✔▲▲✔✔
+> Bluezz ✔✔✔✔✔✔✔
+
+captures whether a tool can exercise BLE firmware under realis-tic attack conditions while still supporting effective analysis. We consider four requirements: (i) fully featured runtime , meaning the emulated environment provides the peripherals and interactions needed by the BLE stack; (ii) practical attack vector , meaning in-puts are injected as OTA BLE packets rather than emulator-specific bytes; (iii) coverage guidance , meaning the fuzzer can use runtime feedback to steer exploration; and (iv) bug introspection , meaning the system supports crash triage and collects execution context useful for root-cause analysis and vulnerability classification. As shown in Table 3, we compare Bluezz against eight rep-resentative BLE firmware fuzzers and general-purpose rehosting fuzzers. Existing BLE-specific fuzzers based on rehosting or simu-lation [16, 25] still have limited support for closed-source targets, stack-agnostic harness construction, and fully featured runtime environments. General rehosting-based fuzzers [2, 26, 28] typically treat injected data as a mixture of emulation control and fuzzing input, which weakens both execution fidelity and the realism of the attack vector. SEMu [41] emulates peripherals from specifica-tions, but its current models do not capture temporal sequencing or cross-peripheral dependencies, especially for radio-related behav-ior. As a result, these approaches do not simultaneously provide the capabilities needed for comprehensive, hardware-independent, OTA-oriented fuzzing of vendor BLE firmware. In contrast, Bluezz is designed to satisfy all of these requirements. Notably, Bluezz trades breadth for semantic fidelity. Compared with black-box rehosting fuzzers such as Fuzzware, Bluezz requires additional effort to model MCU-specific peripheral behaviors and protocol semantics. However, this modeling enables more realistic attack-surface exploration: Bluezz drives firmware through over-the-air BLE inputs and preserves the reactive interactions among peripherals. As a result, it can exercise peripheral-intensive firm-ware and reach protocol states that are difficult to trigger with generic rehosting approaches. 
+
+## 6.3 Fuzzing Coverage Analysis (RQ2) 
+
+To evaluate the benefit of RPM modeling, we conduct extensive evaluation on 18 BLE firmware samples, including basic block cov-erage and crash analysis. Since existing BLE fuzzing tools either cannot target closed-source BLE stacks, have limited scalability to new targets, or do not support coverage calculation, we quantita-tively compare Bluezz with two state-of-the-art rehosting-based fuzzers, Fuzzware [26] and Hoedur [28]. Thanks to the faithful mod-eling, Bluezz naturally supports structured BLE packets as fuzzing seeds. We additionally evaluate Bluezz without input models as an internal baseline. We use BLE-stack-related basic-block coverage as our primary coverage metric because it directly measures the attack-surface exploration capability. Total firmware coverage can therefore be misleading as Fuzzware and Hoedur may introduce spurious coverage that is unlikely to correspond to realistic BLE execution paths triggered by over-the-air inputs. To compute BLE-stack-related coverage, we identify stack code differently depending on target availability. For NimBLE and Zephyr, where source code is available, we extract symbols and basic-block boundaries and iden-tify BLE-stack blocks from the corresponding host and controller modules. In contrast, Nordic’s SoftDevice is a closed-source binary blob with obfuscated symbols, preventing function attribution. We therefore conservatively treat the entire blob as BLE-stack code and count any executed block as stack coverage. While this may slightly overestimate BLE-specific coverage, it ensures a fair and consistent comparison across platforms. The coverage results are shown in Figure 5. The benefit of Bluezz is evident: it outperforms Fuzzware and Hoedur across all 18 targets. Using the arithmetic mean of per-target relative stack-coverage improvement, Bluezz achieves 4.9 × higher stack-related coverage than Fuzzware and 5.9 × higher coverage than Hoedur on average. Further investigation reveals that Fuzzware and Hoedur suffer from limited emulation stability when handling fuzzed values, which con-strains the firmware to processing only a small number of packet inputs. As also observed in PEmu [2], their network-related cover-age is largely confined to the BLE advertising phase (i.e., advertising, and scanning), preventing the establishment of a full connection and thereby restricting access to higher-level application logic. In con-trast, Bluezz provides stable and high-fidelity emulation, enabling the firmware to process packets sequentially. For scanner-type tar-gets, however, the coverage curves remain relatively flat across all tools, as scanners primarily receive and parse incoming packets without triggering extensive control flows. Consequently, Bluezz’s coverage growth plateaus once the packet-handling routines are fully exercised for the scanner-type targets. In contrast, Fuzzware and Hoedur show minor fluctuations and slight increases in their coverage curves, as they occasionally trigger random interrupts. The internal baseline without input models further clarifies the role of structured input modeling. Bluezz without input models quickly plateaus after an initial coverage increase. So rehosting alone is insufficient for complex BLE firmware. Without the input Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 00:00 06:00 12:00 18:00 24:00 0300 600 900 1200 1500                                                                     
+
+> Nimble Active Scanner
+> 00:00 06:00 12:00 18:00 24:00 0250 500 750 1000 1250
+> Nimble Passive Scanner
+> 00:00 06:00 12:00 18:00 24:00 0600 1200 1800 2400 3000
+> Nimble Basic Central
+> 00:00 06:00 12:00 18:00 24:00 0800 1600 2400 3200
+> Nimble Basic Peripheral
+> 00:00 06:00 12:00 18:00 24:00 0800 1600 2400 3200 4000
+> Nimble GATT Client
+> 00:00 06:00 12:00 18:00 24:00 0800 1600 2400 3200 4000
+> Nimble GATT Server
+> 00:00 06:00 12:00 18:00 24:00 0250 500 750 1000 1250
+> Zephyr Active Scanner
+> 00:00 06:00 12:00 18:00 24:00 0250 500 750 1000 1250
+> Zephyr Passive Scanner
+> 00:00 06:00 12:00 18:00 24:00 0300 600 900 1200 1500
+> Zephyr Basic Central
+> 00:00 06:00 12:00 18:00 24:00 0800 1600 2400 3200 4000
+> Zephyr Basic Peripheral
+> 00:00 06:00 12:00 18:00 24:00 0300 600 900 1200 1500
+> Zephyr GATT Client
+> 00:00 06:00 12:00 18:00 24:00 0800 1600 2400 3200 4000
+> Zephyr GATT Server
+> 00:00 06:00 12:00 18:00 24:00 0300 600 900 1200 1500
+> Nordic Active Scanner
+> 00:00 06:00 12:00 18:00 24:00 0250 500 750 1000 1250
+> Nordic Passive Scanner
+> 00:00 06:00 12:00 18:00 24:00 0500 1000 1500 2000 2500
+> Nordic Basic Central
+> 00:00 06:00 12:00 18:00 24:00 0800 1600 2400 3200 4000
+> Nordic Basic Peripheral
+> 00:00 06:00 12:00 18:00 24:00 0800 1600 2400 3200 4000
+> Nordic GATT Client
+> 00:00 06:00 12:00 18:00 24:00 0800 1600 2400 3200 4000
+> Nordic GATT Server
+
+Time(hh:mm) #Covered basic blocks Fuzzware Hoedur Bluezz Bluezz-noinputmodel 
+
+Figure 5: Unique stack-related basic block coverage achieved by Bluezz, Fuzzware, and Hoedur for 18 BLE samples over 24-hour runs. Solid lines show the median; shaded areas show the minimum and maximum across 10 runs. 396 298 1334 4325 2750 1542 
+
+Fuzzware Bluezz BLE Stack 
+
+(a) Nimble GATT Server 417 420 1110 5137 2829 1311 
+
+Fuzzware Bluezz BLE Stack (b) Nimble GATT Client 247 251 852 3150 3325 1519 
+
+Fuzzware Bluezz BLE Stack (c) Zephyr GATT Server 218 159 773 6384 182 423 1196 
+
+Fuzzware Bluezz BLE Stack (d) Zephyr GATT Client 264 833 1047 3386 4083 189 
+
+Fuzzware Bluezz BLE Stack 
+
+(e) Nordic Basic Peripheral 276 968 1064 5107 2510 193 
+
+Fuzzware Bluezz BLE Stack (f) Nordic Basic Central 267 876 1047 3287 4225 189 
+
+Fuzzware Bluezz BLE Stack (g) Nordic GATT Server 367 1021 1422 7679 3823 212 
+
+Fuzzware Bluezz BLE Stack (h) Nordic GATT Client 
+
+Figure 6: Venn diagram for BLE stack-related basic blocks discovered by Bluezz and Fuzzware. Bluezz is denoted in red, Fuzzware in blue, and the overall basic blocks in the firmware related to the BLE stack in yellow. 
+
+model, the fuzzer struggles to further explore the protocol logic due to the lack of grammar and state dependencies. This indicates that RPM’s ECA rules are important for handling peripheral mod-eling and for restricting fuzzed data to the packet-reception inter-face, rather than exposing internal hardware interfaces as arbitrary fuzzing inputs. To further understand if these fuzzers find the same set of basic blocks, we analyze their coverage overlap. Figure 6 illustrate the Venn diagrams comparing Bluezz and Fuzzware. The remaining results are similar and appear in Appendix F. The results indicate that the three fuzzers discover largely disjoint sets of basic blocks. Bluezz achieves higher coverage within BLE-stack–related regions, whereas Fuzzware tends to explore more non–BLE-stack code paths. Further examination shows that the functions associated with the triggered basic blocks span all major BLE protocol phases, indi-cating that Bluezz is able to exercise code paths across the full Reactive Peripheral Modeling for Faithful Firmware Rehosting Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 51 1353 375 109 2227  
+
+> Fuzzware Bluezz GRBL Stack
+
+(a) CNC Firmware 52 1353 355 129 2224   
+
+> Hoedur Bluezz GRBL Stack
+
+(b) CNC Firmware 
+
+Figure 7: Venn diagram for GRBL stack-related basic blocks discovered by Bluezz, Fuzzware, and Hoedur. Bluezz is de-noted in red, Fuzzware in blue, Hoedur in green, and the overall basic blocks in the firmware related to the BLE stack in yellow. 
+
+protocol lifecycle, even though not all functions within each phase are covered. 
+
+## 6.4 Vulnerability Detection Analysis (RQ3) 
+
+We conduct crash analysis and count the unique crashes. To dedupli-cate crashes, we hash the last three stack frames of each backtrace, consistent with standard fuzzing practice [18]. Next, we replay the deduplicated traces to determine whether the crash occurs after the RADIO peripheral receives packets; such cases are counted as BLE stack–related unique crashes. Finally, we attempt to validate crashes by replaying the corresponding packets on development boards and performing root cause analysis using the emulation environment. Across all 18 samples, Bluezz uncovered 10 unique crashes. After manual root-cause analysis, we confirmed five previously unknown vulnerabilities, as listed in Table 4. We have responsibly disclosed all of them to the affected vendors. At the time of writing, one vulnerability has been fixed. Notably, all five vulnerabilities were triggered in the post-connection stage. This highlights Bluezz’s ability to drive BLE firmware beyond shallow advertising and scan-ning logic and explore deeper, security-critical protocol states that are difficult to reach In contrast, baseline systems such as Fuzzware and Hoedur report many stack-unrelated crashes. Fuzzware discov-ered 2, 3, and 1,215 crashes on the NimBLE, Zephyr, and Nordic samples, respectively, while Hoedur found 47, 1,817, and 38. None of these crashes are attributable to BLE-stack code; they arise from malformed or emulation-specific inputs that cannot be replayed on real hardware. Some may originate from peripheral drivers or other non-BLE logic, but fully triaging every crash is infeasible under such volume. This discrepancy also highlights the benefit of Bluezz’s high-fidelity peripheral modeling, which avoids such crashes and focus on the OTA attack vector. 
+
+## 6.5 Generality of RPM (RQ4) 
+
+We further extend Bluezz to Grbl [10], a real-world serial-protocol firmware for Computer Numerical Control (CNC) milling. Grbl is a representative non-BLE embedded target and is widely used in real world CNC controllers. It has also been adopted as a benchmark firmware in prior firmware rehosting and fuzzing work [7, 14, 26, 28, 33]. We run Bluezz, Fuzzware, and Hoedur on Grbl for 24 
+
+Table 4: Previously unknown vulnerabilities by Bluezz.                  
+
+> Target Description Status ∗
+> Zephyr Basic Peripheral A disconnect-time race between thread context and mayfly / ISR context in the LLCP proc_ctx release path can corrupt the free list in mem_release() and cause a double free. RZephyr GATT Server An all-zero LL_CHANNEL_MAP_IND is ac-cepted without validation, later causing an out-of-range channel selection and an assertion in lll_chan_set() .RZephyr GATT Server A crafted post-connection PDU with ma-nipulated NESN can trigger invalid ACK processing before TX state is initialized, leading to inconsistent bookkeeping and an assertion. RNimble GATT Server ALL_CONNECTION_UPDATE_IND with an invalid latency field is accepted and later causes 16-bit wraparound in connection scheduling, triggering BLE_LL_ASSERT .RNimble GATT Server A zeroed LL_CHANNEL_MAP_IND is copied into the pending channel map without validation; when activated, it reaches
+> ble_ll_utils_remapped_channel()
+> and triggers an assertion. R/F
+> ∗R: Reported, F: Fixed.
+
+Table 5: Summary of ECA-based peripheral modeling effort across MCU platforms. The effort is a one-time cost for mod-eling MCU peripherals and can be reused by firmware targets built on the same platform.           
+
+> MCU platform #Peripherals #Rules for all peripherals Estimated time Nordic nRF52840 991 ∼12.5h STM32F4 749 ∼4.0h
+
+hours across five campaigns. The results are shown in Figure 7. All three fuzzers achieve comparable code coverage, reaching over 70% coverage and rediscovering two known bugs. This suggests that RPM can be extended beyond BLE firmware while maintaining fuzzing effectiveness on a widely used non-wireless benchmark. We also estimate the manual effort required to support different MCU platforms, as shown in Table 5. Modeling Nordic nRF52840 requires 12.5 hours for 9 peripherals and 91 ECA rules, mainly due to BLE-specific peripherals such as RADIO, TIMER, RTC, PPI, and CCM. The RADIO peripheral alone requires 38 rules to model packet reception, transmission, timing, and interrupt behavior. In contrast, supporting STM32F4 for Grbl requires 4.0 hours for 7 peripherals and 49 rules, as Grbl mainly interacts with simpler pe-ripherals such as UART, timers, and GPIOs. Although the two MCU families expose different register designs, RPM remains applica-ble. For example, Nordic peripherals often use separate registers for tasks, events, and configurations, whereas STM32 peripherals may encode control and status information in different bit fields of the same register. Despite these differences, the same RPM mod-eling strategy and action primitives are sufficient to capture the required peripheral behavior. Importantly, this modeling effort is Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+incurred per MCU platform rather than per firmware target. Once the peripheral models are implemented, they can be reused for other firmware running on the same MCU platform. These results show that RPM can generalize beyond BLE firmware with man-ageable manual effort Furthermore, the effort in this section need not remain fully manual. A key benefit of the RPM paradigm is that it expresses peripheral behavior through structured, declara-tive Event–Condition–Action rules, making the modeling process amenable to agent assistance. We experimented with an agent-assisted workflow in which an agent extracts peripheral behavior from hardware documentation and proposes the corresponding ECA rules, while a human analyst reviews and validates the re-sulting models. For the Nordic nRF52840 platform, this workflow reduced the time required to construct and validate the 91 rules from approximately 12.5 hours to approximately 2 hours. This re-sult not only shows that agents can substantially reduce the upfront modeling cost, but also highlights the practical value and exten-sibility of RPM’s structured modeling paradigm, while retaining human oversight for hardware-specific semantics. 
+
+## 7 Discussion 
+
+Lessons learnt. Our evaluation suggests three main lessons for rehosting-based analysis of embedded BLE firmware. First, faith-fully modeling reactive peripheral semantics is not merely an engi-neering detail, but a prerequisite for meaningful security testing. In BLE stacks, progression into attacker-relevant states depends on precise causal coordination among MMIO effects, interrupts, DMA activity, and implicit peripheral state transitions. Even small deviations in these event chains can stall execution, prevent valid connection progress, or drive the firmware into semantically in-valid states. Second, the practically relevant BLE attack surface lies primarily in connected and post-connection states , rather than in early advertising or scanning logic alone. Existing fuzzers that remain confined to shallow protocol phases leave much of the real attack surface unexplored. Our results show that reaching connec-tion management, control-PDU handling, and GATT processing requires both faithful peripheral behavior and input models that respect protocol state and packet structure. Third, the vulnerabili-ties we found indicate that many BLE stacks remain fragile in their handling of stateful control traffic . Several of the identified flaws stem from insufficient validation of control-PDU parameters or from unsafe assumptions about state transitions after a malformed packet has been accepted. This suggests that security weaknesses in embedded BLE stacks often arise not from isolated parsing bugs alone, but from the interaction between malformed inputs, delayed protocol effects, and peripheral-driven execution over subsequent connection events. 
+
+Limitations and future work. While Bluezz demonstrates the effectiveness of RPM for complex peripheral modeling and realistic attack-surface exploration, several limitations remain. First, parts of the current workflow still require effort, including understanding protocol and hardware specifications, constructing peripheral mod-els, and preparing use-case drivers. In practice, ECA rules can be generated either by human analysts or by an agent-based workflow. We have already evaluated the latter and found that an agent can generate effective rules for our models, suggesting that rule con-struction need not be a fully manual process. Nevertheless, reliably validating generated rules and preparing drivers still require hu-man oversight, especially for undocumented or hardware-specific behavior. Further automating this pipeline could reduce the cost of supporting new peripherals and improve the scalability of RPM. Second, we plan to extend Bluezz to more real world firmware samples, SoC vendors, and protocol-driven embedded systems, in order to better assess the generality of RPM and further support firmware analysis across a wider range of platforms. 
+
+## 8 Related Work 
+
+Bluetooth security analysis. Bluetooth security has been exten-sively studied over the years [38]. Prior research has uncovered design flaws in BLE-based tracking systems [36, 39], authentica-tion mechanisms [1], and pairing protocols [32] through manual analysis and formal verification [37]. In parallel, several studies have explored automated approaches for detecting memory safety vulnerabilities in Bluetooth implementations. These efforts include: reverse engineering of Bluetooth firmware [34], which suffers from limited testing coverage; top-down fuzzing [12], which overlooks OTA threat models; and on-device fuzzing [8, 9, 17], which tends to be slow, lacks deep introspection, and does not scale well. The closest to our work is Jan’s work [25], which rehosted the BLE firm-ware and testing them. which rehosts BLE firmware for fuzz testing. However, their approach relies on extracting firmware snapshots using vendor-specific debugging features available only on Broad-com and Cypress chips, limiting its scalability. Additionally, their testing is constrained to a small set of initial functions available before device pairing. In comparison, we are the first to unlock full-stack BLE firmware testing. 
+
+Rehosting-based firmware testing. Rehosting has proven valu-able for testing low-end firmware including firmware incorporat-ing trusted execution environments [11], cellular baseband firm-ware [13], and Linux-based router firmware [5, 40]. More recently, researchers have explored rehosting cortex-m firmware, which is the typical runtime environment for most BLE firmware. Due to the tight coupling between such firmware and underlying hardware, existing work focuses on modeling peripheral behavior through Memory-Mapped I/O (MMIO) [7, 21, 22, 26, 28] and high-level hard-ware abstraction layer (HAL) [6, 14, 30]. However, these approaches often suffer from limited fidelity or scalability. Specifically, HAL-based rehosting requires expert knowledge to manually identify relevant functions and implement accurate replacements, which is time-consuming and error-prone. Furthermore, such abstraction may overlook low-level hardware interactions critical for compre-hensive analysis. MMIO-based rehosting, on the other hand, relies on symbolic execution [7, 26] and board specifications [41] to emu-late peripheral behavior, but these techniques may fail to capture complex or timing-sensitive interactions, particularly in BLE RA-DIO peripherals. By contrast, we utilize an event-condition-action modeling to define peripheral behaviors with improved fidelity. 
+
+## 9 Conclusion 
+
+Embedded BLE firmware remains difficult to analyze because it is typically closed-source, tightly coupled with hardware, and driven Reactive Peripheral Modeling for Faithful Firmware Rehosting Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+by reactive peripheral behaviors that are hard to reproduce faith-fully in emulation. Existing rehosting approaches often fail to reach attacker-relevant protocol states and instead expose unrealistic attack surfaces through generic MMIO values or interrupt sched-ules. We presented Reactive Peripheral Modeling (RPM), a new modeling paradigm that uses an event-condition-action abstrac-tion to represent peripherals as reactive systems, and instantiated it in Bluezz. By capturing causal event chains, implicit periph-eral state transitions, and cross-peripheral coordination, Bluezz enables semantically valid firmware execution and aligns fuzzing with practical over-the-air attack vectors. Our extensive evaluation on BLE firmware samples shows that Bluezz systematically exer-cises BLE stacks beyond advertising and scanning into connection and post-connection states. In doing so, Bluezz uncovers five pre-viously unknown vulnerabilities located in post-connection states. We further show that RPM is not limited to BLE by extending it to protocol-driven firmware from another MCU family with man-ageable manual effort. Overall, Bluezz demonstrates that faithful modeling of reactive peripheral semantics is key to unlocking re-alistic and scalable embedded firmware fuzzing. RPM and Bluezz move rehosting-based security testing closer to the conditions un-der which embedded devices are actually attacked, making it more practical and security-relevant for modern embedded systems. 
+
+## References 
+
+[1] Daniele Antonioli, Nils Ole Tippenhauer, and Kasper Rasmussen. 2020. Bias: Bluetooth impersonation attacks. In 2020 IEEE symposium on security and privacy (SP) . IEEE, 549–562. [2] Moritz Bley, Tobias Scharnowski, Simon Wörner, Moritz Schloegel, and Thorsten Holz. 2025. Protocol-Aware Firmware Rehosting for Effective Fuzzing of Embed-ded Network Stacks. (2025). [3] Bluetooth SIG, Inc. 2025. 2024 Bluetooth Market Update. https://www.bluetoot h.com/2024-market-update/. [4] Bluetooth SIG, Inc. 2025. Bluetooth Wireless Technology. https://www.bluetoot h.com/learn-about-bluetooth/tech-overview/. [5] Daming D Chen, Maverick Woo, David Brumley, and Manuel Egele. 2016. Towards automated dynamic analysis for linux-based embedded firmware.. In NDSS , Vol. 1. 1–1. [6] Abraham A Clements, Eric Gustafson, Tobias Scharnowski, Paul Grosen, David Fritz, Christopher Kruegel, Giovanni Vigna, Saurabh Bagchi, and Mathias Payer. 2020. {HALucinator }: Firmware re-hosting through abstraction layer emulation. In 29th USENIX Security Symposium (USENIX Security 20) . 1201–1218. [7] Bo Feng, Alejandro Mera, and Long Lu. 2020. {P2IM }: Scalable and hardware-independent firmware testing via automatic peripheral interface modeling. In 
+
+29th USENIX Security Symposium (USENIX Security 20) . 1237–1254. [8] Matheus E Garbelini, Vaibhav Bedi, Sudipta Chattopadhyay, Sumei Sun, and Ernest Kurniawan. 2022. {BrakTooth }: Causing havoc on bluetooth link manager via directed fuzzing. In 31st USENIX Security Symposium (USENIX Security 22) .1025–1042. [9] Matheus E Garbelini, Chundong Wang, Sudipta Chattopadhyay, Sun Sumei, and Ernest Kurniawan. 2020. {SweynTooth }: unleashing mayhem over Bluetooth low energy. In 2020 USENIX Annual Technical Conference (USENIX ATC 20) . 911–925. [10] gnea. 2026. gnea/grbl. https://github.com/gnea/grbl. [11] Lee Harrison, Hayawardh Vijayakumar, Rohan Padhye, Koushik Sen, and Michael Grace. 2020. {PARTEMU }: Enabling Dynamic Analysis of {Real-World } { TrustZone } Software Using Emulation. In 29th USENIX Security Sympo-sium (USENIX Security 20) . 789–806. [12] Dennis Heinze, Jiska Classen, and Matthias Hollick. 2020. {ToothPicker }: Apple Picking in the {iOS } Bluetooth Stack. In 14th USENIX Workshop on Offensive Technologies (WOOT 20) .[13] Grant Hernandez, Marius Muench, Dominik Maier, Alyssa Milburn, Shinjo Park, Tobias Scharnowski, Tyler Tucker, Patrick Traynor, and Kevin Butler. 2022. FIRMWIRE: Transparent dynamic analysis for cellular baseband firmware. In 
+
+Network and Distributed Systems Security Symposium (NDSS) 2022 .[14] Florian Hofhammer, Marcel Busch, Qinying Wang, Manuel Egele, and Mathias Payer. 2024. SURGEON: Performant, Flexible, and Accurate Re-Hosting via Transplantation. In Workshop on Binary Analysis Research (BAR) .[15] Evan Johnson, Maxwell Bland, YiFei Zhu, Joshua Mason, Stephen Checkoway, Stefan Savage, and Kirill Levchenko. 2021. Jetset: Targeted firmware rehosting for embedded systems. In 30th USENIX Security Symposium (USENIX Security 21) .321–338. [16] Wei-Che Kao, Yen-Chia Chen, Yu-Sheng Lin, Yu-Cheng Yang, Chi-Yu Li, and Chun-Ying Huang. 2025. {BLuEMan }: A Stateful Simulation-based Fuzzing Framework for {Open-Source } { RTOS } Bluetooth Low Energy Protocol Stacks. In 34th USENIX Security Symposium (USENIX Security 25) . 6259–6278. [17] Imtiaz Karim, Abdullah Al Ishtiaq, Syed Rafiul Hussain, and Elisa Bertino. 2023. Blediff: Scalable and property-agnostic noncompliance checking for ble imple-mentations. In 2023 IEEE Symposium on Security and Privacy (SP) . IEEE, 3209– 3227. [18] George Klees, Andrew Ruef, Benji Cooper, Shiyi Wei, and Michael Hicks. 2018. Evaluating fuzz testing. In Proceedings of the 2018 ACM SIGSAC conference on computer and communications security . 2123–2138. [19] Chongqing Lei, Zhen Ling, Yue Zhang, Yan Yang, Junzhou Luo, and Xinwen Fu. 2024. A Friend’s Eye is A Good Mirror: Synthesizing {MCU } Peripheral Models from Peripheral Drivers. In 33rd USENIX Security Symposium (USENIX Security 24) . 7085–7102. [20] Wenqiang Li, Le Guan, Jingqiang Lin, Jiameng Shi, and Fengjun Li. 2021. From library portability to para-rehosting: Natively executing microcontroller software on commodity hardware. arXiv preprint arXiv:2107.12867 (2021). [21] Wenqiang Li, Haohuang Wen, and Zhiqiang Lin. 2024. BaseMirror: Automatic Reverse Engineering of Baseband Commands from Android’s Radio Interface Layer. In Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security . 2311–2325. [22] Alejandro Mera, Bo Feng, Long Lu, and Engin Kirda. 2021. DICE: Automatic emulation of DMA input channels for dynamic firmware analysis. In 2021 IEEE Symposium on Security and Privacy (SP) . IEEE, 1938–1954. [23] Nordic Semiconductor. 2025. nRF52840 Product Specification. https://docs.nordi csemi.com/bundle/ps_nrf52840/page/keyfeatures_html5.html. [24] Renesas. 2025. Event Link Controller (ELC) Operations. https://www.renesas.co m/en/document/apn/rl78f24-event-link-controller-elc-operations-rev100. [25] Jan Ruge, Jiska Classen, Francesco Gringoli, and Matthias Hollick. 2020. Franken-stein: Advanced wireless fuzzing to exploit new bluetooth escalation targets. In 
+
+29th USENIX Security Symposium (USENIX Security 20) . 19–36. [26] Tobias Scharnowski, Nils Bars, Moritz Schloegel, Eric Gustafson, Marius Muench, Giovanni Vigna, Christopher Kruegel, Thorsten Holz, and Ali Abbasi. 2022. Fuz-zware: Using precise {MMIO } modeling for effective firmware fuzzing. In 31st USENIX Security Symposium (USENIX Security 22) . 1239–1256. [27] Tobias Scharnowski, Simeon Hoffmann, Moritz Bley, Simon Wörner, Daniel Klischies, Felix Buchmann, Nils Ole Tippenhauer, Thorsten Holz, and Marius Muench. 2025. {GDMA }: Fully Automated {DMA } Rehosting via Iterative Type Overlays. In 34th USENIX Security Symposium (USENIX Security 25) . 1827–1845. [28] Tobias Scharnowski, Simon Wörner, Felix Buchmann, Nils Bars, Moritz Schloegel, and Thorsten Holz. 2023. Hoedur: Embedded Firmware Fuzzing using Multi-Stream Inputs. (2023). [29] Moritz Schloegel, Nils Bars, Nico Schiller, Lukas Bernhard, Tobias Scharnowski, Addison Crump, Arash Ale-Ebrahim, Nicolai Bissantz, Marius Muench, and Thorsten Holz. 2024. Sok: Prudent evaluation practices for fuzzing. In 2024 IEEE Symposium on Security and Privacy (SP) . IEEE, 1974–1993. [30] Lukas Seidel, Dominik Christian Maier, and Marius Muench. 2023. Forming Faster Firmware Fuzzers.. In USENIX Security Symposium . 2903–2920. [31] Silicon Labs. 2025. EFR32xG22 Wireless Gecko Reference Manual. https://www. silabs.com/documents/public/reference-manuals/efr32xg22-rm.pdf. [32] Maximilian Von Tschirschnitz, Ludwig Peuckert, Fabian Franzen, and Jens Grossklags. 2021. Method confusion attack on bluetooth pairing. In 2021 IEEE symposium on security and privacy (SP) . IEEE, 1332–1347. [33] Jianqiang Wang, Qinying Wang, Tobias Scharnowski, Li Shi, Simon Woerner, and Thorsten Holz. 2025. {AidFuzzer }: Adaptive {Interrupt-Driven } Firmware Fuzzing via {Run-Time } State Recognition. In 34th USENIX Security Symposium (USENIX Security 25) . 1769–1786. [34] Haohuang Wen, Zhiqiang Lin, and Yinqian Zhang. 2020. Firmxray: Detecting bluetooth link layer vulnerabilities from bare-metal firmware. In Proceedings of the 2020 ACM SIGSAC conference on computer and communications security .167–180. [35] Martin Woolley. 2019. Bluetooth core specification v5. 1. Bluetooth Special Interest Group (2019). [36] Jianliang Wu, Patrick Traynor, Dongyan Xu, Dave Jing Tian, and Antonio Bianchi. 2024. Finding traceability attacks in the bluetooth low energy specification and its implementations. In 33rd USENIX Security Symposium (USENIX Security 24) .4499–4516. [37] Jianliang Wu, Ruoyu Wu, Dongyan Xu, Dave Jing Tian, and Antonio Bianchi. 2022. Formal model-driven discovery of bluetooth protocol design vulnerabilities. In 2022 IEEE Symposium on Security and Privacy (SP) . IEEE, 2285–2303. [38] Jianliang Wu, Ruoyu Wu, Dongyan Xu, Dave Jing Tian, and Antonio Bianchi. 2024. Sok: The long journey of exploiting and defending the legacy of king harald bluetooth. In 2024 IEEE Symposium on Security and Privacy (SP) . IEEE, Conference acronym ’XX, June 03–05, 2018, Woodstock, NY         
+
+> 2847–228066. [39] Tingfeng Yu, James Henderson, Alwen Tiu, and Thomas Haines. 2024. Security and Privacy Analysis of Samsung’s {Crowd-Sourced }Bluetooth Location Track-ing System. In 33rd USENIX Security Symposium (USENIX Security 24) . 5449–5466. [40] Yaowen Zheng, Ali Davanian, Heng Yin, Chengyu Song, Hongsong Zhu, and Limin Sun. 2019. {FIRM-AFL }:{High-Throughput }greybox fuzzing of {IoT }
+> firmware via augmented process emulation. In 28th USENIX Security Symposium (USENIX Security 19) . 1099–1114. [41] Wei Zhou, Lan Zhang, Le Guan, Peng Liu, and Yuqing Zhang. 2022. What your firmware tells you is not how you should emulate it: A specification-guided ap-proach for firmware emulation. In Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communications Security . 3269–3283.
+
+## A Open Science 
+
+We support open and reproducible research and release all the artifacts to enable reproduction. Our anonymous artifact repository is available at https://anonymous.4open.science/r/Bluezz-A6F6/. Upon acceptance, we will publicly release the following artifacts: 
+
+• Source code. The implementation of Bluezz, including the core analysis code and the generated peripheral models. 
+
+• Experiment scripts and configurations. Scripts for run-ning the experiments, together with the configuration files used to produce the reported results. 
+
+• Benchmarks and datasets. The 18 BLE samples used in our evaluation, together with their input models. We also provide the source code and build artifacts for these BLE samples. 
+
+• Documentation. A README describing the environment requirements, installation steps, expected runtime, and com-mands for reproducing the key experiments. 
+
+## B Ethical Considerations 
+
+Stakeholders. This work involves four main stakeholder groups. First, BLE firmware users may be affected if vulnerabilities in de-ployed firmware are exploited before fixes are available. Second, BLE firmware developers and SDK maintainers may need to invest effort in triaging reported bugs, developing patches, and improving their testing pipelines. Third, security researchers can benefit from the methodology and artifacts introduced by Bluezz for analyzing BLE firmware in a reproducible setting. Finally, the community benefits from a more robust BLE ecosystem, as BLE is widely used in consumer, industrial, and medical IoT devices. 
+
+Impacts and Principles. We pay special attention to the potential ethical issues raised by this work. Our study follows the principles of beneficence and respect for law and public interest. All SDKs and firmware images used in our evaluation are obtained from legitimate and publicly available sources, including official vendor repositories and open-source projects such as Zephyr, NimBLE, and Nordic SDKs. All fuzzing and emulation experiments are conducted in isolated environments. Our experiments do not transmit over-the-air BLE packets and therefore do not interfere with real-world BLE devices, networks, or users. Moreover, we do not collect, inspect, or analyze personal data, device identifiers, or user-generated traffic. 
+
+Mitigations. The main potential risk is that vulnerability details could be misused against unpatched BLE firmware. To reduce this risk, we follow responsible disclosure practices. Newly discovered vulnerabilities are privately reported to the corresponding main-tainers or vendors before public disclosure. We avoid releasing weaponized exploits or instructions that would enable direct at-tacks against deployed devices. When necessary, we provide only the information required for maintainers to reproduce and fix the issue. 
+
+Decision. We decide to conduct and publish this research because its defensive benefits outweigh the potential risks. The goal of Bluezz is to improve the reliability and security of BLE firmware through systematic testing, reproducible evaluation, and responsi-ble reporting. By helping developers identify and fix bugs before they can be exploited in practice, this work contributes to the long-term hardening of the BLE firmware ecosystem. 
+
+## C BLE Protocol Stack Generic Attribute Profile (GATT) Attribute Protocol (ATT) Logical Link Control and Adaptation Protocol (L2CAP) Generic Access Profile (GAP) Host Controller Interface (HCI) Security Manager Protocol (SMP) 
+
+> CONTROLLER
+> HOST
+> Link Layer (LL) Physical Layer (PHY)
+
+Figure 8: The structure of BLE stacks. 
+
+We present a summary of the BLE stacks and representative packet structures. As shown in Figure 8, the BLE stack is typically divided into two main layers, including the controller and the host. At the lower level, the BLE controller includes the Physical Layer (PHY) and the Link Layer (LL), which are responsible for radio transmission and low-level link management, including advertis-ing, scanning, and connection establishment. Above that, the host includes Logical Link Control and Adaptation Protocol (L2CAP), Attribute Protocol (ATT), and Security Manager Protocol (SMP). L2CAP manages data multiplexing and segmentation/reassembly, serving as a foundation for both ATT and SMP. ATT enables clients to read and write attributes exposed by the server, forming the basis of BLE data communication, while SMP handles pairing and key distribution to secure the connection. On top of these protocols, the Generic Attribute Profile (GATT) defines how devices exchange structured data using the ATT protocol, while the Generic Access Profile (GAP) governs device discovery, connection, and security procedures, built upon SMP and L2CAP. While protocols define how data is exchanged, profiles define what behaviors and roles are expected for interoperability. Associated with the BLE protocol stack, packets are encapsulated across different layers. As shown in Figure 9, Link Layer packets are primarily categorized into advertising packets (e.g., ADV_IND )and data packets used during active connections. Link Layer data packets encapsulate L2CAP packets, which either carry upper-layer protocol messages such as ATT for attribute access and SMP for security procedures, or contain L2CAP signaling messages used for link control operations such as connection parameter updates. Reactive Peripheral Modeling for Faithful Firmware Rehosting Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Preamble (1 byte) Access address (4 bytes) Advertising channel PDU (2-39 bytes) CRC (3 bytes) PDU Header (2 bytes) PDU Payload (0-37 bytes) Preamble (1 byte) Access address (4 bytes) Data channel PDU (2-257 bytes) CRC (3 bytes) PDU Header (2 bytes) PDU Payload (≤ 251 bytes) MIC (4 bytes) L2CAP header (4 bytes) L2CAP payload (≤ 247 bytes) Opcode (1 byte) Payload (≤ 246 bytes) 
+
+Figure 9: Layered structure of BLE packets, including Link Layer advertising packets and data packets. 
+
+## D ECA Action Primitives 
+
+We present the built-in action primitives used to support the ex-ecution of Event–Condition–Action (ECA) rules in our system. Our declarative ECA rule specification organizes each rule around events, conditions, and actions: events define when a rule is trig-gered, conditions define the guard predicates, and actions are real-ized through reusable runtime primitives. This appendix therefore focuses on the rule components needed to understand the specifi-cation format, with particular emphasis on the action primitives that model MMIO updates, interrupts, timers, counters, DMA-like packet transfers, and inter-peripheral event routing. While the cur-rent implementation is sufficient for modeling common peripherals (e.g., RADIO, TIMER, DMA, and IRQ controllers), the action layer is extensible and can incorporate additional primitives to support other embedded domains. We offer thirteen types of action primitives. 
+
+• update_field : modify a register, flag, or bitfield. 
+
+– set(val) : assign a value. 
+
+– add(val) : increment by value. 
+
+– decrease(val) : decrement by value. 
+
+– or(target) : bitwise OR with another field or value. 
+
+– and(target) : bitwise AND with another field or value. 
+
+– not(target) : bitwise NOT or clear (depending on con-text). 
+
+• start_timer : start a timer with a given interval. 
+
+• stop_timer : stop a running timer. 
+
+• start_counter : start a counter with a given interval. 
+
+• stop_counter : stop a running counter. 
+
+• start_rcv_pkt : write a buffer (typically a fuzzed data chunk) of the specified length from a given source address to a des-ignated target address. 
+
+• stop_rcv_pkt : stop the ongoing packet reception. 
+
+• start_send_pkt : read a buffer of the specified length from a given source address. 
+
+• stop_send_pkt : stop the ongoing packet transmission. 
+
+• fire_irq : assert (raise) the interrupt line with the given IRQ number; the emulator in Bluezz then triggers the corre-sponding interrupt handler in the firmware. 
+
+• enable_irq : enable the specified device interrupt source, allowing the corresponding interrupt to be delivered to the firmware. 
+
+• disable_irq : disable the specified device interrupt source, preventing the interrupt from being delivered to the firm-ware. 
+
+• events_route_to_tasks : route hardware EVENTS to TASKS 
+
+for on-chip event chaining. 
+
+Note: All primitive actions accept parameters that can reference a register or bitfield name, a constant value, or a user-defined global variable for state sharing across rules. 
+
+## E Covered Use Cases of BLE Firmware Samples 
+
+Table 6 presents the summary of use cases covered by Bluezz. 
+
+Table 6: Covered use cases of BLE firmware samples 
+
+Use case Functionalities Scanner Passive scan Active scan Central (Basic connection management) 1. Scan and initialize a connection 2. Receive features exchange 3. Receive version exchange 4. Receive connection parameter change 5. Receive disconnect request 6. Disconnect Peripheral (Basic connection management) 1. Advertise and receive a connection 2. Receive a connection parameter update 4. Receive features exchange 5. Receive version exchange 6. Receive connection parameter change 7. Receive disconnect request Central (GATT client) 1. Scan and initialize a connection 2. Request MTU exchange 3. Discover primary services and characteristics 4. Request characteristic values/descriptors read/write 5. Receive characteristic value notification / indications Peripheral (GATT server) 1. Advertise and accept a connection 2. Receive MTU exchange request 3. Receive primary services and characteristics discovery 4. Receive characteristic values/descriptors read/write request 
+
+## F Extended Venn Diagrams for Stack-related Basic Blocks 
+
+Figure 10 present the extended Venn diagrams for all targets not presented in the evaluation in Section 6, Figure 6. Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 546 38 891 1500 111 471 1088 
+
+Fuzzware Bluezz BLE Stack 
+
+(a) Nimble Active Scanner 546 37 891 1611 138 380 1041 
+
+Fuzzware Bluezz BLE Stack (b) Nimble Passive Scanner 518 132 932 5318 2452 1212 
+
+Fuzzware Bluezz BLE Stack (c) Nimble Basic Central 484 165 1026 4520 2459 1549 
+
+Fuzzware Bluezz BLE Stack (d) Nimble Basic Peripheral 232 103 739 767 209 203 1014 
+
+Fuzzware Bluezz BLE Stack 
+
+(e) Zephyr Active Scanner 232 100 739 818 212 156 1007 
+
+Fuzzware Bluezz BLE Stack (f) Zephyr Passive Scanner 218 159 802 6092 194 388 1200 
+
+Fuzzware Bluezz BLE Stack (g) Zephyr Basic Central 244 235 828 3376 2980 1527 
+
+Fuzzware Bluezz BLE Stack (h) Zephyr Basic Peripheral 1291 269 1293 1103 328 956 627 
+
+Fuzzware Bluezz BLE Stack 
+
+(i) Nordic Active Scanner 1666 151 1386 1047 541 729 697 
+
+Fuzzware Bluezz BLE Stack (j) Nordic Passive Scanner 
+
+Figure 10: Venn diagram for BLE stack-related basic blocks discovered by Bluezz and Fuzzware. These are the diagrams for the targets not already presented in Figure 6. Bluezz is denoted in red, Fuzzware in blue, and the overall basic blocks in the firmware related to the BLE stack in yellow. We omit Hoedur’s results here because they are highly similar to Fuzzware for these targets, and are excluded due to page-limit constraints.
