@@ -1,0 +1,1272 @@
+Title: Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM
+
+URL Source: https://arxiv.org/pdf/2609.02048v1
+
+Published Time: Thu, 03 Sep 2026 00:35:10 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+## Wesley B Nuzzo 
+
+Wesley_Nuzzo@student.uml.edu 
+
+University of Massachusetts Lowell USA 
+
+## Samuel Dodson 
+
+Samuel_Dodson@student.uml.edu 
+
+University of Massachusetts Lowell USA 
+
+## Benjamin Houle 
+
+benjamin_houle@student.uml.edu 
+
+University of Massachusetts Lowell USA 
+
+## Tarakaram Gollamudi 
+
+tarakaram_gollamudi@uml.edu 
+
+University of Massachusetts Lowell USA 
+
+## Anitha Gollamudi 
+
+anitha_gollamudi@uml.edu 
+
+University of Massachusetts Lowell USA 
+
+## Abstract 
+
+Trusted Execution Environments (TEEs) provide hardware-supported isolation through enclaves that protect code and data independently of software abstractions. However, TEEs alone cannot enforce information flow security. This prob-lem is further aggravated in LLVM-like low-level languages that allow unrestricted pointer manipulation and unstruc-tured control flow. Moreover, using TEEs effectively typically requires manually partitioning applications into enclave and non-enclave components, a process that is labor-intensive, error-prone, and lacks fine-grained control. We address these challenges with a three-step approach. First, we formalize SIR, an enclave-oblivious calculus based on LLVM IR, equipped with a novel permissive type system that enforces security against low-level attackers. To ob-tain meaningful guarantees, SIR combines information-flow control with security-aware coarse-grained memory safety. Second, we extend SIR to SIREN, an enclave-aware calcu-lus that enforces noninterference against stronger attackers capable of observing arbitrary non-enclave memory. Third, we develop a type-driven, type-preserving compilation from SIR to SIREN that automatically produces secure enclave-aware programs, eliminating the need for manual partition-ing while providing fine-grained control over host–enclave boundaries. We implement and evaluate SPLITR on thirteen micro-benchmarks and real-world workloads, including applica-tions from SGXGauge, on Intel SGX hardware. SPLITR scales to OpenSSL (425 ,953 LLVM IR instructions) and supports multiple objectives that expose trade-offs among enclave TCB size, host–enclave transitions, and boundary data move-ment; for OpenSSL, optimizing for transitions reduces them from 393 to 187. Runtime overhead is dominated by fixed enclave costs for short-running workloads, whereas long-running applications better amortize these costs and ap-proach native performance. 
+
+## 1 Introduction 
+
+Trusted Execution Environments (TEEs), such as Intel SGX [19] and ARM TrustZone [3], provide strong hardware-based iso-lation against privileged attackers, including a compromised operating system. By executing sensitive code inside secure 
+
+enclaves , TEEs protect code and data even when the kernel is malicious. For example, an authentication application may store secret credentials (e.g., passwords) within an enclave, protecting them from the operating system. 
+
+> entry: %sec = icmp sgt i32 %s1, %s2 br i1 %sec, %then, %else
+> public
+> then: %a = add i32 %s1, 10 br %merge
+> private
+> else: %b = sub i32 %s2, 3 br %merge
+> private
+> merge: %pub = icmp eq i32 ..., 0 br i1 %pub, %z, %nz
+> private
+> z:
+> . . . private
+> nz:
+> . . . private
+
+Figure 1. Tracking implicit flows in LLVM using a standard IFC type system. The program gets rejected since there are public side-effect in the private block merge .LLVM [24] is a widely used low-level intermediate lan-guage with unstructured control flow (Figure 1) and arbi-trary pointer arithmetic. Our goal is to enforce security in LLVM using TEEs while enabling flexible enclave partition-ing. Given a security specification identifying sensitive data, the system should automatically place the corresponding code and data inside enclaves with formal security guaran-tees. By targeting LLVM IR, our approach aims to protect any application that compiles to LLVM, enabling broad de-ployment. Unfortunately, TEEs cannot prevent a vulnerable appli-cation from leaking its own secrets; thus, placing an entire application inside an enclave does not guarantee confiden-tiality. While Gollamudi and Chong [14] propose a formal framework for enclave-based information-flow security, its guarantees do not extend to LLVM-like low-level languages, arXiv:2609.02048v1 [cs.CR] 2 Sep 2026 Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi 
+
+which are memory-unsafe (e.g., pointer arithmetic and gep -induced type confusion) and feature unstructured control flow. Enforcing security in this setting therefore introduces additional challenges. 
+
+Challenge 1. IFC for Low-level Languages. Enforcing IFC in LLVM requires tracking implicit flows from complex control flow. A branch on secret data can taint all successors, leading standard IFC systems to reject programs with public effects—an overly restrictive outcome (Figure 1). More per-missive approaches allow taint downgrading at join points, but prior work [7, 8] does not integrate cleanly with static IFC type system and often requires declassification to avoid over-tainting. Moreover, IFC does not address memory errors such as buffer overflows, which can expose secrets via public point-ers. Thus, meaningful security requires preventing memory violations across security boundaries. 
+
+Challenge 2. Using TEEs is challenging. TEE constraints require partitioning applications into enclave and host com-ponents (e.g., SGX disallows system calls inside enclaves). LibOS-based approaches [37] increase the TCB and attack surface [16]. Manual partitioning is costly and error-prone [17, 20]. Several frameworks have explored automated applica-tion partitioning [10, 12, 14, 22, 32, 34] for high-level lan-guages, but none target LLVM IR–like low-level languages. Moreover, systems designed for real-world applications [10, 12, 22, 32, 34] do not provide formal security guarantees, whereas Gollamudi and Chong [14] offers strong formal guarantees but does not evaluate the approach on real-world applications. 
+
+Challenge 3. Exploring Partitioning Trade-offs. Fre-quent host–enclave transitions incur significant overhead, making naive partitioning inefficient. Most prior work, ex-cept Gollamudi and Chong [14], assumes a fixed objective and overlooks the security–performance trade-offs inherent in practical partitioning. While Gollamudi and Chong [14] proposes a proof-of-concept, their evaluation neither exe-cutes the partitioned programs to analyze performance–security trade-offs nor demonstrates the approach on real-world ap-plications. Research Question How can we enforce secure-by-construction enclave partitioning for LLVM programs while enabling flex-ible, fine-grained partitioning trade-offs between se-curity and performance? Our first key insight is that coarse-grained memory safety suffices to prevent buffer overflows from corrupting or expos-ing secret data. Our second insight addresses over-tainting in low-level languages by reconstructing control-flow de-pendencies from the control-flow graph (CFG), which is key to scaling our framework to real-world benchmarks. Third, we systematically study security–performance trade-offs in LLVM by formulating fine-grained partitioning as a con-straint optimization problem with user-defined objective functions. Finally, to mitigate the cost of constraint genera-tion, we employ several optimizations for efficient solving. Our formalism addresses the above research question by integrating TEE abstractions into the secure compilation pipeline, enabling type- and policy-guided placement of sen-sitive code and data inside enclaves to enforce end-to-end security against two distinct low-level attacker classes: 𝑙 -attacker, constrained by language-level security guarantees, and 𝑒 -attacker, limited only by hardware-enforced memory isolation. 
+
+Contributions. This paper makes the following contri-butions: 
+
+• Secure low-level language with enclave support. – We formalize Secure Immediate Representation (SIR), an enclave-agnostic calculus based on LLVM IR [24] with information-flow policies (including declassification), and prove that it enforces gradual release —a condition more permissive than nonin-terference—against 𝑙 -attacker. Our key insight is that IFC in low-level programs does not require fine-grained memory safety. In-stead, SIR combines novel security-aware coarse-grained memory safety with permissive control-flow–induced implicit-flow tracking, mitigating over-tainting in LLVM-like code. 
+
+– We extend SIR with ENclave capabilities to obtain SIREN, an enclave-aware calculus that enforces se-curity against 𝑒 -attacker. SIREN introduces novel enclave abstractions that model TEE memory iso-lation and prevent leakage of enclave-resident se-crets across enclave–host transitions, enabling for-mal security reasoning for partitioned programs. 
+
+• Secure-by-construction enclave partitioning. We formulate secure application partitioning as a type-guided compilation from enclave-agnostic SIR pro-grams to enclave-aware SIREN programs, and prove that the compilation is security type-preserving . Cru-cially, although we focus on Intel SGX in this work, the enclave abstractions can be instantiated for other TEEs, such as ARM TrustZone, RISC-V enclaves, and AMD SEV, without changing the translation. 
+
+• Flexible partitioning via constraint optimization. 
+
+We reduce enclave partitioning to a constraint opti-mization problem, parameterized by developer-provided objective functions, enabling systematic exploration of security–performance trade-offs. Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+• Implementation. We instantiate SIR with LLVM IR and SIREN with Intel SGX enclaves, and implement SPLITR as an out-of-tree LLVM pass targeting the Open Enclave SDK [28]. 
+
+• Evaluation. We evaluate SPLITR on thirteen appli-cations spanning micro-benchmarks and real-world workloads, including BFS, Memcached, OpenSSL, and SVM workloads from SGXGauge [21], on Intel SGX hardware. Across four objectives ( min T, min TCB , min T+
+
+min TCB , and min data ), SPLITR produces distinct parti-tions that expose concrete trade-offs among enclave size, host–enclave transitions, and boundary data move-ment. These trade-offs are most pronounced in larger applications such as Memcached and OpenSSL: OpenSSL contains 425,827 LLVM IR instructions, yet only 0 .03% are directly labeled private, leaving substantial flexi-bility in placing the surrounding public code. Our run-time evaluation further quantifies the performance impact of the generated partitions, demonstrating how partitioning decisions and enclave–host interactions affect end-to-end execution time. 
+
+Note. Full definitions and proofs are in the accompanying tech-nical report .
+
+## 2 Overview 
+
+Figure 2a shows the C-snippet of an authentication program, which implements HMAC-based one-time password (HOTP). The function verifyOtp checks the user’s submitted OTP 
+
+submitted against the expected OTP expected , which is a secret. Figure 2b shows the corresponding SIR snippet for verifyOtp .We obtain this by compiling C program to LLVM IR and an-notating with a security policy via metadata. SIR supports functions, blocks and low-level instructions such as memory load and store, both conditional and unconditional branches, call/return, and getelementptr ( gep ) that permits arbitrary pointer arithmetic. We focus on novel aspects: security pol-icy, declassification, security-aware memory safety, and the security condition. Without loss of generality, we assume a two point con-fidentiality lattice, public ⊥ and private ⊤ with the usual information-flow ordering ⊥ ⊑ ⊤ . The annotations "i32 ⊥"
+
+and "i32 ⊤" specify the confidentiality of variables such as 
+
+submitted (lines 2 and 8) and expected (lines 12 and 13). The ct_compare call (line 17) has a ⊤ policy on its return value, and ⊤, and ⊥ policies on its first and second argu-ments, respectively. Since status depends on sensitive data, it is labeled ⊤ and must be explicitly declassified before use in public contexts; this is achieved by declassify.i32 (line 21), which converts status from ⊤ to ⊥. The two point lattice can be extended to a more complex lattice, with all non-⊥ levels being treated as “secret” for the purposes of enclave assignment. SIR’s memory consists of both stack and heap regions. Novel to SIR, memory is partitioned into security-indexed regions, and allocation instructions allocate memory from the corresponding regions; the memory security specifica-tion maps each memory location to its security region. In the example above, lines 3 and 4 allocate memory from public regions. The gep instruction performs pointer arithmetic and is a well-known attack vector for exposing secrets through public pointers. A key contribution of SIR is to close this attack vector by enforcing coarse-grained memory safety. The semantics of gep therefore differ from standard LLVM IR: the instruction aborts if the computed address crosses security boundaries. Unlike fine-grained memory safety mechanisms (e.g., fat pointers that store base addresses and offsets), this check only ensures that pointer arithmetic does not cross security regions; arithmetic may still overflow within the same region. The gep instruction also models integer-to-pointer conver-sions, which can lead to type-confusion attacks (discussed in Section 5). The SIR IFC type system assigns security levels to basic blocks and tracks information flows across them. In partic-ular, it propagates taints induced by conditional branches to all successor blocks. While this propagation is standard, SIR also statically identifies points in the control-flow graph where such taints can be safely removed. Similar to prior work, SIR uses postdominator nodes to determine these points. However, SIR introduces a novel form of postdominator-indexed security labels that allow the type system to safely remove taints at the corresponding nodes. We defer the discussion to Section 3. We consider an attacker 𝑙 -attacker that is restricted to observing memory regions labeled at or below its security level 𝑙 . For example, a ⊥-attacker (i.e., an 𝑙 -attacker with 
+
+𝑙 = ⊥) cannot access ⊤ memory regions. SIR’s type system enforces security against 𝑙 -attacker. For programs that do not perform declassification, it guarantees 
+
+noninterference (Theorem 1): if two input memories differ only in locations whose security level is strictly higher than 
+
+𝑙 , and are otherwise indistinguishable to the attacker, then their outputs are also indistinguishable to an attacker at security level 𝑙 .For programs that include declassification, SIR enforces 
+
+gradual release (Theorem 2): if two input memories differ in locations with security level strictly higher than 𝑙 , but release the same information through declassification, and are otherwise indistinguishable to the attacker, then their outputs remain indistinguishable at security level 𝑙 [4]. Grad-ual release is more permissive than noninterference, as it allows controlled release of information according to seman-tic declassification policies. Consequently, the program in Figure 2b is secure. Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi  
+
+> 12
+
+static uint32_t submittedCode ; /* public */  
+
+> 3
+
+static uint64_t counter ; /* public */  
+
+> 45
+
+/* set up seed and read ( public ) inputs */  
+
+> 6
+
+void init ( int argc , char ** argv );  
+
+> 78
+
+/* recompute expected OTP ( SECRET result ) */  
+
+> 9
+
+uint32_t expectedOtp ( uint64_t ctr );  
+
+> 10 11
+
+/* constant - time compare of two 6- digit codes */  
+
+> 12
+
+int ct_compare ( uint32_t a , uint32_t b);  
+
+> 13 14
+
+/*  
+
+> 15
+
+* 1. recompute expected OTP from secret seed  
+
+> 16
+
+* 2. CT compare against the submitted code  
+
+> 17
+
+* 3. return DECLASSIFIED accept / reject status  
+
+> 18
+
+*/  
+
+> 19
+
+int verifyOtp ( uint32_t submitted , uint64_t ctr ) { 
+
+> 20
+
+uint32_t expected = expectedOtp ( ctr );  
+
+> 21
+
+int status = ct_compare ( expected , submitted );  
+
+> 22
+
+return declassify_i32 ( status );  
+
+> 23
+
+} 
+
+> 24 25
+
+int main ( int argc , char ** argv ) { 
+
+> 26
+
+init ( argc , argv );  
+
+> 27
+
+int status = verifyOtp ( submittedCode , counter 
+
+↩→ );  
+
+> 28
+
+if ( status ) printf ("\ nAccess Granted !\ n");  
+
+> 29
+
+else printf ("\ nAccess Denied !\ n");  
+
+> 30
+
+return status ? 0 : 1;  
+
+> 31
+
+}
+
+(a) HOTP Authentication in C (snippet)  
+
+> 12
+
+define i32 ⊥ @verifyOtp ( i32 ⊥ % submitted , i64 ⊥ % ctr ) (⊥) { 
+
+> 3
+
+entry :  
+
+> 4
+
+% submitted_loc = alloca i32 ⊥ 
+
+> 5
+
+% ctr_loc = alloca i64 ⊥ 
+
+> 6
+
+% expected_loc = alloca i32 ⊤ 
+
+> 7
+
+% status_loc = alloca i32 ⊤ 
+
+> 8
+
+store i32 ⊥ % submitted , ptr ⊥ % submitted_loc  
+
+> 9
+
+store i64 ⊥ % ctr , ptr ⊥ % ctr_loc  
+
+> 10
+
+;; expected = expectOtp ( ctr )  
+
+> 11
+
+% ctr_1 = load i64 ⊥ , ptr ⊥ % ctr_loc  
+
+> 12
+
+% expected = call i32 ⊤ @expectedOtp ( i64 ⊥ % ctr_1 )  
+
+> 13
+
+store i32 ⊤ % expected , ptr ⊤ % expected_loc  
+
+> 14
+
+;; status = ct_compare ( expected , submitted )  
+
+> 15
+
+% expected_1 = load i32 ⊤ , ptr ⊤ % expected_loc  
+
+> 16
+
+% submitted_1 = load i32 ⊥ , ptr ⊥ % submitted_loc  
+
+> 17
+
+% status = call i32 ⊤ @ct_compare ( i32 ⊤ % expected_1 , i32 ⊥ %
+
+↩→ submitted_1 )  
+
+> 18
+
+store i32 ⊤ % status , ptr ⊤ % status_loc  
+
+> 19
+
+;; return declassify_i32 ( status )  
+
+> 20
+
+% status_1 = load i32 ⊤ , ptr ⊤ % status_loc  
+
+> 21
+
+% out = declassify i32 ⊥ , i32 ⊤ % status_1  
+
+> 22
+
+ret i32 ⊥ % out  
+
+> 23
+
+}
+
+(b) verifyOtp() in SIR 
+
+my_main init printf strtoul verifyOtp_ecall verifyOtp ct_compare declassify.i32 expectedOtp hmac_sha1 sha1_init sha1_final sha1_update sha1_block rol memset memcpy 
+
+enclave boundary ecall enclave (app) enclave (library) host (app) host (library) 
+
+Figure 3. Partitioned HOTP application, MinTCB partition. 
+
+Secure Partitioning. SIREN extends SIR with novel en-clave memory regions and enclave-management instructions for creating and dismantling enclaves, and for managing transitions into and out of enclave execution (Section 4). These abstractions closely model TEE execution and its as-sociated defenses. The semantics enforce the key invariant that enclave memory locations can only be accessed by code executing within the same enclave, reflecting the memory isolation guarantees provided by Intel SGX. SIREN’s type system enforces noninterference against a more powerful 𝑒 -attacker (Theorem 5) that can observe the entire host memory regardless of its security level (e.g., a compromised kernel). In particular, if two input host mem-ories are indistinguishable to the attacker, then the result-ing output host memories remain indistinguishable to the 
+
+𝑒 -attacker. We reduce enclave partitioning to compiling an enclave-oblivious SIR program into an enclave-aware SIREN pro-gram. Our translation enforces only the essential security constraints—for example, ensuring that secret pointers re-main within their corresponding enclaves—while allowing flexibility in how code is assigned to enclaves. The resulting translation is type-driven and type-preserving (Sections 5 and 5.3), ensuring that the generated SIREN program is well-typed and provably secure (Theorem 7). Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+Partitioning Trade-offs. Our implementation consists of two components: Inferno, which infers a complete security policy from sparsely annotated LLVM IR, and SPLITR, which partitions the annotated IR into Intel SGX host and enclave components using the OpenEnclave SDK. By operating on LLVM IR, SPLITR is agnostic to the source language (e.g., C, C++, or Rust) and facilitates future support for other TEE backends, such as ARM TrustZone and RISC-V enclaves. We define the trusted computing base (TCB) as the code placed inside the enclave. Rather than naively placing the entire application in the enclave, SPLITR supports four ob-jectives: min T minimizes host–enclave transitions, min TCB 
+
+minimizes enclave code size (and hence the TCB), min T+TCB 
+
+jointly minimizes transitions and TCB size, and min data min-imizes data transferred across the enclave–host boundary. Our evaluation demonstrates that these objectives expose concrete partitioning trade-offs. For the running HOTP exam-ple, minimizing the TCB produces 635 enclave instructions and 53 transitions, whereas minimizing transitions increases the enclave to 733 instructions but reduces transitions to 1. Figure 3 shows the call graph of HOTP translated under the min TCB objective. my_main , init , and I/O functions such as printf and strtoul reside on the host, while sensitive rou-tines such as verifyOTP and required library routines and wrappers reside in the enclave. Note that I/O functions are pinned to the host because Intel SGX enclaves cannot di-rectly perform I/O. For TEEs that support I/O within the trusted domain, this restriction can be disabled. This trade-off becomes more pronounced in larger applica-tions. For BFS, minimizing transitions reduces their number from 137 to 17, while for OpenSSL (425,953 LLVM IR instruc-tions), it reduces transitions from 393 to 187. In contrast, several benchmarks produce similar partitions across objec-tives because their security and placement constraints leave little optimization freedom. We evaluate these trade-offs in Section 7. 
+
+## 3 SIR: The Source Language 
+
+SIR models LLVM with four key distinctions. First, each data type is explicitly associated with a security policy, and the type system enforces fine-grained information-flow tracking using these policies. Second, the memory model employs a partitioned allocator indexed by security levels. Third, mem-ory access instructions are instrumented to enforce coarse-grained memory safety: pointer arithmetic and load/store operations are confined to the same security-level region. Fourth, it supports a declassify instruction that is opera-tionally the same as assignment but allows information to flow from private to public variables. SIR is simpler than VeLLVM [41]—a framework for ver-ifying LLVM programs—but introduces security-oriented features. The goals of SIR and VeLLVM are orthogonal; in principle, the security mechanisms developed for SIR could be incorporated into VeLLVM to obtain similar information-flow guarantees. Below, we briefly summarize the syntax, well-formedness and focus on the novel aspects of SIR. Read-ers familiar with LLVM semantics may directly skip to Sec-tion 3.1. Figure 4 shows the syntax of SIR. Variables 𝑥 , 𝑦 , 𝑧 ∈ Vars 
+
+map via environment 𝑉 to constants 𝜅 , which are memory locations 𝑚 or numeric literals 𝑐 . Functions are 𝑓 and blocks 
+
+𝑏 . Expressions 𝑒 are literals or variables. Ground types 𝜏 are boolean Int 1, 32-bit integer Int 32 , or pointers. Each value has a security label 𝑙 ∈ ⊥ , ⊤ from a two-point lattice ( ⊥ ⊑ ⊤ ). Full types Type are tuples (𝜏, 𝑙 ).A program 𝑝 is a non-empty list of functions. Each func-tion fn has a standard signature (return type, name, typed parameters), a sequence of blocks, and a security level 𝑙 cap-turing the minimum confidentiality of side effects and its return value. Blocks block have identifiers 𝑏 and bodies body ,sequences of instructions ending with a terminator. All func-tion names and block identifiers are unique, with 𝐹 mapping each name or block label to its function definition. SIR en-forces static single assignment (SSA), where each variable is defined at most once. Memory 𝑀 maps locations to values and is partitioned by heap Loc 𝐻 and stack Loc Σ, with each divided into security regions indexed by level 𝑙 . The memory specification S asso-ciates each location with a type, comprising a ground type and security label. Instructions are classified as internal ( 𝑖 ) or terminators ( 𝑡 ), with terminators controlling program flow. SIR models all major instruction classes, including arithmetic ( add ), pointer arithmetic ( gep ), memory access ( load , store ), branching ( br ), function calls and returns, and phi ( 𝜙 ) for merging values along control-flow paths. Each instruction specifies operand and result types. Shaded instructions are not part of the surface syntax. While branching semantics are standard, SIR uses a permissive typing approach to track control-flow-induced information flow. A program is well-formed if it satisfies SSA, has a unique return node, and places all 𝜙 
+
+instructions at the start of each block. 
+
+SIR Semantics. The operational semantics follow a stan-dard small-step formulation. The small-step judgment ⟨𝐻, Σ, 𝑉 , 𝑏 𝑝 , 𝑖 ⟩ −→ 𝑖 
+
+⟨𝐻 ′, Σ′, 𝑉 ′, 𝑏 𝑝 , 𝑖 ′⟩ describes the transition of a SIR configu-ration ⟨𝐻, Σ, 𝑉 , 𝑏 𝑝 , 𝑖 ⟩. A configuration is represented as the tuple ⟨𝐻, Σ, 𝑉 , 𝑏 𝑝 , 𝑖 ⟩, where 𝐻 denotes the heap, Σ the stack, 
+
+𝑉 the variable environment, 𝑏 𝑝 the previously evaluated block, and 𝑖 the current instruction. 𝐹 denotes the function lookup environment. We omit standard rules for operations such as assign-ments, function calls, branches and arithmetic expressions, and instead focus on the novel semantics that enforce coarse-grained memory safety. The full semantics appear in § 1.2 of the technical report. Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi 
+
+𝑥, 𝑦, 𝑧 ∈ Vars 
+
+𝑓 , 𝑔, ℎ ∈ FNames 
+
+𝑏 ∈ BId 
+
+𝑐, 𝑑 ∈ Z
+
+Const 𝜅 ....= 𝑚 | 𝑐 𝜄 ....= 0 | null 
+
+𝑒 ....= 𝑥 | 𝑐 
+
+Sec Label 𝑙 ....= ⊥ | ⊤ 
+
+Prog Counter pc ....= 𝑙 | 𝑙 ↓𝑏 
+
+| 𝑝𝑐 1 ⊔ 𝑝𝑐 2
+
+Ground type 𝜏 ....= Int 1 | Int 32 | 𝜏 ∗
+
+Type ....= ⟨𝜏, 𝑙 ⟩
+
+𝛼 ....= · | ⟨ 𝜏, 𝑙 ⟩𝑒, 𝛼 𝜙 ....= · | [ 𝑏, 𝑒 ], 𝜙 𝜌 ....= · | ⟨ 𝜏, 𝑙 ⟩𝑥, 𝜌 𝑖 ....= 𝑥 = add ⟨𝜏, 𝑙 ⟩𝑒 1, 𝑒 2 | 𝑥 = alloca ⟨𝜏, 𝑙 ⟩| 𝑥 = malloc ⟨𝜏, 𝑙 ⟩ | free ⟨𝜏 ∗, 𝑙 ⟩𝑥 
+
+| 𝑥 = load ⟨𝜏, 𝑙 1⟩, ⟨𝜏 ∗, 𝑙 2⟩𝑦 
+
+| store ⟨𝜏, 𝑙 1⟩𝑒, ⟨𝜏 ∗, 𝑙 2⟩𝑦 | 𝑥 = 𝜙 ⟨𝜏, 𝑙 ⟩𝜙 
+
+| 𝑥 = gep ⟨𝜏 1, 𝑙 1⟩, ⟨𝜏 1∗, 𝑙 1⟩𝑦, ⟨𝜏 2, 𝑙 2⟩𝑒 
+
+| 𝑥 = call ⟨𝜏, 𝑙 𝑓 ⟩𝑓 (𝛼 )| 𝑥 = declassify ⟨𝜏, 𝑙 ⟩, 𝑒 
+
+| 𝑥 = ⟨𝜏, 𝑙 ⟩𝑒 | nop 
+
+𝑡 ....= br 𝑏 | br ⟨Int 1, 𝑙 ⟩𝑒, 𝑏 1, 𝑏 2
+
+| ret ⟨𝜏, 𝑙 ⟩𝑒 
+
+body ....= 𝑡 | 𝑖 ; body block ....= 𝑏 : body fn ....= ⟨𝜏, 𝑙 𝑓 ⟩𝑓 (𝜌 ){ block }
+
+𝑝 ....= fn 
+
+𝑚 ∈ Loc 
+
+S : 𝑚 ↦ → Type 
+
+Γ : 𝑥 ↦ → Type 
+
+𝛽 : 𝑏 ↦ → pc 
+
+𝑉 : Vars → Const 
+
+𝐹 : FNames ∪ BId → fn 
+
+Ξ : ∅ | ⟨ 𝑉 , 𝑏 𝑝 , 𝑏 𝑐 , 𝑥, 𝑏𝑜𝑑𝑦 ⟩ :: Ξ
+
+Loc ....= Loc 𝐻 ∪ Loc Σ
+
+Loc 𝐻 ....=
+
+Ø
+
+> 𝑙
+
+Loc 𝐻,𝑙 
+
+Loc Σ ....=
+
+Ø
+
+> 𝑖,𝑙
+
+Loc 𝜎 𝑖 ,𝑙 
+
+Memory 𝑀 : Loc → Const Heap 𝐻 : Loc 𝐻 → Const Stack 𝜎 : Loc 𝜎, ⊥ ∪ Loc 𝜎, ⊤ → Const 
+
+Σ : ∅ | 𝜎 :: Σ
+
+Figure 4. SIR Syntax 
+
+3.1 Security-aware Coarse-grained Memory Safety 
+
+The syntax of gep is 𝑥 = gep ⟨𝜏, 𝑙 ⟩, ⟨𝜏 ∗, 𝑙 ⟩𝑦, Int 32 𝑐 , where 𝑦 
+
+is the base pointer and 𝑐 is the offset. If 𝑦 points to the base address 𝑚 , then 𝑥 points to the address 𝑚 + 𝑐 , referred to as the effective address. We motivate the need for enforcing memory safety in SIR (and, more generally, in LLVM-like low-level languages) by demonstrating the vulnerabilities arising from gep instruction.                                                 
+
+> 1%p =alloca <Int 32 ,⊥>
+> 2% dp =alloca <Int 32 ∗,⊥>
+> 3store <Int 32 ∗,⊥>%p , <Int 32 ∗ ∗ ,⊥>% dp
+> 4% dp_als =gep <Int 32 ,⊥>, <Int 32 ∗,⊥>%p , <Int 32 ,⊥
+> ↩→>offset
+> 5; ip is equivalent to ( ptrtoint p)
+> 6% ip =load <Int 32 ,⊥>, <Int 32 ∗,⊥>% dp_als
+
+Figure 5. Type confusion vulnerability. gep models ptrtoint ;
+
+dp and dp_als are aliases with different ground types. First, the base and effective addresses may belong to differ-ent security regions, allowing information leakage through seemingly public pointers. Second, gep can simulate ptr-toint /inttoptr conversions, enabling type confusion. In such cases, a public pointer may be reinterpreted as a public inte-ger. This is dangerous because the integer can subsequently be promoted to a private value and converted back into a private pointer, potentially enabling writes of secret data through apparently private pointers that alias public mem-ory. Figure 5 illustrates this vulnerability. Lines 1–2 allocate memory containing values of type Int 32 and Int 32 ∗, respec-tively. Line 3 stores % 𝑝 into % 𝑑𝑝 , and line 4 uses gep to create a pointer %dp_als by adding an offset to % 𝑝 . For a suit-able offset , %dp_als can alias % 𝑑𝑝 . Notably, gep treats the 
+
+> E-Malloc
+
+𝑚 = next (S, 𝐻, ⟨𝜏, 𝑙 ⟩) S(𝑚 ) = ⟨𝜏, 𝑙 ⟩ 𝐻 (𝑚 ) = ∅
+
+𝑉 ′ = 𝑉 [𝑥 ↦ → 𝑚 ] 𝐻 ′ = 𝐻 [𝑚 ↦ → 𝜄 ]⟨𝐻, Σ, 𝑉 , 𝑏 𝑝 , 𝑥 = malloc ⟨𝜏, 𝑙 ⟩⟩ −→ 𝑖 ⟨𝐻 ′, Σ, 𝑉 ′, 𝑏 𝑝 , nop ⟩
+
+> E-GEP
+
+𝑉 (𝑦 ) = 𝑚 ⟨𝑉 , 𝑒 ⟩ −→ 𝑒 𝑐 𝑚 ′ = 𝑚 + 𝑐 𝑚 ′ ∈ region (𝑚 ) 𝑉 ′ = 𝑉 [𝑥 ↦ → 𝑚 ′]⟨𝐻, Σ, 𝑉 , 𝑏 𝑝 , 𝑥 = gep ⟨𝜏 1, 𝑙 1⟩, ⟨𝜏 1∗, 𝑙 1⟩𝑦, ⟨𝜏 2, 𝑙 2⟩𝑒 ⟩ −→ 𝑖 ⟨𝐻, Σ, 𝑉 ′, 𝑏 𝑝 , nop ⟩
+
+> E-Load
+
+𝑉 (𝑦 ) = 𝑚 𝑚 ≠ null Σ ∪ 𝐻 (𝑚 ) = 𝜅 
+
+isptr (𝜏 ) =⇒ 𝜅 ∈ region (𝑚 ) 𝑉 ′ = 𝑉 [𝑥 ↦ → 𝜅 ]⟨𝐻, Σ, 𝑉 , 𝑏 𝑝 , 𝑥 = load ⟨𝜏, 𝑙 1⟩, ⟨𝜏 ∗, 𝑙 2⟩𝑦 ⟩ −→ 𝑖 ⟨𝐻, Σ, 𝑉 ′, 𝑏 𝑝 , nop ⟩
+
+Figure 6. SIR: Memory access semantics. contents of %dp_als as having type Int 32 rather than Int 32 ∗.Consequently, line 6 reads the contents of %dp_als as an integer instead of a pointer. A similar construction can simulate inttoptr . Together, these operations form a gadget that can launder secrets even though the program is well typed. Since the vulnerability relies on pointer aliasing, we en-sure that a ⊥ pointer can never alias a ⊤ pointer. We partition memory into disjoint ⊥- and ⊤-regions and allocate objects according to their security levels. We enforce this invariant in two ways. First, we restrict gep so that pointer arithmetic cannot cross region boundaries: an operation that computes an address in a different security region is terminated, enforc-ing security-aware coarse-grained memory safety. Second, we restrict load so that a loaded pointer belongs to the same region as the memory location from which it is loaded. For ex-ample, when loading from a (𝜏 ∗)∗ pointer 𝑦 into a 𝜏 ∗ pointer 
+
+𝑥 , both 𝑥 and 𝑦 must point to the same security region. Con-sequently, ⊤ pointers can only point into the ⊤ region and 
+
+⊥ pointers into the ⊥ region; since the regions are disjoint, Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+cross-security pointer aliasing is impossible. We incorporate this invariant into type preservation by requiring well-typed memories to satisfy it, thereby preventing secrets from being laundered through pointer/integer confusion. Figure 6 presents the semantics for the memory access in-structions that enforce this property. Rule E-Malloc allocates a fresh heap location 𝑚 from Loc 𝐻,𝑙 for security level 𝑙 , zero-initializes 𝐻 (𝑚 ), and binds 𝑥 to a pointer to 𝑚 whereas free 
+
+uninitializes 𝑚 . This models partitioned heap allocators such as Allocation Tokens in Clang [36]. The notation 𝑉 [𝑥 ↦ → 𝑚 ]
+
+extends or updates 𝑉 by mapping 𝑥 to 𝑚 .Rule E-GEP computes the effective address 𝑚 ′ by adding the evaluated offset 𝑐 (obtained from expression 𝑒 ) to the base address 𝑚 stored in pointer 𝑦 , binding the result to 𝑥 .The rule requires 𝑚 ′ ∈ region (𝑚 ), ensuring that pointer arithmetic does not cross security-region boundaries. Note that this does not prevent buffer overflows within a security region. Load and store operations are similarly restricted to dereference pointers whose source and target addresses belong to the same region. Rule E-Load evaluates a non-null pointer 𝑦 to obtain the address 𝑚 and retrieves the corresponding value, binding it to 𝑥 . The premise isptr (𝜏 ) =⇒ 𝜅 ∈ region (𝑚 ) ensures that pointers remain confined to their region, preventing cross-boundary accesses. For example, suppose addresses 0–4999 belong to the ⊥ re-gion and 5000–9999 to the ⊤ region. For 𝑥 = gep ⟨Int 32 , ⊥⟩ , ⟨Int 32 ∗, ⊥⟩ 𝑦, ⟨Int 32 , ⊥⟩ 10, if 𝑦 points to 4995, the effective address is 5005 ∈ ⊤ ; since gep 
+
+crosses the region boundary, evaluation cannot proceed (in practice, the address could instead be sandboxed within the 
+
+⊥ region). Similarly, for 𝑥 = load ⟨Int 32 ∗, ⊤⟩ , ⟨Int 32 ∗ ∗ , ⊤⟩ 𝑦 ,if loading from 𝑦 ∈ ⊤ yields 𝜅 = 4000 ∈ ⊥ , the premise isptr (𝜏 ) =⇒ 𝜅 ∈ region (𝑚 ) fails, preventing a ⊤ pointer from referencing the ⊥ region. 
+
+3.2 SIR Security Definition 
+
+We consider an 𝑙 -attacker that can observe memory locations with security level 𝑙 or lower. Two memories 𝑀 1 and 𝑀 2 are 
+
+𝑙 -equivalent , written 𝑀 1 ≃S 
+
+> 𝑙
+
+𝑀 2, if their 𝑙 -projections are equal. We lift the small-step relation to produce a trace of mem-ories, i.e., ⟨𝐻, 𝑉 , 𝑝 ⟩ −→ tr ⟨𝐻 ′, 𝑐 ⟩ ⊲ 𝑇 . Trace equivalence is defined pointwise over the corresponding elements of the traces. A program 𝑝 , without any declassification instruc-tions, is secure if the 𝑙 -attacker cannot distinguish between the memory traces generated using 𝑙 -equivalent initial mem-ories. Definition 1 formally states the same. 
+
+Definition 1 (SIR Noninterference w.r.t 𝑙 -attacker) . Given a memory specification S, a program 𝑝 is noninterfering against a 𝑙 -attacker, if for all initial heaps 𝐻 01 , 𝐻 02 and a vari-able map 𝑉 :1. the initial heaps are 𝑙 -equivalent; that is, 𝐻 01 ≃S 
+
+> 𝑙
+
+𝐻 02 ,and 2. the program configuration ⟨𝐻 0 
+
+> 𝑖
+
+, 𝑉 , 𝑝 ⟩ steps to the final configuration ⟨𝐻 ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩, emitting the trace 𝑇 𝑖 ; that is, for all 𝑖 ∈ { 1, 2}, ⟨𝐻 0 
+
+> 𝑖
+
+, 𝑉 , 𝑝 ⟩ −→ tr ⟨𝐻 ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩ ⊲ 𝑇 𝑖 ,then 𝑐 1 = 𝑐 2 and the traces are 𝑙 -equivalent, i.e., 𝑇 1 ≃S 
+
+> 𝑙
+
+𝑇 2.Definition 1 enforces strict noninterference and thus for-bids any intentional release of secret information. To accom-modate controlled release, our second security condition captures gradual release . Intuitively, a program satisfies grad-ual release if, at every point during execution, two runs that start from low-equivalent heaps and have released the same information so far produce indistinguishable public traces. 
+
+Definition 2 (Release Function) . Given a memory specifi-cation S, a release function 𝑅 : 𝑀 ↦ → Val , maps an initial heap to the information that may be declassified during exe-cution. Two memories agree on the released information if 
+
+𝑅 (𝑀 1) = 𝑅 (𝑀 2).
+
+Definition 3 (Release Projection) . Let 𝑇 be a trace. The release projection 𝑅 (𝑇 ) returns the subsequence of values explicitly declassified along 𝑇 .
+
+Definition 4 (SIR Gradual Release w.r.t 𝑙 -attacker) . Given a memory specification S and a release projection 𝑅 (·) over traces, a program 𝑝 satisfies gradual release against a 𝑙 -attacker if for all initial heaps 𝐻 01 , 𝐻 02 and a variable map 
+
+𝑉 :1. the initial heaps are 𝑙 -equivalent; that is, 𝐻 01 ≃S 
+
+> 𝑙
+
+𝐻 02 ,2. the program configuration ⟨𝐻 0 
+
+> 𝑖
+
+, 𝑉 , 𝑝 ⟩ steps to the final configuration ⟨𝐻 ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩, emitting the trace 𝑇 𝑖 ; that is, for all 𝑖 ∈ { 1, 2}, ⟨𝐻 0 
+
+> 𝑖
+
+, 𝑉 , 𝑝 ⟩ −→ tr ⟨𝐻 ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩ ⊲ 𝑇 𝑖 ,
+
+then 𝑐 1 = 𝑐 2 and for all prefixes 𝑈 1 ⪯ 𝑇 1 and 𝑈 2 ⪯ 𝑇 2, if 
+
+𝑅 (𝑈 1) = 𝑅 (𝑈 2), then 𝑈 1 ≃S 
+
+> 𝑙
+
+𝑈 2.
+
+3.3 SIR Type System                                           
+
+> T-GEP
+> Γ(𝑥 )=Γ(𝑦 )=⟨𝜏 1∗, 𝑙 1⟩Γ⊢𝑒 :⟨𝜏 2, 𝑙 2⟩
+> 𝜏 2∈ { Int 32 ,Int 1}𝑙 2⊑𝑙 1pc ⊑𝑙 1
+> Γ,pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢𝑥 =gep ⟨𝜏 1, 𝑙 1⟩,⟨𝜏 1∗, 𝑙 1⟩𝑦, ⟨𝜏 2, 𝑙 2⟩𝑒
+> T-Load
+> Γ(𝑥 )=⟨𝜏, 𝑙 1⟩Γ⊢𝑦 :⟨𝜏 ∗, 𝑙 2⟩⟨𝜏, 𝑙 2⟩ ⊑ ⟨ 𝜏, 𝑙 1⟩pc ⊑𝑙 1
+> Γ,pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢𝑥 =load ⟨𝜏, 𝑙 1⟩,⟨𝜏 ∗, 𝑙 2⟩𝑦
+
+Figure 7. Typing gep and load 
+
+The typing judgment Γ, pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢ 𝑖 asserts that instruc-tion 𝑖 is well-typed under context (pc , 𝑏 𝑐 , 𝑙 𝑓 ), where pc, the standard program counter label, tracks control-induced flows, 
+
+𝑏 𝑐 is the current block, and 𝑙 𝑓 is the function’s label. A com-mon premise pc ⊑ 𝑙 (for result label 𝑙 ) prevents implicit flows within a block, ensuring that high-security contexts do not produce low-observable effects. As an exception, declassify 
+
+admits a flow from ⊤ to ⊥. Most of the typing rules, except Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi 
+
+for branches, follow standard IFC type system; we therefore show representative typing rules for gep and load (Figure 7). We exclusively discuss typing branches in Section 3.4. The full typing rules appear in § 1.4 of the accompanying techni-cal report. Rule T-Load states that the load instruction is well typed if ⟨𝜏, 𝑙 2⟩ ⊑ ⟨𝜏, 𝑙 1⟩ and pc ⊑ 𝑙 2. The former prevents ex-plicit flows: a well-typed instruction cannot load a value from a private location into a public variable. The latter pre-vents implicit flows by ensuring that the program counter label flows to the label of the accessed location. The relation 
+
+⟨𝜏, 𝑙 2⟩ ⊑ ⟨ 𝜏, 𝑙 1⟩ lifts the ⊑ relation on security labels to full types when 𝜏 is a non-pointer type. Pointer types are invari-ant under subtyping; that is, ⟨𝜏 ∗, 𝑙 ⟩ ⊑ ⟨ 𝜏 ∗, 𝑙 ⟩. Rule T-GEP (and T-Store, not shown here) has analogous premises. Notice that T-Load on its own (i.e., without the enforce-ment of ⊤ and ⊥ regions) is not sufficient to prevent pointer type confusion attacks. If 𝑦 happens to be the result of a gep 
+
+instruction, the type of 𝑦 may not match the type of other pointers pointing to the same location (such as a pointer that was assigned that location via malloc ). In particular, if we load from a location that was created as an integer location, it could have a value that is not valid as a pointer to an 𝑙 1
+
+location (because the location it points to has a different se-curity level). This is why we require the additional premise in E-Load. T-Load alone, without enforcing disjoint ⊤ and ⊥ regions, cannot prevent pointer type confusion. If 𝑦 is derived via 
+
+gep , its type may differ from that of an alias to the same loca-tion. Consequently, loading a pointer from an integer-typed location may produce an address in a region inconsistent with its security label, motivating the additional premise in E-Load. 
+
+Typing HOTP.. In our running example (Figure 2b), val-ues derived from the ⊤-labeled %expected remain ⊤ un-less declassified. Thus, %status , %status_loc , and %status_1 
+
+(lines 17–21) inherit the label ⊤ from %expected and can be assigned to the lower-labeled %out on line 21 only via de-classification; an ordinary assignment would not typecheck. Hence, provided %expected is labeled ⊤, the type system prevents its information from flowing to ⊥ except through explicit declassification. 
+
+3.4 Permissive Control-flow Typing 
+
+The problem of over-tainting (or “label creep”) is exacer-bated in languages with unstructured control flow, where unconditional branches can induce overly restrictive typing (Figure 1). Prior work commonly leverages postdominators, a node that executes along all paths from the current block to the function’s exit, to statically reset the program counter (pc) to a safe label. Our approach follows a similar intuition but avoids complex continuations [8] and abstract interpre-tation–based influence regions [2]. Instead, we introduce a simpler and more expressive mechanism that tracks implicit flows using postdominator-indexed pc labels, enabling taint to be safely peeled off at postdominator nodes. In SIR, pc captures control dependencies from both condi-tional and unconditional branches. The pc of a block repre-sents a lower bound on its control-flow dependencies. Each basic block is assigned a pc of one of three forms: a stan-dard confidentiality level 𝑙 , the novel block-indexed label 
+
+𝑙 ↓𝑏 (“level 𝑙 until block 𝑏 ”), or a join pc 1 ⊔ pc 2. The block-indexed label designates 𝑏 , an immediate postdominator, as a safe reset point for pc, marking the end of the influence of the last conditional branch. For example, the merge block in Figure 1 marks the end of the taint induced by %sec in the 
+
+entry block. We first illustrate this idea on a more complex control-flow example, and then present the type system. Function 𝑓                              
+
+> Type: ⟨Int 32 ,⊥⟩ Args: ⟨Int 1,⊥⟩ 𝑐 1,⟨Int 1,⊤⟩ 𝑐 2
+> entry :⊥
+> br ⟨Int 1,⊥⟩ 𝑐 1,while .end ,while .cond while .cond :⊥ ⊔ ⊥ ↓while .end ⊔ ⊤ ↓while .end
+> br ⟨Int 1,⊤⟩ 𝑐 2,while .end ,while .body while .body :⊥ ⊔ ⊥ ↓while .end ⊔ ⊤ ↓while .end
+> br while .cond while .end :⊥
+> br return return :⊥
+> ret ⟨Int 32 ,⊥⟩ 0
+
+Figure 8. Permissive control-flow typing using blocked-indexed pc labels. Figure 8 illustrates a control-flow graph annotated (possi-bly manually) with block-level security labels, modeling a while-loop nested within an if-condition. The block while.end 
+
+immediately postdominates both while.cond and while.body ,serving as the convergence point for the loop and the condi-tional. As we will describe later, the SIR type system admits this program. We focus on the pc labels assigned to each block. The entry 
+
+block inherits the function’s label ⊥. The pc for while.cond ,
+
+⊥⊔⊥ ↓while .end ⊔⊤ ↓while .end , captures taints induced by conditions 
+
+𝑐 1 and 𝑐 2, both of which can be peeled off at the postdomina-tor while.end . The block while.body carries the same pc. At while.end , the postdominator marks the end of these taints, allowing the pc to reset to ⊥ after peeling off the corresponding policies. Thus, block-indexed pc labels enable fine-grained tracking of taints from multiple conditionals without requiring complex bookkeeping. Rather than requiring manual assignment of block secu-rity labels, we provide an algorithm that computes the most permissive pc labels, that the type system admits. The for-mal algorithm is presented in § 1.4.1 of the accompanying technical report. We incorporate this algorithm into Inferno Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+(Section 6), our policy inference tool, to reduce annotation effort for real-world applications. Intuitively, the algorithm propagates control-flow taints of the form 𝑙 ↓pdom along conditional branches, where 𝑙 is the label of the branch condition and pdom its immediate postdominator. Successor blocks inherit these taints to cap-ture implicit flows. For example, the block while.cond in-herits ⊥↓while .end from the ⊥-conditioned branch in entry and 
+
+⊤↓while .end from the ⊤-conditioned branch in while.body , yield-ing ⊥ ⊔ ⊥ ↓while .end ⊔ ⊤ ↓while .end . At the postdominator while.end ,these control dependencies are discharged, and the pc resets to ⊥.We now formalize typing rules for branches using block-indexed labels 𝑙 ↓𝑏 . A key challenge is capturing legal flows between pc labels. To this end, we introduce a novel block-indexed flows-to relation, ⊑𝑏 , which refines the standard ⊑
+
+relation. It propagates security levels along control paths and discharges the control-flow taint 𝑙 ↓𝑏 at the corresponding immediate postdominator, effectively lowering the pc. Intu-itively, ⊑𝑏 behaves like ⊑ along control paths and peels off the indexed label at the postdominator where control flow merges.              
+
+> BFlow-Super
+> 𝑙 1⊑𝑙 2
+> 𝑙 1⊑𝑏 𝑙 2
+> BFlow-High
+> 𝑙 1⊑𝑙 2𝑏 1≠𝑏 2
+> 𝑙 1↓𝑏 1⊑𝑏 2𝑙 2
+> BFlow-Decl
+> 𝑙 ↓𝑏 ⊑𝑏 ⊥
+
+Figure 9. Block-indexed flows-to Figure 9 shows the formal rules. Rules BFlow-Super and BFlow-High lift the standard ⊑ relation to the ⊑𝑏 relation; rule BFlow-Decl says that a security label can be peeled off once we get to a safe merge point, namely the immediate postdominator node 𝑏 ; note that the block labels match in the conclusion of rule BFlow-Decl. Figure 10 shows the typing rules for branches. Rule T-Br-Conditional type-checks a conditional branch by re-quiring a boolean condition and matching security levels for target blocks. The premise 𝑏 𝑡 = ipdom (𝑏 𝑐 ) identifies the post-dominator 𝑏 𝑡 . The label pc ⊔ 𝑙 ↓𝑏𝑡 allows permissive control-flow, peeling off 𝑙 ↓𝑏𝑡 at the post-dominator, while ensuring ∀𝑖. pc ⊔ 𝑙 ↓𝑏𝑡 ⊑𝑏 𝑖 𝛽 (𝑏 𝑖 ). T-Br-Unconditional simi-larly enforces permissive flow to the target label. Revisiting Figure 8, the instruction br ⟨Int 1, ⊤⟩ 𝑐 2, while .end , while .body 
+
+is well-typed because ⊤↓while .end ⊑while .end ⊥. Similarly, revis-iting Figure 1, the type system admits the program under a more permissive ⊥ policy at the merge block. 
+
+Permissive Typing in HOTP.. Consider extending Fig-ure 2a so that instead of returning the declassified %status ,the program modifies some secret state (e.g., a bank balance) only if the authentication is successful. Then this operation must take place in a private block (with a high pc), and any subsequent public action (e.g., printing “transaction com-plete”) can occur only after the pc is lowered, ensuring that                           
+
+> T-Br-Conditional
+> Γ⊢𝑒 :⟨Int 1, 𝑙 ⟩𝑏 𝑡 =ipdom (𝑏 𝑐 )∀𝑖. pc ⊔𝑙 ↓𝑏𝑡 ⊑𝑏 𝑖 𝛽 (𝑏 𝑖 )
+> Γ,pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢br ⟨Int 1, 𝑙 ⟩𝑒, 𝑏 0, 𝑏 1
+> T-Br-Unconditional
+> pc ⊑𝑏 𝛽 (𝑏 )
+> Γ,pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢br 𝑏
+
+Figure 10. Typing conditional and unconditional branches. effects observable to the 𝑙 -attacker are independent of the branch taken. We conclude the SIR discussion by formalizing its type system’s security guarantee: it enforces noninterference and gradual release for a ⊥-attacker ( 𝑙 -attacker with 𝑙 =
+
+⊥). While the theorem applies to any 𝑙 -attacker, we use ⊥-attacker to represent the more typical attacker. 
+
+Theorem 1 (SIR Noninterference w.r.t ⊥-attacker) . Let 𝑝 
+
+be a program that does not declassify. If Γ ⊢ 𝑝 , then 𝑝 is noninterfering against a ⊥-attacker. That is, for all initial heaps 𝐻 01 , 𝐻 02 and variable map 𝑉 , if: 1. 𝑝 is well-formed and well-typed; that is, Γ ⊢ 𝑝 , and 2. initial heaps are ⊥-equivalent, that is, 𝐻 01 ≃S 
+
+> ⊥
+
+𝐻 02 , and 3. program configurations ⟨𝐻 0 
+
+> 𝑖
+
+, 𝑉 , 𝑝 ⟩ step to a result con-figuration ⟨𝐻 ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩, each emitting a trace 𝑇 𝑖 ; that is, for all 𝑖 ∈ { 1, 2}, ⟨𝐻 0 
+
+> 𝑖
+
+, 𝑉 , 𝑝 ⟩ −→ tr ⟨𝐻 ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩ ⊲ 𝑇 𝑖 ,then 𝑐 1 = 𝑐 2 and traces are ⊥-equivalent, i.e., 𝑇 1 ≃S 
+
+> ⊥
+
+𝑇 2.Proof. The proof follows the standard approach introduced by Myers [27], building on the soundness proof of Volpano et al. [39]. When the target of an unconditional branch is a post-dominator, the analysis is more subtle because the pc may get lowered. For complete proof, refer to Section §1.5of the accompanying technical report. □
+
+Theorem 2 (SIR Gradual Release w.r.t ⊥-attacker) . If Γ ⊢ 𝑝 ,then 𝑝 satisfies gradual release against a ⊥-attacker. That is, for all initial heaps 𝐻 01 , 𝐻 02 and variable map 𝑉 , if: 1. initial heaps are ⊥-equivalent; that is, 𝐻 01 ≃S 
+
+> ⊥
+
+𝐻 02 , and 2. program configurations ⟨𝐻 0 
+
+> 𝑖
+
+, 𝑉 , 𝑝 ⟩ step to a result con-figuration ⟨𝐻 ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩, each emitting a trace 𝑇 𝑖 ; that is, for all 𝑖 ∈ { 1, 2}, ⟨𝐻 0 
+
+> 𝑖
+
+, 𝑉 , 𝑝 ⟩ −→ tr ⟨𝐻 ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩ ⊲ 𝑇 𝑖 ,then 𝑐 1 = 𝑐 2 and, for all prefixes 𝑈 1 ⪯ 𝑇 1 and 𝑈 2 ⪯ 𝑇 2, if 
+
+𝑅 (𝑈 1) = 𝑅 (𝑈 2), then 𝑈 1 ≃S 
+
+> ⊥
+
+𝑈 2.Proof. The proof builds on Theorem 1. The declassification case breaks the proof, however, since 𝑅 (𝑈 1) = 𝑅 (𝑈 2), both executions declassify to the same value, thus restoring the trace equivalence. □
+
+## 4 SIREN: SIR + ENclaves 
+
+SIREN extends SIR with seven enclave-specific instructions: 
+
+eenter , eexit , ekill , ecreate , ocall , oret , and preserve . Among these, preserve and ocall are novel to SIREN: they precisely Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi 
+
+capture the security requirements of TEEs during enclave– host transitions and are not modeled in prior work [14]. These instructions are essential for faithfully modeling real-world TEE execution but introduce additional challenges for the translation. In particular, ocall captures interactions with the host (e.g., enclaves do not support syscalls), which are common in practical applications. Supporting these features enables a realistic evaluation; we explicitly measure the cost of ocall during execution. Figure 11 shows only the extended syntax; the complete syntax appears in § 3.1 of the accompanying technical re-port. The meta-variable 𝜇 denotes the execution mode: 𝜇 = 0corresponds to host execution, while 𝜇 > 0 identifies execu-tion within a specific enclave. The set L tracks the currently active enclaves (excluding 𝜇 = 0, which is always active). Mode transitions occur only via eenter , eexit , ocall , and oret .Instruction ecreate 𝜇, 𝑏 initializes enclave 𝜇 (if inactive) and associates block 𝑏 with it (analogous to how Intel SGX loads code into enclaves), while ekill 𝜇 terminates the enclave. An enclave may be entered multiple times via eenter , possibly at different blocks. Each block is assigned a mode 𝜇 in which it executes, and well-formed programs require enclave blocks to be associated with the enclave before execution.                                                               
+
+> 𝑀𝑜𝑑𝑒 𝜇 ∈N
+> 𝐿𝑖𝑣𝑒 𝐸𝑛𝑐𝑙𝑎𝑣𝑒𝑠 L ⊆ N+
+> 𝑂𝐶𝑎𝑙𝑙 𝑠𝑡𝑎𝑡𝑢𝑠 𝑜 ∈ { Υ, 𝜂 }
+> 𝐺𝑟𝑜𝑢𝑛𝑑 𝑡𝑦𝑝𝑒 𝜏 ....=Int 1|Int 32 | ⟨ 𝜏 ∗, 𝜇 ⟩
+> 𝑖 ....=· · · | 𝑥 =preserve ⟨𝜏, 𝑙 ⟩𝑦
+> |𝑥 =ocall ⟨𝜏, 𝑙 ⟩𝑓 (𝛼 )|ecreate 𝜇, 𝑏 |ekill 𝜇 |eenter 𝑏 𝑡 ....=· · · | eexit |oret ⟨𝜏, 𝑙 ⟩𝑥
+> block ....=𝑏 𝜇 :body fn ....=⟨𝜏, 𝑙 𝑓 ⟩𝑓 𝜇,𝑜 (𝜌 ){ 𝑏𝑙𝑜𝑐𝑘 }
+> Memory Spec S:𝑚 ↦→ ( 𝜇,𝑇𝑦𝑝𝑒 )
+> Heap H:
+> Ø
+> 𝜇 ∈ L ∪ ℎ
+> H𝜇
+> ℎ={0}
+> Typing context G:𝑥 ↦→𝑇𝑦𝑝𝑒
+
+Figure 11. SIREN extensions Instruction eenter 𝑏 transfers control to enclave block 𝑏 ,and eexit restores host mode. However, variables defined inside the enclave may leak secrets when control returns to the host. In Intel SGX, developers must explicitly clear such register state—or replace it with a synthetic state—before exiting the enclave. We capture this requirement with the instruction 𝑥 = preserve ⟨𝜏, 𝑙 ⟩𝑦 , which records that the value of variable 𝑦 is preserved through 𝑥 , so that 𝑥 may be used after enclave exit. A well-formedness condition (described later) requires preserve to appear immediately before an 
+
+eexit .The instruction 𝑥 = ocall ⟨𝜏, 𝑙 ⟩𝑓 (𝛼 ) invokes a host func-tion from within an enclave. It behaves like a standard call 
+
+but performs a mode switch from enclave to host and re-stores the enclave context upon return. Such transitions can introduce subtle re-entrancy vulnerabilities; for example, a host function may recursively invoke enclave code, leading to logic or security errors. To mitigate these issues, each function is annotated with a mode 𝜇 and an attribute 𝑜 ∈ { Υ, 𝜂 }. The mode tracks the execution domain, while 𝑜 controls whether the function may be invoked via an ocall , thereby preventing unsafe enclave re-entry, a key source of subtle security vulnerabilities in TEE-based systems. This design enforces a well-structured call discipline across enclave boundaries. A function 𝑓 is 𝑜 -callable only if 𝑜 = Υ. The oret instruc-tion is automatically generated upon return from an ocall ,restoring control from the host to the enclave. Pointer operands (not shown) in malloc , load , store , and 
+
+gep are annotated with mode types. As in SIR, the set of memory locations Loc includes both heap and stack locations, indexed by security levels and modes. The meta-variables H ,
+
+E, and S denote the corresponding heap, stack, and memory security specification, respectively. 
+
+Well-Formedness. To simplify security enforcement, we restrict our attention to well-formed programs that satisfy additional enclave-related structural constraints, beyond the standard well-formedness conditions of LLVM programs. A key property required for our analysis is variable dominance ,which ensures that the definition of each variable reaches all of its uses. We adapt the standard LLVM block dominance to host and enclave regions, and use it to formalize variable dominance.                              
+
+> 1b0:
+> 2eenter b𝑒 ;
+> 3x=⟨Int 32 ,⊥⟩ y;
+> 4ret 0;
+> 5b𝑒 :
+> 6z=⟨Int 32 ,⊥⟩ 3;
+> 7y=⟨Int 32 ,⊥⟩ preserve z;
+> 8eexit ;
+
+Figure 12. Variable dominance: Line 7 dominates line 3. 
+
+Definition 5 (Variable Dominance in SIREN) . A definition of variable 𝑥 dominates instruction 𝑖 if one of the following holds: (i) Standard dominance: the instruction defining 
+
+𝑥 dominates 𝑖 in the control-flow graph; (ii) Enclave-exit propagation: if 𝑥 is defined by a preserve in a block reach-able from 𝑏 𝑒 , then the instruction eenter label 𝑏 𝑒 is treated as a definition of 𝑥 for dominance purposes; and (iii) Enclave entry dominance: if 𝑖 occurs in an enclave block 𝑏 𝑖 and Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+𝑥 is defined in a host block, then the definition of 𝑥 must dominate every eenter 𝑏 𝑒 instruction such that 𝑏 𝑒 can reach 
+
+𝑏 𝑖 .Variable dominance ensures that enclave-local variables do not escape without an explicit preserve . Consider the pro-gram in Figure 12, which enters enclave block 𝑏 𝑒 (line 2), assigns a value to 𝑧 (line 6), preserves it in 𝑦 (line 7), and then uses 𝑦 (line 4) after exiting the enclave (the control returns to instruction after eenter ). Without line 7, the definition of 𝑦 would not dominate its use at line 4. The enclave-exit propagation rule establishes this dominance by propagat-ing the preserved value to the corresponding enclave entry, allowing 𝑧 to be used outside the enclave. Note that variable dominance alone does not prevent se-cret values from escaping. For example, 𝑦 would still domi-nate line 4 even if ⊥ were replaced with ⊤. Such leaks are prevented by the type system. A SIREN program is well formed if it satisfies standard SSA discipline—each variable is defined exactly once and its definition dominates all uses, with phi instructions placed at block entries—together with additional enclave-specific constraints, namely variable dominance (Definition 5) and single-entry, single-exit enclave regions. While the first two conditions correspond to standard LLVM well-formedness requirements; the remaining con-ditions introduce enclave-specific constraints. In particu-lar, variable dominance is unique to SIREN. Unlike prior works [14], which rely on flow-sensitive typing to track sen-sitive variables within an enclave, variable dominance sim-plifies the type system by enforcing constraints on preserve 
+
+without requiring the tracking of other variables. 
+
+4.1 Semantics of SIREN 
+
+The SIREN small-step semantics ⟨H , E, V, L, 𝑏 𝑝 , 𝜇, 𝑖 ⟩ −→ 𝑖 
+
+⟨H ′, E′, V′, L′, 𝑏 𝑝 , 𝜇, 𝑖 ′⟩ closely mirrors that of SIR, with two additional components in the configuration: the set of active enclaves L and the current execution mode 𝜇 . The set L
+
+records all enclaves that have been initialized but not yet terminated via ekill .The semantics of SIREN differ from SIR in two respects: (i) memory-access instructions, whose behavior is modified, and (ii) enclave-specific instructions, which are absent in SIR. We focus on these differences, using load as a representative memory-access instruction. Figure 13 presents the evaluation rules for load and enclave-specific instructions. The complete semantics are given in § 3.2 of the accompanying technical report. Data within an enclave can only be accessed by code ex-ecuting in the same enclave; SIREN enforces this invariant. Rule E-Load retrieves the value 𝑐 stored at location 𝑚 , pointed to by 𝑦 , and assigns it to variable 𝑥 . The premise 𝜇 𝑦 ∈ { 𝜇, 0}
+
+ensures that 𝑚 resides either in the host ( 𝜇 𝑦 = 0) or in the same enclave as the current instruction ( 𝜇 𝑦 = 𝜇 ). The                                                                                                            
+
+> Et-Load
+> V ( 𝑦 )=𝑚 𝑚 ≠0𝜇 𝑦 ∈ { 𝜇, 0}(H 0∪ H 𝜇 ∪ E 0∪ E 𝜇 )( 𝑚 )=𝜅
+> isptr (𝜏 )=⇒𝜅 ∈region (𝑚 )V′=V [ 𝑥 ↦→𝜅 ]⟨H ,E,V,L, 𝑏 𝑝 , 𝜇, 𝑥 =load ⟨𝜏, 𝑙 1⟩,⟨⟨ 𝜏 ∗, 𝜇 𝑦 ⟩, 𝑙 2⟩𝑦 ⟩ −→ 𝑖 ⟨H ,E,V′,L, 𝑏 𝑝 , 𝜇, nop
+> Et-Ecreate
+> ⟨𝑏, 𝜇 ⟩ ∈ F ( 𝑏 𝑐 )L′=L ∪ { 𝜇 }H′=
+> Ø
+> 𝜇 ∈ℎ∪L ′
+> H𝜇
+> ⟨H ,E,V,L, 𝑏 𝑝 ,0,ecreate 𝜇, 𝑏 ⟩ −→ 𝑖 ⟨H ′,E,V,L′, 𝑏 𝑝 ,0,nop ⟩
+> Et-Eenter
+> ⟨𝑏, 𝜇 ⟩:body ′∈ F ( 𝑏 𝑐 )𝜇 ∈ L
+> fresh (𝜎, 𝜇 )Θ′=⟨eenter , 𝑏 𝑝 , 𝑏 𝑐 ,0, 𝑏𝑜𝑑𝑦 ⟩:: Θ
+> ⟨H ,E,V,L,Θ, 𝑏 𝑝 , 𝑏 𝑐 ,0,eenter 𝑏 ;𝑏𝑜𝑑𝑦 ⟩ −→ 𝑏 ⟨H , 𝜎 :: E,V,L,Θ′, 𝑏 𝑐 , 𝑏, 𝜇, 𝑏𝑜𝑑𝑦
+> Et-Eexit
+> ⟨𝑏 ′
+> 𝑐 ,0⟩ ∈ F ( 𝑏 𝑐 )
+> 𝜇 ≠0Θ=⟨eenter , 𝑏 ′
+> 𝑝 , 𝑏 ′
+> 𝑐 ,0,body ′⟩:: Θ′
+> ⟨H , 𝜎 :: E,V,L,Θ, 𝑏 𝑝 , 𝑏 𝑐 , 𝜇, eexit ⟩ −→ 𝑏 ⟨H ,E,V,L,Θ′, 𝑏 ′
+> 𝑝 , 𝑏 ′
+> 𝑐 ,0,body ′⟩
+
+Figure 13. SIREN: Memory access and enclave semantics premises of the E-Store and E-Gep rules are analogous and are omitted for brevity. For example, 𝑥 = load ⟨Int 32 , ⊥⟩ , ⟨⟨ Int 32 ∗, 1⟩𝑦, ⊥⟩ 
+
+fails in host mode ( 𝜇 = 0) because 𝜇 𝑦 = 1 ∉ {0}, preventing the host from accessing enclave memory. Conversely, an enclave may access host memory since 0 ∈ { 𝜇, 0}.Rule E-Ecreate initializes enclave 𝜇 by inserting block 𝑏 
+
+into its memory space, creating the enclave if it has not yet been activated. The premise ⟨𝑏, 𝜇 ⟩ ∈ F ( 𝑏 𝑐 ) ensures that the mode of enclave block 𝑏 matches that of the enclave being created. The premises L′ = L ∪ { 𝜇 } and H ′ = H ∪ H 𝜇 
+
+update the live enclaves and the global heap to include the created enclave. Rule E-Eenter handles transitions from host to enclave mode. The current mode must be the host ( 𝜇 = 0) and the control transfers to enclave block 𝑏 under mode 𝜇 , Semanti-cally, this resembles a function call but includes additional constraints. The premise 𝜇 ∈ L requires that enclave 𝜇 is live; fresh (𝜎, 𝜇 ) allocates a new stack frame parameterized by the enclave mode; and Θ′ = ⟨eenter , 𝑏 𝑝 , 𝑏 𝑐 , 𝜇, 𝑏𝑜𝑑𝑦 ⟩ :: Θ
+
+records the caller’s (the host continuation) configuration for later restoration. As with E-Ecreate, we require that 
+
+⟨𝑏, 𝜇 ⟩ ∈ F ( 𝑏 𝑐 ), ensuring that the mode of 𝑏 matches 𝜇 .Rule E-Eexit governs transitions from enclave to host mode. Intuitively, this corresponds to a function return: the enclave stack is cleared before control resumes in the host. The premise 𝜇 ≠ 0 enforces that exits occur only from within an enclave. The final configuration ensures that upon restoration, control returns to the same host context saved by E-Eenter . Finally, the premise ⟨𝑏 ′
+
+> 𝑐
+
+, 0⟩ ∈ F ( 𝑏 𝑐 ) confirms that the block being resumed indeed belongs to the host function. For example, let host block 𝑏 1 contain eenter 𝑏 2, and let enclave blocks 𝑏 2 and 𝑏 3 have mode 1, with 𝑏 3 containing 
+
+eexit . Before entering the enclave, 𝑏 2, 𝑏 3, and any intervening Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi 
+
+blocks must be associated with enclave 1 via ecreate 1, 𝑏 .Executing eenter switches the mode from 0 to 1 and transfers control to 𝑏 2. Execution remains in enclave mode until eexit ,which returns control to the instruction following eenter in 
+
+𝑏 1 and restores host mode ( 𝜇 = 0). We briefly outline the semantics of the ekill , ocall , and 
+
+oret instructions. The instruction ekill 𝜇 tears down enclave 
+
+𝜇 , updating the set L. The ocall instruction is used to make a call to a host-mode function. Its semantics are similar to those of the call instruction, except that the execution mode switches to 0, and an additional frame containing the oret 
+
+instruction is pushed onto the call stack Θ. Upon returning, 
+
+ocall first performs a normal ret , followed by oret , which restores the original enclave execution mode. 
+
+4.2 SIREN Security Definition 
+
+The definitions of noninterference and gradual release against 
+
+𝑙 -attacker are as in SIR. In addition to 𝑙 -attacker, we consider a more powerful 𝑒 -attacker that can observe the entire host memory. A program is secure against 𝑒 -attacker if it can-not distinguish the traces of two SIREN configurations with equivalent initial host memories, denoted H1 ≃S 
+
+> ℎ
+
+H2. Trace equivalence, T1 ≃S 
+
+> ℎ
+
+T2, is defined pointwise. We require the memory specification S to be well formed to ensure security against 𝑒 -attacker; in particular, no non-enclave memory location may be labeled ⊤.
+
+Definition 6 (SIREN Noninterference w.r.t. 𝑒 -attacker) . Given a well-formed memory specification S, a well-formed pro-gram 𝑝 is noninterfering with respect to an 𝑒 -attacker, if for all initial heaps H 01 , H 02 and a variable map V:1. the initial heaps are ℎ-equivalent; that is, H 01 ≃S 
+
+> ℎ
+
+H 02 ,and 2. the program configurations ⟨H 0 
+
+> 𝑖
+
+, V, 𝑝 ⟩ step to result configurations ⟨H ′ 
+
+> 𝑖
+
+, 𝑐 ⟩, each emitting the trace T𝑖 ; that is, for all 𝑖 ∈ { 1, 2}, ⟨H 0 
+
+> 𝑖
+
+, V, 𝑝 ⟩ −→ tr ⟨H ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩ ⊲ T𝑖 ,then 𝑐 1 = 𝑐 2 such that the traces are ℎ-equivalent; that is, 
+
+T1 ≃S 
+
+> ℎ
+
+T2.
+
+Definition 7 (SIREN Gradual Release w.r.t 𝑒 -attacker) . Given a memory specification S and a release projection 𝑅 (·) over traces (defined as in SIR), a program 𝑝 satisfies gradual re-lease against a 𝑙 -attacker if for all initial heaps H 01 , H 02 and a variable map V:1. the initial heaps are ℎ-equivalent; that is, H 01 ≃S 
+
+> ℎ
+
+𝐻 02 ,2. the program configuration ⟨H 0 
+
+> 𝑖
+
+, V, 𝑝 ⟩ steps to the final configuration ⟨H ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩, emitting the trace T𝑖 ; that is, for all 𝑖 ∈ { 1, 2}, ⟨H 0 
+
+> 𝑖
+
+, V, 𝑝 ⟩ −→ tr ⟨H ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩ ⊲ T𝑖 ,
+
+then 𝑐 1 = 𝑐 2 and for all prefixes 𝑈 1 ⪯ 𝑇 1 and 𝑈 2 ⪯ 𝑇 2, if 
+
+𝑅 (𝑈 1) = 𝑅 (𝑈 2), then 𝑈 1 ≃S 
+
+> ℎ
+
+𝑈 2.
+
+4.3 SIREN Type System 
+
+The typing judgment G, 𝜇, 𝑜𝑐, pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢ 𝑖 states that instruc-tion 𝑖 , executing in mode 𝜇 , is well typed under the typing                                                       
+
+> Tt-Load
+> 𝜇 ≠0∨𝑙 1⊑ ⊥ G( 𝑥 )=⟨𝜏, 𝑙 1⟩G ⊢ 𝑦 :⟨⟨ 𝜏 ∗, 𝜇 ′⟩, 𝑙 2⟩(𝜇 =𝜇 ′) ∨ ( 𝜇 ′=0)⟨𝜏, 𝑙 2⟩ ⊑ ⟨ 𝜏, 𝑙 1⟩pc ⊑𝑙 1
+> G, 𝜇, 𝑜𝑐, pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢𝑥 =load ⟨𝜏, 𝑙 1⟩,⟨⟨ 𝜏 ∗, 𝜇 ′⟩, 𝑙 2⟩𝑦
+> Tt-Eexit
+> 𝜇 ≠0
+> G, 𝜇, 𝑜𝑐, pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢
+> Tt-Eenter
+> B( 𝑏 )=(𝜇 𝑏 , 𝑙 𝑏 )𝜇 𝑏 ≠0𝜇 =0pc ⊑𝑙 𝑏
+> G, 𝜇, 𝑜𝑐, pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢eenter 𝑏
+> Tt-Ecreate
+> B( 𝑏 )=(𝜇 𝑒 , 𝑙 𝑏 )𝜇 =0
+> G, 𝜇, 𝑜𝑐, pc , 𝑏 𝑐 , 𝑙 𝑓 ⊢
+
+Figure 14. SIREN: typing load and enclave instructions. context G, 𝜇, 𝑜𝑐, pc , 𝑏 𝑐 , 𝑙 𝑓 . This context extends that of SIR with 𝜇 and 𝑜 , which track the current execution mode and the ocall status of the enclosing function. Most typing rules mirror their SIR counterparts, with one additional premise: 
+
+𝜇 ≠ 0 ∨ 𝑙 ⊑ ⊥ , which enforces that any instruction operating on non-public data executes within an enclave. Consequently, private data can only be manipulated during enclave execu-tion. Additionally, ocall checks 𝑜 compatibility and ensures that the callee executes in the host, while regular function calls require mode compatibility. As with the semantics, we focus on memory-access in-structions and enclave-specific constructs. Figure 14 presents the typing rules corresponding to the semantics in Figure 13. The complete typing rules are given in § 3.4 of the accompa-nying technical report. Rule Tt-Load requires that an enclave pointer can only be stored with a value when the execution mode matches. The premise (𝜇 = 𝜇 𝑦 ) ∨ ( 𝜇 𝑦 = 0) ensures that if the pointer belongs to some enclave, then either the current execution mode matches the pointer mode, or the pointer belongs to the host. Note that this premise does not restrict storing to host pointers even if the current execution mode is not the host ( 𝜇 ≠ 0). This models the Intel SGX constraint that enclave memory is accessible only to code within the same enclave—while host code is denied access, enclave code re-tains access to host memory. The remaining premises are similar to those in T-Load , the SIR counterpart for the store 
+
+instruction. Rule Tt-Eenter specifies the conditions under which an enclave can be entered from the host. The premise 𝜇 = 0 en-sures that transitions originate only from host mode, reflect-ing the Intel SGX restriction that disallows direct enclave-to-enclave transitions. Since eenter behaves like an uncon-ditional branch, the additional premise pc ⊑ 𝑙 𝑏 prevents implicit flows arising from jumps from private to public blocks. Rule Tt-Eexit ensures that enclave exits occur in the cor-rect execution mode. Rule Tt-Ecreate requires the current execution mode to be host ( 𝜇 = 0). Additionally, enclave creation is disallowed in secret contexts (premise 𝑝𝑐 ⊑ ⊥ ), preventing enclave initialization from being influenced by sensitive control flow. 
+
+SIREN Typing HOTP.. In Figure 2b, secret variables such as %expected and %status , and instructions operating on Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+them, must reside in the enclave; public code may execute in either the host or enclave. Enclave placement alone, however, does not ensure security. For example, store i32 %expected, %ptr , where %ptr points to host memory, leaks %expected 
+
+to the 𝑒 -attacker, since enclaves may write to host memory. SIREN’s security guarantees therefore arise from combining enclave isolation with IFC enforcement. 
+
+Type Soundness. The SIREN’s type system is sound—a well-typed program is secure against both 𝑙 -attacker and 
+
+𝑒 -attacker threat models. Note that we require S to be well-formed for security against an 𝑒 -attacker. Theorems 3 and 5 formally state the soundness of type system. For simplicity, we omit gradual release version of the theorems. 
+
+Theorem 3 (SIREN Noninterference w.r.t a ⊥-attacker) . Let 
+
+𝑝 be a program that does not declassify. If G ⊢ 𝑝 then 𝑝 is noninterfering with respect to a ⊥-attacker for any well-formed specification S.Proof. The proof is analogous to that of Theorem 1 (SIR Noninterference w.r.t ⊥-attacker). For complete proof, refer to Section §3.5 of the accompanying technical report. □
+
+Theorem 4 (SIREN Gradual Release w.r.t a ⊥-attacker) . If 
+
+G ⊢ 𝑝 then 𝑝 is satisfies gradual release with respect to a 
+
+⊥-attacker for any well-formed specification S.Proof. The proof is analogous to that of Theorem 2 (SIR Gradual Release w.r.t ⊥-attacker). □
+
+Theorem 5 (SIREN Noninterference w.r.t an 𝑒 -attacker) . Let 
+
+𝑝 be a program that does not declassify. If G ⊢ 𝑝 then 𝑝 
+
+is noninterfering with respect to an 𝑒 -attacker for any well-formed specification S. Formally, for all V, H 01 , and H 02 , if: 1. The program is well-formed and well-typed; i.e., G ⊢ 𝑝 ,2. Initial heaps are ℎ-equivalent and 𝑙 -equivalent; i.e., H 01 ≃ℎ
+
+H 02 and H 01 ≃S⊥ H 02 ,3. Program configuration ⟨H 0 
+
+> 𝑖
+
+, V, 𝑝 ⟩ steps to the final configuration ⟨H ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩, emitting a trace T𝑖 ; i.e., for all 
+
+𝑖 = {1, 2}, ⟨H 0 
+
+> 𝑖
+
+, V, 𝑝 ⟩ −→ 𝑡𝑟 ⟨H ′ 
+
+> 𝑖
+
+, 𝑐 𝑖 ⟩ ⊲ T𝑖 
+
+then 𝑐 1 = 𝑐 2 such that the traces are ℎ-equivalent; i.e., T1 ≃S
+
+> ℎ
+
+T2.Proof. The proof builds on the top of Theorem 3 (SIREN Noninterference w.r.t a ⊥-attacker). It heavily relies on two crucial invariants enforced both by the small-step semantics and the security type system. First, a non-public memory location always belongs to some enclave. Second, enclave locations are accessed by the same enclave; otherwise the program aborts. Thus, the host memory is indistinguishable at every step. Note that our security definition is termination-insensitive. For complete proof, refer to Section §3.5 of the accompanying technical report. □
+
+Theorem 6 (SIREN Gradual Release w.r.t an 𝑒 -attacker) . If 
+
+G ⊢ 𝑝 then 𝑝 satisfies gradual release with respect to an 𝑒 -attacker for any well-formed specification S.Proof. The proof builds off of Theorem 5 (SIREN Noninter-ference w.r.t an 𝑒 -attacker) in a manner similar to Theorem 2 (SIR Gradual Release w.r.t ⊥-attacker) and Theorem 4 (SIREN Gradual Release w.r.t a ⊥-attacker). □
+
+## 5 Translation 
+
+A key contribution of this work is to infer enclave placement in SIR programs in a secure-by-construction manner: trans-lating a well-typed SIR program yields a well-typed SIREN program. The soundness of the type system (Theorem 5) then guarantees security. A central challenge in type-preserving translation is rec-onciling the differences between SIR and SIREN. A naive translation that assigns enclave mode to all pointers and instructions not only leads to inefficient use of enclave re-sources (e.g., limited enclave memory) but may also violate security requirements, as enclave-resident secrets must be explicitly scrubbed at exit points, and may be infeasible in practice due to the need for ocall s. In contrast, our translation captures only the minimal set of constraints required for se-curity. In particular, it ensures that secret pointers are placed in enclaves and accessed only by code executing within the same enclave. Since multiple valid translations may exist, we parameterize the translation with a user-defined objec-tive function (e.g., minimizing enclave code size) to select a solution with minimal cost. Translation proceeds in two phases. In the first phase, a well-typed SIR program emits constraints and an intermedi-ate SIREN − program, identical to the input SIR program but with modes attached to pointers, blocks, instructions and functions; if the mode annotations are ignored, the gener-ated SIREN − program is a well-typed SIR program. Unifying constraints yields an enclave assignment for the SIREN −
+
+program. In the second phase, the SIREN − program is trans-formed (by inserting host-enclave transition instructions) into a full-fledged SIREN program, guided by the enclave assignment. 
+
+5.1 Step One: Constraint Generation                                        
+
+> TR-Program
+> S⇝S𝛽 ⇝B𝐹 ⇝FΓ⇝G
+> Γ𝑘 ⇝G𝑘 𝑝 =𝑓 𝑝 ′=𝑓 ′
+> ∀𝑘. Γ𝑘 ,G𝑘 ⊢𝑓 𝑘 ⇝⟨𝑓 ′
+> 𝑘 ,C𝑘 ⟩C=
+> Ø
+> 𝑘
+> C𝑘
+> Γ,G ⊢ 𝑝 ⇝⟨𝑝 ′,C⟩
+
+Figure 15. Translation of program. Rule TR-Program states that a well-typed SIR program emits SIREN − program 𝑝 ′ generating constraints C. Premise 
+
+Γ𝑘 , G𝑘 ⊢ 𝑓 𝑘 ⇝ ⟨𝑓 ′ 
+
+> 𝑘
+
+, C𝑘 ⟩ translates each function 𝑓 𝑘 to 𝑓 ′ 
+
+> 𝑘
+
+and emits constraint set C𝑘 . The final constraint, C is the union of all intermediate constraint sets. Note that C may yield zero or more solutions. Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi 
+
+The premise S ⇝ S translates SIR memory specification 
+
+S to S and ensures that all private location to some (possi-bly distinct) enclave; while the remaining premises 𝛽 ⇝ B,
+
+𝐹 ⇝ F , Γ ⇝ G translate SIR block level map 𝛽 , function def-inition map 𝐹 and variable typing context Γ to corresponding SIREN contexts. Translation generates fresh mode variables for blocks, functions, and reference types, while the typing context is recursively translated to propagate these mode annotations consistently. The translation of a function proceeds by translating blocks that in turn proceeds by translating individual instructions. Notably, the block translation yields 𝜇 , a sequence of mode assignments for the instructions of the block. The mode of the block itself is the least of the instruction modes: if there are different instruction modes, then 𝜇 𝑐 is the host; otherwise, it is equal to the mode of all instructions. The instruction translation judgment Γ, pc , G ⊢ 𝑖 ⇝𝑓 
+
+⟨𝜇, 𝑖 ′, C⟩ states that a well-typed SIR instruction 𝑖 is trans-lated to a SIREN instruction 𝑖 ′ that executes in mode 𝜇 and satisfies the constraints C. All translation rules include the common constraints pc ≠ ⊥ ⇒ 𝜇 ≠ 0 and 𝜇 𝑓 ≠ 0 ⇒ 𝜇 = 𝜇 𝑓 .The former ensures that instructions in a secret context are placed within an enclave, while the latter ensures that the ex-ecution mode of the instruction matches that of the enclosing function. Function calls introduce additional constraints: either the caller and callee execute in the same mode, or, if the caller executes within an enclave, the callee executes in the host. In the former case, the call is translated as a standard function call; in the latter, it is translated to ocall .Two classes of instructions deserve special attention: memory-access instructions and conditional branches. For the former, the translation must generate constraints that ensure pointer modes match the execution mode of the instruction. For the latter, we adopt a conservative strategy requiring that the source and successor blocks have the same execution mode. This prevents undesirable cases such as multiple enclave en-try points. Figure 16 shows the translation rules for load and conditional branch instructions; the complete set of transla-tion rules is presented in § 5.1 of the accompanying technical report. To illustrate the issue with pointer modes, consider our running example (Figure 2b). The public pointer %ctr_loc 
+
+may point to either host or enclave memory. If it points to enclave memory, any instruction accessing it must execute in the enclave, since any attempt to access it from the host will fail; if it points to host memory, the instruction may execute in either mode, since enclaves can access host memory. Rule TR-Load emits constraints ensuring that the mode of a private pointer 𝑦 is enclave, i.e., 𝑙 2 ≠ ⊥ ⇒ 𝜇 ′ ≠ 0. The constraint 𝜇 ′ ≠ 0 ⇒ 𝜇 = 𝜇 ′ further requires that an enclave pointer is accessed only by instructions executing in the same enclave. Notably, these constraints do not prevent a host pointer from being accessed within an enclave, which                                                                                        
+
+> TR-Load
+> G( 𝑦 )=(_, 𝜇 ′,_)F ( 𝑓 )=(𝜇 𝑓 , 𝑜 𝑓 )
+> 𝑖 ′=𝑥 =load ⟨𝜏, 𝑙 1⟩,⟨𝜏 ∗, 𝜇 ′, 𝑙 2⟩𝑦
+> C=
+> 
+> pc ≠⊥ ⇒ 𝜇 ≠0,𝑙 2≠⊥ ⇒ 𝜇 ′≠0,𝜇 ′≠0⇒𝜇 =𝜇 ′
+> 𝜇 𝑓 ≠0⇒𝜇 =𝜇 𝑓
+> 
+> Γ,G ⊢ 𝑥 =load ⟨𝜏, 𝑙 1⟩,⟨𝜏 ∗, 𝑙 2⟩𝑦 ⇝𝑓 ⟨𝜇, 𝑖 ′,C⟩
+> TR-Br-Conditional
+> 𝑒 ⇝𝑒 ′F ( 𝑓 )=(𝜇 𝑓 , 𝑜 𝑓 )B( 𝑏 𝑖 )=(𝜇 𝑖 ,_)𝑖 ′=br ⟨Int 1, 𝑙 ⟩𝑒 ′, 𝑏 𝜇 1
+> 1, 𝑏 𝜇 2
+> 2
+> C=
+> 
+> pc ⊔𝑙 ≠⊥ ⇒ 𝜇 ≠0
+> 𝜇 1=𝜇 2=𝜇 𝜇 𝑓 ≠0⇒𝜇 =𝜇 𝑓
+> 
+> Γ,pc ,G ⊢ br ⟨Int 1, 𝑙 ⟩𝑒, 𝑏 1, 𝑏 2⇝𝑓 ⟨𝜇, 𝑖 ′,C⟩
+
+Figure 16. Translation of load and conditional branch. accurately reflects the memory access controls enforced by Intel SGX. The translation for store is analogous. Rule TR-Br-Conditional emits constraints related to the condition and target block labels. Constraint pc ⊔ 𝑙 ≠ ⊥ ⇒ 
+
+𝜇 ≠ 0 ensures that if the condition is private, then the instruc-tion executes inside an enclave. The constraint 𝜇 1 = 𝜇 2 = 𝜇 
+
+requires that the current and the target blocks execute in the same mode. The latter constraint is not strictly necessary but simplifies the enclave placement in the presence of complex control-flow. 
+
+5.2 Step Two: Program Transformation                              
+
+> ERw-Eexit
+> B( 𝑏 )≠(𝜇, _)𝜇 ≠0
+> ⟨B , 𝜇, br 𝑏 ⟩⇝eexit
+> ERw-Eenter
+> B( 𝑏 )≠(𝜇, _)𝜇 =0
+> 𝑏 ′=mode _exit (𝑏 )⟨B , 𝜇, br 𝑏 ′⟩⇝rest
+> ⟨B , 𝜇, br 𝑏 ⟩⇝eenter 𝑏 ;rest
+
+Figure 17. Rewrite rules for enclave transition The second phase inserts enclave instructions at mode-transition points. We abstract this step as postprocess (𝑝 −, G−, C),where 𝑝 − , G− , and C are produced by the first phase. It first splits basic blocks so that each contains instructions of a single execution mode, and then rewrites unconditional branches as eenter or eexit instructions. To preserve control flow, we identify a mode-exit block that is reachable from all enclave blocks and insert branches to it after each eenter . Intuitively, the mode-exit block acts as a join point that ensures all enclave executions return to a consistent continuation in the host. The rewriting rules RW-Eenter and RW-Eexit (Figure 17) ensure correct continuation across mode transitions. Finally, the program is rewritten to insert preserve instructions in 
+
+eexit blocks, and the resulting definitions are propagated to Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+their uses, yielding a structurally well-formed SIREN pro-gram, ensuring well-structured control flow across enclave boundaries. 
+
+HOTP: End-to-End Translation. Figure 18a shows the original SIR code for initiatelogin(). First, we generate mode constraints. Each line gets a mode 𝜇 , and each line that uses a load, store or, alloca instruction gets a mode 𝜇 ′ for its asso-ciated pointer. There are four pointers, allocated on lines 4–7. The first two, submitted_loc and ctr_loc , are public pointers and may go in either the host or the enclave. The second two, expected_loc and status_loc , are private and must go in the enclave. The constraints require that each pointer have the same associated 𝜇 ′ each time it is used (i.e. if it goes in the host, it must always be in the host). Additionally, each instruction must satisfy 𝜇 ′ ≠ 0 ⇒ 𝜇 = 𝜇 ′, requiring an in-struction to execute in the pointer’s enclave whenever the pointer is not in host memory. Lines 12–20 directly involve secret registers and there-fore require enclave execution. Lines 6 and 7 allocate pri-vate pointers, so they must also run in an enclave. Other instructions are constrained by pc ≠ ⊥ ⇒ 𝜇 ≠ 0 and 
+
+𝜇 𝑓 ≠ 0 ⇒ 𝜇 = 𝜇 𝑓 . Here, the first is vacuous because pc = ⊥
+
+throughout; the second matters only if the function mode 
+
+𝜇 𝑓 is nonzero, in which case all instructions must execute in enclave 𝜇 𝑓 .Next, we choose any enclave assignment satisfying these constraints. One simple allocation is to put lines 6–7, and 12–20 in an enclave, and the rest in the host. Then, since the lines allocating the public pointers will run in host mode, we must put those in the host as well, and the private pointers must go in the enclave because they are private. The translated program, shown in Figure 18b, introduces enclave blocks entry.enclave.0 and entry.enclave.1 , along with ecreate , eenter , and eexit instructions to ensure proper host-enclave translations. Execution begins in host block en-try , enters entry.enclave.0 , which runs in enclave mode, then returns to entry after the first eenter and continues in host mode. It then enters entry.enclave.0 , which runs in enclave mode, and then returns to to entry after the second eenter ,and runs in host mode until the end of the program. This is only one valid solution; other satisfying assignments yield different but equally correct and secure SIREN programs. 
+
+5.3 Type-preserving Translation 
+
+Heap translation S ⊢ 𝐻 ⇝ H , the last missing piece, works by mapping each SIR location to a SIREN sub-heap consistent with its mode and security level in the target memory specifi-cation. In particular, all private SIR sub-heaps are translated to enclave sub-heaps in SIREN, ensuring that sensitive data resides only within enclave memory regions. The translation is type preserving: translating a well-typed SIR configuration yields a well-typed SIREN configuration. This property is formalized in Theorem 7 (Type Preserving Translation). 
+
+Theorem 7 (Type Preserving Translation) . Let a well-formed and well-typed SIR 𝑝 be translated to SIREN 𝑝 𝑒 program such that the following hold. 1. The SIR configuration is well-typed; i.e., S, Γ ⊢ ⟨ 𝐻, 𝑉 , 𝑝 ⟩.2. The SIR program 𝑝 is translated to the SIREN − program 
+
+𝑝 − ; i.e., Γ, G− ⊢ 𝑝 ⇝ ⟨𝑝 −, C⟩ (see TR-Program ). 3. The SIREN memory specification S is well-formed; i.e., 
+
+⊢ S .4. The SIR heap 𝐻 is translated to SIREN heap H ; i.e., 
+
+S ⊢ 𝐻 ⇝ H .5. The SIR variable map 𝑉 is translated to SIREN variable map V; i.e., S ⊢ 𝑉 ⇝ V.6. Post-processing SIREN − program 𝑝 − yields 𝑝 ′; i.e., postprocess (𝑝 −, G−
+
+⟨𝑝 𝑒 , G⟩ .Then the translated program configuration is well-typed; i.e., 
+
+S, G ⊢ ⟨H , V, 𝑝 𝑒 ⟩.
+
+Proof outline is presented in §5.3 of the accompanying technical report. Note that the well-typed SIREN configu-ration is secure against ⊥-attacker and 𝑒 -attacker attackers (see Theorems 3 and 5), and since Theorem 7 guarantees that the translated program is well-typed, we have that the translation enforces security against both ⊥-attacker and 
+
+𝑒 -attacker. Also, note that since 𝑝 satisfies gradual release, so does 𝑝 𝑒 . We leave the mechanized verification of Theorem 7 to future work. Theorem 7 does not state that the translation is semantics-preserving; establishing this formally requires careful reason-ing about semantics-preserving control flow and is left for future work. Nevertheless, our evaluation provides empirical evidence that the translation preserves semantics. 
+
+## 6 Implementation 
+
+Our implementation consists of two major components: In-ferno, which infers a permissive, complete security policy from sparsely annotated IR, and SPLITR (pronounced “split-ter”), which consumes the annotated IR and generates an enclave–host partition. 
+
+6.1 Inferno 
+
+Inferno infers a complete security policy in five phases. First, it parses and links the IR files into a single module for whole-program analysis. Second, it constructs the call graph and identifies strongly connected components (SCCs). Third, it processes SCCs bottom-up, solving each independently and reducing it to a summary of its interface with the rest of the program (e.g., that information flows from an argument to the return value). Fourth, it performs a global solve over function signatures and SCC summaries, incorporating seed annotations to determine each function’s argument, return, Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi                                                                                                                  
+
+> 12define i32 ⊥@verifyOtp ( i32 ⊥% submitted , i64 ⊥%
+> ↩→ctr ) (⊥) {
+> 3entry :
+> 4% submitted_loc =alloca i32 ⊥
+> 5% ctr_loc =alloca i64 ⊥
+> 6% expected_loc =alloca i32 ⊤
+> 7% status_loc =alloca i32 ⊤
+> 8store i32 ⊥% submitted , ptr ⊥% submitted_loc
+> 9store i64 ⊥% ctr , ptr ⊥% ctr_loc
+> 10 ;; expected =expectOtp ( ctr )
+> 11 % ctr_1 =load i64 ⊥,ptr ⊥% ctr_loc
+> 12 % expected =call i32 ⊤@expectedOtp ( i64 ⊥% ctr_1
+> ↩→)
+> 13 store i32 ⊤% expected , ptr ⊤% expected_loc
+> 14 ;; status =ct_compare ( expected , submitted )
+> 15 % expected_1 =load i32 ⊤,ptr ⊤% expected_loc
+> 16 % submitted_1 =load i32 ⊥,ptr ⊥% submitted_loc
+> 17 % status =call i32 ⊤@ct_compare ( i32 ⊤%
+> ↩→expected_1 , i32 ⊥% submitted_1 )
+> 18 store i32 ⊤% status , ptr ⊤% status_loc
+> 19 ;; return declassify_i32 ( status )
+> 20 % status_1 =load i32 ⊤,ptr ⊤% status_loc
+> 21 % out =declassify i32 ⊥,i32 ⊤% status_1
+> 22 ret i32 ⊥% out
+> 23 }
+
+(a) verifyOTP() in SIR                                                                                                                                                                        
+
+> 12define i32 ⊥@verifyOtp ( i32 ⊥% sbmt , i64 ⊥% ctr ) (⊥) {
+> 3entry.host : ;; 𝜇 =0( host )
+> 4ecreate 𝜇 =1,label % entry.enclave.0
+> 5ecreate 𝜇 =1,label % entry.enclave.1
+> 6% submitted_loc =alloca i32 ⊥,𝜇 =0
+> 7% ctr_loc =alloca i64 ⊥,𝜇 =0
+> 8eenter label % entry.enclave.0
+> 9store i32 ⊥% submitted , ptr ⊥
+> 𝜇 =0% submitted_loc
+> 10 store i64 ⊥% ctr , ptr ⊥
+> 𝜇 =0% ctr_loc
+> 11 % ctr_1 =load i64 ⊥,ptr ⊥
+> 𝜇 =0% ctr_loc
+> 12 eenter label % entry.enclave.1
+> 13 ;; return declassify_i32 ( status )
+> 14 ret i32 ⊥% out
+> 15 16 entry.enclave.0 : ;; 𝜇 =1( enclave 1)
+> 17 % expected_loc =alloca i32 ⊤,𝜇 =1
+> 18 % status_loc =alloca i32 ⊤,𝜇 =1
+> 19 eexit
+> 20 21 entry.enclave.1 ; ;; 𝜇 =1( enclave 1)
+> 22 ;; expected =expectOtp ( ctr )
+> 23 % expected =call i32 ⊤@expectedOtp ( i64 ⊥% ctr_1 )
+> 24 store i32 ⊤% expected , ptr ⊤
+> 𝜇 =1% expected_loc
+> 25 ;; status =ct_compare ( expected , submitted )
+> 26 % expected_1 =load i32 ⊤,ptr ⊤
+> 𝜇 =1% expected_loc
+> 27 % submitted_1 =load i32 ⊥,ptr ⊥
+> 𝜇 =0% submitted_loc
+> 28 % status =call i32 ⊤@ct_compare ( i32 ⊤% expected_1 ,
+> ↩→i32 ⊥% submitted_1 )
+> 29 store i32 ⊤% status , ptr ⊤
+> 𝜇 =1% status_loc
+> 30 ;; declassify_i32 ( status )
+> 31 % status_1 =load i32 ⊤,ptr ⊤
+> 𝜇 =1% status_loc
+> 32 % out =declassify i32 ⊥,i32 ⊤% status_1
+> 33 eexit
+> 34 }
+
+(b) verifyOTP() in SIREN 
+
+Figure 18. Translation of HOTP. and pc labels. Omitting function bodies from this solve en-ables Inferno to scale to large programs such as OpenSSL. Finally, it re-solves each SCC using these concrete labels to annotate individual instructions. During the final phase, Inferno employs a repair loop to resolve conflicting constraints. For example, if a private func-tion foo is called from a public function bar , Inferno presents the developer with the UNSAT core, who can then declassify 
+
+foo ’s return value, promote bar to private, or clone foo into public and private versions with separate signatures. 
+
+Security Annotation Effort. Manually annotating pro-grams beyond a few hundred IR instructions is impracti-cal. Instead, developers provide a small number of seed an-notations marking where secrets enter the program (e.g., the private-key argument to RSA_private_decrypt ); Inferno propagates these labels according to the SIR typing rules to infer a complete security policy. Although preliminary and non-optimizing, Inferno anno-tates all our benchmarks, including OpenSSL ( ∼400k instruc-tions), in under 10 minutes, requiring at most one manual annotation per distinct confidentiality level. Many bench-marks require only a single annotation specifying the initial security context. More complex policies may require addi-tional annotations, but we expect this effort to remain small relative to program size. Future work will support a larger class of instructions (e.g., indirect calls), improve automation and usability, including source-level annotations and IDE integration. 
+
+6.2 SPLITR 
+
+SPLITR is an LLVM 20 new-pass-manager module pass that partitions annotated LLVM IR produced by Inferno into Ope-nEnclave host and enclave components. It faithfully imple-ments the constraint-based translation of Section 5, deriv-ing per-instruction placement constraints and solving them using a built-in max-flow min-cut solver. The solver mod-els each LLVM instruction as a node, with the source and sink representing host and enclave placement, respectively. Weighted edges encode placement and transition costs; the minimum cut assigns instructions to the host or enclave while minimizing the selected objective. SPLITR supports four primary objective functions: min TCB ,which minimizes TCB size; min T, which minimizes enclave– host transitions; min T+TCB , which minimizes both min TCB Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+and min T; and min data , which minimizes data transferred across the enclave–host boundary. By targeting LLVM IR, SPLITR is agnostic to the source language (e.g., C, C++, or Rust) and can be extended to addi-tional TEE backends, such as ARM TrustZone and RISC-V enclaves. The current implementation targets partitioning to a single enclave: each instruction has a boolean mode vari-able, enabling forced-set propagation or max-flow min-cut rather than a general integer solver. Partitioning to multiple enclaves is an interesting future work. SPLITR forces code accessing secret data into the enclave. However, SGX enclaves cannot directly execute host-only operations such as system calls, network or file I/O, host-library calls, or freeing host-allocated memory; TEEs such as Intel TDX that support conventional OS interactions can simplify this constraint. SPLITR therefore uses host pinning :host-only in-module code, unless security-forced into the en-clave, is outlined into a host helper invoked through an ocall 
+
+that marshals its operands. External calls are not automati-cally converted to ocall s; instead, functions containing them are pinned to the host, where the corresponding libraries are linked. For data transfer, SPLITR flattens argv into a con-tiguous representation and deep-copies flat buffers of known length; nested pointers are avoided across the boundary by co-locating code with their data. 
+
+Limitations. SPLITR uses LLVM’s CodeExtractor, which requires single-entry regions. When a fine-grained partition cannot be outlined or its boundary data marshalled, SPLITR places the enclosing function in the enclave, yielding po-tentially coarser partitions. It deep-copies flat, known-size, non-opaque data across the enclave boundary; for nested, unsized, or handle-like data, it co-locates code and data or emits hints for OpenEnclave handling. Unsupported LLVM instruction classes (e.g., exceptions, globals and atomics) are treated permissively. Finally, SPLITR does not enforce coarse-grained memory safety; we leave this to future work studying the interplay between memory safety and information flow control. 
+
+## 7 Evaluation 
+
+Benchmarks and Experimental Setup. We evaluate SPLITR on benchmarks spanning cryptographic, data-processing, machine-learning, and systems workloads. For each bench-mark, we report the total number of LLVM IR instructions (#IR) and Priv% o, the percentage of instructions whose own inferred security label is private. Our suite includes BFS , a breadth-first graph traversal; BTree , a B-tree index; ChaCha20 ,a stream cipher; LibreSSL and OpenSSL , cryptographic and TLS workloads; HOTP , an OTP-authentication application; 
+
+LZAV , a Lempel–Ziv compressor; Memcached , an in-memory key–value store; MonteCarlo , a Monte Carlo computation; 
+
+Quicksort , an in-memory sorting workload; and SVM Predict ,
+
+SVM Scale , and SVM Train , which exercise SVM prediction, data scaling, and training, respectively. BFS , Memcached ,
+
+OpenSSL , and the SVM workloads are drawn from SGX-Gauge. The benchmarks range from small kernels to large applications: for example, LZAV contains 1,455 LLVM IR instructions, of which 89.48% are labeled private, whereas 
+
+OpenSSL contains 425,953 instructions but only 0.16% are labeled private. This diversity allows us to evaluate SPLITR across programs with substantially different sizes and secu-rity footprints. All experiments were conducted on Intel SGX hardware provisioned through IBM Cloud, running Ubuntu 20.04 with 8 vCPUs and 40 GB of memory (at most 5 GB is used). 
+
+Impact of Optimization Objectives. Figure 19 compares the partitions produced by min T, min TCB , min T +min TCB ,and min data in terms of enclave–host transitions and enclave size. Figure 19a shows the expected trade-off between mini-mizing transitions and minimizing the TCB. min T generally produces the fewest boundary crossings, while min TCB may introduce additional transitions to move more code out of the enclave. This trade-off is particularly visible for larger applications. LibreSSL exhibits the most pronounced differ-ence: despite having 275,942 LLVM IR instructions, only 137 ( ∼0.05%) are labeled private, and different placement objectives can therefore make substantially different deci-sions about the large amount of public code surrounding the small security-sensitive core. Memcached , OpenSSL , and 
+
+SVM_Train similarly show a considerable degree of varia-tion between min TCB and the transition-oriented objectives. In contrast, several smaller benchmarks and the other SVM workloads show less variation in transitions, indicating that their security and placement constraints leave fewer mean-ingful optimization choices. Figure 19b reports enclave instructions normalized to the min T solution for each benchmark, making the rela-tive effect of each objective visible despite large differences in benchmark size. As expected, min TCB generally favors smaller enclaves, whereas min T may retain additional pub-lic code inside the enclave when doing so avoids boundary crossings. The combined min T+TCB objective typically lies between these two extremes, while min data favors place-ments that reduce data movement rather than enclave size directly. The largest differences occur in benchmarks where relatively sparse private instructions are embedded within substantially larger programs, giving SPLITR greater free-dom to trade enclave size against transitions. Conversely, when most of the program is private, or when the place-ment constraints effectively determine the partition, the four objectives converge to similar enclave sizes. Overall, the results demonstrate that the optimal partition depends on the deployment objective: reducing the TCB can increase enclave–host communication, while minimizing transitions may require retaining substantially more code inside the enclave. Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi 
+
+> bfs btree chacha20 libressl hotp lzav memcached montecarlo openssl quicksort svm_predict svm_scale svm_train 0100 200 300 400
+> Transitions
+
+(a) Enclave–host transitions. 
+
+> bfs btree chacha20 libressl hotp lzav memcached montecarlo openssl quicksort svm_predict svm_scale svm_train 00.51
+> Enclave instructions (normalized to MinT)
+
+(b) Enclave instructions normalized to MinT.    
+
+> MinT MinTCB MinT+TCB MinData
+
+Figure 19. Comparison of partitioning objectives across benchmarks: (a) number of enclave–host transitions and (b) number of enclave instructions normalized to MinT for each benchmark.    
+
+> bfs btree chacha20 libressl hotp lzav memcached montecarlo openssl quicksort svm_predict svm_scale svm_train
+> 10 0
+> 10 1
+> Adjusted slowdown ( ×)
+> MinT MinTCB MinT+TCB MinData
+
+Figure 20. Adjusted slowdown across partitioning objec-tives. Figure 20 reports the adjusted runtime slowdown across partitioning objectives. The selected objective has relatively little impact on performance for most benchmarks, although OpenSSL is a notable outlier, ranging from 0 .88 × under min T
+
+to 1 .74 × under min data . BTree, Memcached, and SVM Pre-dict remain close to native performance, while BFS incurs a moderate ∼2× overhead. Short-running workloads such as ChaCha20, HOTP, LZAV, and Quicksort show approx-imately 39–42 × slowdown, suggesting that fixed enclave execution costs dominate their native runtimes. LibreSSL uses arbitrary-precision arithmetic for RSA keys through BIGNUM structures containing deeply nested pointers that cannot be readily marshalled across the enclave boundary. The corresponding operations are therefore pinned to the host, inducing frequent enclave–host transitions and a sub-stantial slowdown of ∼12 ×.Interestingly, the SVM benchmarks demonstrate min data 
+
+in action. svm _scale performs substantial computation but invokes logging, which must be pinned to the host because it performs I/O. Separating the computation from logging induces heavy enclave–host data marshalling, resulting in a 120 × slowdown. The objective min data instead co-locates 
+
+svm _scale with logging on the host, minimizing boundary data transfer and substantially reducing the slowdown. 
+
+## 8 Related Work 
+
+IFC for Low-level Languages. While prior IFC work is extensive [6, 11, 13, 18, 26, 29–31, 33, 35, 38, 39], we focus on low-level languages with unstructured control flow, where permissive tracking often relies on post-dominator–like no-tions. Bichhawat et al. [7] use dynamic pc stacks with post-dominators as declassification points; SIFTAL [8] tracks con-vergence via linear continuations; Aldous and Might [2] use abstract interpretation to compute influence regions. In con-trast, our approach is static and type-based, enabling com-parable expressiveness with simpler reasoning. Prior work on security-type-preserving compilation Barthe et al. [5] enforces IFC via type preservation across compilation from a structured languages to assembly, but does not leverage post-dominator–based reasoning to handle implicit flows in unstructured control flow. 
+
+Program Partitioning for TEEs. Since we have exten-sively compared our work with Gollamudi and Chong [14], we focus on other related works. We also exclude works that partition their programs for distributed settings [15, 25]. Civet [10], Glamdring [22], and Cadote [12] perform auto-matic partitioning of Java, C, and Rust programs, but pro-vide no formal security guarantees. Rubinov et al. [32] uses taint tracking for Android partitioning but lacks implicit Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM 
+
+flow support and automatic enclave porting. HasTEE [34] targets noninterference in Haskell, yet relies on programmer-specified monads and does not support fine-grained IFC or enclave inference. By contrast, our approach provides auto-matic, low-level partitioning with formal noninterference guarantees and practical compiler support. Moreover, none of these works offer support for partitioning trade-offs. Privtrans [9] and PtrSplit [23] perform automatic parti-tioning for privilege separation, with PtrSplit supporting general pointers. In contrast, we enforce noninterference against low-level attackers, providing formal guarantees and fine-grained host–enclave partitioning under unsafe mem-ory. Viaduct [1], similar to Jif/split [40, 42], enables secure com-putation among mutually distrustful principals by selecting trusted hosts and using cryptographic mechanisms when necessary. Unlike our work, these systems do not target TEEs or address low-level challenges of LLVM IR, such as unstruc-tured control flow and pointer arithmetic. While Viaduct also uses constraint optimization, it minimizes the cost of cryptographic mechanisms, whereas we minimize the cost of enclave usage. 
+
+## References 
+
+[1] Coşku Acay, Rolph Recto, Joshua Gancher, Andrew C. Myers, and Elaine Shi. 2021. Viaduct: an extensible, optimizing compiler for secure distributed programs. In Proceedings of the 42nd ACM SIGPLAN Inter-national Conference on Programming Language Design and Implemen-tation (Virtual, Canada) (PLDI 2021) . Association for Computing Ma-chinery, New York, NY, USA, 740–755. doi: 10.1145/3453483.3454074 
+
+[2] Peter Aldous and Matthew Might. 2015. Static Analysis of Non-interference in Expressive Low-Level Languages. In 22nd Interna-tional Static Analysis Symposium (SAS 2015) (Lecture Notes in Computer Science, Vol. 9281) . Springer, 1–17. doi: 10.1007/978-3-662-48288-9_1 
+
+[3] ARM. 2009. ARM Security Technology — Building a Secure System using TrustZone Technology. http://infocenter.arm. com/help/topic/com.arm.doc.prd29-genc-009492c/PRD29-GENC-009492C_trustzone_security_whitepaper.pdf .[4] Aslan Askarov and Andrei Sabelfeld. 2007. Gradual Release: Unifying Declassification, Encryption and Key Release Policies. In 2007 IEEE Symposium on Security and Privacy (SP ’07) . 207–221. doi: 10.1109/SP. 2007.22 
+
+[5] Gilles Barthe, Tamara Rezk, and Amitabh Basu. 2007. Security types preserving compilation. Comput. Lang. Syst. Struct. 33, 2 (July 2007), 35–59. doi: 10.1016/j.cl.2005.05.002 
+
+[6] Iulia Bastys, Maximilian Algehed, Alexander Sjösten, and Andrei Sabelfeld. 2022. Secwasm: Information flow control for WebAssembly. In International Static Analysis Symposium . Springer, 74–103. [7] Abhishek Bichhawat, Vineet Rajani, Deepak Garg, and Christian Ham-mer. 2014. Information Flow Control in WebKit’s JavaScript Bytecode. In Principles of Security and Trust , Martín Abadi and Steve Kremer (Eds.). Springer Berlin Heidelberg, Berlin, Heidelberg, 159–178. [8] Eduardo Bonelli, Adriana Compagnoni, and Ricardo Medel. 2004. SIF-TAL: A typed assembly language for secure information flow analysis. (01 2004). [9] David Brumley and Dawn Xiaodong Song. 2004. Privtrans: Automati-cally Partitioning Programs for Privilege Separation. In 13th USENIX Security Symposium (USENIX Security 04) . USENIX Association, San Diego, CA, 57–72. https://www.usenix.org/conference/13th-usenix-security-symposium/privtrans-automatically-partitioning-programs-privilege 
+
+[10] Chia che Tsai, Jeongseok Son, Bhushan Jain, John McAvey, Raluca Ada Popa, and Donald E. Porter. 2020. Civet: An Efficient Java Partitioning Framework for Hardware Enclaves. In 29th USENIX Security Sym-posium (USENIX Security 20) . USENIX Association, 505–522. https: //www.usenix.org/conference/usenixsecurity20/presentation/tsai 
+
+[11] Dorothy E. Denning. 1976. A lattice model of secure information flow. 
+
+Commun. ACM 19, 5 (May 1976), 236?243. doi: 10.1145/360051.360056 
+
+[12] Felix Dreissig, Jonas Röckl, and Tilo Müller. 2022. Compiler-Aided Development of Trusted Enclaves with Rust. In Proceedings of the 17th International Conference on Availability, Reliability and Security 
+
+(Vienna, Austria) (ARES ’22) . Association for Computing Machinery, New York, NY, USA, Article 18, 10 pages. doi: 10.1145/3538969.3538972 
+
+[13] Joseph A Goguen and José Meseguer. 1982. Security policies and security models. In 1982 IEEE Symposium on Security and Privacy .IEEE, 11–11. [14] Anitha Gollamudi and Stephen Chong. 2016. Automatic enforcement of expressive security policies using enclaves. SIGPLAN Not. 51, 10 (Oct. 2016), 494–513. doi: 10.1145/3022671.2984002 
+
+[15] Anitha Gollamudi, Stephen Chong, and Owen Arden. 2019. Informa-tion Flow Control for Distributed Trusted Execution Environments. In 2019 IEEE 32nd Computer Security Foundations Symposium (CSF) .304–30414. doi: 10.1109/CSF.2019.00028 
+
+[16] Graphene. 2022. Graphene Project: LibOS Bugs. https: //github.com/gramineproject/graphene/issues?q=is%3Aissue% 20state%3Aopen%20libos .[17] Aisha Hasan, Ryan Riley, and Dmitry Ponomarev. 2020. Port or Shim? Stress Testing Application Performance on Intel SGX. In 2020 IEEE International Symposium on Workload Characterization (IISWC) . 123– 133. doi: 10.1109/IISWC50251.2020.00021 
+
+[18] Sebastian Hunt and David Sands. 2006. On Flow-sensitive Security Types. In Conference Record of the 33rd ACM SIGPLAN-SIGACT Sym-posium on Principles of Programming Languages . 79–90. [19] Intel. 2014. Intel Software Guard Extensions (Intel SGX) Programming Reference. https://www.intel.com/content/www/us/en/developer/ tools/software-guard-extensions/overview.html .[20] Sandeep Kumar, Abhisek Panda, and Smruti R. Sarangi. 2022. SGX-Gauge: A Comprehensive Benchmark Suite for Intel SGX. In 2022 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS) . doi: 10.1109/ISPASS55109.2022.00014 Also available as arXiv:2205.06415v1. [21] Sandeep Kumar, Abhisek Panda, and Smruti R. Sarangi. 2022. SGX-Gauge: A Comprehensive Benchmark Suite for Intel SGX. In 2022 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS) . 135–137. doi: 10.1109/ISPASS55109.2022.00014 
+
+[22] Joshua Lind, Christian Priebe, Divya Muthukumaran, Dan O’Keeffe, Pierre-Louis Aublin, Florian Kelbert, Tobias Reiher, David Goltzsche, David Eyers, Rüdiger Kapitza, Christof Fetzer, and Peter Pietzuch. 2017. Glamdring: automatic application partitioning for intel SGX. In Proceedings of the 2017 USENIX Conference on Usenix Annual Tech-nical Conference (Santa Clara, CA, USA) (USENIX ATC ’17) . USENIX Association, USA, 285–298. [23] Shen Liu, Gang Tan, and Trent Jaeger. 2017. PtrSplit: Supporting General Pointers in Automatic Program Partitioning. In 24th ACM Conference on Computer and Communications Security (CCS) . 2359– 2371. doi: 10.1145/3133956.3134066 
+
+[24] LLVM Project. [n. d.]. LLVM: Low Level Virtual Machine. https: //llvm.org/ . Accessed: 2025-07-09. [25] Shamiek Mangipudi, Pavel Chuprikov, Patrick Eugster, Malte Viering, and Savvas Savvides. 2023. Generalized Policy-Based Noninterference for Efficient Confidentiality-Preservation. Proc. ACM Program. Lang. 
+
+7, PLDI, Article 117 (June 2023), 25 pages. doi: 10.1145/3591231 Wesley B Nuzzo, Samuel Dodson, Benjamin Houle, Tarakaram Gollamudi, and Anitha Gollamudi 
+
+[26] Karthikeyan Manivannan, Christian Wimmer, and Michael Franz. 2010. Decentralized information flow control on a bare-metal JVM. In Pro-ceedings of the Sixth Annual Workshop on Cyber Security and Informa-tion Intelligence Research (Oak Ridge, Tennessee, USA) (CSIIRW ’10) .Association for Computing Machinery, New York, NY, USA, Article 64, 4 pages. doi: 10.1145/1852666.1852738 
+
+[27] Andrew C. Myers. 2011. Proving Noninterference for a While-Language Using Small-Step Operational Semantics . Cornell University, OPLSS/12. 
+
+https://www.cs.cornell.edu/andru/classes/oplss12/while.pdf Tutorial originally written November 2009, updated March 2011; available online. [28] Open Enclave SDK Contributors. 2025. Open Enclave SDK. https: //openenclave.io . Accessed: 2025-07-10. [29] Donald E. Porter, Michael D. Bond, Indrajit Roy, Kathryn S. Mckinley, and Emmett Witchel. 2014. Practical Fine-Grained Information Flow Control Using Laminar. ACM Trans. Program. Lang. Syst. 37, 1, Article 4 (Nov. 2014), 51 pages. doi: 10.1145/2638548 
+
+[30] François Pottier and Vincent Simonet. 2003. Information Flow In-ference for ML. ACM Transactions on Programming Languages and Systems 25, 1 (Jan. 2003), 117–158. [31] Indrajit Roy, Donald E Porter, Michael D Bond, Kathryn S McKinley, and Emmett Witchel. 2009. Laminar: Practical fine-grained decentral-ized information flow control. In Proceedings of the 30th ACM SIGPLAN conference on programming language design and implementation . 63– 74. [32] Konstantin Rubinov, Lucia Rosculete, Tulika Mitra, and Abhik Roy-choudhury. 2016. Automated partitioning of android applications for trusted execution environments. In Proceedings of the 38th Interna-tional Conference on Software Engineering (Austin, Texas) (ICSE ’16) .Association for Computing Machinery, New York, NY, USA, 923–934. doi: 10.1145/2884781.2884817 
+
+[33] Andrei Sabelfeld and Andrew C. Myers. 2003. Language-Based Information-Flow Security. IEEE Journal on Selected Areas in Commu-nications 21, 1 (Jan. 2003), 5–19. [34] Abhiroop Sarkar, Robert Krook, Alejandro Russo, and Koen Claessen. 2023. HasTEE: Programming Trusted Execution Environments with Haskell. In Proceedings of the 16th ACM SIGPLAN International Haskell Symposium (Seattle, WA, USA) (Haskell 2023) . Association for Com-puting Machinery, New York, NY, USA, 72–88. doi: 10.1145/3609026. 3609731 
+
+[35] Heule Stefan, Deian Stefan, Edward Z Yang, Alejandro Russo, and John C Mitchell. 2015. IFC Inside: Retrofitting Languages with Dy-namic Information Flow Control. In Proceedings of the 4th Conference on Principles of Security and Trust (POST 2015) .[36] The Clang Team. 2025. Allocation Tokens . LLVM Project. https:// clang.llvm.org/docs/AllocToken.html Clang 22.0.0git Documentation. [37] Chia-Che Tsai, Donald E. Porter, and Mona Vij. 2017. Graphene-SGX: a practical library OS for unmodified applications on SGX. In Proceedings of the 2017 USENIX Conference on Usenix Annual Technical Conference 
+
+(Santa Clara, CA, USA) (USENIX ATC ’17) . USENIX Association, USA, 645–658. [38] Marco Vassena, Alejandro Russo, Deepak Garg, Vineet Rajani, and Deian Stefan. 2019. From fine-to coarse-grained dynamic informa-tion flow control and back. Proceedings of the ACM on Programming Languages 3, POPL (2019), 1–31. [39] Dennis Volpano, Cynthia Irvine, and Geoffrey Smith. 1996. A Sound Type System for Secure Flow Analysis. Journal of Computer Security 
+
+4, 2-3 (Jan. 1996), 167–187. [40] Steve Zdancewic, Lantian Zheng, Nathaniel Nystrom, and Andrew C. Myers. 2002. Secure program partitioning. ACM Transactions on Computer Systems 20, 3 (2002), 283–328. doi: 10.1145/566340.566343 
+
+[41] Aseem Zellweger, Damien Zufferey, Ranjit Jhala, and Sorin Lerner. 2011. Vellvm: Verifying the LLVM. In Proceedings of the 23rd Inter-national Conference on Computer Aided Verification (CAV) . Springer, 198–202. [42] Lantian Zheng, Stephen Chong, Andrew C. Myers, and Steve Zdancewic. 2003. Using Replication and Partitioning to Build Secure Distributed Systems. In 2003 IEEE Symposium on Security and Privacy .IEEE Computer Society, 236–250. doi: 10.1109/SECPRI.2003.1199340
