@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-03</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-04</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
     <strong class="dpr-home-dashboard-count">共 6 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>4</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-03 22:49:40 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-04 22:17:51 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日6篇聚焦安全编译与漏洞检测，精读2篇高分论文引关注。</p>
-<p>最值得看：LLVM类型驱动安全分区（9.0）与轻量LLM行为树漏洞检测（8.0）。</p>
-<p>下一步可速读Linux内核利用合成与CI/CD静态分析集成实践。</p>
+<p>今日聚焦6篇论文，精读2篇高分研究，覆盖二进制控制流预测与机密容器架构创新。最值一看：利用双虚拟枢纽与多任务图学习突破剥离二进制控制流预测；通过原生架构支持重塑机密容器安全模型。建议优先精读这两篇9分工作，速读内容可作为RTL安全与Linux漏洞利用的延伸参考。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -80,12 +78,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM">Type-Directed, Secure-by-Construction Enclave Partitioning for LLVM</span></li><li><span class="dpr-home-dashboard-paper-title" title="Towards Behavior Tree-Guided Vulnerability Detection with Lightweight LLMs">Towards Behavior Tree-Guided Vulnerability Detection with Lightweight LLMs</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Silicon to Boot Code: Extending Automated Program Repair to Firmware-Layer Security Workarounds">From Silicon to Boot Code: Extending Automated Program Repair to Firmware-Layer Security Workarounds</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Long-Range Indirect Control-Flow Prediction in Stripped Binaries via Dual Virtual Hubs and Multi-Task Graph Learning">Long-Range Indirect Control-Flow Prediction in Stripped Binaries via Dual Virtual Hubs and Multi-Task Graph Learning</span></li><li><span class="dpr-home-dashboard-paper-title" title="NACRE: Rethinking Confidential Containers through Native Architectural Support">NACRE: Rethinking Confidential Containers through Native Architectural Support</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -93,12 +91,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="PrimSynth: An Agentic Approach to Discover, Validate, and Synthesize Exploit Primitives for Linux Kernel Vulnerabilities">PrimSynth: An Agentic Approach to Discover, Validate, and Synthesize Exploit Primitives for Linux Kernel Vulnerabilities</span></li><li><span class="dpr-home-dashboard-paper-title" title="Automating Static Code Analysis Through CI/CD Pipeline Integration">Automating Static Code Analysis Through CI/CD Pipeline Integration</span></li><li><span class="dpr-home-dashboard-paper-title" title="SpiderSapien: Client-Centric Web Crawler and Security Scanner">SpiderSapien: Client-Centric Web Crawler and Security Scanner</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Unsaid, Unsafe? Implicit Security Obligations in LLM-Based RTL Code Generation">Unsaid, Unsafe? Implicit Security Obligations in LLM-Based RTL Code Generation</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Silicon to Boot Code: Extending Automated Program Repair to Firmware-Layer Security Workarounds">From Silicon to Boot Code: Extending Automated Program Repair to Firmware-Layer Security Workarounds</span></li><li><span class="dpr-home-dashboard-paper-title" title="PrimSynth: An Agentic Approach to Discover, Validate, and Synthesize Exploit Primitives for Linux Kernel Vulnerabilities">PrimSynth: An Agentic Approach to Discover, Validate, and Synthesize Exploit Primitives for Linux Kernel Vulnerabilities</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 </div>
 
