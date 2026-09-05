@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-04</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-05</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 6 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 3 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>4</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-04 22:17:51 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-05 21:03:06 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,7 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日聚焦6篇论文，精读2篇高分研究，覆盖二进制控制流预测与机密容器架构创新。最值一看：利用双虚拟枢纽与多任务图学习突破剥离二进制控制流预测；通过原生架构支持重塑机密容器安全模型。建议优先精读这两篇9分工作，速读内容可作为RTL安全与Linux漏洞利用的延伸参考。</p>
+<p>今日速读3篇论文，聚焦硬件安全与企业网络防护，暂无精读。</p>
+<p>最值得关注的是《JENGA》中针对RowHammer计数器对策的实时性突破（7.0分），以及《PatchBench》对AI漏洞修复代理的评估。</p>
+<p>建议下一步优先精读JENGA，并留意AI代理在漏洞修复中的实际效能边界。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -78,12 +80,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">0 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Long-Range Indirect Control-Flow Prediction in Stripped Binaries via Dual Virtual Hubs and Multi-Task Graph Learning">Long-Range Indirect Control-Flow Prediction in Stripped Binaries via Dual Virtual Hubs and Multi-Task Graph Learning</span></li><li><span class="dpr-home-dashboard-paper-title" title="NACRE: Rethinking Confidential Containers through Native Architectural Support">NACRE: Rethinking Confidential Containers through Native Architectural Support</span></li></ul>
+<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -91,12 +93,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">4 篇</strong>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Unsaid, Unsafe? Implicit Security Obligations in LLM-Based RTL Code Generation">Unsaid, Unsafe? Implicit Security Obligations in LLM-Based RTL Code Generation</span></li><li><span class="dpr-home-dashboard-paper-title" title="From Silicon to Boot Code: Extending Automated Program Repair to Firmware-Layer Security Workarounds">From Silicon to Boot Code: Extending Automated Program Repair to Firmware-Layer Security Workarounds</span></li><li><span class="dpr-home-dashboard-paper-title" title="PrimSynth: An Agentic Approach to Discover, Validate, and Synthesize Exploit Primitives for Linux Kernel Vulnerabilities">PrimSynth: An Agentic Approach to Discover, Validate, and Synthesize Exploit Primitives for Linux Kernel Vulnerabilities</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="JENGA: Exploiting Counter-Based RowHammer Countermeasures to Break Real-Time Predictability">JENGA: Exploiting Counter-Based RowHammer Countermeasures to Break Real-Time Predictability</span></li><li><span class="dpr-home-dashboard-paper-title" title="VPID: An Integrated Framework for Vulnerability Prioritization and Intrusion Detection in Enterprise Networks">VPID: An Integrated Framework for Vulnerability Prioritization and Intrusion Detection in Enterprise Networks</span></li><li><span class="dpr-home-dashboard-paper-title" title="PatchBench: Evaluating AI Agents for Vulnerability Patching">PatchBench: Evaluating AI Agents for Vulnerability Patching</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
 </div>
 
