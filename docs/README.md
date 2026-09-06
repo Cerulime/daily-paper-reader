@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-05</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-06</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 3 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-05 21:03:06 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-06 22:09:11 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日速读3篇论文，聚焦硬件安全与企业网络防护，暂无精读。</p>
-<p>最值得关注的是《JENGA》中针对RowHammer计数器对策的实时性突破（7.0分），以及《PatchBench》对AI漏洞修复代理的评估。</p>
-<p>建议下一步优先精读JENGA，并留意AI代理在漏洞修复中的实际效能边界。</p>
+<p>今日精读聚焦AI生成系统代码的运行时校验，速读覆盖数据竞争检测、日志框架与智能合约漏洞注入。最值得关注方向：对抗生成器下“重生成+运行时验证”思路，以及超越传统锁机制的静态数据竞争检测。普通读者可优先精读首篇，速读四篇从系统安全与可靠性扩展视野。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -80,12 +78,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">0 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Don&#x27;t Trust the Code, Check Its Effects: Runtime Refinement for Regenerated Systems Code Under an Adversarial Generator">Don&#x27;t Trust the Code, Check Its Effects: Runtime Refinement for Regenerated Systems Code Under an Adversarial Generator</span></li></ul>
   </div>
-
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -96,7 +94,7 @@
     <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="JENGA: Exploiting Counter-Based RowHammer Countermeasures to Break Real-Time Predictability">JENGA: Exploiting Counter-Based RowHammer Countermeasures to Break Real-Time Predictability</span></li><li><span class="dpr-home-dashboard-paper-title" title="VPID: An Integrated Framework for Vulnerability Prioritization and Intrusion Detection in Enterprise Networks">VPID: An Integrated Framework for Vulnerability Prioritization and Intrusion Detection in Enterprise Networks</span></li><li><span class="dpr-home-dashboard-paper-title" title="PatchBench: Evaluating AI Agents for Vulnerability Patching">PatchBench: Evaluating AI Agents for Vulnerability Patching</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Beyond Locks and Thread IDs: Static Data Race Detection Off The Beaten Path (Extended Version)">Beyond Locks and Thread IDs: Static Data Race Detection Off The Beaten Path (Extended Version)</span></li><li><span class="dpr-home-dashboard-paper-title" title="Influence of Logging Frameworks on Bind9">Influence of Logging Frameworks on Bind9</span></li><li><span class="dpr-home-dashboard-paper-title" title="Automated Vulnerability Injection in Smart Contracts Using Large Language Models">Automated Vulnerability Injection in Smart Contracts Using Large Language Models</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>

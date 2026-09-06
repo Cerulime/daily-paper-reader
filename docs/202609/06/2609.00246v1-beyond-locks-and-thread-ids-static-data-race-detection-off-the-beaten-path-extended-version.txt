@@ -1,0 +1,2356 @@
+Title: Beyond Locks and Thread IDs: Static Data Race Detection Off The Beaten Path (Extended Version)
+
+URL Source: https://arxiv.org/pdf/2609.00246v1
+
+Published Time: Wed, 02 Sep 2026 00:11:51 GMT
+
+Number of Pages: 49
+
+Markdown Content:
+# Beyond Locks and Thread ID s: Static Data Race Detection Off The Beaten Path 
+
+## (Extended Version) 
+
+Daniel Bund 1 , Julian Erhard 2 , Michael Petter 1 , and Michael Schwarz 3 
+
+> 1
+
+Technical University of Munich, Garching, Germany 
+
+{daniel.bund,michael.petter }@tum.de  
+
+> 2
+
+CISPA Helmholtz-Zentrum, Garching, Germany 
+
+julian.erhard@cispa.de  
+
+> 3
+
+National University of Singapore, Singapore 
+
+m.schwarz@nus.edu.sg 
+
+Abstract. Maintaining an abstraction of the execution history of threads can improve the precision of data race detection in static analysis. Here, we extend the digest framework to handle concurrency constructs and synchronization mechanisms that have been ignored in static race detec-tion. We introduce mechanisms for the commonly used thread barriers, as well as pthread once , which allows to ensure that an action is exe-cuted only once. We also instantiate the framework with an abstraction of locksets held by ancestor threads. We propose a suite of litmus tests to evaluate analyses for these features and compare our implementation to state-of-the-art tools, finding that they lack support. 
+
+Keywords: data races, concurrency, static program analysis, software verification, abstract interpretation 
+
+## 1 Introduction 
+
+Data races are a class of errors that is particularly hard to debug, partially due to the nondeterministic nature of the scheduling, i.e., bugs not materializ-ing in every execution. To ensure correctness of code, particularly in domains where bugs are unacceptable, sound static analyses have been proposed that are guaranteed to flag any potential data race. However, these analyses typically suffer from false positives. For such tools to be practical, the number of false positives must remain manageable [3, 11]. Nevertheless, much of the literature on static data-race detection considers only mutexes and thread creation and joining as synchronization, overlooking less common but equally valid ways to prevent conflicting accesses from occurring concurrently. One such feature are barriers as provided by Pthreads :
+
+Example 1. Figure 1 is a program fragment using barriers. The main thread creates two workers, which compute with the value of a global variable g and their string argument. The barrier b is used to ensure that both workers can only arXiv:2609.00246v1 [cs.PL] 31 Aug 2026 2 D. Bund, J. Erhard, M. Petter, and M. Schwarz                    
+
+> 1int g;
+> 23pthread_barrier_t b;
+> 45void* worker(void* arg) {
+> 6// Worker initialization
+> 78pthread_barrier_wait(&b);
+> 910 int f = compute(g,arg);
+> 11 // Do something with f
+> 12 13 return NULL;
+> 14 }
+> 15 int main() {
+> 16 pthread_t w1, w2; // Worker threads
+> 17 18 pthread_barrier_init(&b, NULL, 3);
+> 19 20 pthread_create(&w1, NULL, worker, "1");
+> 21 pthread_create(&w2, NULL, worker, "2");
+> 22 23 // Main initialization code
+> 24 g = 2;
+> 25 26 pthread_barrier_wait(&b);
+> 27 // ...
+> 28 }
+
+Fig. 1. Program using Pthreads barriers. 
+
+perform their computation (line 10) after the main thread has set the global in line 24. Once all three threads have called wait for b, all of them can proceed. Assuming that the variable g is only accessed in the three locations given in the program fragment, there is no data race: The write to g in line 24 happens before all threads have reached the barrier, and the other two accesses to g happen later. On top of synchronization by barriers, we also consider the pthread once 
+
+feature library developers often rely on (see the example Figure 4 in Section 3) and two patterns combining reasoning about threads and synchronization by mutexes (see the descendantLocksets example in Figure 8 in Section 5, as well as the creationLocksets examples in Figure 9). We focus on the temporal aspect of race detection, providing sound methods to prove that two access instructions cannot happen in parallel. This takes dif-ferent forms: For barriers, our approach determines that certain accesses must happen before others. For pthread once , this is combined with establishing that all accesses protected by the same pthread once control variable happen in the same thread and can thus not race, even when their specific order cannot be established. When it comes to reasoning about threads and mutexes, in the de-scendantLocksets case (Section 5), it is once more must-happen-before relation-ships that are established, while for creationLocksets (Appendix F), it is only the fact that accesses are in fact ordered by critical sections even though they may not appear to be at first glance. Broadly, these mechanisms fall into two categories: barriers, pthread once , and descendant locksets use additional his-tory information to establish must-happen-before relationships between accesses, whereas creation locksets (Appendix F) extend conventional lockset reasoning by recognizing protection through critical sections spanning multiple threads. Our approach is parametric in the other important ingredient of static race detection, namely a may-alias analysis, and can be combined with different such analyses to obtain different speed–precision tradeoffs. We base our work on digest-driven abstract interpretation . Abstract inter-pretation [4] is a principled way to overapproximate the concrete semantics of programs using abstract domains. Digests [28] were originally designed as a mechanism to improve the precision of thread-modular value analyses using ab-stract interpretation. Digests allow an analysis to distinguish program points as Static Data Race Detection Off The Beaten Path 3
+
+well as the states of shared variables according to the execution history observed by the thread executing the statement. They thus generalize trace partition-ing [20] to concurrent programs, providing concurrency-sensitivity that can be configured independently of the analysis domain. In the result computed by an analysis with digests, potentially reachable accesses to shared variables are an-notated with digests, i.e., an abstraction of the execution history observed by the thread in question. This can be exploited to enhance the precision of sound static data race detection [26]: When considering two accesses to a shared vari-able, both annotated with a digest, data races can be excluded when the two accesses cannot happen concurrently—as judged by their digests. While previous work [25, 26, 28] proposes digests for history information such as whether the execution is single-threaded or multi-threaded, or which mutexes are locked by the current thread, libraries such as Pthreads offer fur-ther concurrency and synchronization primitives, which have often been ignored. In particular, we provide digests for barriers, a mechanism to synchronize multi-ple threads. To do so, we extend the semantic framework underlying the digest framework to actions that involve more than two threads (Section 2). We show how digests are used to argue about whether two arbitrary operations may pos-sibly happen in parallel 4, which is not only a key ingredient of our barrier digest but also paves the way towards further applications of the digest framework. We show in Section 4 how a history abstraction, i.e., a digest, relating to the operations performed on the barrier, is used to deduce race freedom for the programs using barriers, such as Example 1. There, the predicate || ?, introduced for checking whether two accesses to the same variable may race, is used for a different purpose in the definition of the barrier digest itself, to determine whether a sufficient number of threads may wait at the barrier at the same time. Section 3 proposes a digest for pthread once for more precise data-race detection. pthread once is a feature used in particular by library developers to ensure that some code is executed exactly once. Sometimes a thread locks a mutex before creating child threads and does not release it until certain protected operations have completed. This pattern requires intricate handling beyond existing per-thread lockset analyses. Partially inspired by Lu et al. [19], we propose a way of handling such patterns with digests in Section 5. Another pattern, where locks are held by a thread during the entire execution of its child is covered in Section 6. We implemented the proposed digests in an abstract interpreter. The experiments we conducted on a set of hand-crafted examples using these constructs are discussed in Section 7. 
+
+## 2 Digest-Driven Data Race Detection 
+
+At a high level, digest-driven data race detection [26] proceeds in two phases. First, an abstract interpreter propagates abstract program states indexed by 
+
+digests , compact summaries of the execution history observed by the current       
+
+> 4While may happen concurrently is perhaps the more accurate term, we use may happen in parallel for consistency with the literature on MHP analysis. 4D. Bund, J. Erhard, M. Petter, and M. Schwarz
+
+thread, such as its thread id , currently held locks, or completed synchronization events. Several digests, each tailored to a different aspect of concurrency, can be active simultaneously and jointly index the abstract states. Whenever the analysis reaches a shared-memory access, it records the access together with its digest. Second, the race detector considers pairs of accesses that may refer to the same memory location and of which at least one is a write. It applies a may-happen-in-parallel predicate to each active digest: if any one of them estab-lishes from the aspect of the histories it records that the accesses cannot occur concurrently, the pair is discarded; otherwise, it is reported as a potential data race. Thus, digests provide the concurrency information used both to partition abstract states during the analysis and to rule out infeasible races afterward. We next introduce the local trace semantics underlying the digest framework, and formally define digests and the may-happen-in-parallel predicate. The local trace semantics precisely describes concurrent programs while abstracting away irrelevant details such as the order of local actions of independent threads, which are differentiated in an interleaving semantics. It has served as the justification for thread-modular analyses and the digest framework. Observable and observ-ing actions play a key role: they may be ordered relative to actions of other threads. Previous work fixed observing actions to arity two, so features such as pthread once or barriers could not be expressed. We directly present our generalization to observing actions of arbitrary arity. Previous work encoded atomic global accesses using cumbersome atomicity mutexes . We instead allow operations to be both observable and observing, avoiding atomicity mutexes. 
+
+2.1 Local Trace Semantics 
+
+A program is a set of labelled control-flow graphs (CFGs), one for each thread entry point. Let N be the CFG nodes ( program points ), Act the actions, and 
+
+E ⊆ N × A ct × N the labelled CFG edges. Program text can be translated into this representation using standard compiler techniques. A local trace encodes the history of one ego thread — the thread whose perspective is taken — and the parts of other threads’ histories it can know. The knowledge comes from observing actions, which observe observable actions of other threads. Examples include locking (observing), unlocking (observable), and global-variable accesses (both). Table 1 summarizes observing and observable actions. Further, there are local actions (neither observing nor observable). A local trace contains one action-interleaved configuration sequence per ap-pearing thread. Each sequence follows a path through the CFG and is locally consistent : its local-variable reads, writes, and taken guards agree [24]. This se-quence is the thread’s swim-lane , ordered by the program order →po . For each non-main thread, a →c edge connects its create action to the first node of its swim-lane. Observing and observable actions induce further dependencies be-tween configurations, possibly across threads, ensuring global consistency. For example—given mutex m from the set of mutexes S—there is a dependency 
+
+→m from an unlock(m) to the next lock(m) operation, where each unlock of 
+
+m (and the initialization action) has at most one outgoing edge →m and each Static Data Race Detection Off The Beaten Path 5
+
+Table 1. Observable and observing actions for primitives addressed in this paper. Feature Observable Action Observing Action Access to a global g = x / x = g g = x / x = g
+
+Mutexes unlock (a) lock (a)Joining return x x′=join (x′′ )Barriers barrier N record(b) barrier N check(b) pthread once endO (o) / initO (o) startO (o)         
+
+> initMT create (w1) create (w2) g= 2 barrier 3 record (b)
+> barrier 3 record (b)barrier 3 check (b)x=g
+> barrier 3 record (b)
+> →c
+> →c
+> →b
+> →b
+> →b
+> →g
+> →g
+
+Fig. 2. Stylized local trace for Figure 1 with ego thread w1, assuming the first step of 
+
+compute (g, arg ) is storing g into x. Black arrows indicate the order of configurations within threads, red arrows indicate the order induced by accesses to g. Green arrows indicate the barrier order from the recorded arrivals at b to the check, blue arrows the order between a configuration creating a new thread and its first configuration. 
+
+lock has exactly one incoming edge →m (for the first lock, this edge originates at the endpoint of a special observable action initMT 5). Thus, mutex operations are totally ordered, so at most one thread holds a mutex at a time. Likewise, a 
+
+→g edge connects each access to global g to the next, encoding atomic global accesses. We revisit its relation to race reporting at the section’s end. In a local trace, then, 
+
+– Each swim-lane is locally consistent; 
+
+– Each auxiliary order (e.g., creation order →c and mutex orders →m) meets its requirements; 
+
+– The transitive closure of the combined program and auxiliary orders is acyclic, with a least element representing the main thread’s initial config-uration and a maximal element. The maximal element is the ego thread’s last configuration, ensuring that the local trace represents one thread’s perspective. Figure 2 shows an example rep-resentation for a local trace of the program in Figure 1 with ego thread w1. Let T denote the program’s local traces, defined inductively later. For now, let init ⊂ T contain the initial local traces, each consisting only of the main thread’s initial configuration. Given a local trace t and a CFG edge e = ( u, act , v ) 
+
+> 5
+
+This program-start action executes first and is observed when a mutex is first locked or a global first accessed. We elide this purely technical action henceforth. 6 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+where act is not observing, we define the semantics by a function JeK(t) : T → 
+
+(T opt ) which either returns Some t′ if t can be extended to a new local trace 
+
+t′ by executing act along e, or None otherwise, e.g., if t ends in a program point u′̸ = u. For k-ary observing actions act , we define the semantics using a function JeK(t0, . . . , t k−1) : T k → (T opt ) which returns the resulting local trace if the provided local traces can be combined into a new local trace. 6 If 
+
+JeK(t0, . . . , t k−1) = Some t′, then t0, . . . , t k−1 are compatible w.r.t. the edge e
+
+and each other. Otherwise, they are incompatible .For example, J(u, lock (a), v )K t0 t1 returns Some t′ if t0 ends in u and t1 ends in an unlock(a) action and taking the union of these two local traces and adding an edge →a from unlock(a) to the newly introduced successor node of lock(a) 
+
+yields a new local trace t′. Otherwise, it returns None . There is also a function 
+
+new : N → N → T → (T opt ), where new u u 1 t = Some t′ computes the initial local trace of the new thread, if there is an edge ( u, create u1, u ′) in the CFG and 
+
+t ends in u1, and None otherwise. The set T is the least fixpoint obtained by applying J·K and new to init and to traces generated along the way. For abstract interpretations, an equivalent constraint-system view is more useful. We use variables ( unknowns ) [ u] for each program point u ∈ N and [ act ] for observable actions act . The resulting constraint system then takes the following form: [u0] ⊇ init 
+
+[act ] ⊇ J(u1, act , u 2)K([ u1]) (for ( u1, act , u 2) ∈ E , act observable) [u2] ⊇ J(u1, act , u 2)K([ u1]) (for ( u1, act , u 2) ∈ E , act not observing) [u2] ⊇ J(u1, act , u 2)K([ u1], [act 0], . . . , [act k−2]) (for ( u1, act , u 2) ∈ E , act of arity k, act 0 . . . act k−2 observed by act )[u′] ⊇ new ([ u1], u 1, u ′) (for ( u1, x = create u′, u 2) ∈ E )(1) where u0 is the main thread’s initial program point and the functions J·K and 
+
+new are lifted point-wise to sets of local traces. For an edge e with an action of arity k and sets Ti, 0 ≤ i < k of local traces we define JeK(T0, . . . , T k−1) := 
+
+S
+
+> t0∈T0,...,t k−1∈Tk−1
+
+(
+
+{t′} if JeK(t0, . . . , t k−1) = Some t′
+
+∅ otherwise .
+
+In Eq. (1), observable-action edges have two constraints. One propagates traces to the CFG successor unknown; the other records them in the observable action unknown. In the concrete semantics, the right-hand sides for both are identical. We leave local actions unspecified as our approach is parametric in them. 
+
+Data Races. Since local trace semantics totally orders all accesses to a global g
+
+via →g edges, its use for data-race detection may seem surprising. Schwarz and Erhard [26] show that it is possible: bidirectional trace compatibility coincides with the intuitive notion of two accesses to a global being unordered.     
+
+> 6Thus, successor computation is deterministic; nondeterminism can instead be en-coded by multiple CFG edges. We use the curried version of J·Kinterchangeably. Static Data Race Detection Off The Beaten Path 7
+
+Definition 1. Traces t0 and t1 ending in nodes u0 and u1 with outgoing edges 
+
+(u0, act 0, u ′
+
+> 0
+
+) and (u1, act 1, u ′
+
+> 1
+
+) where act 0 and act 1 are accesses to the same global variable, are bidirectionally trace compatible , if, with appropriately lifted JeK,
+
+∃t′ ∈ T : None ̸ = J(u0, act 0, u ′
+
+> 0
+
+)K(t0, J(u1, act 1, u ′
+
+> 1
+
+)K(t1, t ′)) ∧
+
+None ̸ = J(u1, act 1, u ′
+
+> 1
+
+)K(t1, J(u0, act 0, u ′
+
+> 0
+
+)K(t0, t ′)) .
+
+This means that the accesses can immediately follow each other in either order, matching the intuitive notion of being unordered. 
+
+Proposition 1. Two accesses to a global variable g are racy in the intuitive sense if and only if at least one is a write and traces t0 and t1 ending in the respective CFG predecessors exist, s.t. they are bidirectionally trace compatible. Proof. Similar to [26, Theorem 1]; see Appendix B. ⊓⊔
+
+2.2 Digests and Digest-Driven Data Race Detection 
+
+Digests [24, 25, 28] abstract thread histories and can refine abstract interpre-tations of concurrent programs. They exploit that some thread histories are 
+
+incompatible , a notion transferable from local traces to digests. Let A be the set of digests. αA maps a local trace t to its digest αA t ∈ A . 7
+
+We require digests to be computable inductively. For the initial set of digests at the program start, we define 
+
+init ♯ 
+
+> A
+
+= {αA t | t ∈ init }. (2) Further, we introduce a digest counterpart Ju, act K♯ 
+
+> A
+
+: Ak → (A opt ) of the se-mantics Ju, act , v K inheriting its arity from the concrete semantics but operating on digests instead of traces. We call these functions right-hand side functions. More concretely, for an edge e = ( u, act , v ) we demand ∀t0, · · · , t k−1 ∈ T 
+
+map αA (JeK(t0, · · · , t k−1)) ˆ ⊑ Ju, act K♯ 
+
+> A
+
+(αA t0, · · · , α A tk−1) (3) where αA is mapped over the trace option returned by JeK(t0, · · · , t k−1), and ˆ⊑ is the partial order on A opt with None as bottom and all other elements incomparable. Equation (3) says that J·K♯ 
+
+> A
+
+soundly overapproximates J·K.For newly created threads, a function new ♯ 
+
+> A
+
+: A → N → N → A opt returns the digest of a thread starting at u1, created at u by a thread with digest A. We demand that new ♯ 
+
+> A
+
+soundly abstracts new :
+
+∀t ∈ T : map αA (new t u u 1) ˆ ⊑new ♯ 
+
+> A
+
+(αA t) u u 1 (4) If the thread calling create has a successor digest, then new ♯ 
+
+> A
+
+must return a digest for the created thread: 
+
+∀A ∈ A : Ju, x = create (u1)K♯ 
+
+> A
+
+(A)̸ = None =⇒ new ♯ 
+
+> A
+
+A u u 1̸ = None (5) Digests satisfying (2) to (5) are admissible .            
+
+> 7We denote by γAA={t|αAt=A}the concretization function for a digest. 8D. Bund, J. Erhard, M. Petter, and M. Schwarz
+
+Digest-Driven Abstract Interpretation. An analysis can be refined using any ad-missible digest. We quickly present the requirements for an analysis. An analysis constraint system is obtained from the concrete constraint system by replacing sets of traces with an analysis domain and concrete transfer functions with ab-stract ones. Let D be the abstract domain used by the analysis, which forms a complete lattice with operations join ⊔ and meet ⊓. A monotonic function 
+
+γD : D → 2T provides the concretization of a given domain element. The analy-sis must define abstract transfer functions J·K♯, as well as abstract versions new ♯
+
+and init ♯ of new and init . Given soundness of J·K♯, new ♯, and init ♯ w.r.t. their con-crete counterparts, related by γD , and the monotonicity of J·K♯ and J·K, it follows that the concretization of a solution of the analysis constraint system is greater than the least solution of the concrete constraint system (see [25, Theorem 1]). When refining an analysis with a digest, the constraint system is adapted by splitting unknowns according to digests, yielding a constraint system of form: [u0, A 0] ⊒ init ♯ (for A0 ∈ init ♯
+
+> A
+
+)[act , A ′] ⊒ J(u1, act )K♯ ([ u1, A ]) (for ( u1, act , u 2) ∈ E , act observable ,
+
+Some A′ = Ju1, act K♯ 
+
+> A
+
+A)[u2, A ′] ⊒ J(u1, act , u 2)K♯ ([ u1, A ]) (for ( u1, act , u 2) ∈ E , act not observing ,
+
+Some A′ = Ju1, act K♯ 
+
+> A
+
+A)[u2, A ′] ⊒ J(u1, act , u 2)K♯ ([ u1, A 1], [act 0, A 2], . . . , [act k−2, A k]) (for ( u1, act , u 2) ∈ E , act of arity k, act 0 . . . act k−2 observed by act ,
+
+Some A′ = Ju1, act K♯ 
+
+> A
+
+(A1, A 2, . . . A k)) [u′, A ′] ⊒ new ♯([ u1, A ], u 1, u ′) (for ( u1, x = create u′, u 2) ∈ E ,
+
+Some A′ = new ♯
+
+> A
+
+A u 1 u′)
+
+Proposition 2. Refining a sound abstract interpretation of a concurrent pro-gram with an admissible digest yields a sound abstract interpretation. Proof. By giving a digest-refined concrete semantics and showing that soundness of the original abstract interpretation w.r.t. the original semantics carries over to the refined setting. See Appendix B for details. ⊓⊔
+
+As examples, we consider the lockset digest, which tracks each thread’s cur-rently held locks (see Figure 3), and the thread id digest for dynamically created threads: Schwarz et al. [28] propose a digest computing thread id s for pthreads .It identifies threads by the sequence of create edges involved in their creation: the main thread receives main , a thread it creates along edge e receives main · e,and so on. To account for cycles in the creation history caused by recursively creating threads or threads being created in a loop, non-definite thread id s are used. For details, see [28]. In the rest of the paper, we use generic thread id s with the following assumptions. A thread id is information that remains constant for all operations of a given concrete thread and can be projected from a digest A1
+
+by πtid : A1 → TID . We further assume the existence of functions: Static Data Race Detection Off The Beaten Path 9                                    
+
+> A= 2 S
+> init ♯
+> A={∅}
+> new ♯
+> AS u 1=Some ∅
+> Ju, act K♯
+> A(S0,· · · , S i) = Some S0
+> (other edge ( u, act , v ))
+> J,lock (a)K♯
+> A(S0, S 1) =
+> (
+> None if a∈S0
+> Some (S0∪ { a})otherwise
+> J,unlock (a)K♯
+> AS=
+> (
+> None if a̸∈S
+> Some (S\ { a})otherwise
+> Fig. 3. Right-hand sides for lockset digest [25], generalized to our setting. Underscores serve as wildcards that do not bind the matched value.
+
+– unique : TID → Bool checking whether, in any execution, at most one con-crete thread can have this abstract thread id .
+
+– must anc : TID → 2TID returning the set of must ancestors , i.e., threads that must have been involved in the creation of the current thread. 
+
+– may create : A1 → 2TID returning the may-created thread id s, i.e., child-thread id s the ego thread may have created given a digest. The product of admissible digests is also an admissible digest [25]. This allows for a modular design where digests tracking different aspects of the history can seamlessly be combined during an analysis. 
+
+May-Happen-In-Parallel Predicate. Digests support reasoning about the tem-poral separation aspect of data races [26]. For two accesses to race, they must potentially happen concurrently: by Proposition 1, there must be bidirectionally trace-compatible traces ending just before them. Thus, compatibility of digests ,an abstraction of local-trace compatibility, can exclude data races. Two digests 
+
+A0 and A1 are compatible with an edge e and each other if there are traces t0
+
+and t1 with these digests that are compatible with e and each other. Thus, if two digests are not bidirectionally compatible, the corresponding traces are not either. This yields a first definition of a may-happen-in-parallel predicate 
+
+|| ? 
+
+> e1,e 2
+
+: A → A → { false , ⊤} 
+
+for checking whether two accesses to a variable may race, where e1 and e2 are the CFG edges in question. We outline the detailed requirements for || ? 
+
+> e1,e 2
+
+in Appendix A. When edges are clear or irrelevant, we write || ?. The answers form the lattice false ⊑ ⊤ . For product digests, answers can be combined using meet (⊓). For thread id s, the || ? definition arising from bidirectional digest compat-ibility is maximally precise. However, this is not the case for all digests. For instance, with the lockset digest, two actions with overlapping locksets cannot run concurrently, so the corresponding concrete accesses cannot race. However, bidirectional digest compatibility cannot infer this, because overlapping locksets need not prevent the respective accesses to a global g from directly following each other in the →g order. Thus, one may instead provide a more precise || ? and justify it directly w.r.t. bidirectional trace compatibility. We generalize || ? 
+
+> e1,e 2
+
+to show that two arbitrary-action edges e1, e 2 cannot happen in parallel: introduce a fresh global variable and replace the actions by writes to it, yielding edges 
+
+e′
+
+> 1
+
+, e ′
+
+> 2
+
+. Then A1|| ? 
+
+> e1,e 2
+
+A2 is defined as A1|| ?
+
+> e′
+> 1,e ′
+> 2
+
+A2.10 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+> // Library file pthread_once_t once; schmilblick* dev; // Some device void init_lib() { dev = malloc(size_of(schmilblick)); init_schmilblick(dev); }void maluba(){ // Ensure the library is initialized pthread_once(once,init_lib); assert(dev != NULL); // ... }// Main file void *t1(void *arg) { maluba(); // ... return NULL; }int main() { pthread_t t; pthread_create(&t, t1, NULL); maluba(); // ... }
+
+Fig. 4. Pthread program using pthread once 
+
+Race Detection. Schwarz and Erhard [26] give a data race detection algorithm using digests. First, one performs digest-driven abstract interpretation, collecting digests associated with accesses. Then, for each shared memory location, one iterates over all access pairs. For accesses at edges e1 and e2 with digests A1 and 
+
+A2, a potential race is flagged if at least one access is a write and A1|| ? 
+
+> e1,e 2
+
+A2 = ⊤.
+
+## 3 Synchronization via pthread once 
+
+Pthreads offers a mechanism for executing code at most once. This enables resource initialization before thread access, such as opening a shared log file or database connection. Application developers can place such code in main , but library developers do not control main and instead rely on pthread once [2]. It provides a type for control variables (which we assume are from set O) and a function pthread once(o,f) which executes f and sets o if it is unset, and oth-erwise does nothing. The system makes running f and setting o appear atomic. Consider the program in Figure 4. init lib must allocate and initialize the de-vice before any other library function runs. pthread once ensures that init lib 
+
+is called exactly once and that the device is initialized before use. 
+
+pthread once is often overlooked by static analyzers or abstracted very crudely. With digests, it can be handled precisely without complicating the un-derlying analysis; all handling happens inside the digest. This excludes two race classes: within the called function and between initialization and later code. 
+
+Extension of the concrete semantics. We introduce a new observable action 
+
+initO (o) to initialize a control variable o at program start 8 and compile pthread once(o,f) to a sequence calling startO (o), branching on ran (o), executing the inlined code from f if ran (o) is false, and finally performing endO (o). Here, 
+
+initO (o) and endO (o) are observable, while startO (o) is observing, analogous to 
+
+initMT /unlock (a) and lock (a) for mutex a. The once order →o follows  
+
+> 8
+
+Unlike library developers, a whole-program analyzer can conceptually insert helper code at program start, so this action does not negate the need for pthread once .Static Data Race Detection Off The Beaten Path 11   
+
+> main :initO(o); create(t1); // ... startO(o); if (!ran(o)) dev = malloc(42); endO(o); assert(dev != NULL);
+> t1 :// ... startO(o); if (!ran(o)) dev = malloc(42); endO(o); // ... assert(dev != NULL);
+
+Fig. 5. Program highlighting how pthread once is decomposed into individual steps. 
+
+the mutex-order requirements from Section 2.1. The actions 
+
+Pos (ran (o)) and Neg (ran (o)) guard whether the code asso-ciated with pthread once is to be executed: the former re-turns a local trace only when 
+
+endO (o) appears in the trace, and the latter only when it does not. 9 The program in Figure 5 corresponds to the one in Figure 4 after abstracting away details and expressing pthread once as above. A digest for this feature (Figure 6) may then track two sets in a tuple ( A, C ): 
+
+– A set A of active control variables, i.e., those for which the ego thread is currently inside the section between startO (o) and endO (o). 
+
+– A set C of completed control variables, i.e., those for which the associated fragment has surely been run, as a call to endO (o) was observed. The guards Pos (ran (o)) and Neg (ran (o)) check whether o has already completed, i.e., whether it is in C. startO (o) adds o to the active set, and endO (o) moves it from the active to the completed set. || ? can then be defined as: (A, C ) || ? (A′, C ′) = 
+
+(
+
+false if ( A ∩ (A′ ∪ C′)̸ = ∅) ∨ (A′ ∩ (A ∪ C)̸ = ∅)
+
+⊤ otherwise ,
+
+i.e., accesses may not race when a control variable is active during both accesses, or active in one and completed in the other. 
+
+Example 2. Consider again the program in Figure 5. An analysis using the digest from Figure 6 succeeds in establishing race freedom. ⊓⊔ 
+
+> 9
+
+Recursively calling pthread once(o,f) is not conclusively specified in the standard; here, we decided to go for the behavior of glibc , which deadlocks upon such calls. 
+
+A = 2 O × 2O
+
+init ♯ 
+
+> A
+
+= {(∅, ∅)}
+
+new ♯ 
+
+> A
+
+(A, C ) u u 1 = Some (∅, C )
+
+J , Pos (ran (o)) K♯ 
+
+> A
+
+(A, C ) = (
+
+None if o̸ ∈ C
+
+Some (A, C ) otherwise 
+
+Ju, act K♯ 
+
+> A
+
+(A, C ) · · · (Ai, C i) = 
+
+Some (A, C ) (other edge ( u, act , v )) 
+
+J , startO (o)K♯ 
+
+> A
+
+(A0, C 0) ( A1, C 1) = (
+
+Some (A0 ∪ { o}, C 0 ∪ C1) o̸ ∈ A0
+
+None otherwise 
+
+J , endO (o)K♯ 
+
+> A
+
+(A, C ) = Some (A \ { o}, C ∪ { o})
+
+J , Neg (ran (o)) K♯ 
+
+> A
+
+(A, C ) = (
+
+None if o ∈ C
+
+Some (A, C ) otherwise 
+
+Fig. 6. Right-hand sides for excluding races based on pthread once .12 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Proposition 3. The digest given above is admissible, and its predicate || ? sound. 
+
+See Appendix C for the proof (by contradiction) and an extended digest making the analysis of global variables more precise. 
+
+## 4 Synchronization via Barriers 
+
+Pthreads provides barriers: after initialization by calling pthread barrier init (b, c )for a barrier b and capacity c ∈ N+, callers to pthread barrier wait (b) block until 
+
+c threads have called it, at which point all waiters are unblocked. Figure 1 shows a barrier example whose pthread barrier wait (b) calls may all happen in parallel. In fact, this always needs to be the case, as any call to pthread barrier wait (b)happening after another call has returned, cannot contribute to reaching the required capacity. The predicate || ? also detects stuck executions when fewer than c − 1 other pthread barrier wait (b) calls may happen in parallel. Passing a barrier reveals cross-thread information that excludes some races. 
+
+Extension of the concrete semantics. Let B be a set of barriers. For presenta-tion, we initially assume static capacities (eliminating pthread barrier init ) and replace each pthread barrier wait (b) with barrier N record (b); barrier N check (b), where N ∈ N+ is b’s capacity. The action barrier N record (b) is non-blocking and observable, i.e., the local trace ending in it is recorded at the corresponding unknown. The action barrier N check (b) is observing and N -ary, incorporating lo-cal traces stored at the unknown corresponding to barrier N record (b), i.e., those ending in that action. 10 Figure 2 shows an example local trace. By construction of the constraint system, for JeK(t0, . . . , t N −1) for an edge 
+
+e = ( u, barrier N check (b), v ), t0 is a local trace ending in u with last action 
+
+barrier N record (b), and the other N −1 local traces provided as an argument also end in barrier N record (b), as that is the action observed by the check action. The call yields Some t′ only if its arguments are distinct and their union, augmented with dependency edges from the record endpoints to the check endpoint, is a local trace. For each barrier b, the barrier order →b goes from nodes with an incoming edge barrier N record (b) to those with an incoming edge barrier N check (b); call these sets B+ and B−, respectively. Each B+ node has at most 1 outgoing →b
+
+edge, while B− node has exactly N incoming →b edges, including one from the control-flow predecessor, i.e., the thread passing the barrier was involved in the barrier being passed. This order then forms part of the causality order of a local trace. Consider the N subtraces ending at B+ nodes that directly →b-precede a B− node. None of these subtraces may contain any of the relevant calls to 
+
+barrier N record (b). This ensures that all N calls happened in parallel. Before deriving a digest tracking information about barriers, we first observe that for any digest that provides the predicate || ? for checking for data races and does not track information about barriers, i.e., is unaffected by executing actions 
+
+barrier N record (b) and barrier N check (b), a definition of J , barrier N check(b) K♯  
+
+> A
+> 10 This uses our generalization to higher-arity observing actions. Static Data Race Detection Off The Beaten Path 13
+
+can be given that detects some instances where the execution must become stuck: 
+
+J , barrier N check(b) K♯ 
+
+> A
+
+(A0, . . . , A N −1) = 
+
+(
+
+Some A0 if ∀i, j ∈ [0 , N − 1] : i̸ = j =⇒ Ai|| ?Aj = ⊤
+
+None otherwise This uses the predicate || ? to check whether the N calls to barrier N record (b)can all happen in parallel. When this is not the case, the execution must become stuck, and None is returned, denoting unreachability. The predicate thus turns out to be not only useful when considering whether accesses can happen in parallel, but also when considering richer synchronization primitives. 
+
+Example 3. Consider Figure 1 and assume that the developer has, by mistake, surrounded calls to pthread barrier wait (b) with locking and unlocking of mutex 
+
+m. Then, one thread reaches the call to pthread barrier wait (b) while holding m.However, it will not release m until the barrier is passed, and the other threads do not call pthread barrier wait (b) until they have acquired m. The execution deadlocks. With the lockset digest from [26] with the definition of || ? returning false when locksets overlap, the analysis will detect this as {m}|| ?{m} = false . ⊓⊔
+
+Showing certain accesses unreachable may improve the precision of race de-tection. If a digest tracks thread id s, we can define a more precise digest that excludes more races by tracking barriers passed by the current thread and ob-served barrier actions of other threads. If, for two accesses, one thread knows that the other has passed a barrier that it has not yet passed, the accesses are ordered w.r.t. each other and thus not bidirectionally compatible and not racy. The new digest is the product of the original digest A1 and two components 11 :
+
+– a set R ⊆ B of barriers for which the current thread has called barrier N record (b)
+
+– a map O : TID → 2B from thread id s to sets of barriers for which the respective thread has been observed to have called barrier N record (b). The corresponding right-hand sides for the digest are given in Figure 7 in terms of those for A1. The predicate then is given by: ( A0, R 0, O 0) || ? (A1, R 1, O 1) = = ( A0 || ? 
+
+> A1
+
+A1) ⊓
+
+
+
+false if ( unique (πtid A0) ∧ O1 (πtid A0)̸ ⊆ R0)
+
+∨(unique (πtid A1) ∧ O0 (πtid A1)̸ ⊆ R1)
+
+⊤ otherwise On top of the predicate for the base digests, this exploits the fact that if A0
+
+is unique, any of its actions that have been observed by the other thread must already have happened for the accesses to potentially happen concurrently. 
+
+Example 4. Consider again Figure 1 and assume a digest identifies all threads as unique 12 and assigns them id s main , w1 , and w2 . The access in main happens be-fore calling pthread barrier wait (b), and has digest ( A0, ∅, {} ); the worker accesses               
+
+> 11 The tracking of separate components for Rand Ois to simplify presentation here: Whenever the thread id in Ais unique, Rcan be reconstructed from O.
+> 12 This is, e.g., the case for the digest-based thread id s abstracting creation history [28].
+
+14 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+A = A1 × 2B × (TID → 2B ) init ♯ 
+
+> A
+
+= {(A1, ∅, ∅) | A1 ∈ init ♯ 
+
+> A1
+
+}
+
+new ♯ 
+
+> A
+
+(A, R, O ) u u 1 =
+
+(
+
+Some (A′, ∅, O ) if new ♯ 
+
+> A1
+
+A u u 1 = Some A′
+
+None otherwise 
+
+J , barrier N check(b) K♯ 
+
+> A
+
+(( A0, R 0, O 0), . . . , (AN −1, R N −1, O N −1)) = 
+
+Some (A0, R 0, S 
+
+> i
+
+Oi) if ∀i, j ∈ [0 , N − 1] : ( i̸ = j =⇒ Ai|| ?Aj )∧
+
+(unique (πtid Ai) = ⇒ Oj (πtid Ai) ⊆ Ri)
+
+None otherwise 
+
+J , barrier N record(b) K♯ 
+
+> A
+
+(A, R, O ) = 
+
+Some (A, R ∪ { b}, O ⊕ { (πtid A) 7 → (O (πtid A)) ∪ { b}} )
+
+J , act K♯ 
+
+> A
+
+(( A0, R 0, O 0), . . . , (AN −1, R N −1, O N −1)) = (
+
+Some (A′, R 0, S 
+
+> i
+
+Oi) if J , act K♯ 
+
+> A1
+
+(A0, . . . , A 1) = Some A′
+
+None otherwise (other n-ary action) 
+
+Fig. 7. Barrier digest where ⊕ denotes updating a map, missing bindings are assumed to be ∅, and the union of maps is defined pointwise per binding. 
+
+have digests ( Aj , {b}, {main 7 → { b}, w1 7 → { b}, w2 7 → { b}} ) for some Aj , where we omit empty bindings. As πtid A0 = main , unique main holds but {b}̸ ⊆ ∅ , the write in main happens before any of the reads, and race-freedom is shown. ⊓⊔
+
+Proposition 4. The digest given above is admissible, and its predicate || ? sound. 
+
+The proof is by contradiction; see Appendix D. This digest generalizes straight-forwardly to tracking how often barriers have been waited for, possibly stopping exact bookkeeping at a fixed constant k to avoid a blowup. Conversely, for a more tractable analysis, one can switch to an abstract digest to avoid keeping track of exact sets, along the lines of [25]. 
+
+Remark 1. Our implementation supports dynamic barrier capacities and pointer-based accesses. Barriers may also be used for inter-process communication, but since the Goblint framework does not support process-level concurrency, our implementation soundly and coarsely treats such barriers as no-ops. 
+
+## 5 Synchronization via Mutexes and Creation Orders 
+
+While previous sections covered features that are often completely unhandled, here we deal with complex patterns combining thread creation and mutexes: Cre-ating threads while holding a mutex can simulate barriers on platforms lacking them. Also, then, worker threads do not have to wait for one another: 
+
+Example 5. In Figure 8, main creates workers i1 and i2 while holding m. Each worker initializes, then immediately acquires and releases m. These locks occur only after main unlocks m, so worker accesses to g follow main’s access and cannot race. Notably, i1 need not wait for i2 to reach the lock. Static Data Race Detection Off The Beaten Path 15 
+
+> int g = 0; pthread_mutex_t m; void *worker(void *arg) { // Worker Initialization... pthread_mutex_lock(&m); pthread_mutex_unlock(&m); int f = compute(g, arg); // ... return NULL; }int main() { // Worker threads pthread_t i1, i2; pthread_mutex_lock(&m); pthread_create(&i1, NULL, worker, NULL); pthread_create(&i2, NULL, worker, NULL); g++; // Initialization code pthread_mutex_unlock(&m); return 0; }
+
+Fig. 8. Access to g in main must happen before accesses in worker threads. 
+
+For accesses in thread i0 and a thread i1 it created, the following conditions rule out conflicts via mutex m. At the first access, we require that 1. i1 was created in i0, ensuring i0 is its ancestor. This check matters because an ancestor of i0 might otherwise have created i1, enabling races. 2. At all of those creations, m is locked—c.f. lockset digest (Figure 3). 3. m was not unlocked after any such creation. Note that i1 does not need to be a child of i0, but can be more generally a descendant. So, we account for transitive creations of i1, enhancing the precision. At the second access, we record which threads have locked each mutex. We can exclude a race if a lock of m has happened at some point after the creation in 
+
+i0 in the created thread or—for the same reason as above—one of its descendants. If m was locked in iH , this is the case if i0 must be an ancestor of iH . We describe a suitable digest in Appendix E. 
+
+## 6 Digests for Creation Locksets 
+
+The pattern described in Section 5 is not the only one where thread creations with mutexes held can ensure mutual exclusion. This time, we are interested in programs where a mutex m is held in i0 throughout the entire execution of a descendant thread i1. In consequence, i1 is protected in some way by m. This may sometimes be useful: Imagine, e.g., that a thread needs to do two expensive computations in parallel while having exclusive access to a global. Then, it may spawn a new thread while holding the protecting mutex to do one part of the work, while performing some other work in another task. Before releasing the mutex again, the worker thread is joined again. While this is probably more common for programming languages such as Go , where thread creation is cheap, it applies just as well to C programs, as we show in the next example: 
+
+Example 6. Consider the program given in Figure 9. Throughout the entire ex-ecution of work , the mutex m is locked. As m is also in the lockset at the access to g in t1, this access cannot race with the one in work .Note that it is important to record that a mutex m is locked in the creator thread i0 and held throughout the execution of a descendant thread i1, as it 16 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+> int g = 0; pthread_mutex_t m ; pthread_t i1, i2; void* t1(void* arg) { pthread_mutex_lock(&m); g++; // not racing! pthread_mutex_unlock(&m); return NULL; }// main holds m throughout work void* work(void* arg) { // Expensive computations g = ...; // not racing! return NULL; }int main() { pthread_create(&i1, NULL, t1, NULL); ... pthread_mutex_lock(&m); // Two expensive computations // some of it happens in work // work created while m is locked pthread_create(&i2, NULL, work, NULL); // no unlock of m while work running pthread_join(i2, NULL); pthread_mutex_unlock(&m); return 0; }
+
+Fig. 9. Creation Locksets: Mutex m protects accesses to global —even though work 
+
+never acquires it. 
+
+does not protect i1 from accesses happening in i0. To detect that i1 is protected from i0 with m, we propose the following conditions: 1. i1 was transitively created in i0, ensuring i0 must be an ancestor of it. We require the latter condition for the same reason as given in Section 5—there should be no alternative way of creating i0 other than via i1.2. At all of those creations, m must be locked, as recorded by the lockset digest. 3. There exists no unlock of m while i1 may run in parallel. For the last point, one can compute the id s of the descendant threads running in parallel by determining all threads that were transitively created from the current thread and subtracting threads that were joined back. Using the thread 
+
+id digest, we obtain the former. For the latter information, we use the join digest suggested by Schwarz and Erhard [25]. Appendix F gives a digest for checking the conditions above. 
+
+## 7 Experiments and Benchmark Set 
+
+We enhanced the Goblint [23] static analyzer to support pthread once , bar-riers, and complex interactions between thread creation and mutex locking. The implementations deviate slightly from the presentation here: they support 
+
+Pthreads directly rather than idealized primitives and use abstract digests in the sense of [25]. For thread-creation and mutex-locking interactions, they use mixed flow-sensitivity [29] to compute abstract digests at global unknowns. We evaluate scalability and runtime on 60k–80k-LOC GNU Coreutils. Their size precludes ground-truth annotations, but they allow measuring the runtime impact of the new digests against a minimal baseline and the SV-Comp con-figuration. We ran each benchmark on Ubuntu 26.04 with a 2.5 GHz Intel Core i7-11700, a 5-minute timeout, and a 20 GB memory limit. Table 2 shows the cost of the enhanced synchronization features. It is most pronounced for the locked-creation feature. For df , locked creation handling adds 30 .5% to the baseline Static Data Race Detection Off The Beaten Path 17                                             
+
+> Table 2. Runtime comparison. Runtime in seconds. Benchmark LOC Baseline Once ( ∆%) Barriers ( ∆%) Locked ( ∆%)
+> cksum 68k 1.00 1.02 (+2.0%) 1.04 (+4.0%) 1.13 (+13.0%)
+> cp 75k 11.86 12.45 (+5.0%) 12.36 (+4.2%) 14.44 (+21.8%)
+> cut 69k 1.79 1.85 (+3.4%) 1.84 (+2.8%) 2.10 (+17.3%)
+> dd 72k 2.68 2.77 (+3.4%) 2.74 (+2.2%) 3.30 (+23.1%)
+> df 70k 13.86 14.55 (+5.0%) 14.65 (+5.7%) 18.09 (+30.5%)
+> du 70k 9.13 9.72 (+6.5%) 9.81 (+7.4%) 11.27 (+23.4%)
+> nohup 68k 1.97 1.95 (-1.0%) 1.91 (-3.0%) 2.25 (+14.2%)
+> ptx 71k 4.20 4.49 (+6.9%) 4.45 (+6.0%) 5.11 (+21.7%)
+> tail 72k 3.44 3.62 (+5.2%) 3.68 (+7.0%) 4.18 (+21.5%) Average +4.0% +4.0% +20.7%
+
+time. However, across ≈ 30,000 SV-Comp benchmarks enabling the enhanced synchronization features increased total runtime by ≈ 2%, which is negligible. We also compare our implementation with other static analyzers. We gath-ered 90 small benchmarks, 20–70 lines of code each, testing the correct handling of each of our four features: 28 pthread once , 26 barriers, 18 creationLockset, and 18 descendantLockset tests. Each file contains one focused test annotated with the expected ground truth and sometimes motivated by a real-world use case. Our main goal is to determine whether analyzers can correctly certify the absence of data races in the presence of these features. A false positive is an unexpected warning; avoiding them is crucial for the acceptance of static analyzers in practice. Conversely, a false negative is a missed race; even one compromises soundness . We encode the desired behavior as SV-Comp verdicts. We compared our implementation with CPAChecker [1], Dartagnan [17], 
+
+UGemcutter [13], ESBMC-kind [7], and RacerF [5]. We also wanted to check whether soundness concerns about [19] carry over to the implementation, but the code is unavailable and the authors did not respond to inquiries. Table 3 summarizes the experiment, detailed in Appendix G. The benchmark set reveals no false positives or false negatives in our implementation. Since our implementation builds on abstract interpretation, it may produce false positives on other programs with the considered features. All tools treat barriers in a sound way (which can be trivially achieved by not providing specific handling), they however do not exploit the infor-mation completely to reduce false positives. Dartagnan and UGemcutter 
+
+avoid false negatives but return ERROR and UNKNOWN , respectively, when barri-ers or pthread once are present. For pthread once , CPAChecker , RacerF ,and ESBMC-kind miss races, but do not produce false positives except for 
+
+RacerF . All tools miss races in the creationLockset and descendantLockset categories, demonstrating unsound behavior. Dartagnan , ESBMC-kind , and 
+
+UGemcutter produce no false positives. We hope contributing these tests to 
+
+Sv-Comp will encourage tools to support these features and spur competition. 18 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Table 3. Capability of static analyzers to establish data-race freedom in the presence of enhanced synchronization features. The table reports the number of false negatives ( - , unsound) and false-positive race warnings ( + ) for each tool.                                         
+
+> Tool pthread once barrier wait creationLockset descendantLockset
+> -/+-/+-/+-/+
+> Goblint (this work) 0 / 0 0 / 0 0 / 0 0 / 0
+> CPAChecker 9 / 0 0 / 12 2 / 1 2 / 0
+> Dartagnan 0 / 0 0 / 0 3 / 0 3 / 0
+> Ultimate Gemcutter 0 / 0 0 / 0 2 / 0 2 / 0
+> ESBMC-kind 6 / 0 0 / 4 5 / 0 3 / 0
+> RacerF 3 / 7 0 / 7 1 / 3 2 / 3
+
+## 8 Related Work 
+
+Local traces and digests were proposed in a series of papers on thread-modular value analyses [24, 25, 27, 28]. Recent work [26] re-uses them for race detection. We generalize both to cover more synchronization mechanisms, and show that || ?
+
+can check whether two actions may run concurrently, which we use for barriers. Terauchi [37] presents an approach for framing race-freedom of programs as a typing problem, which in turn is solved using rational linear programming. It covers classical lock-based synchronization and mechanisms rarely supported by static analyses, including signaling, semaphores, and read-write locks. However, the approach differs from ours both in the used techniques, type-checking rather than abstract interpretation, and in the considered synchronization mechanisms. 
+
+Barriers. Barriers have been widely studied [14, 15, 21, 22], including analyses of OpenMP-style barriers [18, 35, 36]. In OpenMP, all threads in a team share the same code and must arrive at the syntactically same barrier, so code before a barrier cannot run in parallel with code after it. This does not carry over to 
+
+Pthreads : different syntactic calls to wait may belong together, and the capac-ity of a barrier need not equal the number of running threads. Here, we focus on work on Pthreads -style barriers. Mittermayr and Blieberger [21] extend the use of Kronecker algebra from the static analysis of semaphores to barriers. Kokologiannakis and Vafeiadis [14] speed up stateless model checking by merg-ing interleavings that differ only in barrier-arrival order. There, it is required that the initial capacity of a barrier is an upper bound to the number of wait 
+
+calls that happen in parallel. The analysis is justified w.r.t. a execution graph semantics. Murthy et al. [22] verify (using SPIN) a distributed phaser, a synchro-nization construct similar to barriers, but do not analyze code using it. Le et al. [15] propose a separation-logic using bounded partial permissions to show that participating threads execute in lockstep phases separated by barriers, thereby excluding races across phases. Their approach and others [9] rely on user anno-tations; ours is fully automatic. Jeremiassen and Eggers [10] split executions into barrier-delimited phases to determine which sections cannot run concurrently, aiming to reduce compiler-introduced false sharing and cache misses, while Das et al. [6] do so to reduce the instrumentation overhead of dynamic approaches. Static Data Race Detection Off The Beaten Path 19 
+
+Feature pthread once . For pthread once , missing support has been noted as a limitation [16, 30]; to our knowledge, ours is the first analysis beyond syntactic checks [32], both for race detection or static analysis more broadly. 
+
+Mutexes and Creation Orders. In static analysis, research on the patterns from Section 5 is sparse. To our knowledge, only Lu et al. [19] explicitly use it to ex-clude races, via Segmented Thread-Sensitive Control Flow Graph s. This analysis is not justified w.r.t. a concrete semantics and is unsound on several litmus tests. They also describe mutexes held throughout descendant-thread execution, but give no analysis to detect this pattern; to our knowledge, ours is the first. Dy-namic race-prediction techniques [8, 12, 31, 33] reason about ordering constraints induced by locks and other dependencies to determine which re-orderings of an observed execution are possible. This resembles our use of digests as synchroniza-tion histories to rule out parallel accesses, but the analysis problem differs sub-stantially. Predictive analyses start from a single execution and seek to weaken its observed ordering without admitting infeasible re-orderings; our sound static analysis overapproximates all executions and must warn unless it can establish that the relevant accesses are ordered in every execution, not just those aris-ing from re-orderings. The descendant-lockset construction establishes the same must-happen-before relationship that CP/WCP-style rules derive from lock syn-chronization — if a thread is known to acquire a specific mutex before another thread (in our case because the first thread is statically known to be an ancestor of the second and to hold the mutex when the descendant is created), then the release by the first thread must precede the acquire by the second thread. Un-like predictive analyses, which reason over a single trace, our analysis establishes this ordering soundly across all executions. Sulzmann and Thiemann [34] extend dynamic lockset reasoning with cross-thread critical sections, in which an event may be protected by an acquire–release pair executed by another thread when it must occur between them. This captures the same pattern as our creation-Locksets : a mutex held by an ancestor throughout a descendant’s execution can protect accesses in the descendant, although it never acquires the mutex. Their analysis operates on observed executions and derives cross-thread critical sec-tions from must-happen-before information; our contribution is a sound static abstraction establishing this protection across all executions using creation, join, thread-id, and lock-history information. 
+
+## 9 Conclusion and Future Work 
+
+Sound static race detection comes with strong guarantees; reducing false posi-tives is crucial for usability. We built on digests, a framework refining thread-modular abstract interpretation, by distinguishing program points according to thread histories. While previous work cast existing techniques as digests to jus-tify their soundness, we present novel digests for several interesting concurrency primitives that have received little to no attention in sound static race detec-tion. Future work may apply our techniques to other concurrency bugs, such as deadlocks and termination. Bibliography 
+
+[1] Baier, D., Beyer, D., Chien, P., Jankola, M., Kettl, M., Lee, N., Lemberger, T., Rosenfeld, M.L., Spiessl, M., Wachowitz, H., Wendler, P.: Cpachecker 2.3 with strategy selection - (competition contribution). In: Finkbeiner, B., Kov´ acs, L. (eds.) Tools and Algorithms for the Construction and Anal-ysis of Systems - 30th International Conference, TACAS 2024, Held as Part of the European Joint Conferences on Theory and Practice of Soft-ware, ETAPS 2024, Luxembourg City, Luxembourg, April 6-11, 2024, Proceedings, Part III, Lecture Notes in Computer Science, vol. 14572, pp. 359–364, Springer (2024), doi : 10.1007/978-3-031-57256-2_21 , URL 
+
+https://doi.org/10.1007/978-3-031-57256-2_21 
+
+[2] Butenhof, D.R.: Programming with POSIX threads. Addison-Wesley Pro-fessional (1993) [3] Christakis, M., Bird, C.: What developers want and need from program analysis: an empirical study. In: Lo, D., Apel, S., Khurshid, S. (eds.) Proceedings of the 31st IEEE/ACM International Conference on Auto-mated Software Engineering, ASE 2016, Singapore, September 3-7, 2016, pp. 332–343, ACM (2016), doi : 10.1145/2970276.2970347 , URL https: //doi.org/10.1145/2970276.2970347 
+
+[4] Cousot, P., Cousot, R.: Abstract interpretation: A unified lattice model for static analysis of programs by construction or approximation of fixpoints. In: POPL, pp. 238–252, ACM (1977), doi : 10.1145/512950.512973 
+
+[5] Dac´ ık, T., Vojnar, T.: Racerf: Lightweight static data race detection for C code (experience paper). In: Aldrich, J., Silva, A. (eds.) 39th European Con-ference on Object-Oriented Programming, ECOOP 2025, Bergen, Norway, June 30 - July 2, 2025, LIPIcs, vol. 333, pp. 37:1–37:19, Schloss Dagstuhl - Leibniz-Zentrum f¨ ur Informatik (2025), doi : 10.4230/LIPICS.ECOOP. 2025.37 , URL https://doi.org/10.4230/LIPIcs.ECOOP.2025.37 
+
+[6] Das, M.M., Southern, G., Renau, J.: Section-based program analysis to reduce overhead of detecting unsynchronized thread communication. ACM Trans. Archit. Code Optim. 12 (2), 23:23:1–23:23:26 (2015), doi : 10.1145/ 2766451 , URL https://doi.org/10.1145/2766451 
+
+[7] Gadelha, M.Y.R., Ismail, H.I., Cordeiro, L.C.: Handling loops in bounded model checking of C programs via k-induction. Int. J. Softw. Tools Tech-nol. Transf. 19 (1), 97–114 (2017), doi : 10.1007/S10009-015-0407-9 , URL 
+
+https://doi.org/10.1007/s10009-015-0407-9 
+
+[8] Gen¸ c, K., Roemer, J., Xu, Y., Bond, M.D.: Dependence-aware, unbounded sound predictive race detection. Proceedings of the ACM on Program-ming Languages 3(OOPSLA), 1–30 (10 2019), doi : 10.1145/3360605 , URL 
+
+https://doi.org/10.1145/3360605 
+
+[9] Hobor, A., Gherghina, C.: Barriers in concurrent separation logic: Now with tool support! Log. Methods Comput. Sci. 8(2) (2012), doi : 10.2168/ LMCS-8(2:2)2012 Static Data Race Detection Off The Beaten Path 21 
+
+[10] Jeremiassen, T.E., Eggers, S.J.: Static analysis of barrier synchronization in explicitly parallel programs. In: Cosnard, M., Gao, G.R., Silberman, G.M. (eds.) Parallel Architectures and Compilation Techniques, Proceedings of the IFIP WG10.3 Working Conference on Parallel Architectures and Com-pilation Techniques, PACT’94, Montr´ eal, Canada, 24-26 August, 1994, IFIP Transactions, vol. A-50, pp. 171–180, North-Holland (1994) [11] Johnson, B., Song, Y., Murphy-Hill, E.R., Bowdidge, R.W.: Why don’t software developers use static analysis tools to find bugs? In: Notkin, D., Cheng, B.H.C., Pohl, K. (eds.) 35th International Conference on Software Engineering, ICSE ’13, San Francisco, CA, USA, May 18-26, 2013, pp. 672– 681, IEEE Computer Society (2013), doi : 10.1109/ICSE.2013.6606613 ,URL https://doi.org/10.1109/ICSE.2013.6606613 
+
+[12] Kini, D., Mathur, U., Viswanathan, M.: Dynamic race prediction in lin-ear time. ACM SIGPLAN Notices 52 (6), 157–170 (6 2017), doi : 10.1145/ 3140587.3062374 , URL https://doi.org/10.1145/3140587.3062374 
+
+[13] Klumpp, D., Dietsch, D., Heizmann, M., Sch¨ ussele, F., Ebbinghaus, M., Farzan, A., Podelski, A.: Ultimate gemcutter and the axes of generalization - (competition contribution). In: Fisman, D., Rosu, G. (eds.) Tools and Al-gorithms for the Construction and Analysis of Systems - 28th International Conference, TACAS 2022, Held as Part of the European Joint Conferences on Theory and Practice of Software, ETAPS 2022, Munich, Germany, April 2-7, 2022, Proceedings, Part II, Lecture Notes in Computer Science, vol. 13244, pp. 479–483, Springer (2022), doi : 10.1007/978-3-030-99527-0_ 35 , URL https://doi.org/10.1007/978-3-030-99527-0_35 
+
+[14] Kokologiannakis, M., Vafeiadis, V.: BAM: Efficient Model Checking for Bar-riers. In: Echihabi, K., Meyer, R. (eds.) Networked Systems, vol. 12754, pp. 223–239, Springer International Publishing, Cham (2021), ISBN 978-3-030-91013-6 978-3-030-91014-3, doi : 10.1007/978-3-030-91014-3_16 ,URL https://link.springer.com/10.1007/978-3-030-91014-3_16 , se-ries Title: Lecture Notes in Computer Science [15] Le, D.K., Chin, W.N., Teo, Y.M.: Verification of Static and Dynamic Barrier Synchronization Using Bounded Permissions. In: Hutchison, D., Kanade, T., Kittler, J., Kleinberg, J.M., Mattern, F., Mitchell, J.C., Naor, M., Nier-strasz, O., Pandu Rangan, C., Steffen, B., Sudan, M., Terzopoulos, D., Ty-gar, D., Vardi, M.Y., Weikum, G., Groves, L., Sun, J. (eds.) Formal Methods and Software Engineering, vol. 8144, pp. 231–248, Springer Berlin Heidel-berg, Berlin, Heidelberg (2013), ISBN 978-3-642-41201-1 978-3-642-41202-8, doi : 10.1007/978-3-642-41202-8_16 , URL http://link.springer. com/10.1007/978-3-642-41202-8_16 , series Title: Lecture Notes in Com-puter Science [16] Le, Q.L., Raad, A., Villard, J., Berdine, J., Dreyer, D., O’Hearn, P.W.: Finding real bugs in big programs with incorrectness logic. Proc. ACM Program. Lang. 6(OOPSLA1), 1–27 (2022), doi : 10.1145/3527325 
+
+[17] de Le´ on, H.P., Furbach, F., Heljanko, K., Meyer, R.: Dartagnan: Bounded model checking for weak memory models (competition contribution). In: Biere, A., Parker, D. (eds.) Tools and Algorithms for the Construction 22 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+and Analysis of Systems - 26th International Conference, TACAS 2020, Held as Part of the European Joint Conferences on Theory and Practice of Software, ETAPS 2020, Dublin, Ireland, April 25-30, 2020, Proceed-ings, Part II, Lecture Notes in Computer Science, vol. 12079, pp. 378– 382, Springer (2020), doi : 10.1007/978-3-030-45237-7_24 , URL https: //doi.org/10.1007/978-3-030-45237-7_24 
+
+[18] Lin, Y.: Static nonconcurrency analysis of OpenMP programs. In: M¨ uller, M.S., Chapman, B.M., de Supinski, B.R., Malony, A.D., Voss, M. (eds.) OpenMP Shared Memory Parallel Programming - International Workshops, IWOMP 2005 and IWOMP 2006, Eugene, OR, USA, June 1-4, 2005, Reims, France, June 12-15, 2006. Proceedings, Lecture Notes in Computer Science, vol. 4315, pp. 36–50, Springer (2005), doi : 10.1007/978-3-540-68555-5_4 
+
+[19] Lu, F., Wang, X., Zeng, Q., Yuan, G., Bao, Y.: Segment-based may-happen-in-parallel analysis for c programs. Concurrency and Computation: Practice and Experience 37 (21-22), e70203 (2025), doi : 10.1002/cpe.70203 
+
+[20] Mauborgne, L., Rival, X.: Trace partitioning in abstract interpretation based static analyzers. In: Sagiv, M. (ed.) Programming Languages and Systems, pp. 5–20, Springer Berlin Heidelberg, Berlin, Heidelberg (2005), ISBN 978-3-540-31987-0 [21] Mittermayr, R., Blieberger, J.: Kronecker Algebra for Static Analysis of Barriers in Ada. In: Bertogna, M., Pinho, L.M., Qui˜ nones, E. (eds.) Re-liable Software Technologies — Ada-Europe 2016, vol. 9695, pp. 145– 159, Springer International Publishing, Cham (2016), ISBN 978-3-319-39082-6 978-3-319-39083-3, doi : 10.1007/978-3-319-39083-3_10 , URL 
+
+http://link.springer.com/10.1007/978-3-319-39083-3_10 , series Ti-tle: Lecture Notes in Computer Science [22] Murthy, K., Paul, S.R., Meel, K.S., Cogumbreiro, T., Mellor-Crummey, J.: Design and Verification of Distributed Phasers. In: Dutot, P.F., Trys-tram, D. (eds.) Euro-Par 2016: Parallel Processing, vol. 9833, pp. 405– 418, Springer International Publishing, Cham (2016), ISBN 978-3-319-43658-6 978-3-319-43659-3, doi : 10.1007/978-3-319-43659-3_30 , URL 
+
+http://link.springer.com/10.1007/978-3-319-43659-3_30 , series Ti-tle: Lecture Notes in Computer Science [23] Saan, S., Kocal, A.R., Petter, M., Holter, K., Erhard, J., Schwarz, M., Vojdani, V., Seidl, H.: Goblint: A portfolio for mixed flow-sensitive ab-stract interpretation - (competition contribution). In: Junges, S., Katz, G. (eds.) Tools and Algorithms for the Construction and Analysis of Systems - 32nd International Conference, TACAS 2026, Held as Part of the International Joint Conferences on Theory and Practice of Software, ETAPS 2026, Turin, Italy, April 11-16, 2026, Proceedings, Part II, Lec-ture Notes in Computer Science, vol. 16506, pp. 516–522, Springer (2026), 
+
+doi : 10.1007/978-3-032-22749-2_26 , URL https://doi.org/10.1007/ 978-3-032-22749-2_26 
+
+[24] Schwarz, M.: Thread-Modular Abstract Interpretation: The Local Perspec-tive. Ph.D. thesis, Technical University of Munich (2025), URL https: //d-nb.info/137113345X/34 Static Data Race Detection Off The Beaten Path 23 
+
+[25] Schwarz, M., Erhard, J.: The digest framework: concurrency-sensitivity for abstract interpretation. International Journal on Software Tools for Technology Transfer (2024), ISSN 1433-2787, doi : 10.1007/ s10009-024-00773-y 
+
+[26] Schwarz, M., Erhard, J.: Data race detection by digest-driven abstract interpretation. In: Chen, Y., Jensen, T.P., Leng´ al, O. (eds.) Verification, Model Checking, and Abstract Interpretation - 27th International Con-ference, VMCAI 2026, Rennes, France, January 12-13, 2026, Proceed-ings, pp. 309–334, Lecture Notes in Computer Science, Springer (2026), 
+
+doi : 10.1007/978-3-032-15700-3_15 , URL https://doi.org/10.1007/ 978-3-032-15700-3_15 
+
+[27] Schwarz, M., Saan, S., Seidl, H., Apinis, K., Erhard, J., Vojdani, V.: Im-proving thread-modular abstract interpretation. In: Dragoi, C., Mukherjee, S., Namjoshi, K.S. (eds.) Static Analysis - 28th International Symposium, SAS 2021, Chicago, IL, USA, October 17-19, 2021, Proceedings, Lecture Notes in Computer Science, vol. 12913, pp. 359–383, Springer (2021), doi :
+
+10.1007/978-3-030-88806-0_18 
+
+[28] Schwarz, M., Saan, S., Seidl, H., Erhard, J., Vojdani, V.: Clustered re-lational thread-modular abstract interpretation with local traces. In: Eu-ropean Symposium on Programming, pp. 28–58, Springer (2023), doi :
+
+10.1007/978-3-031-30044-8_2 
+
+[29] Seidl, H., Vojdani, V., Erhard, J., Schwarz, M.: Mixed flow-sensitive static analysis: Engineering modularity. In: Sampaio, A., Stoelinga, M. (eds.) For-mal Methods - 27th International Symposium, FM 2026, Tokyo, Japan, May 18-22, 2026, Proceedings, Part II, Lecture Notes in Computer Science, vol. 16557, pp. 446–470, Springer (2026), doi : 10.1007/978-3-032-26220-2_ 22 , URL https://doi.org/10.1007/978-3-032-26220-2_22 
+
+[30] Siegel, S.F., Zheng, M., Luo, Z., Zirkel, T.K., Marianiello, A.V., Edenhofner, J.G., Dwyer, M.B., Rogers, M.S.: CIVL: the concurrency intermediate ver-ification language. In: Kern, J., Vetter, J.S. (eds.) Proceedings of the Inter-national Conference for High Performance Computing, Networking, Storage and Analysis, SC 2015, Austin, TX, USA, November 15-20, 2015, pp. 61:1– 61:12, ACM (2015), doi : 10.1145/2807591.2807635 
+
+[31] Smaragdakis, Y., Evans, J., Sadowski, C., Yi, J., Flanagan, C.: Sound predictive race detection in polynomial time. ACM SIGPLAN Notices 
+
+47 (1), 387–400 (1 2012), doi : 10.1145/2103621.2103702 , URL https: //doi.org/10.1145/2103621.2103702 
+
+[32] SonarSource SA: SonarSource rule RSPEC-5488 (2024), URL https:// rules.sonarsource.com/c/RSPEC-5488/ 
+
+[33] Sulzmann, M., Stadtm¨ uller, K.: Efficient, near complete, and often sound hybrid dynamic data race prediction. In: Proceedings of the 17th Interna-tional Conference on Managed Programming Languages and Runtimes, p. 30–51, MPLR ’20, Association for Computing Machinery, New York, NY, USA (2020), ISBN 9781450388535, doi : 10.1145/3426182.3426185 , URL 
+
+https://doi.org/10.1145/3426182.3426185 24 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+[34] Sulzmann, M., Thiemann, P.: Cross-thread critical sections and efficient dynamic race prediction methods (2023), URL https://arxiv.org/abs/ 2307.09855 
+
+[35] Swain, B., Huang, J.: Towards incremental static race detection in OpenMP programs. In: Laguna, I., Rubio-Gonz´ alez, C. (eds.) 2nd IEEE/ACM Inter-national Workshop on Software Correctness for HPC Applications, COR-RECTNESS@SC 2018, Dallas, TX, USA, November 12, 2018, pp. 33–41, IEEE (2018), doi : 10.1109/CORRECTNESS.2018.00009 
+
+[36] Swain, B., Li, Y., Liu, P., Laguna, I., Georgakoudis, G., Huang, J.: Om-pracer: a scalable and precise static race detector for OpenMP programs. In: Cuicchi, C., Qualters, I., Kramer, W.T. (eds.) Proceedings of the Inter-national Conference for High Performance Computing, Networking, Storage and Analysis, SC 2020, Virtual Event / Atlanta, Georgia, USA, November 9-19, 2020, p. 54, IEEE/ACM (2020), doi : 10.1109/SC41405.2020.00058 
+
+[37] Terauchi, T.: Checking race freedom via linear programming. In: Gupta, R., Amarasinghe, S.P. (eds.) Proceedings of the ACM SIGPLAN 2008 Con-ference on Programming Language Design and Implementation, Tucson, AZ, USA, June 7-13, 2008, pp. 1–10, ACM (2008), doi : 10.1145/1375581. 1375583 Static Data Race Detection Off The Beaten Path 25 
+
+## A Requirements on || ?
+
+> e0,e 1
+
+Formally, we demand that a predicate || ? 
+
+> e0,e 1
+
+satisfies for all digests A0, A 1:
+
+∃t0, t 1, t ′ ∈ T :
+
+t0 ends in u0 ∧ αA t0 = A0 ∧ t1 ends in u1 ∧ αA t1 = A1∧
+
+None ̸ = J(u0, act 0, u ′
+
+> 0
+
+)K(t0, J(u1, act 1, u ′
+
+> 1
+
+)K(t1, t ′)) ∧
+
+None ̸ = J(u1, act 1, u ′
+
+> 1
+
+)K(t1, J(u0, act 0, u ′
+
+> 0
+
+)K(t0, t ′)) = ⇒
+
+A0 || ?(u0,act 0,v 0),(u1,act 1,v 1) A1 = ⊤
+
+The definition in terms of bi-directional digest compatibility is then given by 
+
+A0 || ?(u0,act 0,v 0),(u1,act 1,v 1) A1 =
+
+
+
+false if ¬∃ A′ : None ̸ = Ju0, act 0K♯ 
+
+> A
+
+(A0, Ju1, act 1K♯ 
+
+> A
+
+(A1, A ′)) ∧
+
+None ̸ = Ju0, act 0K♯ 
+
+> A
+
+(A1, Ju1, act 1K♯ 
+
+> A
+
+(A0, A ′)) 
+
+⊤ otherwise The soundness of this definition follows directly from the admissibility of the digest. 
+
+## B Proofs for Propositions 1 and 2 
+
+Recall Proposition 1 from Section 2.1: 
+
+Proposition 5. Two accesses to a global variable g are racy in the intuitive sense if and only if at least one is a write and traces t0 and t1 ending in the respective CFG predecessors exist, s.t. they are bidirectionally trace compatible. Proof. More formally, in line with [26], define two accesses to be racy in the intuitive sense if they access the same memory, at least one is a write, and there exists a local trace in which they are unordered after disregarding the order induced by the accesses themselves. The proof is then a simplification of the proof of [26, Theorem 1], which uses atomicity mutexes to order accesses to globals. The existence of observing actions of arity n does not complicate the proof here, as it does not consider the reason some actions are ordered w.r.t. each other. ⊓⊔
+
+Recall Proposition 2 from Section 2.2: 
+
+Proposition 6. Refining a sound abstract interpretation of a concurrent pro-gram with an admissible digest yields a sound abstract interpretation. Proof. First, a version of the concrete semantics where the unknowns are split according to the digests is constructed. This refined concrete semantics is shown equivalent to the original concrete semantics, which is shown by giving a bijec-tion between least solutions of either of the constraint systems. The property 26 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+is then established by fixpoint induction performing a case distinction based on the considered constraint. The proof is a (slight) generalization of the proof of Theorem 4 of Section 2.3 of the PhD thesis of Schwarz [24], to account for the higher arity of observing actions but no additional complications arise here. Then, from the soundness of the base analysis, the soundness of the refined anal-ysis follows by checking that by concretizing a solution of the abstract refined analysis one obtains a solution of the refined concrete constraint system. This is done by verifying this property for each constraint. ⊓⊔
+
+Technically, the admissibility of the lockset digest would also need to be re-established for the additional considered actions, but as they return the digest unmodified, and pthread once and barriers do not affect sets of held locks, this is straightforward. 
+
+## C Details on & Extended Support for pthread once 
+
+Recall proposition Proposition 3 from Section 3. 
+
+Proposition 7. The digest given in Section 3 is admissible, and its predicate 
+
+|| ? is sound. Proof. To verify admissibility, i.e., conditions (2) to (5), we first need to define 
+
+αA t0 = ( A0, C 0)where A0 is the set of control variables o for which startO (o) appears along the ego-lane of t0, but endO (o) does not. C0, on the other hand, is the set of control variables o for which endO (o) is backwards reachable by following program order edges →po , once order edges →oi , and thread creation edges →tc in reverse. This corresponds to those endO (o) actions that are either along the ego-lane of t0, or along the ego-lane of one of its parents up to the point where the parent created the ego thread, or that the current thread has learned about by communicating through other control variables. This choice may seem complicated when con-trasted with just considering all endO (o) actions that appear in the local trace, but is deliberate: in this way, information about control variables is not propa-gated along other pairs of observing/observable actions, improving performance of the analysis. We can then check conditions (2) to (5) by induction on the length of the trace. The definition of init ♯ 
+
+> A
+
+= {(∅, ∅)} in Figure 6 coincides with requirement (2), as in all initial traces, no startO (o) or endO (o) actions have been executed. We need to verify requirement (3) for all edges, which we recall is: 
+
+map αA (JeK(t0, · · · , t k−1)) ˆ ⊑ Ju, act K♯ 
+
+> A
+
+(αA t0, · · · , α A tk−1)where αA is mapped over the trace option returned by JeK(t0, · · · , t k−1), and ˆ⊑ is the partial order on A opt with None as bottom and all other elements incomparable. Static Data Race Detection Off The Beaten Path 27 
+
+Let us first consider an edge e ≡ (u, Pos (ran (o)) , v ) in the trace. We have: 
+
+J , Pos (ran (o)) K♯ 
+
+> A
+
+(A, C ) = 
+
+(
+
+None if o̸ ∈ C
+
+Some (A, C ) otherwise Consider a trace t0:
+
+– If JeK t0 = None , we have 
+
+map αA (JeK t0) = map αA None = None ˆ⊑ Ju, Pos (ran (o)) K♯ 
+
+> A
+
+(αA t0)which holds as None is the bottom element of the partial order ˆ ⊑.
+
+– Consider now the case where JeK t0 = Some t1 and let αA t0 = ( A0, C 0). 
+
+• Consider the case where o̸ ∈ C0. Then, endO (o) does not appear in t0: By construction, startO (o) appears in t0 as the guard can syntactically only appear between startO (o) and endO (o). All actions startO (o) and endO (o)as well as actions in between are totally ordered by →o and →po . Thus, if endO (o) appears anywhere in t0 it is backwards reachable by following program order edges →po , once order edges →oi , and thread creation edges →tc . As endO (o) does not appear in t0, the code associated with o
+
+has not been executed, and thus JeK t0 = None , which is a contradiction. 
+
+• It remains to consider the case where o ∈ C0. Appending an action 
+
+Pos (ran (o)) to the trace does not change the set of active or completed control variables, and thus αA t1 = ( A0, C 0). Thus, we have: 
+
+map αA (JeK t0) = map αA (Some t1) = Some (A0, C 0)ˆ⊑ Some (A0, C 0) = Ju, Pos (ran (o)) K♯ 
+
+> A
+
+(αA t0)Thus, the claim follows. The proofs proceed analogously for e ≡ (u, Neg (ran (o)) , v ), as well as for edges not involving control variables. Next, consider an edge e ≡ (u, startO (o), v ). Since startO (o) observes either 
+
+initO (o) or endO (o), its concrete semantics has two arguments. Let αA ti =(Ai, C i) for i ∈ { 0, 1}. We have 
+
+J , startO (o)K♯ 
+
+> A
+
+(A0, C 0) ( A1, C 1) = 
+
+(
+
+Some (A0 ∪ { o}, C 0 ∪ C1) if o / ∈ A0,
+
+None otherwise .
+
+Again, if JeK(t0, t 1) = None , requirement (3) follows immediately because None 
+
+is the least element of ˆ ⊑. It therefore remains to consider JeK(t0, t 1) = Some t′.In this case, o / ∈ A0: otherwise, the ego-lane of t0 would contain an unmatched 
+
+startO (o). A further startO (o) on the same lane cannot be supplied with a prede-cessor in the once order. The observable action supplying the unmatched start has already been consumed, while every later endO (o) is ordered after the new start. Adding the required once-order edge would therefore either violate its uniqueness requirement or create a cycle with program order. Hence, the con-crete successor could not be a local trace, contradicting JeK(t0, t 1) = Some t′.28 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Appending the new action makes o active on the ego-lane and leaves the activity of every other control variable unchanged. Consequently, the active component of αA t′ is A0 ∪ { o}. Moreover, the new once-order edge makes every completed action that is backwards reachable in either input trace also backwards reachable in t′, and it introduces no other endO action. Thus, its completed component is 
+
+C0 ∪ C1. We obtain 
+
+map αA (JeK(t0, t 1)) = Some (A0 ∪ { o}, C 0 ∪ C1)ˆ⊑ Some (A0 ∪ { o}, C 0 ∪ C1) = J , startO (o)K♯ 
+
+> A
+
+(A0, C 0) ( A1, C 1).
+
+Consider now an edge e ≡ (u, endO (o), v ). This action is non-observing, and its digest semantics is 
+
+J , endO (o)K♯ 
+
+> A
+
+(A0, C 0) = Some (A0 \ { o}, C 0 ∪ { o}).
+
+If JeK(t0) = None , requirement (3) again follows from the minimality of None .Otherwise, let JeK(t0) = Some t′ and αA t0 = ( A0, C 0). Appending endO (o)closes the section for o on the ego-lane, while leaving all other active sections unchanged. Hence, the active component of αA t′ is A0\{ o}. The appended action is itself backwards reachable from the maximal element of t′, so o is completed; all previously completed control variables remain backwards reachable. Therefore, the completed component is C0 ∪ { o}, and 
+
+map αA (JeK(t0)) = Some (A0 \ { o}, C 0 ∪ { o})ˆ⊑ Some (A0 \ { o}, C 0 ∪ { o}) = J , endO (o)K♯ 
+
+> A
+
+(A0, C 0).
+
+This concludes the proof for requirement (3). We next verify requirement (4), i.e., 
+
+map αA (new t u u 1) ˆ ⊑ new ♯ 
+
+> A
+
+(αA t) u u 1
+
+for every trace t and all program points u, u 1. Let αA t = ( A0, C 0). By definition, 
+
+new ♯ 
+
+> A
+
+(A0, C 0) u u 1 = Some (∅, C 0).
+
+If new t u u 1 = None , the left-hand side of requirement (4) is None , so the claim follows from the minimality of None . Otherwise, let new t u u 1 = Some t′. The ego-lane of the newly created thread in t′ consists only of its initial configuration. In particular, it contains no unmatched startO (o) action, and the active compo-nent of αA t′ is therefore empty. The thread-creation edge makes exactly the part of the creating thread’s history available at the creation point backwards reachable from the new thread. Consequently, a endO (o) is backwards reachable in t′ if and only if it contributes o to C0. Thus, αA t′ = ( ∅, C 0), and we obtain 
+
+map αA (new t u u 1) = Some (∅, C 0)ˆ⊑ Some (∅, C 0) = new ♯ 
+
+> A
+
+(αA t) u u 1.Static Data Race Detection Off The Beaten Path 29 
+
+This proves requirement (3). Finally, requirement (5) demands that, for every digest ( A0, C 0), 
+
+Ju, x = create (u1)K♯ 
+
+> A
+
+(A0, C 0)̸ = None =⇒ new ♯ 
+
+> A
+
+(A0, C 0) u u 1̸ = None .
+
+This follows directly from the definition of new ♯
+
+> A
+
+: for every ( A0, C 0) and all program points u, u 1,
+
+new ♯ 
+
+> A
+
+(A0, C 0) u u 1 = Some (∅, C 0)̸ = None .
+
+Thus, the conclusion of the implication holds independently of its premise, which proves requirement (5) and concludes the proof of admissibility. For the proof of soundness of || ?, we observe that actions startO (o) and 
+
+endO (o) and the actions appearing in between in any local trace are totally ordered by →o and the program order →po . W.l.o.g., assume ( A ∩ (A′ ∪ C′)̸ = ∅)and that the considered access by thread with digest ( A, C ) is along an edge e.Consider t ∈ γA(A, C ) and t′ ∈ γA(A′, C ′). If o is in A and in A′, for both traces to belong to the same execution, either t is a subtrace of t′, or t′ is a subtrace of t, as endO (o) needs to occur before a second thread can execute startO (o). Thus, t and t′ cannot be bidirectionally trace-compatible. Now consider the case where o ∈ A ∩ C′. Then, in t′, there is an edge Neg (ran (o)), meaning the code associated with o was actually run inside of t′. For an access to occur with o ∈ A,
+
+Neg (ran (o)) needs to be contained in the ego-lane of t. As this holds for at most one thread in any execution, t and t′ can only be compatible if they coincide up to the execution of the access. Thus, t is a subtrace of t′, and JeK(t0, t 1) = None 
+
+and the traces are not bidirectionally compatible. ⊓⊔
+
+Beyond supporting pthread once for checking for data races, one can also in-crease the precision of an analysis by only reading those values that globals may have after the code inside pthread once has been executed. A digest to help analyze this feature (Figure 10) may then track three pieces of information in a tuple ( A, C, O ): 
+
+– Some set A of active control variables as in Section 3. 
+
+– Some set C of completed control variables, i.e., control variables for which the associated fragment has surely been run. Unlike in Section 3, this is not only the case if endO (o) was called by the ego thread or one of its parents, but also when the ego thread incorporates an observable action where the control variable is completed. 
+
+– Additionally, a map O tracking for each mutex a, for which of the control variables o the mutex a was unlocked while o was active. The interesting case is the right-hand side for acquiring a mutex a: In case the ego thread has observed that the mutex a was unlocked while some control variable 
+
+o was active, but the trace ending in the unlock of a has neither observed this nor is the control variable currently active, there must have been a later unlock of a, where the control variable was active. Thus, no two traces with such digests can be compatible. 30 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+A = 2 O × 2O × (S → 2O )
+
+init ♯ 
+
+> A
+
+= {(∅, ∅, {a 7 → ∅ | a ∈ S} )}
+
+new ♯ 
+
+> A
+
+(A, C, O ) u u 1 = Some (∅, C, O )
+
+J , Pos (ran (o)) K♯ 
+
+> A
+
+(A, C, O ) = (
+
+None if o̸ ∈ C
+
+Some (A, C, O ) otherwise 
+
+J , Neg (ran (o)) K♯ 
+
+> A
+
+(A, C, O ) = (
+
+None if o ∈ C
+
+Some (A, C, O ) otherwise 
+
+J , lock (a)K♯ 
+
+> A
+
+(A0, C 0, O 0) ( A1, C 1, O 1) = (
+
+None if O0 a̸ ⊆ (C1 ∪ A1)
+
+Some (A0, C 0 ∪ C1, O 0 ∪ O1) otherwise 
+
+J , unlock (a)K♯ 
+
+> A
+
+(A, C, O ) = Some (A, C, O ⊕ { a 7 → O a ∪ A})
+
+J , act K♯ 
+
+> A
+
+(A0, C 0, O 0) ( A1, C 1, O 1) = 
+
+Some (A0, C 0 ∪ C1, O 0 ∪ O1) (other observing) 
+
+J , act K♯ 
+
+> A
+
+(A, C, O ) = Some (A, C, O ) (other non-observing) 
+
+J , startO (o)K♯ 
+
+> A
+
+(A0, C 0, O 0) ( A1, C 1, O 1) = 
+
+(
+
+Some (A0 ∪ { o}, C 0 ∪ C1, O 0 ∪ O1) o̸ ∈ A0
+
+None otherwise 
+
+J , endO (o)K♯ 
+
+> A
+
+(A, C, O ) = Some (A \ { o}, C ∪ { o}, O )
+
+Fig. 10. Right-hand sides for expressing pthread once as a refinement, where ∪ on maps is defined as the point-wise union of the right-hand sides. 
+
+Example 7. Consider again the program in Figure 5, and an analysis associating values of globals with mutexes that are always held when the global is accessed, refined with the digests from Figure 10. At the later lock (mdev ) in both of the threads, the only reaching digests of the ego threads are ( ∅, {o}, {mdev 7 → { o}} ). Thus, only those unknowns associated with observable actions with a digest (A1, C 1, O 1) where o is either in A1 or C1 can be incorporated here. For all these unknowns, the value of g is known to not be null. Thus, the assertions can be shown in both threads. ⊓⊔
+
+## D Details on Barriers 
+
+We first remark on the difference between barriers and signals. 
+
+Remark 2. While the signalling mechanism of Pthreads at first glance seems similar to barriers of capacity one, the information that a call to signal wait(s) 
+
+has returned cannot help exclude data races. Pthreads allows for spurious wakeups, so such a call may return even though s has not been signalled. We next turn to the soundness of using this digest for excluding races. Recall that the barrier digest is built on a digest A1. We assume that A1 is admissible and that its predicate || ? 
+
+> A1
+
+is sound. Recall that in Section 2.2 we have established that 
+
+|| ? 
+
+> A1
+
+can be used to check whether arbitrary actions may-happen-in-parallel. We further assume that the base abstraction is insensitive to the newly introduced barrier record and check actions. That is, extending a trace by either action does not change its A1 abstraction, and the corresponding base right-hand sides are identity functions. As required for the generic thread IDs introduced in Section 2, Static Data Race Detection Off The Beaten Path 31 
+
+πtid is constant along each concrete thread and unique (q) implies that at most one concrete thread in an execution has projected ID q.Recall the following proposition from Section 4: 
+
+Proposition 8. Provided the digest A1 is admissible, and its predicate || ? 
+
+> A1
+
+is sound, the digest given in Section 4 is admissible, and its predicate || ? sound. Proof. Even though the definition of the predicate || ? appears in the right-hand side of the digests, the proof can proceed step-by-step, first showing admissibility and turning to the soundness of || ? later. Let αA1 be the abstraction function of the base digest. We define the abstraction function for the product digest by 
+
+αA t = ( αA1 t, R (t), O (t)) .
+
+Here, R(t) contains exactly those barriers b for which a barrier N record (b) action occurs on the ego-lane of t. For a projected thread ID q, the set O(t) q contains 
+
+b if t contains a barrier N record (b) action performed by a thread whose base digest at that action projects to q. Thus, R describes records of the ego thread, whereas O also includes records learned from incorporated traces. We verify requirements (2) to (5). For requirement (2), an initial trace contains no barrier action. Therefore, R(t) = 
+
+∅ and O(t) is the everywhere-empty map for every t ∈ init . Its base component belongs to init ♯ 
+
+> A1
+
+by admissibility of A1. Consequently, 
+
+{ αA t | t ∈ init } = { (A, ∅, ∅) | A ∈ init ♯ 
+
+> A1
+
+} = init ♯
+
+> A
+
+.
+
+We next verify requirement (3). As before, if a concrete right-hand side returns 
+
+None , the requirement follows immediately because None is the least element of ˆ ⊑. In the following cases, we may therefore assume that the concrete operation succeeds. First, let 
+
+e = ( u, barrier N record (b), v ), JeK(t0) = Some t′,
+
+and write αA t0 = ( A0, R 0, O 0). The record action is appended to the ego-lane. Barrier actions do not affect the base digest, so the first component remains A0.The new record adds b to R0. It is performed by the ego thread, whose projected ID is πtid A0, and therefore also adds b to the corresponding binding of O0. No other binding changes. Hence, 
+
+αA t′ =  A0, R 0 ∪ { b},O0 ⊕ { (πtid A0) 7 → (O0(πtid A0)) ∪ { b}} ,
+
+which is exactly J , barrier N record (b)K♯ 
+
+> A
+
+(A0, R 0, O 0). Now consider 
+
+e = ( u, barrier N check (b), v ), JeK(t0, . . . , t N −1) = Some t′,32 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+and let αA ti = ( Ai, R i, O i). Concrete success means that the N traces ending in the corresponding record action are distinct, mutually compatible, and can occur in parallel. Soundness of || ? 
+
+> A1
+
+therefore gives 
+
+Ai|| ? 
+
+> A1
+
+Aj = ⊤ for every i̸ = j. 
+
+It also implies the second check in the abstract right-hand side. To see this, fix 
+
+i̸ = j and suppose that πtid Ai is unique. Every barrier record in Oj (πtid Ai) was then performed by the unique ego thread represented by Ai. If such a record were not in Ri, tj would already contain a strict continuation of the ego-lane of ti. The two record actions supplied to the same barrier check could then not occur in parallel: combining the traces would either duplicate a barrier-order predecessor or create a causality cycle. This would contradict the assumed success of the concrete check. Therefore, 
+
+unique (πtid Ai) =⇒ Oj (πtid Ai) ⊆ Ri.
+
+Thus, the guard of the successful branch of the abstract right-hand side holds. The check action adds no barrier record to its ego-lane, so the resulting R
+
+component is R0. It incorporates all input traces, and hence a record is available in the result exactly when it is available in at least one input. Its observation map is consequently the pointwise union SN −1 
+
+> i=0
+
+Oi. Finally, the check does not alter the base digest of the ego thread. We conclude that 
+
+αA t′ = ( A0, R 0, 
+
+> N−1
+
+[
+
+> i=0
+
+Oi),
+
+which agrees with the successful branch of J , barrier N check (b)K♯
+
+> A
+
+.It remains to consider an edge e = ( u, act , v ) for any other n-ary action. Let 
+
+αA ti = ( Ai, R i, O i) and assume JeK(t0, . . . , t n−1) = Some t′. By requirement (3) for the base digest and the flat order on options, its abstract right-hand side returns precisely the base component A′ of t′:
+
+Ju, act K♯ 
+
+> A1
+
+(A0, . . . , A n−1) = Some A′.
+
+The action adds no barrier record to the ego-lane, so the second component remains R0. All records incorporated from the argument traces are captured by the pointwise union of their observation maps. Therefore, 
+
+αA t′ = ( A′, R 0,
+
+> n−1
+
+[
+
+> i=0
+
+Oi),
+
+exactly as returned by the product right-hand side. This proves requirement (3) in all cases. For requirement (4), let αA t = ( A0, R 0, O 0). If new t u u 1 = None , the claim follows from the minimality of None . Otherwise, let new t u u 1 = Some t′.Requirement (4) for the base digest yields 
+
+new ♯ 
+
+> A1
+
+A0 u u 1 = Some A′ with αA1 t′ = A′.Static Data Race Detection Off The Beaten Path 33 
+
+The new thread’s ego-lane initially contains no barrier record, so its R component is empty. Through the creation edge, it inherits all records known at the creation point, and hence its observation map is O0. It follows that 
+
+αA t′ = ( A′, ∅, O 0) = new ♯ 
+
+> A
+
+(A0, R 0, O 0) u u 1,
+
+establishing requirement (4). Finally, suppose the premise of requirement (5) holds: 
+
+Ju, x = create (u1)K♯ 
+
+> A
+
+(A0, R 0, O 0)̸ = None .
+
+By the definition of the product right-hand side, the corresponding base right-hand side is also different from None . Requirement (5) for A1 then gives 
+
+new ♯ 
+
+> A1
+
+A0 u u 1 = Some A′
+
+for some A′. By definition of the product operation, 
+
+new ♯ 
+
+> A
+
+(A0, R 0, O 0) u u 1 = Some (A′, ∅, O 0)̸ = None .
+
+This proves requirement (5), and hence the barrier digest is admissible. Let us now turn to the soundness of || ?: The first check is sound by soundness of || ? 
+
+> A1
+
+. We show that the second argument for ⊓ returning false implies that the traces are not bi-directionally compatible. W.l.o.g., assume ( unique (πtid A0)∧O1 (πtid A0)̸ ⊆
+
+R0) and that the considered access by thread with digest ( A0, R 0, O 0) is along an edge e. Consider t0 ∈ γA(A0, R 0, O 0) and t1 ∈ γA(A1, R 1, O 1). Then, trace t1
+
+has observed an action performed by the ego-thread of t0 that itself is not part of t0 yet. Thus, a super-trace of t0 containing the access and the observed action is a subtrace of t1. Thus, JeK(t0, t 1) = None and the claim follows. ⊓⊔
+
+## E Digests for Descendant Lockset 
+
+A digest helping with analyzing the pattern described in Section 5 tracks the following information in a triple (( A, S ), H, D ): 
+
+– A tuple ( A, S ) holding the value of the thread id digest A and the value of the lockset digest S
+
+– A map H, where each mutex m is mapped to the set of thread id s. This set includes only thread id s, in which m was locked. In Example 5, H holds the relevant information we need at the access to global in i1.
+
+– A map D, where we map each thread id i to a set of mutexes. If m is included in the set, the conditions 2 and 3 listed in section 5. We then define the race check as: (A0, S 0, H 0, D 0) || ? (A1, S 1, H 1, D 1) = let i0 = πtid A0 in let i1 = πtid A1 in 
+
+false if (( {i1} ∪ must anc i1) ∩ may create A0̸ = ∅ ∧ 
+
+(∃iH1 ∈ TID , s ∈ S : iH1 ∈ H1 s ∧ s ∈ D0 i1 ∧ i0 ∈ must anc iH1 )) ∨
+
+(( {i0} ∪ must anc i0) ∩ may create A1̸ = ∅ ∧ 
+
+(∃iH0 ∈ TID , s ∈ S : iH0 ∈ H0 s ∧ s ∈ D1 i0 ∧ i1 ∈ must anc iH0 )) 
+
+⊤ otherwise 34 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+A = AT ×S × (S → 2TID ) × (TID → 2S )
+
+new ♯ 
+
+> A
+
+(( A, S ), H, D ) u u 1 =(Some (( A′, S ′), H, {i 7 → S | i ∈ TID }) if new ♯  
+
+> AT×S
+
+(A, S ) u u 1 = Some (A′, S ′)
+
+None otherwise 
+
+init ♯ 
+
+> A
+
+= {(( A, S ), ∅, {i 7 → S | i ∈ TID }) | (A, S ) ∈ init ♯  
+
+> AT×S
+
+}
+
+Ju, create u0K♯ 
+
+> A
+
+(( A, S ), H, D ) = 
+
+let Some Anew = new ♯ 
+
+> AT
+
+A u u 0 in let iego = πtid A in let I∗ 
+
+> new
+
+= {i ∈ TID | πtid Anew ∈ ({i} ∪ must anc i)} in let D′ = D ⊕ { i∗ 
+
+> new
+
+7 → S ∩ D i ∗ 
+
+> new
+
+| i∗ 
+
+> new
+
+∈ I∗
+
+> new
+
+, i ego ∈ must anc i∗
+
+> new
+
+} in Some (( A′, S ), H, D ′)if Ju, create u0K♯ 
+
+> AT
+
+A = Some A′
+
+None otherwise 
+
+Ju, lock (a)K♯ 
+
+> A
+
+(( A0, S 0), H 0, D 0) (( A1, S 1), H 1, D 1) = (
+
+Some (( A0, S ′), H 0 ⊕ { a 7 → (H0 a) ∪ { πtid A0}} , D 0) if Ju, lock (a)K♯ 
+
+> AS
+
+S0 S1 = Some S′
+
+None otherwise 
+
+Ju, unlock (a)K♯ 
+
+> A
+
+(( A, S ), H, D ) = 
+
+let D′ = {i 7 → D i \ { a} | i ∈ TID } in (
+
+Some (( A, S ′), H, D ′) if Ju, unlock (a)K♯ 
+
+> AS
+
+S = Some S′
+
+None otherwise 
+
+J , act K♯ 
+
+> A
+
+((( A0, S 0), H 0, D 0), . . . , (( AN −1, S N −1), H N −1, D N −1)) = 
+
+
+
+Some (( A′, S ′), H 0, D 0) if J , act K♯  
+
+> AT×S
+
+(( A0, S 0), . . . , (AN −1, S N −1)) = 
+
+Some (A′, S ′)
+
+None otherwise (other) 
+
+Fig. 11. Descendant lockset digest, where ⊕ denotes updating a map. Missing bindings map to the empty set. Static Data Race Detection Off The Beaten Path 35 
+
+Example 8. Considering the program from Figure 8 again, the digests have the following interesting values at the accesses to global :
+
+– At the access in i1, the H component has value {m 7 → { main , i 1}} .
+
+– At the access in main , the D component has value {i1 7 → { m}, i 2 7 → { m}} .With these values and the may-race predicate given above, we can exclude the possibility of a data race. 
+
+Proposition 9. Provided the digest AT ×S is admissible, the digest given above is admissible and its definition for || ? is sound. Proof. For proof of admissibility, we inductively verify that the digest fulfills (2) to (5). Let αB be the abstraction function for AT ×S and define 
+
+αA t = ( αB t, H (t), D (t)) .
+
+The auxiliary components are defined inductively along the creation-extended ego lane of the local trace. For traces in init , H maps every mutex to ∅, while 
+
+D maps every thread ID to S. Executing lock (a) in a thread with projected ID 
+
+i adds i to H(a). A create action intersects D(i) with the current lockset for precisely the possible descendant IDs selected by I∗ 
+
+> new
+
+in Figure 11. Executing 
+
+unlock (a) removes a from every entry of D. Other actions leave both components unchanged. A new thread inherits H from its creator and starts with a map mapping all thread id s to S for D.For requirement (2), an initial trace contains no lock, unlock, or creation action. Hence, for every t ∈ init ,
+
+αA t = (( A, S ), ∅, {i 7 → S | i ∈ TID }) ∈ init ♯
+
+> A
+
+where ( A, S ) ∈ init ♯  
+
+> AT×S
+
+. The converse inclusion follows from requirement (2) for the base digest, proving equality with the displayed init ♯
+
+> A
+
+.We verify requirement (3) by cases. A concrete result None is below every abstract result, so only successful concrete operations require consideration. Let e ≡ (u, create u0, v ), JeK(t) = Some t′, and αA t = (( A, S ), H, D ). Base admissibility and flatness of the option order give 
+
+Ju, create u0K♯ 
+
+> AT
+
+A = Some A′, αB t′ = ( A′, S ).
+
+By requirement (5) for the thread-ID digest we have new ♯ 
+
+> AT
+
+A u u 0 = Some Anew 
+
+for some Anew . Thus, the pattern match defining Anew in the successful branch is total. By the definition of D, the new creation adds the current-lockset condition for exactly the IDs in the resulting I∗
+
+> new
+
+, so 
+
+D′ = D ⊕ { i 7 → S ∩ D(i) | i ∈ I∗
+
+> new
+
+, π tid A ∈ must anc i}.
+
+A create performs no lock, hence H is unchanged and αA t′ = (( A′, S ), H, D ′), coinciding with the result of the right-hand side. 36 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Next, consider J(u, lock (a), v )K(t0, t 1) = Some t′ and let αA tk = (( Ak, S k), H k, D k). The right-hand side of the base digest yield Ju, lock (a)K♯ 
+
+> AS
+
+S0 = Some S′ and leaves A0 unchanged. The action records that the ego thread, whose ID is πtid A0,has locked a; it does not modify D. Therefore, 
+
+αA t′ = (( A0, S ′), H 0 ⊕ { a 7 → H0(a) ∪ { πtid A0}} , D 0),
+
+agreeing with the result of the right-hand side. For a successful unlock operation, J(u, unlock (a), v )K(t) = Some t′ with αA t =(( A, S ), H, D ), base admissibility yields Ju, unlock (a)K♯ 
+
+> AS
+
+S = Some S′. This un-lock invalidates the uninterrupted-holding condition for a for every potential descendant ID, while changing no H entry. Thus, 
+
+αA t′ = (( A, S ′), H, {i 7 → D(i) \ { a} | i ∈ TID }),
+
+agreeing with the result of the right-hand side. For every other n-ary action, requirement (3) for the base digest and flatness give the exact successful base successor ( A′, S ′). Such an action changes neither auxiliary component by definition, so the product successor is (( A′, S ′), H 0, D 0), as specified by the “other” case in Figure 11. This proves requirement (3). For requirement (4), let αA t = (( A, S ), H, D ). It once again suffices to con-sider only the case where the edge succeeds in the concrete. For new t u u 1 =
+
+Some t′, base requirement (4) and flatness yield 
+
+new ♯  
+
+> AT×S
+
+(A, S ) u u 1 = Some (A′, S ′), αB t′ = ( A′, S ′).
+
+By definition, the child inherits H, has not itself established any creation con-straint, and therefore starts with the everywhere-S map. Hence, 
+
+αA t′ = (( A′, S ′), H, {i 7 → S | i ∈ TID }),
+
+which coincides with the definition of new ♯
+
+> A
+
+.Finally, if the premise of requirement (5) holds for (( A, S ), H, D ), by require-ments (3) and (5) makes new ♯  
+
+> AT×S
+
+(A, S ) u u 1 different from None . The definition of the product new-thread operation then returns Some (( A′, S ′), H, {i 7 → S | 
+
+i ∈ TID }) for the corresponding base result ( A′, S ′), proving requirement (5). Thus, the descendant-lockset digest is admissible. We now turn to the proof of soundness of || ?: W.l.o.g., assume the first disjunct of the false case holds. Consider two local traces t and t′ where t ∈
+
+γA(A0, S 0, H 0, D 0) and t′ ∈ γA(A1, S 1, H 1, D 1). Since ( {i1} ∪ must anc i1) ∩ may create A0̸ = ∅, t has observed at least one transitive creation of threads associated with i1—the thread id at the end of t′.As s ∈ D0 i1, all of those creations happened while s was in the lockset and none of the creations is followed by unlock (s) in i0.Since iH1 ∈ H1 s, t′ has observed lock (s) in iH1 . No matter which of the transitive creations in i0 described above resulted in the creation of the thread at the end of t′—this lock happens after that creation, as i0 ∈ must anc iH1 . The Static Data Race Detection Off The Beaten Path 37 
+
+lock must also happen after a succeeding unlock (s) following the creation in i0,since s is in the lockset at that creation. Since no such unlock is included in 
+
+t whereas the later lock is included in t′, compatibility can hold only if t is a subtrace of t′. Hence, the traces are not bidirectionally compatible. ⊓⊔
+
+## F Digests for Creation Locksets 
+
+We propose the digest in Figure 12 to analyze the conditions given at the end of Section 6. Such a digest is a triple (( A, S, J ), C, O ): 
+
+– A triple ( A, S, J ) representing the thread id and lockset digest introduced in Section 2.2, and the join digest by Schwarz and Erhard [25]. 
+
+– A map C mapping each thread id i to a set of mutexes, where m is included if conditions 2 and 3 are satisfied. 
+
+– A map O mapping each thread id i to a pair. In the digest of the ego thread, 
+
+O i stores the C component and the set of may-created thread id s of the most recently observed sub-trace belonging to a thread represented by i.Such an observation occurs when the ego thread locks a mutex after that thread unlocks it. We use O to compare the lockset at a program point with inter-threaded mutex protections of other threads. To determine if two program points with the digests explained above may race, we can evaluate the following predicate: (( A0, S 0, J 0), C 0, O 0) || ? (( A1, S 1, J 1), C 1, O 1) = 
+
+let i0 = πtid A0 in let i1 = πtid A1 in 
+
+false if (∃iO ∈ TID : iO̸ = i1 ∧ let (CO , I ′ 
+
+> O
+
+) = O1 iO in 
+
+CO i0 ∩ S1̸ = ∅ ∧ ({i0} ∪ must anc i0) ∩ I′
+
+> O
+
+̸ = ∅) ∨
+
+(∃iO ∈ TID : iO̸ = i0 ∧ let (CO , I ′ 
+
+> O
+
+) = O0 iO in 
+
+CO i1 ∩ S0̸ = ∅ ∧ ({i1} ∪ must anc i1) ∩ I′
+
+> O
+
+̸ = ∅)
+
+⊤ otherwise Consider the first disjunct for the false case. It checks whether it can be shown that the access of thread i1 must happen after the access of thread i0. Con-cretely, O1 iO = ( CO , I ′ 
+
+> O
+
+) means that i1 observed, through a lock it or one of its ancestors acquired, an action of a thread with thread id iO . The condition ({i0} ∪ must anc i0) ∩ I′
+
+> O
+
+̸ = ∅ establishes that this observation occurred after 
+
+iO had created either i0 or one of its mandatory ancestors. If CO i0 ∩ S1̸ = ∅
+
+there is some mutex, say m, that is held at the access by i1 and that was held throughout the execution of i0. Thus, we obtain that i0 or one of its mandatory ancestors must have been created before the access in i1 occurred and m was held throughout i0’s execution. As i0̸ = i1, for i1 to succeed in acquiring m, it must have been released, and thus i0 must have completed its execution before 
+
+i1’s access. The second, gray disjunct checks the symmetric situation. 38 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+A = AT ×S×J × (TID → 2S ) × (TID → (( TID → 2S ) × 2TID )) 
+
+new ♯ 
+
+> A
+
+(( A, S, J ), C, O ) u u 1 =
+
+let O′ = {i 7 → (∅, ∅) | i ∈ TID } in (Some (( A′, S ′, J ′), ∅, O ′) if new ♯  
+
+> AT×S×J
+
+(A, S, J ) u u 1 = Some (A′, S ′, J ′)
+
+None otherwise 
+
+init ♯ 
+
+> A
+
+= {(( A, S, J ), ∅, {i 7 → (∅, ∅) | i ∈ TID }) | (A, S, J ) ∈ init ♯  
+
+> AT×S×J
+
+}
+
+Ju, create u0K♯ 
+
+> A
+
+(( A, S, J ), C, O ) = 
+
+let Some Anew = new ♯ 
+
+> AT
+
+A u u 0 in let iego = πtid A in let I∗ 
+
+> new
+
+= {i ∈ TID | πtid Anew ∈ ({i} ∪ must anc i)} in let C′ = C ⊕ { i∗ 
+
+> new
+
+7 → S ∩ C i ∗ 
+
+> new
+
+| i∗ 
+
+> new
+
+∈ I∗
+
+> new
+
+, i ego ∈ must anc i∗
+
+> new
+
+} in Some (( A′, S, J ), C ′, O )if Ju, create u0K♯ 
+
+> AT
+
+A = Some A′
+
+None otherwise 
+
+Ju, lock (a)K♯ 
+
+> A
+
+(( A0, S 0, J 0), C 0, O 0) (( A1, S 1, J 1), C 1, O 1) = 
+
+let O′ = O0 ⊕ { πtid A1 7 → (C1, may create A1)}(
+
+Some (( A0, S ′, J 0), C 0, O ′) if Ju, lock (a)K♯ 
+
+> AS
+
+S0 = Some S′
+
+None otherwise 
+
+Ju, unlock (a)K♯ 
+
+> A
+
+(( A, S, J ), C, O ) = 
+
+let iego = πtid A in let Irunning = {i ∈ TID | ∃ icreated ∈ may create A : icreated ∈ { i} ∪ must anc i} \ J in let C′ = C ⊕ { irunning 7 → C i running \ { a} | irunning ∈ Irunning } in (
+
+Some (( A, S ′, J ), C ′, O ) if Ju, unlock (a)K♯ 
+
+> AS
+
+S = Some S′
+
+None otherwise 
+
+J , act K♯ 
+
+> A
+
+((( A0, S 0, J 0), C 0, O 0), . . . , (( AN −1, S N −1, J N −1), C N −1, O N −1)) = 
+
+
+
+Some (( A′, S ′, J ′), C 0, O 0) if J , act K♯  
+
+> AT×S×J
+
+(( A0, S 0, J 0), . . . , (AN −1, S N −1, J N −1)) = 
+
+Some (A′, S ′, J ′)
+
+None otherwise (other) 
+
+Fig. 12. Creation lockset digest, where ⊕ denotes updating a map and missing bindings map to S.Static Data Race Detection Off The Beaten Path 39 
+
+Example 9. Consider the program from Figure 9 again. At the access to g in i1,the O component of the digest is 
+
+{main 7 → ({work 7 → { m}, i 1 7 → ∅} , {i1, work })},
+
+where missing bindings of the outer map default to ( ∅, ∅) and missing bindings of the inner map default to S. Together with S = {m}, this suffices to rule out a data race with any program point having thread id work .
+
+Proposition 10. Provided the product digest AT ×S×J is admissible, the digest given above is admissible and its definition for || ? is sound. Proof. Let αB be the abstraction function of the base product digest. Define 
+
+αA t = ( αB t, C (t), O (t)) inductively along the creation-extended ego lane of t. Initially, C maps every thread id to S (represented by the empty finite map), and O maps every thread 
+
+id to ( ∅, ∅). A create intersects the entries of C selected by I∗ 
+
+> new
+
+with the current lockset. An unlock (a) removes a from the entries selected by Irunning . If a lock (a)observes a trace s ending in the matching unlock, it stores ( C(s), may create As)in the O entry for πtid As, where αB s = ( As, S s, J s). All other actions leave C
+
+and O unchanged. A new thread starts with the initial values of both maps. We verify (2) to (5). For requirement (2), an initial trace contains no creation, unlock, or observation. Hence 
+
+αAt = (( A, S, J ), ∅, {i 7 → (∅, ∅) | i ∈ TID })for some ( A, S, J ) ∈ init ♯  
+
+> AT×S×J
+
+. Conversely, every initial base digest is repre-sented by an initial trace by requirement (2) for the base digest. This proves equality with the definition of init ♯
+
+> A
+
+.For requirement (3), a concrete result None is below every abstract re-sult, so it remains to consider successful concrete operations. First let e =(u, create u0, v ), JeK(t) = Some t′, and 
+
+αAt = (( A, S, J ), C, O ).
+
+Base admissibility and flatness of the option order give 
+
+Ju, create u0K♯ 
+
+> AT
+
+A = Some A′, αB t′ = ( A′, S, J ).
+
+Admissibility and the componentwise definition of the base product make the match new ♯ 
+
+> AT
+
+A u u 0 = Some Anew total. Let I∗ 
+
+> new
+
+be the set induced by Anew 
+
+in the right-hand side and let 
+
+C′ = C ⊕ { i 7 → S ∩ C i | i ∈ I∗
+
+> new
+
+, π tid A ∈ must anc i}.
+
+Exactly these entries acquire the current creation constraint; the create performs no observation. Thus αAt′ = (( A′, S, J ), C ′, O ), which is the result of the abstract create transfer. 40 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Next suppose J(u, lock (a), v )K(t0, t 1) = Some t′, where t1 ends in the ob-served unlock (a), and write 
+
+αAtk = (( Ak, S k, J k), C k, O k) (k ∈ { 0, 1}).
+
+The componentwise base transfer and base admissibility yield Ju, lock (a)K♯ 
+
+> AS
+
+S0 =
+
+Some S′ and leave the ego thread’s A0 and J0 unchanged. The lock changes no creation constraint, and its mutex-order edge observes precisely t1. Therefore, with 
+
+O′ = O0 ⊕ { πtid A1 7 → (C1, may create A1)},
+
+we have αAt′ = (( A0, S ′, J 0), C 0, O ′), exactly as specified by the abstract lock transfer. For a successful unlock (a), let αAt = (( A, S, J ), C, O ). Base admissibility gives Ju, unlock (a)K♯ 
+
+> AS
+
+S = Some S′. The set 
+
+Irunning = {i ∈ TID | ∃ icreated ∈ may create A : icreated ∈ { i} ∪ must anc i} \ J
+
+contains exactly the possible descendants not known to have been joined. Un-locking a invalidates the uninterrupted-holding condition for those entries and performs no observation. Hence, for 
+
+C′ = C ⊕ { i 7 → C i \ { a} | i ∈ Irunning },
+
+we obtain αAt′ = (( A, S ′, J ), C ′, O ), the result of the abstract unlock transfer. Finally, for any other successful n-ary action, base admissibility and flatness give the exact base successor B′ from the base digests B0, . . . , B n−1. Such an action changes neither auxiliary component, so the successor is ( B′, C 0, O 0), agreeing with the “other” transfer. This proves requirement (3). For requirement (4), suppose αAt = ( B, C, O ) and new t u u 1 = Some t′.Base admissibility and flatness yield 
+
+new ♯  
+
+> AT×S×J
+
+B u u 1 = Some B′, αB t′ = B′.
+
+A new thread has not created a descendant, invalidated a creation lockset, or observed another thread. Consequently 
+
+αAt′ = ( B′, ∅, {i 7 → (∅, ∅) | i ∈ TID }),
+
+precisely the result of new ♯
+
+> A
+
+. The unsuccessful concrete case follows from the minimality of None .Finally, suppose the premise of requirement (5) holds for ( B, C, O ). Then the corresponding base create transfer succeeds. Requirement (5) for the base prod-uct yields new ♯  
+
+> AT×S×J
+
+B u u 1 = Some B′ for some B′. The displayed definition of new ♯ 
+
+> A
+
+consequently returns 
+
+Some (B′, ∅, {i 7 → (∅, ∅) | i ∈ TID })̸ = None .
+
+This proves requirement (5) and hence admissibility. Static Data Race Detection Off The Beaten Path 41 
+
+We now turn to the proof of soundness of || ?: W.l.o.g., assume the first disjunct of the false case holds. Consider t0 ∈ γA(( A0, S 0, J 0), C 0, O 0) and t1 ∈
+
+γA(( A1, S 1, J 1), C 1, O 1). Consider some thread with id iO , from which the thread at the end of t1
+
+has observed ( CO , I ′ 
+
+> O
+
+) := O1 iO . Since ( {i0} ∪ must anc i0) ∩ I′
+
+> O
+
+̸ = ∅, threads associated with i0 have already been transitively created. Choose s ∈ CO i0 ∩ S1.By the meaning of CO i0, thread iO holds s throughout the execution of every relevant thread represented by i0. At the same time, s ∈ S1 means that the ego thread represented by i1 holds s at the access in t1. Since iO̸ = i1, these are different threads. Mutual exclusion orders the corresponding critical sections by 
+
+→s, so the accesses cannot be bidirectionally trace-compatible. ⊓⊔
+
+## G Experimental Setup 
+
+G.1 Benchmark Subjects 
+
+Our benchmark sets follow the conventions of the SV-Comp software-verification competition. Each benchmark instance comprises source code together with at least one property to verify: 
+
+– no-data-race , which evaluates to true if no data race occurs in any exe-cution of the program; 
+
+– unreach-call , which evaluates to true if the special function reach error() 
+
+is unreachable in every execution of the program; and 
+
+– other properties, which are not relevant to the benchmarks considered here. The possible verdicts are true , false , unknown , and error . An analyzer that cannot decide a property conclusively usually returns unknown . Because 
+
+SV-Comp provides no direct way to specify invariants, we encode them using program guards and the unreach-call property. Although these benchmarks are formally unreach-call tests, they let us check whether an analyzer handles synchronization features correctly. We use a consistent naming scheme for the benchmark programs. Each file-name contains four components separated by underscores. They identify, in or-der, the challenge (“b” for “barrier,” “cl” for “creation lockset,” “dl” for “de-scendant lockset,” and “o” for “once”), the property (“n” for no-data-race and “u” for unreach-call ), the expected verdict (“true” or “false”), and a number that uniquely identifies the benchmark. 
+
+G.2 Soundness and Precision 
+
+For both no-data-race and unreach-call , we classify verdicts as follows: analysis verdict 
+
+TRUE FALSE 
+
+ground truth TRUE ✓ false positive 
+
+FALSE false negative ✓42 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Under this formulation, a false positive is a FALSE verdict when TRUE is expected and indicates imprecision. A false negative is a TRUE verdict when 
+
+FALSE is expected and indicates unsoundness. Because abstract interpretation overapproximates program behavior, an abstract interpreter generally cannot sub-stantiate a FALSE verdict when FALSE is expected and therefore usually re-turns UNKNOWN .
+
+G.3 Comparative Benchmark Baseline 
+
+We selected the baseline tools from SV-Comp participants that performed well in concurrent-program verification categories. For each tool, we used the param-eters specified by its configuration for the relevant categories. RacerF is an abstract interpreter that supports only the no-data-race property, so we did not evaluate it on unreach-call .                       
+
+> Tool Version Configuration
+> Racerf 2.2 ./racerf-sv.py -machdep gcc x86 64 $FILE
+> ESBMC (base) 7.7.0 ./esbmc --no-div-by-zero-check --force-malloc-success --state-hashing --add-symex-value-sets --no-align-check --k-step 2 --floatbv --unlimited-k-steps --no-vla-size-check $FILE --64 --no-por --context-bound 3 --witness-output witness.graphml --no-pointer-check --no-bounds-check --incremental-bmc
+> ESBMC (no-data-race) --data-races-check --no-assertions
+> ESBMC (unreach-call) --enable-unreachability-intrinsic
+> CPAChecker 4.2.2 ./cpachecker --svcomp26 --heap 10000M --benchmark --timelimit 900 s --stats --spec
+> $PROPERTY --64 $FILE
+> U. Gemcutter 0.3.1 ./Ultimate.py --spec $PROPERTY --file $FILE --full-output --architecture 64bit
+> Dartagnan 4.1.0 ./Dartagnan-SVCOMP.sh $PROPERTY $FILE
+
+G.4 Benchmark Execution Times 
+
+We ran the benchmarks on a machine with a 2.5 GHz Intel Core i7-11700 CPU, 64 GB of RAM, and Ubuntu 26.04. Each tool invocation was limited to 5 minutes and 20 GB of RAM. Static Data Race Detection Off The Beaten Path 43 
+
+Table 4: Tool execution times (ms) per input file. 
+
+Input File 
+
+> lines of code
+> CPAchecker Dartagnan ESBMC RacerF UGemCutter Goblint
+
+b n false 1.c 36 3013 2144 1337 2941 11543 82 
+
+b n false 2.c 30 2676 2017 1199 3371 9471 71 
+
+b n false 3.c 29 2530 2152 851 2852 8991 65 
+
+b n false 4.c 33 2551 2217 805 2754 10669 66 
+
+b n false 5.c 34 2867 2134 798 2677 9867 64 
+
+b n true 1.c 35 2533 2115 1316 2656 9235 65 
+
+b n true 2.c 40 2532 3275 2299 2891 9215 74 
+
+b n true 3.c 39 2645 2161 953 2851 10709 93 
+
+b n true 4.c 35 2486 2423 851 2846 8933 59 
+
+b n true 5.c 31 2616 2398 894 2708 9389 56 
+
+b n true 6.c 31 2342 2239 795 2788 9473 65 
+
+b n true 7.c 30 2582 2475 901 2812 9133 59 
+
+b u false 1.i 1420 2983 2040 720 - 11506 53 
+
+b u false 2.i 1418 2736 1646 720 - 13664 53 
+
+b u false 3.i 1431 3696 1655 797 - 13042 76 
+
+b u false 4.i 1422 2948 1701 710 - 12700 62 
+
+b u false 5.i 1417 3037 3195 797 - 12433 51 
+
+b u false 6.i 1411 2718 1762 772 - 12139 47 
+
+b u true 1.i 1415 3051 1684 711 - 12992 46 
+
+b u true 2.i 1427 3376 1619 701 - 14886 50 
+
+b u true 3.i 1429 2841 1667 812 - 13995 56 
+
+b u true 4.i 1424 2892 3036 860 - 13357 84 
+
+b u true 5.i 1425 3005 1677 882 - 12015 81 
+
+b u true 6.i 1427 2774 1594 729 - 14324 59 
+
+b u true 7.i 1427 2902 1687 1112 - 13406 52 
+
+b u true 8.i 1418 3885 1612 706 - 13195 46 
+
+cl n false 1.i 39 2483 2336 1124 1569 9532 73 
+
+cl n false 2.i 23 2420 3368 2148 1577 10176 65 
+
+cl n false 3.c 30 2594 2456 845 3650 10868 61 
+
+cl n false 4.c 32 2508 2863 1071 3519 10238 59 
+
+cl n false 5.c 35 3506 2527 992 3064 10503 60 
+
+cl n false 6.c 28 2592 2550 1613 2998 10024 88 
+
+cl n false 7.c 32 2626 2587 1775 2804 9673 64 
+
+cl n false 8.c 23 2468 2447 843 2931 10829 51 
+
+cl n false 9.c 24 2590 2666 1079 2778 10429 55 
+
+cl n false 10.c 29 2695 2132 1699 2621 11228 60 
+
+cl n false 11.c 39 2823 2633 7174 2726 10037 60 
+
+cl n false 12.c 39 2930 3026 3657 2120 10191 62 
+
+cl n false 13.c 888 2761 ∞ ∞ 2678 10254 65 
+
+dl n false 14.i 888 2367 3895 1657 1501 9486 48 
+
+dl n false 15.i 20 2382 2923 1531 1399 8840 71 
+
+dl n false 16.c 21 2806 2393 1959 2543 10196 68 
+
+dl n false 17.c 27 3216 2282 827 3071 10443 90 
+
+dl n false 18.c 26 2936 2211 1077 2648 12272 63 
+
+dl n false 19.c 893 2912 3663 945 2683 10543 55 
+
+dl n false 20.c 22 2586 2205 848 1867 9936 54 
+
+dl n false 21.c 24 2468 3647 871 1859 9907 54 
+
+dl n false 22.c 30 2623 2653 8510 3100 11235 57 
+
+dl n false 23.c 23 2486 2246 1839 3224 9542 54 
+
+dl n false 24.c 26 3017 2246 818 2855 11450 59 
+
+dl n false 25.c 893 2527 2408 13061 3184 9579 64 
+
+cl n true 1.c 888 2337 2363 1432 3405 9468 61 
+
+cl n true 2.c 34 2431 2446 5002 3083 9542 61 
+
+cl n true 3.c 25 2309 3457 1067 2851 9703 54 
+
+cl n true 4.c 30 2361 2580 1049 3285 9335 65 
+
+cl n true 5.c 39 2527 2371 9480 2010 9301 89 
+
+dl n true 6.c 23 2248 2196 824 2547 10063 54 
+
+dl n true 7.c 28 2455 2473 982 1857 9567 62 
+
+Continued on next page 44 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Table 4 continued from previous page 
+
+Input File 
+
+> lines of code
+> CPAchecker Dartagnan ESBMC RacerF UGemCutter Goblint
+
+dl n true 8.c 28 2260 2152 1440 2547 9702 52 
+
+dl n true 9.c 23 2342 2210 970 2843 9225 59 
+
+dl n true 10.i 889 2477 3555 869 1632 8650 49 
+
+dl n true 11.i 28 2349 2298 898 1546 9943 47 
+
+o n false 1.c 26 2856 2581 787 1955 10821 55 
+
+o n false 2.c 47 2696 2217 1065 3359 9970 61 
+
+o n false 3.c 59 2731 2264 796 2742 11350 62 
+
+o n false 4.c 30 2450 2149 841 1768 9740 57 
+
+o n false 5.c 35 2442 2187 868 2627 9984 57 
+
+o n false 6.c 28 2470 2139 842 1788 9960 60 
+
+o n true 1.c 34 2903 3598 851 2723 9789 68 
+
+o n true 2.c 63 2424 2197 905 2936 9641 74 
+
+o n true 3.c 29 ∞ 3171 ∞ 2874 10716 61 
+
+o n true 4.c 28 2427 3590 944 3066 9132 60 
+
+o n true 5.c 41 2349 2174 840 2860 9391 59 
+
+o n true 6.c 40 2274 2171 881 2947 9371 61 
+
+o n true 7.c 48 2512 3876 1985 2996 10592 74 
+
+o n true 8.c 27 2420 2185 949 2904 10061 56 
+
+o n true 9.c 27 2428 2125 1042 1747 10613 79 
+
+o u false 1.i 938 2346 1669 752 - 12889 55 
+
+o u false 2.i 926 3504 2796 768 - 11322 65 
+
+o u false 3.i 924 2523 2232 1445 - 11151 46 
+
+o u false 4.i 925 2743 2099 894 - 13314 54 
+
+o u false 5.i 928 2393 1741 755 - 11400 53 
+
+o u true 1.i 930 2328 1758 888 - 12621 48 
+
+o u true 2.i 1307 2518 2400 1007 - 16589 60 
+
+o u true 3.i 1302 2752 2192 852 - 11251 47 
+
+o u true 4.i 1297 2191 1730 1691 - 13574 72 
+
+o u true 5.i 924 2350 1652 794 - 12891 50 
+
+o u true 6.i 925 2405 1832 818 - 12031 75 
+
+o u true 7.i 925 2397 1731 1075 - 12693 54 
+
+o u true 8.i 928 2265 1786 793 - 12433 45 
+
+G.5 Soundness 
+
+To assess soundness, we use no-data-race and unreach-call benchmarks whose expected verdict is FALSE and compare each tool’s result with the expected verdict. A TRUE verdict in these cases misses a data race and is therefore a false negative; a single such verdict demonstrates unsound behavior. A FALSE 
+
+or UNKNOWN verdict is consistent with soundness, but an UNKNOWN 
+
+verdict does not establish that the property is false. Dartagnan and Ulti-mate Gemcutter recognize occurrences of barriers and pthread once but re-turn ERROR and UNKNOWN , respectively. These inconclusive results provide no ev-idence of unsoundness or precision. RacerF does not support unreach-call 
+
+and is therefore not evaluated for that property. Because Goblint is an overap-proximating abstract interpreter, it returns UNKNOWN , rather than FALSE ,for the false unreach-call properties. It could nevertheless return TRUE ; such a result would be a false negative. 
+
+Benchmark Results Static Data Race Detection Off The Beaten Path 45 
+
+Table 5: Unsoundness experiment: TRUE verdicts for no-data-race or unreach-call 
+
+when FALSE is expected are considered missed data races, and indicate unsound behaviour for this tool in this test. 
+
+Input File CPAchecker Dartagnan ESBMC RacerF UGemCutter Goblint 
+
+b n false 1.c FALSE ERROR FALSE FALSE UNKNOWN UNKNOWN 
+
+b n false 2.c FALSE ERROR FALSE FALSE UNKNOWN UNKNOWN 
+
+b n false 3.c FALSE ERROR FALSE FALSE UNKNOWN UNKNOWN 
+
+b n false 4.c FALSE ERROR FALSE FALSE UNKNOWN UNKNOWN 
+
+b n false 5.c FALSE ERROR FALSE FALSE UNKNOWN UNKNOWN 
+
+b u false 1.i FALSE ERROR ERROR - UNKNOWN UNKNOWN 
+
+b u false 2.i FALSE ERROR ERROR - UNKNOWN UNKNOWN 
+
+b u false 3.i FALSE ERROR ERROR - UNKNOWN UNKNOWN 
+
+b u false 4.i FALSE ERROR ERROR - UNKNOWN UNKNOWN 
+
+b u false 5.i FALSE ERROR ERROR - UNKNOWN UNKNOWN 
+
+b u false 6.i FALSE ERROR ERROR - UNKNOWN UNKNOWN 
+
+cl n false 1.i TRUE TRUE TRUE ERROR TRUE UNKNOWN 
+
+cl n false 2.i TRUE TRUE TRUE ERROR TRUE UNKNOWN 
+
+cl n false 3.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+cl n false 4.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+cl n false 5.c UNKNOWN FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+cl n false 6.c UNKNOWN TRUE TRUE FALSE UNKNOWN UNKNOWN 
+
+cl n false 7.c FALSE FALSE TRUE FALSE UNKNOWN UNKNOWN 
+
+cl n false 8.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+cl n false 9.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+cl n false 10.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+cl n false 11.c FALSE FALSE TRUE FALSE UNKNOWN UNKNOWN 
+
+cl n false 12.c FALSE FALSE FALSE TRUE UNKNOWN UNKNOWN 
+
+cl n false 13.c FALSE UNKNOWN UNKNOWN FALSE UNKNOWN UNKNOWN 
+
+dl n false 14.i TRUE TRUE TRUE ERROR TRUE UNKNOWN 
+
+dl n false 15.i TRUE TRUE TRUE ERROR TRUE UNKNOWN 
+
+dl n false 16.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+dl n false 17.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+dl n false 18.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+dl n false 19.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+dl n false 20.c UNKNOWN FALSE FALSE TRUE UNKNOWN UNKNOWN 
+
+dl n false 21.c UNKNOWN TRUE TRUE TRUE UNKNOWN UNKNOWN 
+
+dl n false 22.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+dl n false 23.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+dl n false 24.c FALSE FALSE FALSE FALSE UNKNOWN UNKNOWN 
+
+dl n false 25.c UNKNOWN ERROR ERROR FALSE UNKNOWN UNKNOWN 
+
+o n false 1.c TRUE ERROR TRUE TRUE UNKNOWN UNKNOWN 
+
+o n false 2.c TRUE ERROR TRUE FALSE UNKNOWN UNKNOWN 
+
+o n false 3.c TRUE ERROR TRUE FALSE UNKNOWN UNKNOWN 
+
+o n false 4.c TRUE ERROR TRUE TRUE UNKNOWN UNKNOWN 
+
+o n false 5.c TRUE ERROR TRUE FALSE UNKNOWN UNKNOWN 
+
+o n false 6.c TRUE ERROR TRUE TRUE UNKNOWN UNKNOWN 
+
+o u false 1.i TRUE ERROR ERROR - UNKNOWN UNKNOWN 
+
+o u false 2.i FALSE ERROR ERROR - UNKNOWN UNKNOWN 
+
+o u false 3.i FALSE ERROR ERROR - UNKNOWN UNKNOWN 
+
+o u false 4.i TRUE ERROR ERROR - UNKNOWN UNKNOWN 
+
+o u false 5.i TRUE ERROR ERROR - UNKNOWN UNKNOWN 
+
+# false negatives 13 6 14 6 4 0barriers 0 0 0 0 0 0once 9 0 6 3 0 0creationLockset 2 3 5 1 2 0descendantLockset 2 3 3 2 2 0
+
+Example benchmarks indicating unsound behavior To illustrate the un-soundness we found, we present compact benchmarks that the corresponding tools report as data-race-free even though they contain a data race. 46 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Assertions provide another way to expose unsound behavior. In SV-Comp ,assertions are typically encoded using the unreach-call property, which can also reveal false negatives, as one of the examples below shows. 
+
+– Racerf reports this program as data-race-free: 
+
+// expected verdict: no-data-race false #include <pthread.h> #include <stdio.h> #include <assert.h> int g = 0; pthread_once_t once = PTHREAD_ONCE_INIT; void fun() { g++; // RACE }void *f(void *p){ fun(); }pthread_t id1; int main(void) { pthread_t id; pthread_create(&id1, NULL, f, NULL); pthread_once(&once, fun); return 0; }
+
+– CPAChecker reports this file as data-race-free: 
+
+// expected verdict: no-data-race false extern int __VERIFIER_nondet_int(); #include <pthread.h> int global = 0; pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER; pthread_t id1, id2; void *t1(void *arg) { pthread_mutex_lock(&mutex); global++; // RACE! pthread_mutex_unlock(&mutex); return NULL; }// t2 is not protected by mutex locked in main thread, // joining may not happen before unlock void *t2(void *arg) { global++; // RACE! return NULL; }int main(void) { pthread_create(&id1, NULL, t1, NULL); pthread_mutex_lock(&mutex); pthread_create(&id2, NULL, t2, NULL); int maybe = __VERIFIER_nondet_int(); if (maybe) { pthread_join(id2, NULL); }pthread_mutex_unlock(&mutex); return 0; }Static Data Race Detection Off The Beaten Path 47 
+
+– ESBMC and CPAChecker report that the error state in this file is un-reachable: 
+
+// expected verdict: unreach-call false #include <pthread.h> #include <stdio.h> #include <assert.h> extern void abort(void); void reach_error() { assert(0); } // expected: unreach-call is false #define __VERIFIER_assert(cond) { if((cond)) { reach_error(); abort(); } } int g = 0; pthread_once_t once = PTHREAD_ONCE_INIT; void fun() { g++; }int main(void) { pthread_t id; pthread_once(&once, fun); pthread_once(&once, fun); __VERIFIER_assert(g==1); // g==1 is true here -> reach_error() is reached return 0; }
+
+G.6 Precision 
+
+To assess precision, we use no-data-race and unreach-call benchmarks whose expected verdict is TRUE and compare each tool’s result with the expected verdict. A FALSE verdict in these cases is a false positive. Dartagnan and 
+
+Ultimate Gemcutter recognize occurrences of barriers and pthread once but return ERROR and UNKNOWN , respectively. Neither result demonstrates that the tool can verify the property. RacerF does not support unreach-call and is therefore not evaluated for that property. 
+
+Benchmark Results 
+
+Table 6: Precision experiment: FALSE verdicts for no-data-race or unreach-call 
+
+when TRUE is expected are false positives. 
+
+Input File CPAchecker Dartagnan ESBMC RacerF UGemCutter Goblint 
+
+b n true 1.c FALSE ERROR FALSE FALSE UNKNOWN TRUE 
+
+b n true 2.c FALSE ERROR FALSE FALSE UNKNOWN TRUE 
+
+b n true 3.c FALSE ERROR FALSE FALSE UNKNOWN TRUE 
+
+b n true 4.c TRUE ERROR TRUE FALSE UNKNOWN TRUE 
+
+b n true 5.c TRUE ERROR TRUE FALSE UNKNOWN TRUE 
+
+b n true 6.c TRUE ERROR TRUE FALSE UNKNOWN TRUE 
+
+b n true 7.c FALSE ERROR FALSE FALSE UNKNOWN TRUE 
+
+Continued on next page 48 D. Bund, J. Erhard, M. Petter, and M. Schwarz 
+
+Table 6 continued from previous page 
+
+Input File CPAchecker Dartagnan ESBMC RacerF UGemCutter Goblint 
+
+b u true 1.i FALSE ERROR ERROR - UNKNOWN TRUE 
+
+b u true 2.i FALSE ERROR ERROR - UNKNOWN TRUE 
+
+b u true 3.i FALSE ERROR ERROR - UNKNOWN TRUE 
+
+b u true 4.i FALSE ERROR ERROR - UNKNOWN TRUE 
+
+b u true 5.i FALSE ERROR ERROR - UNKNOWN TRUE 
+
+b u true 6.i FALSE ERROR ERROR - UNKNOWN TRUE 
+
+b u true 7.i FALSE ERROR ERROR - UNKNOWN TRUE 
+
+b u true 8.i FALSE ERROR ERROR - UNKNOWN TRUE 
+
+cl n true 1.c TRUE TRUE TRUE FALSE UNKNOWN TRUE 
+
+cl n true 2.c TRUE TRUE TRUE TRUE UNKNOWN TRUE 
+
+cl n true 3.c TRUE TRUE TRUE FALSE UNKNOWN TRUE 
+
+cl n true 4.c TRUE TRUE TRUE FALSE UNKNOWN TRUE 
+
+cl n true 5.c FALSE ERROR TRUE TRUE UNKNOWN TRUE 
+
+dl n true 6.c TRUE TRUE TRUE FALSE UNKNOWN TRUE 
+
+dl n true 7.c TRUE TRUE TRUE TRUE UNKNOWN TRUE 
+
+dl n true 8.c TRUE TRUE TRUE FALSE UNKNOWN TRUE 
+
+dl n true 9.c TRUE TRUE TRUE FALSE UNKNOWN TRUE 
+
+dl n true 10.i TRUE TRUE TRUE ERROR TRUE TRUE 
+
+dl n true 11.i TRUE TRUE TRUE ERROR TRUE TRUE 
+
+o n true 1.c TRUE ERROR TRUE FALSE UNKNOWN TRUE 
+
+o n true 2.c TRUE ERROR TRUE FALSE UNKNOWN TRUE 
+
+o n true 3.c UNKNOWN ERROR UNKNOWN FALSE UNKNOWN TRUE 
+
+o n true 4.c TRUE ERROR TRUE FALSE UNKNOWN TRUE 
+
+o n true 5.c TRUE ERROR TRUE FALSE UNKNOWN TRUE 
+
+o n true 6.c TRUE ERROR TRUE TRUE UNKNOWN TRUE 
+
+o n true 7.c UNKNOWN ERROR TRUE FALSE UNKNOWN TRUE 
+
+o n true 8.c TRUE ERROR TRUE FALSE UNKNOWN TRUE 
+
+o n true 9.c TRUE ERROR TRUE TRUE UNKNOWN TRUE 
+
+o u true 1.i TRUE ERROR ERROR - UNKNOWN TRUE 
+
+o u true 2.i TRUE ERROR ERROR - UNKNOWN TRUE 
+
+o u true 3.i TRUE ERROR ERROR - UNKNOWN TRUE 
+
+o u true 4.i TRUE ERROR ERROR - UNKNOWN TRUE 
+
+o u true 5.i TRUE ERROR ERROR - UNKNOWN TRUE 
+
+o u true 6.i TRUE ERROR ERROR - UNKNOWN TRUE 
+
+o u true 7.i TRUE ERROR ERROR - UNKNOWN TRUE 
+
+o u true 8.i TRUE ERROR ERROR - UNKNOWN TRUE 
+
+# false positives 13 0 4 20 0 0barriers 12 0 4 7 0 0once 0 0 0 7 0 0creationLockset 1 0 0 3 0 0descendantLockset 0 0 0 3 0 0
+
+Example benchmarks indicating imprecise behavior To demonstrate the kinds of imprecise behavior we found, we present compact benchmarks that some analyzers report as containing a data race but that are actually data-race-free. The following is a representative barrier example: 
+
+// expected verdict: no-data-race true #include<pthread.h> #include<stdio.h> #include<unistd.h> extern int __VERIFIER_nondet_int(); int g; pthread_barrier_t barrier; Static Data Race Detection Off The Beaten Path 49 
+
+void* f1(void* ptr) { g = 2; // NORACE pthread_barrier_wait(&barrier); return NULL; }int main(int argc, char const *argv[]) {int top = __VERIFIER_nondet_int(); int i = 0; pthread_barrier_init(&barrier, NULL, 2); pthread_t t1; pthread_create(&t1,NULL,f1,NULL); pthread_barrier_wait(&barrier); g = 3; //NORACE return 0; }

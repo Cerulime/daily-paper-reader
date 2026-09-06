@@ -1,0 +1,325 @@
+Title: Influence of Logging Frameworks on Bind9
+
+URL Source: https://arxiv.org/pdf/2609.00954v1
+
+Published Time: Wed, 02 Sep 2026 01:23:32 GMT
+
+Number of Pages: 10
+
+Markdown Content:
+# Influence of Logging Frameworks on Bind9 
+
+Max Schr¨ otter 
+
+Department of Computer Science University of Potsdam Potsdam, Germany schroetter@cs.uni-potsdam.de 
+
+Hannes Signer 
+
+Department of Computer Science University of Potsdam Potsdam, Germany hannes.signer@uni-potsdam.de 
+
+Bettina Schnor 
+
+Department of Computer Science University of Potsdam Potsdam, Germany schnor@cs.uni-potsdam.de 
+
+Abstract —Host-based Intrusion Prevention Systems (IPS) rely on application logs to detect and block malicious activity. How-ever, on modern high-speed networks the logging subsystem itself becomes a bottleneck: an attacker can hide traces simply by generating enough traffic to overwhelm the application’s log pipeline, dropping crucial traces. In this work, we show that widely deployed setups such as Fail2Ban monitoring BIND9 can be defeated with less than 65 Mbps of DNS traffic. Further, we show that when replacing core components of the IPS architecture with their higher-performance equivalent, iptables with eBPF and regex matching with Hyperscan, the logging backends themselves become the bottleneck. Therefore, we present FIPS, a new IPC designed for high-performance logging that bypasses the kernel and reduces copying of the log messages to a minimum. FIPS uses per-thread lock free shared memory ring buffers, supporting multiple independent consumers reading the same log stream at their own pace. FIPS offers both a native API and a drop-in replacement for the syslog interface. Our evaluation with BIND 9 shows that FIPS introduces almost no overhead compared to disabled logging, logs more requests than any other evaluated framework, and enables the IPS to ban malicious clients 2.5× faster than with file logging while sustaining 216 attacking clients at one million requests per second. 
+
+Index Terms —Intrusion Prevention, 100GbE, IPC, Logging 
+
+## 1. Introduction 
+
+The detection and prevention of intrusions is a key part of securing computer systems. Depending on the location and function of the intrusion detection system it uses differ-ent data sources. Network intrusion detection systems use network traffic to detect attacks, while the analysis of system and application logs is the key component of host intrusion detection. Applications usually write text-based log files that are analyzed by log collectors (like logstash, beats, fluentd, etc.) and then forwarded to SIEMs and IDSs. These log collectors parse the log files from strings into fields and store them in databases in a unified and machine-readable format for later analysis. Figure 1 shows this workflow with BIND9 as an example application and syslog as logging backend. While the correct parsing of logs is its own research topic [1], a lot of effort could be circumvented by consequently logging in a user-definable binary or structured format. Application logging is a core component of every user-space application. The most widespread logging options are file logging, utilizing a variation of the write syscall and syslog, utilizing either a libc syslog function[2, 3] or reim-plementing a variation[4]. While syslog is, strictly speaking, a protocol (RFC 5424 [5]), most current logging daemons (e.g. rsyslogd or systemd-journald) create the /dev/log 
+
+Unix socket to receive new local log messages. While most applications will by default write messages to this Unix socket, the transport via UDP and TCP is also widely sup-ported. Local logging daemons process new logs and might also forward them to dedicated logging servers. A variation of file logging which is almost universally supported is the logging to the stdout or stderr filedescriptor. Current Init-Systems like systemd read those messages and forward them to the local logging daemon. Logs themselves are a primary target for attackers to hide their attacks [6]. This can be accomplished in multiple ways: modifying the logs after a system has been compromised or overwhelming a component in the logging pipeline. Secur-ing logs against tampering after a system has been compro-mised has been thoroughly covered in the literature [7–12]. This work focuses on how easily the application or the used IPC can be overwhelmed to hide traces of an attacker. Sommese et al. [13] showed that DNS infrastructure is a common target for DDoS attacks. They also showed that affected DNS hosting providers are small to medium-sized. While complete failure in DNS name resolution is rare (1%) the attacks increase the RTT up to 348 times. In another scenario, an attacker might generate a high volume of DNS logs to hide the execution of malware. Malware uses DNS and Domain Generation Algorithms to resolve addresses of Control and Command Servers. An Intrusion Prevention System (IPS) and the logging frame-work must be able to cope with high volumes of logs and employ mechanisms to reduce log volume like rate limiting to mitigate these attacks. In this work, we focus on the full stack, from the applica-tion producing the logs, to the Inter-Process Communication (IPC) used to transport them, and to the log collectors. Our arXiv:2609.00954v1 [cs.CR] 1 Sep 2026 write 
+
+> ...
+> ...
+> Application: Bind9 Clients Worker ...Worker ...Worker syslog IPC /dev/log
+> Unix Socket
+> read
+> syslog
+> $Owner root local2.* /syslog
+> · · ·
+> CONF:
+> authent-ication failure 1.1.1.1
+> · · ·
+> LOG:
+> Consumer
+
+SIEM 
+
+> 00101010 01010101 00101010
+
+IPS  
+
+> STOP
+> requests &replies calls calls calls loads writes reads reads Figure 1. Overview of the classic IPS workflow
+
+contributions are: 1) We show how easily a widely used IPS like Fail2Ban can be overwhelmed. (see Section 2) 2) We evaluate the performance impact of the logging framework on the performance of BIND9. (see Sec-tion 2) 3) Our analysis shows that the logging backends them-selves become the bottleneck. Therefore, we pro-pose a new IPC called FIPS IPC designed for high-performance logging that bypasses the kernel. FIPS uses per-thread lock-free shared-memory ring buffers, supporting multiple independent consumers reading the same log stream at their own pace. The memory containing the ring buffers is directly shared between the logging application and the consumers, reducing memory copies of the log messages. (see Section 4) 4) We evaluate the new IPC against state-of-the-art log-ging frameworks and show its performance benefit both on the performance of the IPS and on the application (BIND9). Fail2Ban is written in Python and, because of the interpreted language and slow regex pattern matching, is not designed for high-performance. In the evaluation we, therefore, replace it by a simplified C-based imple-mentation (simple-Fail2Ban). Core components were replaced with their more efficient equivalents, iptables with eBPF and regex matching with Hyperscan [14]. We analyze how well our proposed FIPS IPC with BIND9 and the improved simple-Fail2Ban is able to cope with DoS attacks up to 10 million packets per second. (see Section 5) 5) As DoS mitigation strategy the DoS clients are rate limited. We also analyze the number of logged requests to see if traces of answered requests can be lost. (see Section 5) 
+
+## 2. Limitations of IPS in High-Speed Networks 
+
+In our first experiment, we use the widely used IPS Fail2Ban [15] as baseline. Fail2Ban uses user-definable regular expressions to detect patterns in log files and ex-ecutes a user-definable action if a pattern is detected, as well as another action after a user-definable time interval. One of the most widely used configurations is to monitor authentication tries against sshd or a web server. If a user enters incorrect credentials more often than a configurable limit within a configurable time frame, the IP address is banned via iptables. Fail2Ban is however not limited to authentication brute force attacks, but supports also rate limiting. The advantage of utilizing Fail2Ban for rate limiting is that requests that exceed the rate limit are blocked at the firewall level, which frees up resources for the application, for example a DNS server. BIND9 is configured to log all DNS queries to a file and Fail2Ban monitors this file for clients that have exceeded the rate limit. To test the performance of this system, we set the rate limit to just 3 requests per 60 seconds. This limit is well below the rate for common DNS clients. Web browsers, for example, often send multiple DNS requests for a single web page to load. First, DNS requests for the IPv4 and IPv6 records for the requested domain are sent, and additional requests for resources like webfonts, javascript libraries, and third party tracking & integrations follow, which are often hosted under different domains (CDNs). Furthermore, we set a ban duration for 60 seconds, whereas the default rate limit window of BIND9 is 15 seconds. This configuration gives Fail2Ban the opportunity to ban clients earlier and longer and reduces the load on the DNS server. All measurements are done on servers with an Intel(R) Xeon(R) Silver 4314 Chip with 16 cores and 128 GB RAM and ConnectX-6 Dx Cards connected via 100 GBit Ethernet. DNS requests were generated with Trex [16]. The test bed is shown in Figure 2. First, we test this application scenario under attack and identify the bottleneck. 
+
+2.1. Ban Capabilities under Attack 
+
+For this experiment, Trex generated traffic from two different source networks. One network generates legitimate baseload of 50,000 requests per second. From the second 100 Gbit/s Ethernet Switch             
+
+> Server 1: SuT
+> BIND9 Fail2Ban IPtables
+> Server 2: Load Generator
+> TRex
+> Server 3: Sink
+> records DNS Replies
+> DNS Workload DNS Replies Figure 2. Test Bed 0100 200 300 400 500 600 00.51
+> ·10 5t1t2t3t4t5
+> Time [s] Packets per Second  Pkts Pass Pkts Drop
+> Figure 3. Fail2Ban Performance Investigation with 255 spoofed IP ad-dresses and 100000 packets per second from attackers
+
+network we simulate an attacker which sends 100,000 re-quests per second from 255 different IP addresses which is much more than a DNS server is capable to handle. Figure 3 shows that Fail2Ban is initially able to parse the BIND9 file logs and ban all attacking clients. After a spike in the Pkts Pass curve in the first few seconds, the firewall drops all 100,000 requests per second from the attacking clients. At t1 the 60 second ban time has elapsed and fail2ban allows the previously banned clients again. The figure also shows that it takes Fail2Ban longer in the second (t2) and third ( t3) ban cycle to ban all attacking clients. After the third ban cycle ( t3) Fail2Ban completely fails to keep up with the log volume and is not able to ban all attacking clients anymore. If the attacker increases the number of spoofed IP addresses to 2046 this behavior already occurs at 10,000 packets per second, as can be seen in Figure 4. The figure shows only one ban cycle (10s-70s) in which Fail2Ban bans the attack traffic. It also takes Fail2Ban significantly longer to ban 2047 addresses with a tenth of packets per seconds, than 255 clients. Even though 100,000 requests per second sounds like a high volume of traffic, it is actually less than 65 Mbps with each DNS request being 648 bits long. Profiling the system under stress showed that 15.1% 1 of total CPU time was spend in the BIND9 logging function           
+
+> 1. using profile-bpfcc to profile user-space and kernel-space 020 40 60 80 100 120 140 160 180 200 020 40 60
+> Time [s] Packets per Second [kpps]  Pkts Pass Pkts Drop
+> Figure 4. Fail2Ban Performance Investigation with 2047 spoofed IPs and 10000 packets per seconds from an attacker
+
+isc_log_doit . Even under high load, where BIND9 is not able to reply to all requests, the system is still 65% 2
+
+idle. To determine why BIND9 is not using more CPU time an off-CPU analysis 3 was performed. It showed that 80% of the time, a BIND9 thread could not run because of the lock inside isc_log_doit . This confirms that logging is a bottleneck, which we investigate further in the next section. 
+
+2.2. Impact of Logging 
+
+In this subsection the performance impact of different logging options is analyzed. BIND9 supports multiple log-ging options, as many Linux applications, i.e. file logging, syslog, systemd journal. For all logging frameworks BIND9 supports a configurable log format and different log levels. BIND9 is multi-threaded, but the logging function is pro-tected by the global “ isc__lctx->lock ” mutex. This is done for non thread-safe logging functions and the use of a single global log buffer. For file logging, BIND9 uses fprintf to write to the open file stream. For syslog, BIND9 calls the syslog function from the libc. There, the syslog messages are sent via the syslog (/dev/log) socket to a syslog daemon which handles the message further. The syslog daemon was configured to write the logs to a file. For the systemd journal, messages are printed to std-out and captured by systemd which writes the messages to memory, and only if configured writes it to persistent storage. Unlike syslog, the systemd journal was configured to use volatile storage. In this experiment, TREX generates only benign traffic from 255 IP addresses, starting from 10,000 up to 10 million packets per second. The following figures present the me-dian of 3 measurements. Figure 5 shows the performance impact of the different logging frameworks on BIND’s performance. BIND9 with no logging configured replies to 99.94% of requests when 900,000 requests per second are being sent. If BIND9 is using logging via journald the reply rate drops to 11.79%. This is an 8.45x performance    
+
+> 2. measured with mpstat 3. using offcputime-bpfcc 10k 100k 1m 10m
+> 0%
+> 20 %
+> 40 %
+> 60 %
+> 80 %
+> 100 %
+> 8.45 ×
+> 99.94%
+> Packets Per Second Replied Packets [%]
+> No Logging File Logging Syslog Logging Systemd Journal Figure 5. Logging Performance Comparison of BIND9
+
+drop. The results for syslog and file logging are worse with only 4.64% and 6.53% of requests being answered respec-tively. The journald performance shows the advantages of in-memory logging over file-based logging. While the syslog performance shows the disadvantages of the extra overhead of the Unix socket and logging daemon before writing to disk. However, all available logging options show a significant performance drop compared to no logging. This shows that logging is one of the bottlenecks for Intrusion Prevention Systems. 
+
+## 3. Related Work 
+
+There has been little change in logging functions for widely used applications like Apache httpd [2], nginx [4], BIND9 [3] and many more. However, there have been addi-tions in logging formats for example qlog [17] the “Struc-tured Logging for Network Protocols” from the IETF Quic working group. Also domain specific logging formats and transport have been introduced, for example DNSTAP [18] for logging DNS events relying on Googles Protocol Buffers and forwarding these events over ring buffers to a stream socket. Even though there has been little development in existing applications the topic is nonetheless heavily researched. Jaein Jeong [19] has identified the need for high perfor-mance logging for GNU/Linux Applications in 2013 and proposed a shared-memory logging framework. Applica-tions enqueue log messages in a memory mapped file from which the proposed mqlogd dequeues them and forwards them via named pipes to a designated output utility like syslogd. For their evaluation a flash storage logger was used as output utility and different locks for synchronization. The pthread mutex lock implementation outperformed syslogd by a factor of 4.0. Although Domain Name System (DNS) query logs are a critical resource for detecting malware deployments within a network, enabling text-based logging on high-traffic au-thoritative DNS servers, such as BIND9, significantly de-grades their query-resolution throughput. To resolve this, the DNSTAP protocol was introduced as a high-speed binary logging architecture [18]. DNSTAP encapsulates raw DNS events using Google Protocol Buffers [20] and transports them asynchronously via Unix domain sockets using the 
+
+fstrm library [21]. Its reliance on Unix domain sockets inherently establishes a 1-to-1 stream. If multiple consumers require access to the logs, an external software multiplexer must be introduced. The reliance on sockets also include the overhead of a context switch when writing or reading to and from them. A distinct branch of research focuses on the crypto-graphic integrity of system logs to prevent manipulation by a privileged adversary [7–10]. These have been primarily focused on kernel audit logs. In the following, we will discuss advances in High-Performance Queues, which could be utilized for logging, and Malware Detection based on Query Logs. The pursuit of low latency IPC has driven extensive research into user-space, shared-memory data structures that bypass the Linux kernel. There is the “linuxrb” ring buffer in the Linux kernel [22], “dpdkrb” as part of DPDK [23], “scqd”, a scalable and memory efficient lock-free queue [24] and the queues of the folly [25] and boost [26] libraries. However, as Wang et al. [27] showed they all suffer from consumer contention, producer contention, delayed tail updates or cache interference between enqueues and dequeues. Further, all these approaches support only the classical producer-consumer. However, for logging it is crucial to support redundant readers that read and analyse the same content. Redundant readers are supported by Disruptor [28] and BBQ [27]. The Disruptor framework was introduced cope with the need for high performance IPC in finan-cial exchanges by LMAX. It relies on a self coined term called “mechanical sympathy”. Instead of expensive locks or “Compare and Swap” (CaS) instructions, the disruptor tries to mostly rely on memory barriers. This works for a single producer. However, if multiple threads are producing items the disruptor utilitizes CaS instructions so the threads get the next free slot in the ring buffer in a race-free manner. Furthermore, by preallocating the ring buffer used for the queue, latency hits for reallocating new elements can be circumvented and the overhead of Java’s garbage collector, since the pre-allocated ring buffer is immortal. Chronicles RingZero [29] outperforms the disruptor framework by re-ducing the feature set to a single producer and a single consumer avoiding the synchronization overhead. BBQ stands for Block-Based Bounded Queue where the ring buffer is split into multiple blocks. By spliting the ring buffer into blocks the four pointers for queue management (allocated, committed, reserved and consumed) may point to cells in different blocks. If these pointers point to cells in different blocks, the consumer just needs to check if the committed pointer is still in a different block, which has no cache line interference with writes to the offset of the committed pointer inside its block. Only once the producer moves the committed pointer to a different block the cache lines of the consumer become invalid. However, multiple consumers still contend on the pointer allocated and 
+
+committed . However, Wang et al. use, what the authors view as in principle cheaper FAA (Fetch-and-Add) instruc-... 
+
+> ...
+> Application Clients Worker ...Worker ...Worker FIPS Consumer
+
+SIEM 
+
+> 00101010 01010101 00101010
+
+IPS 
+
+> STOP
+> requests &replies writes writes writes reads reads reads reads reads Figure 6. Overview of the new fast IPS architecture
+
+tions instead of CaS instructions, because writers can only enter a block if the block has been previously consumed. Schweizer et al. [30] have shown that all tested atomics have comparable latency and bandwidth. Therefore, we propose the use of multiple ring buffers (one ring buffer per producer) instead of a single ring buffer with writer contention. 
+
+## 4. Design of the new IPC for High-Performance Logging 
+
+To overcome the limitations of existing logging frame-works, this work introduces a new IPC designed for high-performance logging, while keeping the need of IPS and SIEMs in mind. The design goals of the new IPC are: (a) Increase logging performance to cope with DoS attacks in high-speed performance networks by using lock-free ring buffers (results shown in Section 5.2) (b) Support a variant of the multiple producer multiple consumer model where multiple consumers may read independently all available log messages. This allows multiple applications to analyse the same log message. (see Section 4.1) (c) Provide a simple interface for applications to use the new IPC (see Section 4.2 and 4.3) (d) Provide a plug-and-play solution for existing applica-tions (see Section 4.2) As shown in Figure 1 before, multiple applications may be interested in the logs generated by the producer appli-cation. These can be different IPS systems or SIEMs or log consumers that forward the logs to a central logging server. Each of these applications should be able to read all log messages at their own pace. File-based logging supports this use-case by nature as multiple applications can open the same log file and read it at their own pace. The architecture of the new FIPS IPC, an IPC for fast intrusion prevention, is shown in Figure 6. To increase logging performance each producer application thread has a dedicated lock-free ring buffer to write its log messages to. The new IPC supports multiple consumers with each 321876 54        
+
+> SX
+> Flow
+> Commit Tail Write Head Read
+> C1
+> Release
+> C1
+> Read
+> Cn
+> Release
+> Cn
+> Producer Consumer 1
+> subset of m1bound to SX
+> T2
+> Release Queue
+> 6
+> mutex
+> claim
+> ret 7
+> ret 6&7
+> 413Consumer n
+> subset of mnbound to SX
+> T1T2
+> Release Queue mutex
+> claim ret 3
+> no mutex
+> 2
+
+··· 
+
+> Figure 7. Ring buffer architecture
+
+having multiple threads reading from the ring buffers. In the following, we present the new IPC in detail 
+
+4.1. FIPS IPC Synchronization 
+
+As previously shown in Section 2.1, writing of query logs can limit performance drastically. This behavior is not limited to BIND9. For example, nginx spends 50% 4 of its CPU time writing query logs when serving static files. Hence, it is crucial to reduce the overhead for the log-writing (producer) application. We achieve this by assigning each producer thread its own ring buffer as can be seen in Figure 6. This reduces the complexity to a single-producer, multiple-consumer ring buffer. Figure 7 shows the architecture of a single ring with one producer and n consumer applications. A two-phase approach to enqueue and dequeue elements to the ring is used, similar to the mechanisms provided by DPDK [31] and eBPF [32]. In phase one the producer claims memory from the ring buffer, and the application can directly write into this memory without unnecessary memory copies later. In the second phase the producer commits this memory to the ring buffer. A consumer later claims the same memory and can directly operate on the read-only mapped memory. The pointers “Write Head” and “Commit Tail” as shown in the top part of Figure 7, are only updated by a single thread. This, therefore, requires no lock or atomic CAS (Compare-and-Swap) or FAA (Fetch-and-Add) operation, significantly reducing the overhead for the producer. To en-sure that the “Commit Tail” pointer is only moved after the ring buffer cell has been written to, we use Acquire/Release memory order. Since x86 employs the Total Store Ordering (TSO) model, these writes become normal mov instructions.            
+
+> 4. measured with profile-bpfcc to profile user-space and kernel-space Reader thread →ring buffer assignment ( m<N typical)
+> T1T2T3
+> S1S2S3S4S5··· SNFigure 8. Ring buffer assignment
+
+Depending on how the writer should cope with full buffers (as described in Section 4.4), the write head is either moved forward regardless of whether consumers have released their memory, or it returns ENOMEM .As discussed previously, the FIPS IPC supports mul-tiple readers reading the same log messages, with each reader having multiple threads consuming the log messages. Therefore, each reader has a “Read” pointer and a “Re-lease” pointer. A reader can start reading a new message by claiming a new cell, see 1 , which moves the “Read” pointer ahead. This is done via a CaS operation because multiple reading threads are supported and to ensure that the “Read” pointer does not bypass the “Commit Tail”. CaS operations can be expensive, especially under high con-tention. To alleviate this bottleneck, FIPS IPC (a) supports reading in batches (reading multiple log messages at once) and (b) assigns a consumer thread to multiple ring buffers. As visualized in Figure 8, thread T2 is assigned to ring buffer 
+
+S3 and S4. If the CaS operation on ring buffer S3 fails, T2
+
+tries to read a message from an alternative ring assigned to it, i.e. S4 (same color in Figure 8). If work stealing is enabled and none of its assigned rings contain any log messages, the consumer tries to steal work from another ring buffer that belongs to a different thread (different color in the figure). Analyzing string log messages is often done via call-backs (on a match) in the case of Hyperscan [14], or com-pletely in an asynchronous manner. Using asynchronous I/O also requires the ring buffer to handle out-of-order releases. When returning a cell in-order, the release pointer is in-cremented directly without accessing the “Release Queue”. This is shown in 2 for consumer n. Figure 7 shows the state after consumer 1 has returned cell 6 before cell 5. Cell 6, therefore, was not returned directly but the cell index is appended to an ordered “Release Queue”. Next the consumer returned cell 5, it was returned directly without accessing the “Release Queue” protected by a mutex and moving the release pointer to index 6. This situation is shown in Figure 7. If consumer 1 now returns cell 7, a direct return is not possible because the release pointer still points to cell 6. Before adding a cell index to the “Release Queue”, it checks the front of the queue (see 3 ) to see if there are cells that can be returned in-order. Consumer 1, therefore, returns the cell 6 and 7 (see 4 ) and moves the “Release” pointer to cell 8. By returning cell 6 together with cell 7, in-order returns do not need to access the mutex-protected “Release Queue”. This minimizes synchronization overhead for all in order returns, at the cost of a slightly delayed release pointer update. 
+
+4.2. FIPS IPC API for Writers                                                                     
+
+> Listing 1. Example usage of the FIPS IPC for an application writing logs 1%\begin{minted}[fontsize=\footnotesize, breaklines,frame=lines,linenos,
+> 2%framesep=2mm,xleftmargin=1.8em]{c}
+> 3fips_buf_arg_t arg ={
+> 4.role =FIPS_WRITER,
+> 5};
+> 6// Needs to be called once at application startup
+> 7fips_buf_init(&arg, "/path/to/config");
+> 8// Needs to be called once per thread
+> 9fips_buf_thread_arg_t fips_buf_thread_arg = {0};
+> 10 fips_buf_attach(&fips_buf_thread_arg);
+> 11 // Request abuffer to write log message to
+> 12 struct iovec iov[NUM_LOGS_TO_WRITE];
+> 13 fips_get_write_buffer(&fips_buf_thread_arg, iov ,NUM_LOGS_TO_WRITE);
+> 14 // Write log messages to the buffers
+> 15 // ...
+> 16 snprinf(iov[i].iov_base, iov[i].iov_len, "Log Message %d", i);
+> 17 // ...
+> 18 // Commit the written log messages
+> 19 fips_buf_write(&fips_buf_thread_arg, NUM_LOGS_TO_WRITE);
+
+Listing 1 shows example usage of the new IPC for an application, writing logs. First the application must call 
+
+fips_buf_init to set up the shared memory and ring buffers. It does not matter whether the application writing logs or reading logs calls init first. All options can be configured in the argument struct or via a configuration file. The only mandatory argument in the struct is the role of the application, either FIPS_WRITER or FIPS_READER . All other options can be set via the configuration file, making it possible to have one configuration file for both readers and writers. These options include the size of each ring buffer, the number of maximum writer threads and readers. Each thread that wants to write logs must call 
+
+fips_buf_attach to attach its ring buffer to the thread. To write logs the application then requests an arbitrary amount of message buffers to write logs to using fips_get_write_buffer . After writing the log messages to the buffers the application must call 
+
+fips_buf_write to commit the written log messages. Existing applications can also use the syslog API (openlog & syslog ) to write logs via the new FIPS IPC. This can be done by preloading a shared library that overrides the syslog functions and uses the new IPC instead. This method is called “FIPS Syslog”. 
+
+4.3. FIPS IPC API for Readers                                                                        
+
+> Listing 2. Example usage of the FIPS IPC for an application reading logs 1%\begin{minted}[fontsize=\footnotesize, breaklines,frame=lines,linenos,
+> 2%framesep=2mm,xleftmargin=1.8em]{c}
+> 3fips_buf_arg_t arg ={
+> 4.role =FIPS_READER, 5};
+> 6// Needs to be called once at application startup
+> 7fips_buf_init(&arg, "/path/to/config");
+> 8// Needs to be called once per thread
+> 9fips_buf_thread_arg_t fips_buf_thread_arg ={0};
+> 10 fips_buf_attach(&fips_buf_thread_arg);
+> 11 // Request a buffer to read log message from
+> 12 struct iovec iov[NUM_LOGS_TO_READ];
+> 13 int tag = 0; // tag to identify the buffers for return
+> 14 int flags = 0; // blocking read &no workload stealing
+> 15 fips_buf_read(&fips_buf_thread_arg, iov, NUM_LOGS_TO_READ, &tag, flags);
+> 16 // Process the read log messages
+> 17 //process_log_message(iov[i].iov_base, iov[i]. iov_len);
+> 18 // ...
+> 19 // Commit the read log messages
+> 20 fips_buf_return(&fips_buf_thread_arg, tag);
+
+For reading, the initialization process is similar as shown in Listing 2. With fips_buf_read , an arbitrary amount of log message buffers can be requested. After process-ing these read log messages the application must call 
+
+fips_buf_return to return the log message buffers. However, while the writer must commit log buffers in the same order as requested, the reader can return the log buffers in any order. This allows the reader to process log messages in parallel and in an asynchronous manner. For this purpose, each read request also returns a tag that identifies the requested buffers. This tag must be provided when returning the buffers. Internally if a reader returns a buffer out of order the buffer index is stored in a sorted list until all previous buffers have been returned. To reduce the length of the list we always aggregate contiguous returned buffers into a single entry in the list. While the ring buffers themselves are lock-free, the sorted list is protected by a mutex, because multiple reading threads could be returning messages out of order from the same ring buffer. 
+
+4.4. Options for Coping with Full Ring Buffers 
+
+In addition to the configuration options mentioned above, the user can also configure the behavior of the writer if the ring buffer is full. Three options to handle a full ring buffer are supported:  
+
+> •
+
+Drop : The writer receives an ENOMEM error when requesting buffer space and thus most likely drops the message.  
+
+> •
+
+Overwrite: The writer will overwrite the oldest log message in the ring buffer and move the read pointer forward and accordingly update the out of order list.  
+
+> •
+
+Overwrite slow readers: The same as above, but if the fastest reader would be overwritten, the writer receives an ENOMEM error. The overwrite slow readers option allows the fastest reader to at least read all the log messages in the ring buffer, while still allowing the writer to proceed if a reader is too slow. If an application requires that all handled client requests logged, it still can drop the request if the 
+
+fips_get_write_buffer returns with no buffer avail-able. 
+
+## 5. Evaluation 
+
+The evaluation section is structured as follows. (A) FIPS IPC is compared against other logging frame-works used by the state-of-the-art DNS server BIND9. (B) The effect of FIPS IPC on client banning is evaluated. (C) FIPS IPC is also analyzed with the state-of-the-art DNS server BIND9. All measurements are done on servers with an In-tel(R) Xeon(R) Silver 4314 Chip, with 128 GB RAM and ConnectX-6 Dx Cards connected via 100 GBit Ethernet. For the following experiments FIPS IPC uses a fixed maximal log message size of 254 bytes and a total capacity of 217 log messages. BIND9 is configured with one worker per CPU core, resulting in 16 ring buffers with one per BIND9 worker. In our setup with 16 producer, one consumer thread was fast enough to evaluate all written log messages. However, we configured FIPS IPC with a maximum reader count of 2 and a maximal reader thread count of 16 with each thread having a release queue of 1024 entries. Since only one consumer thread ever attached to the new IPC it reads the log messages of all buffers. The figures present the median of 3 measurements. The source code of FIPS IPC, its integration into BIND9 and the measurement artifacts are publicly available 5.
+
+5.1. Comparison to other Logging Frameworks 
+
+To evaluate FIPS IPC, it was integrated into BIND9 twice. The first integration is executed before 
+
+isc_log_doit would have been called. It logs data directly in a binary format without converting elements like IP addresses, timestamps and query information to strings. This reduces the overhead of first converting data into strings and later matching it by regular expressions to convert it back. This version is labeled “FIPS Binary” in Figure 9. The second integration was achieved without any code changes to BIND9 and without the need to recompile BIND9. It is included by preloading a shared object, replacing libc’s openlog and syslog functions with those of FIPS IPC (labeled “FIPS Syslog”). Figure 9 shows the percentage of answered DNS queries and the percentage of logged requests versus the queries per second for different logging frameworks. We compare the two FIPS versions against all available DNS logging options: No Logging, DNSTAP, File Logging, Syslog, and Systemd Journald. The DNS queries were generated by Trex [16] from 255 different IP addresses. The queries requested DNS records of a small zone file with 10 entries. The workload varies from 10,000 up to 10 million packets per second.                      
+
+> 5. https://anonymous.4open.science/r/FIPS-IPC-E03F 10k 100k 1m 10m
+> 0%
+> 20 %
+> 40 %
+> 60 %
+> 80 %
+> 100 %Packets Per Second Requests Replied [%]
+> No Logging Fips Binary Fips Syslog Dnstap File Logging Syslog Logging Systemd Journal
+> 10k 100k 1m 10m
+> 0%
+> 20 %
+> 40 %
+> 60 %
+> 80 %
+> 100 %Packets Per Second Requests Logged [%] Figure 9. Logging Performance Comparison of BIND9 without Banning Clients 0246810 12 0%
+> 20 %
+> 40 %
+> 60 %
+> 80 %
+> 100 %×2.5over 99%
+> Time [s] Packets [%]  Fips Pkts Drop Fips Pkts Pass File Pkts Drop File Pkts Pass Fips Replies File Replies
+> Figure 10. IPC Impact on Ban Speed of simple-Fail2Ban
+
+The figure demonstrates that FIPS IPC incurs almost no performance loss compared to no logging. While DNSTAP logging shows similar performance, the number of logged messages is significantly lower, as can be seen on the right side of the figure. FIPS Syslog shows the advantages of the FIPS IPC even when using the syslog API and, in the case of BIND9, being serialized by a mutex. For all other logging frameworks, the performance is identical to those presented in Figure 5. The number of logged requests is also identical to the number of answered requests for all logging frameworks except for DNSTAP and no logging. This highlights the performance benefit of FIPS IPC com-pared to other logging frameworks. 
+
+5.2. Impact on the IPS 
+
+To analyze the impact of the FIPS IPC, we need to eliminate the performance bottleneck Fail2Ban. We there-fore have written a fast test IPS called simple-Fail2Ban. It mimics the main features of Fail2Ban. It is written in C instead of Python. It uses Hyperscan [14] for fast multi pattern matching instead of Python’s regex engine. Instead of storing clients in a SQLite database it uses multiple hash tables to store clients and ban times. For all further evalu-ations our simple-Fail2Ban implementation is used instead of Fail2Ban. For the evaluation with IPS simple-Fail2Ban we used file logging as base line, as its the most prevelent logging option. In Figure 10 we evaluate how the IPC influences the time an IPS needs to ban all DoS IP addresses. We used the same ban limit of 3 and ban duration of 60 seconds as in Section 2.1. To stress the new IPC 3,000,000 packets per seconds from a /16 subnet were generated. Additionally, a baseload of 50,000 packets per seconds from a whitelisted /24 subnet was send. Figure 10 shows, for file logging and FIPS IPC, the percentage of packets dropped and passed by the IPS. The Figure 10 also depicts how many of the 50,000 requests of the whitelisted clients are replied by BIND9. The response rate of FIPS IPC to valid clients is 2.5× faster over 99% than with file logging. While FIPS reaches 99.5% at the 2.8s mark, file logging only reaches this value after 7.1s. The figure also shows that with file logging, the average response rate is only 3.2% before any attackers are banned (see “File Replies”). In contrast, FIPS IPC achieves an average response rate of 29.95% before any attackers are banned (see “FIPS Replies”). Figure 11 shows the influence of the new IPC on the whole system. The left plot shows the response rate of the whitelisted clients of BIND9 with varying number of spoofed attack addresses. The whitelisted clients send 50 000 
+
+requests per second, while the attacker sends a total of 
+
+1 000 000 requests per second. While Fail2Ban struggled with 1024 clients sending 100 000 requests (see Section 2), the FIPS IPC with simple-Fail2Ban easily handles 216 
+
+clients sending 1 million requests per second. The plot also shows the performance of FIPS Syslog on the whole system. This shows the overhead of the lock in BIND9 
+
+isc_log_doit function and the conversion to and from strings. While FIPS Syslog cannot handle 216 DoS clients it shows the advantage of an IPC bypassing the kernel compared to file logging. After 214 clients the system with file logging answers less than 20% of the valid requests. Furthermore, the right side of Figure 11 shows that file log-ging experiences the same degradation as shown in Figure 3 with increasing ban cycles. In contrast FIPS IPC is able to keep up with the log volume. In summary, our experiments show that, once a high-performance IPS which uses alternatives such as eBPF for packet filtering and Hyperscan for pattern matching is in place, the logging subsystem becomes the dominant bottle-212 213 214 215 216 217           
+
+> 20 40 60 80 100
+> Number of Clients Replied Packets [%]
+> Fips Binary Fips Syslog File
+> 050 100 150 200 250 300 350 00.20.40.60.81
+> Time [s] Packets [%]
+> Fips Drop Fips Pass File Drop File Pass Figure 11. Percentage of DNS Replies (left) and Percentage of Packets dropped and passed by simple-Fail2Ban (right)
+
+neck which can be eliminated by the FIPS IPC. 
+
+## 6. Discussion 
+
+In this work, we showed the problems of existing log-ging frameworks for IPS systems using BIND9 as an exam-ple. Since the FIPS IPC can be used transparently by any application supporting the syslog API or by directly using the FIPS API, it can also be used by other applications. However, the performance impact might vary depending on the workload generated by each request. Applications with a high workload per request might see less of a performance impact. However, in our analysis the high-performance web server nginx also spend 50% of CPU time writing query logs when serving static files. This shows the potential of the new logging IPC. io uring, the asynchronous file I/O API of Linux, also relies on ring buffers. While io uring has shown a significant performance improvements for file I/O [33], it still relies on syscalls ( io_uring_enter ) to submit and complete I/O operations [34], which increases overhead compared to shared-memory-based approaches. Furthermore, io uring has been disabled by default for multiple popular projects like Docker, Android and ChromeOS because of security concerns [35–37]. While shared memory solutions might also introduce security concerns by making reading applica-tion transitionally vulnerable from writing applications, the scope is limited to these applications and does not apply to the Linux kernel. Our evaluation has shown the benefit of the FIPS IPC. In cooperation with an IPS, BIND9’s ability to cope with DoS attacks has improved significantly. The integration into BIND9 is just 179 lines of code 6, showing how easily a new logging IPC can be integrated into existing software. Furthermore, the ability to be integrated via the widely used Syslog API allows effortless integration into existing software. 
+
+> 6. measured with git diff
+
+## 7. Future Work 
+
+FIPS IPC has increased the answer rate performance while under attack by 6 × compared to file logging. How-ever, the results presented in this work did not go beyond 3,000,000 requests per second. Current network interfaces already support 400 Gbps, and 800 Gbps is on the horizon, making it necessary to further investigate IPS performance at higher network speeds. In future work, we want to analyze the impact of FIPS IPC on TCP applications like nginx. This is currently not included because Trex, the used load generator, has trouble generating stateful TCP traffic, when packets are dropped by an IPS. 
+
+## 8. Conclusion 
+
+In this work, we examined the components of a host-based IPS pipeline and showed that, once high-performance alternatives such as eBPF for packet filtering and Hyper-scan [14] for pattern matching are in place, the logging sub-system becomes the dominant bottleneck. Using Fail2Ban together with BIND9 as a case study, we demonstrated that an attacker can defeat widely deployed IPS setups with as little as 65 Mbps of DNS traffic, simply by overwhelming the file-, syslog-, or journald-based log path. To address this gap, we introduce FIPS IPC, an IPC tailored to high-performance application logging. FIPS IPC bypasses the kernel by using per-thread lock-free shared-memory ring buffers, supports multiple independent con-sumers reading the same stream at their own pace, and minimizes memory copies. A drop-in replacement for the syslog API allows existing applications to benefit from FIPS without source-code changes. The simple native API ex-poses the full functionality to applications, further allowing them to reduce overhead by logging data in a binary format. Our evaluation with BIND9 showed that the FIPS IPC introduces almost no overhead compared to fully disabled logging and consistently logs more requests than any other evaluated framework. When combined with an IPS, FIPS enables malicious clients to be banned 2.5× faster than with file logging and sustains workloads of 216 attacking clients at one million requests per second, well beyond the regime in which conventional logging backends collapse. These results indicate that the logging IPC, rather than the detection logic, deserves closer attention as link speeds continue to grow toward 400 and 800 Gbps. 
+
+## References 
+
+[1] S. Petrescu, F. Den Hengst, A. Uta, and J. S. Rellermeyer, “Log pars-ing evaluation in the era of modern software systems,” in 2023 IEEE 34th International Symposium on Software Reliability Engineering (ISSRE), 2023, pp. 379–390. [2] The Apache Software Foundation, “Apache HTTP server project,” 2026, accessed: 2026-05-29. [Online]. Available: https://httpd.apache. org/ [3] I. S. Consortium, “Bind 9 dns server,” https://www.isc.org/bind/. [4] F5, Inc. and I. Sysoev, “nginx,” 2026, accessed: 2026-05-29. [Online]. Available: https://nginx.org/ [5] R. Gerhards, “The Syslog Protocol,” RFC 5424, Mar. 2009. [Online]. Available: https://www.rfc-editor.org/info/rfc5424 [6] Carbon Black, “Global Incident Response Threat Report: The Omi-nous Rise of “Island Hopping” & Counter Incident Response Con-tinues,” Tech. Rep., Apr 2019. [7] A. Ahmad, S. Lee, and M. Peinado, “Hardlog: Practical tamper-proof system auditing using a novel audit device,” in 2022 IEEE Symposium on Security and Privacy (SP), 2022, pp. 1791–1807. [8] V. Gandhi, S. Banerjee, A. Agrawal, A. Ahmad, S. Lee, and M. Peinado, “Rethinking system audit architectures for high event coverage and synchronous log availability,” in 32nd USENIX Security Symposium (USENIX Security 23). Anaheim, CA: USENIX Association, Aug. 2023, pp. 391–408. [Online]. Available: https: //www.usenix.org/conference/usenixsecurity23/presentation/gandhi [9] V. T. Hoang, C. Wu, and X. Yuan, “Faster yet safer: Logging system via Fixed-Key blockcipher,” in 31st USENIX Security Symposium (USENIX Security 22). Boston, MA: USENIX Association, Aug. 2022, pp. 2389–2406. [Online]. Available: https: //www.usenix.org/conference/usenixsecurity22/presentation/hoang [10] R. Paccagnella, K. Liao, D. Tian, and A. Bates, “Logging to the danger zone: Race condition attacks and defenses on system audit frameworks,” in Proceedings of the 2020 ACM SIGSAC Conference on Computer and Communications Security, ser. CCS ’20. New York, NY, USA: Association for Computing Machinery, 2020, p. 1551–1574. [Online]. Available: https://doi.org/10.1145/3372297. 3417862 [11] V. Karande, E. Bauman, Z. Lin, and L. Khan, “Sgx-log: Securing system logs with sgx,” in Proceedings of the 2017 ACM on Asia Conference on Computer and Communications Security, ser. ASIA CCS ’17. New York, NY, USA: Association for Computing Machinery, 2017, p. 19–30. [Online]. Available: https://doi.org/10.1145/3052973.3053034 [12] A. Sinha, L. Jia, P. England, and J. R. Lorch, “Continuous tamper-proof logging using tpm 2.0,” in Trust and Trustworthy Computing, T. Holz and S. Ioannidis, Eds. Cham: Springer International Pub-lishing, 2014, pp. 19–36. [13] R. Sommese, K. Claffy, R. van Rijswijk-Deij, A. Chattopadhyay, A. Dainotti, A. Sperotto, and M. Jonker, “Investigating the impact of ddos attacks on dns infrastructure,” in Proceedings of the 22nd ACM Internet Measurement Conference, ser. IMC ’22. New York, NY, USA: Association for Computing Machinery, 2022, p. 51–64. [Online]. Available: https://doi.org/10.1145/3517745.3561458 [14] X. Wang, Y. Hong, H. Chang, K. Park, G. Langdale, J. Hu, and H. Zhu, “Hyperscan: A fast multi-pattern regex matcher for modern CPUs,” in 16th USENIX Symposium on Networked Systems Design and Implementation (NSDI 19). Boston, MA: USENIX Association, Feb. 2019, pp. 631–648. [Online]. Available: https://www.usenix.org/conference/nsdi19/presentation/wang-xiang [15] Fail2Ban, “Project fail2ban,” https://github.com/fail2ban/fail2ban, 2014. [16] H. Haim, “Test your limits with TRex traf-fic generator,” in Proceedings of Netdev 0x14, The Technical Conference on Linux Networking, August 2020. [Online]. Available: https://netdevconf.info/0x14/session.html? talk-test-your-limits-with-trex-traffic-generator [17] R. Marx, L. Niccolini, M. Seemann, and L. Pardue, “qlog: Structured Logging for Network Protocols,” Internet Engineering Task Force, Internet-Draft draft-ietf-quic-qlog-main-schema-13, Oct. 2025, work in Progress. [Online]. Available: https://datatracker.ietf. org/doc/draft-ietf-quic-qlog-main-schema/13/ [18] R. Edmonds. (2013) dnstap. [Online]. Available: https://dnstap.info/ [19] J. Jeong, “High performance logging system for embedded unix and gnu/linux applications,” in 2013 IEEE 19th International Conference on Embedded and Real-Time Computing Systems and Applications, 2013, pp. 310–319. [20] Google, “Protocol buffers,” https://github.com/protocolbuffers/ protobuf, 2008, accessed: 2026-06-03. [21] Farsight Security, “fstrm: Frame streams implementation in c,” https: //github.com/farsightsec/fstrm, 2021, accessed: 2026-06-03. [22] L. Torvalds et al., “Linux Kernel Circular Buffer (kfifo),” https:// github.com/torvalds/linux, 2026, accessed: 2026-06-03. [23] DPDK Project, “Data Plane Development Kit (DPDK),” https://www. dpdk.org/, 2026, accessed: 2026-06-03. [24] R. Nikolaev, “A Scalable, Portable, and Memory-Efficient Lock-Free FIFO Queue,” in 33rd International Symposium on Distributed Computing (DISC 2019), ser. Leibniz International Proceedings in Informatics (LIPIcs), J. Suomela, Ed., vol. 146. Dagstuhl, Germany: Schloss Dagstuhl – Leibniz-Zentrum f¨ ur Informatik, 2019, pp. 28:1–28:16. [Online]. Available: https://drops.dagstuhl.de/ entities/document/10.4230/LIPIcs.DISC.2019.28 [25] Meta Platforms, Inc., “Folly: An open-source C++ library developed and used at Facebook,” https://github.com/facebook/folly, 2026, ac-cessed: 2026-06-03. [26] Boost Community, “Boost C++ Libraries,” https://www.boost.org/, 2026, accessed: 2026-06-03. [27] J. Wang, D. Behrens, M. Fu, L. Oberhauser, J. Oberhauser, J. Lei, G. Chen, H. H¨ artig, and H. Chen, “BBQ: A block-based bounded queue for exchanging data and profiling,” in 2022 USENIX Annual Technical Conference (USENIX ATC 22). Carlsbad, CA: USENIX Association, Jul. 2022, pp. 249–262. [Online]. Available: https://www.usenix.org/conference/atc22/presentation/wang-jiawei [28] M. Thompson, D. Farley, M. Barker, P. Stewart, and A. Pratt, “Disruptor: High performance alternative to bounded queues for exchanging data between concurrent threads,” LMAX Exchange, Tech. Rep., 2011. [Online]. Available: https://lmax-exchange.github. io/disruptor/files/Disruptor-1.0.pdf [29] Chronicle Software, “Chronicle ring,” https://chronicle.software/ insights/blogs/chronicle-ring-vs-lmax-disruptor, Oct 2021, accessed: 2026-06-03. [30] H. Schweizer, M. Besta, and T. Hoefler, “Evaluating the cost of atomic operations on modern architectures,” in 2015 International Conference on Parallel Architecture and Compilation (PACT), 2015, pp. 445–456. [31] DPDK Project, “rte ring peek zc.h File Reference,” https://doc.dpdk. org/api/rte ring peek zc 8h.html, 2026, accessed: 2026-06-11. [32] The kernel development community, “BPF ring buffer,” https://www. kernel.org/doc/html/latest/bpf/ringbuf.html, 2026, accessed: 2026-06-11. [33] M. Jasny, M. El-Hindi, T. Ziegler, V. Leis, and C. Binnig, “High-performance dbmss with io uring: When and how to use it,” 2025. [Online]. Available: https://arxiv.org/abs/2512.04859 [34] L. Kernel, “io uring,” https://man7.org/linux/man-pages/man7/io uring.7.html. [35] T. Koczka, “ Learnings from kCTF VRP’s 42 Linux ker-nel exploits submissions ,” https://security.googleblog.com/2023/06/ learnings-from-kctf-vrps-42-linux.html, 2023. [36] P. Estes, “Update runtimedefault seccomp profile to disallow io uring related syscalls,” https://github.com/containerd/containerd/pull/9320, 2023. [37] W. He, H. Lu, F. Zhang, and S. Wang, “Ringguard: Guard io uring with ebpf,” in Proceedings of the 1st Workshop on EBPF and Kernel Extensions, ser. eBPF ’23. New York, NY, USA: Association for Computing Machinery, 2023, p. 56–62. [Online]. Available: https://doi.org/10.1145/3609021.3609304
