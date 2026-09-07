@@ -1,0 +1,605 @@
+Title: Hoss: Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture
+
+URL Source: https://arxiv.org/pdf/2609.04522v1
+
+Published Time: Mon, 07 Sep 2026 00:17:01 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Hoss: Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture 
+
+# Jianzhang Du ∗
+
+# Weijie Huang ∗
+
+# Chenghong Wang 
+
+Indiana University {du5,wh25,cw166}@iu.edu 
+
+# Nicolas Tsagareli Yukui Luo 
+
+ntsagareli@binghamton.edu yluo11@binghamton.edu Binghamton University 
+
+# XiaoFeng Wang 
+
+Nanyang Technological University xiaofeng.wang@ntu.edu.sg 
+
+# Zhongshu Gu 
+
+IBM Research zgu@us.ibm.com 
+
+## Abstract 
+
+Semantic search is widely deployed in modern AI systems, but pro-tecting both data contents and access patterns remains challenging. The current state-of-the-art system, Compass, achieves oblivious se-mantic search by building an optimized ORAM over HNSW graphs. However, even with aggressive optimizations, it still incurs large overheads. Closing this performance gap is fundamentally difficult: Compass has already removed most cryptographic overheads, leav-ing ORAM accesses as the dominant cost, which are constrained by well-known Ω(log 𝑁 ) bandwidth lower bounds. Our key insight is that traditional ORAM overhead stems from the assumption of limited private memory, whereas modern GPU TEEs provide large private memory ( Pmem ) that blinds internal access patterns ( Hunt et al., NSDI’23 ). This shift opens a new de-sign space. We therefore propose Hoss, a first-of-its-kind oblivi-ous semantic search system with a heterogeneous CPU–GPU TEE architecture that supports fast, scalable search with low cost of ownership. In Hoss, the GPU TEE’s large Pmem hosts the hot-path HNSW traversal, while the lower layers of the graph, if exceeds GPU capacity, are offloaded to CPU TEEs. The system invokes oblivious primitives only when accessing these lower layers. The availability of large Pmem also enables new optimization opportu-nities. For example, Hoss features a host-access ORAM mechanism that goes beyond traditional performance constraints, and incorpo-rates several data-dependent optimizations that are not possible in prior designs. We implement a prototype of Hoss and benchmark it against Compass. Our result shows that Hoss achieves up to 99 ×
+
+speedup while maintaining high recall, with larger gains at scale. 
+
+## CCS Concepts 
+
+• Security and privacy → Operating systems security ; Dis-tributed systems security ; Hardware security implementation ; • 
+
+Computer systems organization → Distributed architectures .
+
+## Keywords 
+
+Oblivious semantic search, confidential computing, GPU TEE, ORAM 
+
+## 1 Introduction 
+
+Semantic search [15, 29, 44, 87, 89, 107, 116, 138] maps queries and data into a shared embedding space and retrieves results by similar-ity. It has become a core primitive in modern AI systems, support-ing recommendation engines [22], retrieval-augmented generation 
+
+> ∗The first two authors contributed equally to this research.
+
+(RAG) [52], and personalized search [80]. It is also critical in phar-macology, chemistry, and biomedicine, where it enables similarity-based discovery over chemical compounds, molecular structures, genetic sequences, and patient records. However, existing cloud deployments are unsuitable for these high-stakes domains because of privacy, trust, and proprietary constraints. Most systems oper-ate on plaintext, exposing both queries and embeddings to service providers. Although encrypted search techniques [36, 38, 39, 132] support queries over encrypted data, they do not eliminate leakage in semantic retrieval: because search is data-dependent, observ-able memory-access patterns can still reveal structural information about query semantics and user intent [21, 42, 72, 148]. Recent work addresses this leakage through data-oblivious re-trieval [28, 46, 69, 77, 147, 148]. However, most approaches either incur high overhead from heavy cryptographic primitives such as fully homomorphic encryption or garbled circuits [28, 46, 69, 77], or remain largely theoretical [50, 147]. Compass [148], the state of the art, provides end-to-end oblivious semantic search with reasonable accuracy and scalability by building an optimized ORAM for HNSW indexes [87]. Yet even with extensive optimizations, Compass still incurs seconds-level latency on million-scale datasets at roughly 0.9 recall, whereas plaintext systems can achieve > 0.95 recall with microsecond-level latency [112]. Closing this gap is fundamentally difficult: Compass already removes most heavy cryptographic costs, leaving ORAM accesses as the dominant bottleneck, as also ob-served in other oblivious data-processing systems [26, 91, 123, 145]. Given the well-known lower bounds of ORAMs [54], the remaining room for optimization is limited. 
+
+A new opportunity. Recent GPU-based Trusted Execution Envi-ronments (TEEs) [35] open up a new opportunity. TEEs provide hardware-isolated execution that sandboxes sensitive code and data from the rest of the software stack. They have been widely used to build secure retrieval systems [3, 26, 47, 91, 123, 146]. Traditional CPU TEEs still rely on ORAM to achieve strong obliviousness. This is because memory access patterns can leak through shared mi-croarchitectural states to co-located tenants [58, 74], or be inferred by adversaries observing memory traces [34]. However, GPU TEEs have changed this landscape. Unlike CPUs, GPUs execute kernels in a more dedicated manner. GPU TEEs default to a full-device pass-through mode [103], dedicating the entire GPU as an enclave to a single tenant. This minimizes cross-tenant interference. More-over, modern GPUs integrate on-package 3D-stacked memory (e.g., 80GB of HBM [102]) tightly coupled with compute cores. There are no exposed external memory channels. As a result, even physical snooping of memory traffic becomes extremely hard [61, 103, 127]. arXiv:2609.04522v1 [cs.CR] 3 Sep 2026 CCS ’26, November 15-19,2026, Netherlands 
+
+In classical ORAM studies, dedicated (non-shared), on-package memory is assumed to serve as private memory ( Pmem ), whose access patterns are not visible to the adversary [55]. In CPU settings, however, only registers satisfy this requirement, so that prior ORAM studies to assume merely 𝑂 (1)-sized Pmem [10, 55]. GPU TEE’s iso-lated HBM meets the same requirement—it is on-package and dedi-cated to a single trusted workload—making it reasonable to treat as a much larger Pmem . Both industry [102] and academia [127] have recognized this capability. Recently, it has led to a new class of oblivious systems [62, 67] and opens a new design point that reduces the traditional “ORAM tax.” 
+
+The problem of this work. Our key insight is that large Pmem in GPU TEEs reshapes the design space of oblivious semantic search. We therefore explore how to leverage this capability to rethink existing designs and ask the following central question: Can Pmem 
+
+in GPU TEEs enable new system designs that match the security of ex-isting oblivious semantic search (e.g., Compass), but with significantly lower overhead? More concretely, we follow a setting as Compass, focusing on HNSW-based semantic search, a top-performing and widely adopted method with strong accuracy in practice 1 [87, 148]. HNSW organizes embeddings into a multi-layer graph, where nodes at each layer is an embedding instance and form a subset of the layer below, with the bottom layer containing all embeddings. Search follows a greedy, layer-by-layer descent, using upper layers for coarse routing and lower layers for fine-grained nearest neighbor refinement. Building on this basis, our goal is to leverage Pmem in modern GPU TEEs to build a secure outsourced retrieval system that, upon receiving a query from the data owner, efficiently tra-verses the HNSW graph to locate the top similar embeddings. The system must protect both the contents of the data and the mem-ory access patterns during HNSW graph traversal. We also seek the system to maintain high recall rate (accuracy goal, G-1 ), low search latency (performance goal, G-2 ), and scalable to real-world datasets with Gigabytes or even Terabytes embeddings (scalability goal, G-3 ). In addition, we aim to keep the total cost of ownership (TCO) low when leveraging GPUs (cost goal, G-4 ). 
+
+Unique challenges. Despite the availability of large Pmem , achiev-ing the above goals together require non-trivial designs. For exam-ple, meeting G-3 with a single GPU TEE is challenging, as real-world semantic datasets can easily exceed the HBM capacity of one GPU (e.g., 80 GB on an H100). A straightforward approach is to scale out to multi-GPU TEE deployments [102]. However, data retrieval work-loads, including semantic search, are inherently memory-bound rather than compute-bound [78], so scaling out often leads to under-utilized compute resources. Moreover, GPU TEE compute resources cannot be flexibly shared across workloads, further inflating TCO and making it difficult to satisfy G-4. 
+
+## 1.1 Our Contributions 
+
+To address these challenges and meet our design goals, we propose Hoss, the first Heterogeneous-TEE-based system for Oblivious 
+
+Semantic Search. Figure 1 provides an overview of the system. At its core, Hoss adopts a heterogeneous design and avoids relying on 
+
+> 1That said, our approach is not limited to HNSW and can be extended to other hierar-chical graph index methods (see § 7).
+
+Figure 1: Hoss overview. 
+
+multi-GPU TEEs. It offloads the HNSW graph, especially the lower layers, to the host CPU TEE, which offers a much larger secure memory space (e.g., up to terabytes). We partition the graph by layers, as the hierarchical structure of HNSW provides clean bound-aries for both data and search. This layer-wise offloading simplifies both the system and the search algorithm. The upper-layer search runs entirely within the GPU TEE’s Pmem , which allows fast data-dependent operations on the hot path. When the search descends to the lower layers, the system accesses host memory through a special ORAM controller inside the GPU TEE. With this design, all outsourced data remains protected within TEEs: data-dependent accesses are confined to the GPU TEE’s Pmem , while accesses to host memory are made oblivious. As such, both data contents and access patterns are protected, and meets our security goals. The heterogeneous design also lets the system scale to terabyte-scale datasets (G-3) with only a single GPU (G-4). In addition, the large 
+
+Pmem provides us opportunities to introduce new ORAM designs that avoid traditional bottlenecks. This plays a key role in achieving efficient query capability (G-2) without lowering recall (G-1). We summarize our technical contributions below: 
+
+• Architecture. We propose the first heterogeneous TEE-based oblivious semantic search system that delivers high efficiency, accuracy, and scalability while maintaining low TCO. 
+
+• Storage layout. We propose a sorted, linear table representa-tion for HNSW graphs that largely reduces heavy pointer-based adjacency structures, and enables efficient GPU execution and ORAM mapping. We map this logical design to concrete storage layouts across CPU and GPU TEE environments. 
+
+• Execution model. We propose a self-hosted execution model that repurposes CPU bypassing for security. Instead of using the CPU to orchestrate execution, the GPU maintains all query state and control flow, which reduces host interference. 
+
+• New ORAM. The large Pmem in GPU TEEs (e.g., 𝑂 (𝛼 · 𝑁 ), where 
+
+𝛼 > 0 and 𝑁 denotes the total data size) opens new opportu-nities for ORAM design. We introduce an ORAM mechanism that supports access to host memory with only 𝑂 
+
+ log 𝑁  
+
+> log log 𝑁
+
+
+
+band-width overhead. In contrast, under the traditional ORAM model with 𝑂 (1) Pmem , the lower bound is Ω (log 𝑁 ). We further opti-mize the design with a secure coalescing mechanism and provide theoretical analysis to validate its security and bandwidth gains. Hoss : Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture CCS ’26, November 15-19,2026, Netherlands 
+
+• Prototype and evaluation. We implement Hoss in CUDA C++ with 8.1K lines of code and conduct a comprehensive evaluation against the SOTA systems. Our results show that Hoss achieves up to 99 × speedup and delivers larger gains at scale, with im-provements increasing for larger datasets. 
+
+## 2 Background 2.1 Similarity Search 
+
+Similarity search is a prominent method for retrieving data from large databases. It is extensively used in search [64] and recommen-dation systems [73]. Recently, it has become increasingly prevalent in critical fields such as biomedical research, pharmaceutical discov-ery [30, 81], and chemical informatics [82, 134]. In similarity search, entities such as images, documents, or molecules are mapped into high-dimensional vectors - embeddings - and retrieval is performed by finding nearest neighbors under a distance metric. Semantic search is a prominent instance of similarity search that captures semantic meaning learned from data. Finding exact nearest neighbors becomes computationally in-tractable at large scale and high dimensionality, making exhaustive search impractical in real-world deployments. This is addressed by adopting approximate nearest neighbor (ANN) search techniques, which sacrifice a small amount of accuracy for substantially greater efficiency. ANN methods use specialized indexing structures to accelerate queries without scanning all data points. Indexing strate-gies developed over the years include tree-based methods [18, 19], locality-sensitive hashing [120], vector quantization [136], and graph-based approaches [88]. Among these, graph-based meth-ods have received substantial attention due to their strong accuracy, high performance, and applicability across diverse workloads. 
+
+HNSW [87] is one of the most popular and effective graph-based ANN indexing methods [13, 148]. It organizes data points in a multi-level graph, where higher layers give a coarse overview and lower layers capture finer neighborhoods. Search starts at an entry node on the top layer and moves down level by level. At upper levels, a greedy walk follows a single best candidate, steering the query toward relevant regions. At the bottom layer, the search expands into a dynamic candidate list of size ef , exploring multiple paths instead of just one. ef is a key parameter - it controls how broadly the algorithm explores at the base layer, directly trading off accuracy against latency. A bigger ef means more candidates are checked, giving higher recall but costing more compute. 
+
+## 2.2 TEEs and ORAMs 
+
+TEEs and access pattern leakages. TEEs are hardware-protected regions of a processor that ensure code and data loaded inside them remain isolated from the rest of the system, including privileged software such as the operating system or hypervisor. Examples include Intel TDX and AMD SEV. While TEEs guarantee confi-dentiality and integrity of enclave memory, a notorious security pitfall is the access pattern leakage : the sequence of memory op-erations (e.g., Load and Store ) performed by enclave programs can still be inferred by a malicious observer. Access pattern leak-age arises in two primary ways. First, adversaries may exploit 
+
+shared microarchitectural resources such as caches, branch predic-tors, or TLBs to infer sensitive program behavior through timing differences [48, 58, 74, 140]. Second, even if on-chip state is pro-tected [139], external memory channels remain visible: DRAM buses, PCIe links, DMA buffers, and even board-level copper traces can all be snooped or tampered with [59, 66, 109, 149]. ANN searches exhibit highly data-dependent memory traces, which makes them especially susceptible to access-pattern leak-ages [70, 148]. Hence, relying solely on CPU TEEs to secure these algorithms is insufficient. 
+
+ORAMs. ORAM [10, 12, 20, 43, 54, 93, 117, 122, 145] is a cryp-tographic primitive designed to hide memory access patterns in the RAM model. In its simplest form, memory is modeled as a se-quence of address-value pairs (addr 𝑖 , 𝑣 𝑖 ) with consecutive integer addresses. An ORAM ensures that every read or write operation re-sults in a pseudorandom sequence of physical accesses, preventing an adversary from learning which exact memory line was targeted. Oblivious Maps (OMAPs) [26, 62, 91, 145] generalize this notion to key-value stores with arbitrary keys (e.g., strings, sparse indexes) but comes with additional costs, typically in I/O bandwidths. Traditional ORAMs follow a client-server model [122], where a trusted client is responsible for memory obfuscation tasks such as shuffling and remapping memory blocks, while the server merely stores encrypted in-memory data. This design, however, imposes significant client-side overhead and high communication costs. To our knowledge, the only oblivious ANN system, Compass [148] is built upon this costly setup. Modern ORAMs reduce this burden by using CPU TEEs as the trusted controller and manages its private memory in ORAM subroutines. Unfortunately, even the obfuscation logic itself can leak critical access patterns. To address this, Mishra et al. introduced the notion of doubly-obliviousness (DO) [91], which requires concealing the access patterns of both the data and the ORAM control program. In this work, we adopt the DO outsourcing paradigm as our default model and refer to it simply as obliviousness .
+
+GPUs and GPU TEEs. Modern GPUs expose massive parallelism through thousands of hardware threads organized into stream-ing multiprocessors (SMs). Threads execute in lockstep groups called warps (32 lanes on NVIDIA GPUs), where all lanes follow the same instruction stream [71]. Warps are further grouped into cooperative thread arrays (CTAs) that share fast on-chip scratch-pad memory, and persistent kernels can keep CTAs resident to sustain high throughput. This execution model strongly favors structured, SIMD-style computation [71]. When threads within a warp diverge due to branches, execution becomes serialized, re-ducing efficiency [99, 126]. Similarly, irregular memory accesses degrade bandwidth utilization. As a result, GPUs perform best with uniform control flow and coalesced memory accesses, and tend to perform poorly with branch-heavy or irregular workloads [99]. Recent work has extended TEEs beyond CPUs to accelerators, most notably GPUs [67, 86, 103, 127]. While the original motivation was largely performance-driven, researchers have observed that GPU TEEs also provide strong resistance to access-pattern leakage due to their architectural design [62, 67, 127]. First, GPUs are typ-ically dedicated to a single tenant during secure execution [103], avoiding the microarchitectural resource sharing that enables many side channels on CPUs. Second, modern GPU TEEs incorporate CCS ’26, November 15-19,2026, Netherlands 
+
+large on-package HBM. Unlike CPU TEEs, where traffic to external DRAM remains observable, GPU HBM is integrated directly on the package and cannot be externally snooped. As a result, memory accesses within GPU HBM are effectively hidden even from a phys-ical adversary [61, 62, 67, 127]. Guo et al. [62] recently introduced a new ORAM design that exploits secure HBM, breaking through the long-standing bandwidth lower bound of traditional ORAMs. 
+
+## 3 Threat Models & Security Goals 
+
+We formulate our system in the standard secure outsourced com-puting model. At a high level, the framework involves three logical entities: (i) a data owner , who possesses a semantic dataset 𝐷 (in HNSW graph style) and wishes to outsource its storage and search to an untrusted cloud; (ii) a cloud server , which manages computing resources (including TEEs) to deliver confidential semantic search services; and (iii)a vetted analyst , authenticated to access 𝐷 , who issues a semantic query Search (𝑞, 𝐷, 𝑘 ) to retrieve the top-𝑘 em-beddings in 𝐷 that are most similar to the input query 𝑞 . This work focuses on secure search over a pre-built HNSW index (e.g., by the data owner), as efficient oblivious HNSW search is already a non-trivial challenge. Other index-management primitives, such as insertion and deletion, naturally build upon the same search primitive and are discussed in § 7. 
+
+## 3.1 Threat Model 
+
+We adopt the same threat model as prior accelerator TEE work [62, 67, 127] and industry specifications [103]. We trust the cloud provider’s organizational integrity but treat its software stack, administrators, and co-located tenants as untrusted. The adversary is powerful: it may compromise any software layer and obtain physical access to hardware, enabling passive observation of off-chip channels. In particular, we assume all exposed interconnects, including DMA buffers [59], host DRAM [34, 109], and PCIe links [66], can be snooped. We exclude chip-level attacks such as depackaging or probing silicon interposers [103], as well as active physical side channels (e.g., power analysis [76, 137] and electromagnetic em-anations [56]) that require invasive access, such as remove heat sinks and unseal chip packages, and are impractical in data center settings. We also assume the GPU TEE operates in full passthrough mode and is dedicated to a single program (e.g., Hoss), as is typ-ical in current deployments [103]; therefore, co-location attacks that rely on sharing a GPU with a victim [6, 95, 96, 141, 142] are out of scope. We do not consider availability attacks [85], covert channels [90], as they’re not targeting the confidential computing guarantees. We also do not consider attacks via malicious user in-puts [63], as these fall outside the threat model of secure outsourced computing, where users are assumed to be data owners themselves or their authorized users. Lastly, we assume the attacker cannot break symmetric or public-key cryptosystems. 
+
+## 3.2 Security Goals 
+
+We follow the standard obliviousness definitions used in many ORAM papers [10, 117, 122]. We slightly adapt it in the context of semantic searches. Intuitively, given an HNSW graph dataset 𝐷 and a query 𝑞 , we define path (𝑞, 𝐷 ) ← Ð𝑘 𝑖 =0 r𝑖 as the logical traversal path for answering 𝑞 , where r𝑖 denotes the sequence of logical node accesses at layer 𝑖 of the HNSW graph. Our security notion requires that for any two queries 𝑞 and 𝑞 ′ with the same traversal lengths, i.e., ∀𝑖 ∈ { 0, . . . , 𝑘 }, |r𝑖 | = |r′ 
+
+> 𝑖
+
+|, no probabilistic polynomial-time (p.p.t.) adversary in our threat model can distinguish between their executions by observing the leakage transcripts. This is analogous to classical ORAM definitions, where security is defined over logical access sequences of same length [122]. Specifically, 
+
+Definition 3.1 (Obliviousness in HNSW search). For any p.p.t. ad-versary A, and for any two queries 𝑞 and 𝑞 ′ over the same HNSW data 𝐷 , such that ∀𝑖 ∈ { 0, . . . , 𝑘 }, |r𝑖 | = |r′ 
+
+> 𝑖
+
+|, we have 
+
+|Pr [A ( View (𝑞, 𝐷 )) = 1] − Pr [A ( View (𝑞 ′, 𝐷 )) = 1]| ≤ negl (𝜆 ),
+
+where View (·) is the leakage transcript, and negl (𝜆 ) denotes a neg-ligible probability under the security parameter 𝜆 .
+
+## 3.3 Infrastructure Assumptions 
+
+We make several infrastructure-level assumptions. First, GPU TEE memory is limited: the footprint of ANN indexes–including both structural metadata and embeddings–can exceed the capacity of a single GPU’s HBM (e.g., 80 GB on an H100 TEE) [94, 133]. We do not assume the ability to stitch multiple GPUs into a larger trusted pool, as current vendors provide no such support and it would re-quire new hardware features [103]. While multi-GPU TEEs are an interesting direction, they are orthogonal to our focus. We assume that host-side private memory (e.g., CPU TEEs) is comparatively larger and can hold the remainder of the index. Under this model we study a purely in-memory setting, though our design naturally extends to persistent storage at even larger scales. Concretely, we parameterize capacity as size_of (𝑀 hbm ) = 𝛼 · size_of (𝑀 host ),where 𝑀 hbm and 𝑀 host denote GPU and CPU TEE memory, respec-tively, and 𝛼 ∈ ( 0, 1). Finally, we assume standard TEE protections, including memory encryption, integrity verification, replay defense, and encrypted inter-TEE communication [103, 127]. We omit these baseline mechanisms and focus on the core contributions of Hoss. 
+
+## 4 Hoss System Design 
+
+In this section, we present the technical design of Hoss. We first describe the storage layout for HNSW graphs in Hoss (§ 4.1). We then take a top-down view, starting from the top-layer searches in GPU TEEs (§ 4.2) and proceeding to the new ORAM design that support fast bottom-layer accesses on CPU TEE (§ 4.3). 
+
+## 4.1 Storage Layout 
+
+Perhaps the most fundamental question we must address is how to store the HNSW graph . This is non-trivial. Common graph repre-sentations, such as adjacency matrices and adjacency lists, do not fit our setting well. Adjacency matrices scatter data across mem-ory, leading to fragmented layouts and poor utilization of GPU HBM. Adjacency lists rely on pointer chasing and irregular access patterns, which are inefficient on GPUs. Moreover, neither repre-sentation maps well to ORAM semantics, which assume a compact address space and support only fixed-size address–value accesses (i.e., accessing data by logical address over contiguous blocks). A direct mapping would create sparse address spaces and require expensive OMAPs [62, 123, 145] instead of simpler ORAM schemes. Hoss : Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture CCS ’26, November 15-19,2026, Netherlands 
+
+Figure 2: Sorted, decomposed linear table representation 
+
+These then motivate us to design a new representation that better matches both GPU execution and ORAM access models. 
+
+Sorted linear tables for HNSW. To be efficient for both GPU execution and ORAM semantics, we introduce a novel yet surpris-ingly simple graph representation. The key idea is to flatten each layer of the hierarchy into a compact linear table, sorted by node ID. Figure 2 shows the layout. Every node is assigned a temporary ID that stays the same across all layers the node appears in. These IDs are allocated top-down: nodes first appearing at the highest layer get the smallest IDs, then the next layer down, and so on until layer 0. Since each layer is a superset of the layer above it, a node that appears at layer ℓ also appears at layers ℓ − 1, ..., 1, 0, always under the same ID. Moreover, in HNSW graphs, each node has a bounded number of neighbors bounded by parameter 𝑀 . This means that we can allocate a fixed-size slot for each node to store its neighbor list. Together, these features lead to a simple and uniform addressing scheme. Given a node ID, we can locate its entry in any layer by direct indexing, i.e., by computing base_addr + ID × size_of(node) . As a result, both within-layer access and cross-layer access take 𝑂 (1)
+
+time. This addressing model matches ORAM semantics well and also removes pointer chasing, which is especially important for efficient GPU execution. This representation is simple, and so too is the process of gen-erating it, as illustrated in Figure 2. We start with a hierarchical graph whose nodes are identified by arbitrary IDs (e.g., document IDs) (Figure 2.1). The key step is to assign each node a new tempo-rary ID that is consistent across all layers where the node appears. These temporary IDs are allocated in ascending order, proceeding layer by layer from the topmost to the bottom (Figure 2.2). Once assigned, constructing the linear tables becomes straightforward: each layer is treated as an independent graph, and we record its ID-to-neighbor mappings, sorted by the temporary ID. 
+
+Physical storage. With the sorted linear-table abstraction in place, we now describe how data is physically laid out across CPU memory and GPU TEE memory. As noted earlier, we partition storage along layer boundaries. For upper layers that reside in GPU HBM, we use a decomposed layout: the graph structure is stored in one contiguous array, while embeddings are stored in a separate contiguous embedding slab. This avoids duplicating large embedding vectors across layers and minimizes fragmentation. Moreover, as long as embeddings are laid out in node-ID order, we can locate an embedding by direct indexing, using the node ID. In this way, we do not need to store pointers from graph entries to embeddings. As a result, the graph structure only stores compact neighbor IDs, rather than full pointers or embedding references. This reduces metadata overhead, makes the GPU layout more compact, and frees more HBM capacity that potentially to store more upper layers. For the host-resident layers, however, we use a different physi-cal layout. There, each entry co-locates the neighbor list and the embedding in one self-contained record. The reason is simple: on the host side, the bottleneck is not storage capacity but I/O. If struc-ture and embedding were stored separately, each node expansion would require multiple oblivious accesses. By packing them to-gether, one ORAM access retrieves everything needed to process a node. This may duplicate some embedding data across layers, but it significantly reduces ORAM traffic, which is the more important optimization in this setting. For the remaining host-resident layers, table entries embed both structure and embeddings directly. While this may duplicate embed-dings across multiple layers when 𝑘 > 1, we say that the host bot-tleneck is not memory capacity but I/O overhead when transferring memory blocks to the GPU. Co-locating structure and embeddings eliminates the need for separate ORAM lookups, and halves I/O invocations. Moreover, this layout preserves the logical shape of linear tables, as such we can design efficient ORAM primitives ( G-3 ,§ 4.3) for retrieval, rather than resorting to heavyweight OMAPs. 
+
+## 4.2 Execution model 
+
+Modern GPU programs rely on a sequence of short kernels launched by the CPU [99, 126]. This model is convenient but introduces pri-vacy risks in our setting. Frequent host interactions expose fine-grained, data-dependent execution states to the CPU [23, 74, 79], which makes them vulnerable to side-channel attacks. In addi-tion, CPU–GPU traffic patterns, which are observable on inter-connects (e.g., PCIe), can leak strong signals about data-dependent secrets [67]. Our response is new a form of CPU bypassing . In HPC systems, CPU bypass is typically used to reduce software overhead and move the fast path closer to the device [5, 75]. Here, we repurpose this idea for security. Rather than treating the GPU as a stateless accelerator, we let it self-host the search. Conceptually, a long-lived kernel maintains the full query state on device, advances the traversal across the HNSW hierarchy, and initiates and manages ORAM calls entirely from the device side for host access. It materializes results to host memory only at the end. In other words, we remove the CPU from the step-by-step control path not to reduce overhead, but to limit host interference and potential leakage. To realize this execution model, we design a persistent search kernel with staged execution (Figure 3 shows an overview). All storage is provisioned before the kernel starts: On the host side, the final-layer(s) data is placed in pinned memory and organized using an ORAM-friendly layout (§ 4.3). On the GPU side, HBM is pre-allocated for the upper-layers index and runtime structures, CCS ’26, November 15-19,2026, Netherlands 
+
+Figure 3: The Hoss architecture and execution model 
+
+including input and output buffers, auxiliary data structures (e.g., visited bitmaps during graph traverses, etc.), and scratch pad mem-ory space. The host continuously posts queries to a device-visible input buffer, and a fixed set of resident CTAs occupies the GPU and repeatedly pulls queries. The kernel then proceeds in 4 stages. 
+
+init_query . A warp pulls a query from the input queue, decodes it, and initializes a compact per-query context on device and then execution directly transitions to the next stage. 
+
+upper_search . The same warp first executes the top-layer HNSW search over the GPU-resident hierarchy. To accelerate the search, we also add intra-query parallelisms, where warp lanes cooper-atively evaluate neighbors of the current node, process strided subsets of candidates, and compute distances in parallel. 
+
+layer0_search . Once the traversal reaches the host-resident final layer(s), the algorithm switches from direct HBM access to device-side ORAM calls. The key point is that the kernel does not return control to the CPU. Instead, it issues ORAM-backed fetches through a GPU-resident controller (§ 4.3) that manages all ORAM logic and metadata on device. This stage preserves the same search semantics as standard HNSW search, but maps all node accesses to ORAM subroutines. One practical change is in how we realize the beam-search frontier on the GPU. The frontier is the set of active candidate nodes that the search maintains and expands at each step. In classical HNSW, it is implemented using dynamic priority queues that repeatedly extract the next candidate while updating the current best set [87]. That organization works well on CPUs, but maps poorly to warp execution because it leads to irregular memory updates and branch-heavy control flow. We thus maintain the working set as bounded candidate and result arrays managed cooperatively by the warp. At each expansion, lanes scan strided subsets of the arrays, use warp-level reductions to identify the next candidate to expand, and then update the arrays in place. 
+
+result_materialize . After the final-layer search converges, the kernel performs final top-𝑘 selection on device and writes back the final identifiers, embeddings and corresponding distances. 
+
+## 4.3 GPU-Assisted Coalesced ORAM 
+
+We now introduce our novel ORAM design for efficiently accessing offloaded HNSW layer(s) in host (CPU TEE) memory. 
+
+A first attempt–direct following of BOLT [62] design. The most straightforward approach is to adopt a classical CPU-based (doubly-oblivious) ORAM [26, 91, 145]. In this design, the GPU generates logical memory requests (e.g., which node to retrieve) and submits them to the CPU through an encrypted channel. The CPU runs a full ORAM runtime, executes the retrieval subroutine on host memory, and returns the requested record (plus dummies) to the GPU. While functionally correct, this approach suffers from the well-known Ω(log 𝑁 ) I/O blowup of classical ORAM [54]. In our setting, where cross-TEE I/O is already the bottleneck, such overhead is immediately prohibitive. A natural alternative is to follow BOLT, which pushes most of the ORAM logic into the accelerator itself. In BOLT’s model, the accelerator computes logical addresses and issues them directly, leaving the host side to a lightweight role of translating addresses and performing raw memory accesses. This eliminates much of the CPU overhead. However, directly porting BOLT to our setting still performs poorly. BOLT is designed as a general OMAP rather than an ORAM, introducing machinery unnecessary for our goal. Moreover, its design relies on randomized power-of-two choices, which translate into condition-heavy execution that is inefficient on GPUs. Finally, treating HNSW simply as a generic retrieval workload fails to exploit properties unique to graph search. 
+
+Lessons learned and our ideas. These failed attempts suggest two important design principles. First, oblivious ANN search should ex-ploit properties unique to HNSW rather than treating it as a generic retrieval workload. Second, oblivious algorithms should be designed around GPU execution instead of inheriting condition-heavy con-trol logic from CPU- or hardware-oriented designs. Guided by these principles, we redesign oblivious HNSW from the ground up. Our first insight is that HNSW enables a form of oblivious coa-lescing that is impossible in general retrieval workloads. Naïvely coalescing repeated accesses breaks obliviousness [122], since de-terministically merging requests to the same memory location pro-duces a distinguishable access transcript. The key observation is that the neighbors expanded from a node in HNSW are inherently distinct. Hence, when coalescing is restricted within a neighbor expansion, every access in the batch is already unique, so coalesc-ing does not alter the access distribution (§ 5). Any reduction in memory accesses is indistinguishable from random collisions under independent sampling. This HNSW-specific optimization naturally aligns with the GPU’s SIMD execution model, substantially re-ducing cross-TEE I/O. Moreover, such coalescing fundamentally relies on graph-search semantics and therefore cannot be safely performed by the CPU, but can be exploited inside the GPU’s Pmem .Our second insight is that BOLT’s load balancing can be greatly simplified. Instead of using randomized power-of-two choices, we use uniform random remapping. This increases the asymptotic bandwidth cost from 𝑂 (log log 𝑁 ) to 𝑂 ( log 𝑁   
+
+> log log 𝑁
+
+) (see § 5), where 𝑁 
+
+is the total data size. However, for practical data sizes (e.g., 𝑁 ≤ 232 ), this gap is small. In return, the hot path becomes branch-free and SIMD-friendly, which leads to larger performance gains in practice. 
+
+Coalesced ORAM (CORAM). We now present our CORAM design based on the above insights. For clarity, we focus exclusively on the data access path and describe CORAM without tying it to a specific HNSW layer. In general, the CORAM can be used to access Hoss : Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture CCS ’26, November 15-19,2026, Netherlands 
+
+Algorithm 1 Coalesced ORAM for Neighbor Expansion 
+
+GPU TEE: position map MAP [1..𝑁 ]; per-block stash queues 
+
+𝑆 [1..𝑀 ]; entry →final cache EC ; node to expand 𝑢 .
+
+CPU TEE: 𝑉 host [1..𝐾 ] (page-aligned).  
+
+> 1:
+
+V ← 𝑥 . GetNeighbors ()  
+
+> 2:
+
+B ← Distinct  {MAP [𝑣 ] | 𝑣 ∈ V}  
+
+> 3:
+
+{ page 𝑏 }𝑏 ∈ B ← READ  {𝑉 host [𝑏 ] | 𝑏 ∈ B}  
+
+> 4:
+
+for 𝑣 ∈ V do  
+
+> 5:
+
+𝑟𝑒𝑐 [𝑣 ] ← ExtractRemove  page MAP [𝑣 ] ∪ 𝑆 MAP [𝑣 ], 𝑣  
+
+> 6:
+
+ComputeOnGPU  { 𝑟𝑒𝑐 [𝑣 ] } 𝑣 ∈ V 
+
+ 
+
+> 7:
+
+for 𝑣 ∈ V do ⊲ stash-only remap  
+
+> 8:
+
+𝑏 ′ ← UniformRandom (1..𝑀 ); MAP [𝑣 ] ← 𝑏 ′ 
+
+> 9:
+
+𝑆 [𝑏 ′] ← 𝑆 [𝑏 ′] ∪ { 𝑟𝑒𝑐 [𝑣 ]}  
+
+> 10:
+
+for 𝑏 ∈ B do ⊲ drain only for blocks read this round  
+
+> 11:
+
+pg ′ 
+
+> 𝑏
+
+← Assemble  page 𝑏 ∪ 𝑆 [𝑏 ]; 𝑆 [𝑏 ] ← ∅  
+
+> 12:
+
+WRITE  { ( 𝑉 host [𝑏 ], pg ′ 
+
+> 𝑏
+
+) | 𝑏 ∈ B } 
+
+any layers. To distinguish between TEE spaces, we use blue text to denote structure stored in host memory (CPU TEE). Initially, we partition host storage into 𝑀 fixed-sized blocks 
+
+𝑉 host [1..𝐾 ]. Each block stores a set of records (𝑣, nbrs (𝑣 ), emb (𝑣 )) ,padded with dummy entries to maintain a uniform layout. The loca-tion of each record is tracked by a dense position map MAP [1..𝑁 ],which resides entirely inside the GPU TEE. The GPU also maintains per-block stash queues 𝑆 [1..𝐾 ] to temporarily hold records that have been remapped but not yet written back to host storage. We also maintain an entry cache EC on the GPU. For each node in the last GPU-resident layer (layer 𝑘 ), EC stores its neighbors in the next layer ( 𝑘 +1), which is offloaded to the host. This cache stores only neighbor IDs and allows the GPU to immediately start expansion once the search reaches the boundary layer. At a high level, when expanding neighbors of a node, the GPU first looks up MAP to identify the blocks that contain the required records, and then reads these blocks from host memory in a coa-lesced batch. Once fetched, the kernel locates the target records on the GPU. Since some records may have been accessed earlier and remapped but not yet written back, they may not appear in the fetched blocks and must instead be retrieved from the stash. After processing, each accessed record is remapped to a new block. The system then writes back the blocks fetched in this round. At the same time, any records in the stash that are mapped to these blocks are merged and written back together. This workflow is summarized in Algorithm 1. 
+
+Stage.1 Coalesce read (line 1:3). To expand the neighbors of a node 
+
+𝑥 , the GPU first obtains its neighbor set V. This step is straight-forward. If 𝑥 is an entry node, its neighbors are directly available in EC . Otherwise, 𝑥 must have been fetched earlier, and its full neighbor list is already read into GPU. Each 𝑣 ∈ V is then mapped through MAP [𝑣 ] to its current host block, and a deduplication step produces the distinct block set B. We store MAP as a dense array indexed by node IDs, which allows the GPU to efficiently process many lookups in parallel. The deduplication is also implemented using parallel primitives, which fits well with GPU execution. The result is a compact set of block IDs, which is submitted as a batch of read requests to the CPU TEE. Each request corresponds to one page-aligned READ , and the CPU returns all requested pages over the bounce buffer [103]. 
+
+Stage.2 GPU local computation (line 4:7). Once the pages are resident, the GPU extracts the requested records by invoking ExtractRemove 
+
+on their source blocks. The search also checks the stash 𝑆 , since some nodes may have been accessed earlier but not yet written back to host storage. Importantly, even if a node is served from the stash, the corresponding page request must still be issued in Stage 1; otherwise, an attacker could infer whether a page has been evicted. The ExtractRemove operation returns the record and clears its slot, so the block reflects a consistent logical state. The extracted records are then processed by the local expansion routine (ComputeOnGPU ), which computes distances, filters candidates, and selects the next frontier entirely within GPU HBM. 
+
+Stage.3 Batch random remap (line 8:11). After the local computation, each record is remapped to a new block ID chosen uniformly at random from [1..𝑀 ]. As discussed earlier, this simplification re-moves branch-heavy load-balancing logic and keeps the hot path SIMD-friendly. The position map MAP is updated accordingly, and the record is appended to the stash queue 𝑆 [𝑏 ′] for its destination block 𝑏 ′, where it waits to be written back. 
+
+Stage.4 Eviction (line 12:15). The final phase drains the stash queues for all blocks in B. For each block 𝑏 that was read in this round, we assemble the updated page image by merging the surviving contents of page 𝑏 with all records currently in 𝑆 [𝑏 ]. The stash for 
+
+𝑏 is then cleared, and the assembled page is written back in a single 
+
+WRITE to 𝑉 host [𝑏 ]. As a result, each block in B is touched exactly once per round, one read and one write, independent how many remapped records it absorbed from the stash. 
+
+Stash optimizations. The stash is the temporary holding area for tuples that have been removed from a bucket but cannot yet be written back to their new locations. Because every ORAM access may touch the stash, it sits directly on the critical path. A naive GPU design would treat it as one dynamic container and linearly scan or physically reshuffle entries whenever a tuple is remapped or evicted. That is manageable on a CPU, but on a GPU it becomes expensive: remapping would move full tuple contents, eviction would touch unrelated entries, and updates would create exactly the kind of irregular memory traffic and synchronization pressure that GPUs handle poorly. To address this, we use a decomposed storage that separate tuple payloads from stash metadata. The payload is the full node tuple, in-cluding node id, neighbor list, and embedding values, and it is stored in a contiguous array of fixed-size stash slots. The metadata only track where each tuple is stored and which bucket it is currently associated with. We maintain this metadata using two lightweight structures: a ring-buffer free pool and a reverse index. The free pool recycles slot identifiers, so insertion pops a free slot and eviction pushes it back. The reverse index is organized as per-bucket rows of 
+
+(node_id, slot_idx) pairs. This design makes remapping cheap: a tuple usually stays in place, and only its reverse-index association moves from one bucket row to another. Eviction is also optimized. Instead of scanning the whole stash, we only scan the CCS ’26, November 15-19,2026, Netherlands 
+
+row for the current bucket, copy out the referenced slots, and return those slot ids to the free pool. In short, we move metadata eagerly and payloads only when they are actually consumed. We also make stash access SIMD-friendly. A fully scalar stash path would be easy to implement, but it would serialize the most bandwidth-heavy part of ORAM access. Our design instead uses a split rule: one designated thread in the warp, lane 0, handles the small control-critical updates, such as popping or pushing slot ids in the free pool, clearing an old reverse-index entry, or writing a new (node_id, slot_idx) association after remap. The rest of the warp cooperatively performs row lookup, slot copy, dummy padding, and output materialization. To coordinate these steps, we use standard warp primitives such as __shfl_sync , which broad-casts a value from one lane to the others, and __ballot_sync ,which collects per-lane predicates into a bit mask so the warp can quickly determine which entries matched or which slots are valid. This design keeps the logic correct without giving up throughput. 
+
+## 5 Hoss Analysis 
+
+We now present the formal analysis of Hoss. 
+
+Security analysis. We first analyze the security guarantees of Hoss. Recall that observable memory traces arise only from the host-resident final layer(s). Accordingly, the analysis reduces to the obliviousness of the CORAM host-access primitive. Theorem 5.1. Let 𝐾 be the number of host blocks and let 𝑀 de-note the maximum neighbor list size in HNSW. For any final-layer expansion over a neighbor list V with |V | ≤ 𝑀 , the CORAM host access in Hoss satisfies the obliviousness definition in Definition 3.1. 
+
+Proof. We prove obliviousness by showing that, for any two queries 𝑞 and 𝑞 ′ satisfying ∀𝑖 ∈ { 0, . . . , 𝑘 }, |r𝑖 | = |r′ 
+
+> 𝑖
+
+|, the distribu-tions of their observable traces are computationally indistinguish-able. We first consider the non-coalesced variant. Each logical node access is mapped to a host block chosen uniformly at random from 
+
+[𝐾 ], and after every access the node is remapped independently to a fresh random block. Therefore, the sequence of block identifiers revealed during execution forms a sequence of independent uni-form samples over [𝐾 ]. Since 𝑞 and 𝑞 ′ induce traversal paths of the same length, their observable traces consist of the same number of such samples. In addition, if a requested node is served from the stash, the system issues a dummy block read, so the observable trace preserves both length and structure. As a result, the distributions of block access sequences under 𝑞 and 𝑞 ′ are identical. We now consider the coalesced variant. During the expansion of a node in the final HNSW layer, each neighbor appears at most once in the neighbor list. Therefore, each logical node is accessed at most once, and ORAM remapping introduces no dependencies among accesses within the same expansion. Consequently, all accesses can be issued as a single batch without changing the logical execution. Since both 𝑞 and 𝑞 ′ produce sequences of equal length with identical distributions, the distribution over distinct block identifiers (or coalesced transcript) remains identical for both executions. Since all blocks are encrypted by TEE’s memory encryption mechanism, and thus we say that any p.p.t. adversary cannot distin-guish executions of 𝑞 and 𝑞 ′ unless the encryption itself fails. □
+
+Bandwidth complexity. We next analyze host-I/O cost. We say that it is enough to study the bandwidth of one neighbor expansion invocation as the total bandwidth of a full query is linear in the number of such expansions. Theorem 5.2. Let 𝑁 be the number of data points and let 𝐾 =
+
+Θ(𝑁 ) be the number of host pages. In the non-coalesced variant, the bandwidth of one neighbor expansion is at most 
+
+𝑂 
+
+
+
+𝑀 · log 𝑁 
+
+log log 𝑁 
+
+
+
+except with probability at most 1/𝑁 .
+
+Proof. As in prior ORAM analyses [62, 117, 122, 145], the random-remapping process can be modeled as a balls-and-bins experiment: the 𝑁 nodes are balls, the 𝐾 host pages are bins, and each node is assigned independently and uniformly to one bin. Let ℓmax be the maximum page load. Standard balls-and-bins bounds [92, 115] show that when 𝐾 = Θ(𝑁 ), ℓmax = 𝑂 
+
+ log 𝑁  
+
+> log log 𝑁
+
+
+
+except with probability at most 1 /𝑁 . In one non-coalesced final-layer expansion, at most 𝑀 
+
+neighbor accesses are issued. Since the amount of data transferred by one logical access is bounded by the maximum block load, the total bandwidth is at most 𝑀 · ℓmax blocks. □
+
+Note that the per-block bandwidth is upper bounded by 𝑂 
+
+ log 𝑁  
+
+> log log 𝑁
+
+
+
+,which provides a guideline for setting block sizes in practice. With this choice, the probability of overflow, i.e., that more data is ran-domly remapped to a block than it can accommodate, is at most 1/𝑁 . For large 𝑁 , this probability is negligible. Theorem 5.3. Let 𝐾 = Θ(𝑁 ) and assume 𝑀 = 𝑜 (𝐾 ). In one coalesced neighbor expansion, the expected number of host page reads is 𝑀 − Θ(𝑀 2/𝐾 ). In particular, coalescing saves Θ(𝑀 2/𝐾 ) page reads in expectation compared to the 𝑀 reads in the non-coalesced variant. 
+
+Proof. We model the 𝑀 logical accesses as placing 𝑀 balls in-dependently and uniformly into 𝐾 pages. Let 𝑋 be the number of distinct pages touched. A given page is accessed unless all 𝑀 
+
+accesses avoid it, which occurs with probability (1 − 1/𝐾 )𝑀 . Thus, each page is touched with probability 1 − ( 1 − 1/𝐾 )𝑀 , and summing over all 𝐾 pages gives E[𝑋 ] = 𝐾 (1 − ( 1 − 1/𝐾 )𝑀 ). When 𝑀 = 𝑜 (𝐾 ),we use the expansion (1 − 1/𝐾 )𝑀 = 1 − 𝑀 /𝐾 + Θ(𝑀 2/𝐾 2), which yields E[𝑋 ] = 𝐾 (𝑀 /𝐾 − Θ(𝑀 2/𝐾 2)) = 𝑀 − Θ(𝑀 2/𝐾 ). □
+
+Stash analysis. We now study the size of the stash. Theorem 5.4 (stash size). Let 𝑁 be the number of tuples and 
+
+𝐾 the number of host blocks. Assume each logical access is drawn uniformly from the 𝑁 tuples, and each remapped tuple is reassigned independently and uniformly to one of the 𝐾 blocks. Let ℓmax be the max page size, and define 𝑥 ∗ := 𝑁 𝐾 𝑁 +𝐾 . Then, with probability at least 
+
+1 − 1/𝑁 the stash size is bounded by 
+
+𝑥 ∗ + 𝑂 
+
+
+
+ℓmax 
+
+√𝑥 ∗ ln 𝑁 
+
+
+
+Proof. We view the stash as a queue whose entries are labeled by their destination page in [𝐾 ]. Let 𝑋 𝑡 be the stash size after the 
+
+𝑡 -th access. In one step, the stash changes for two reasons: one accessed tuple may be newly inserted into the stash, and some existing stash entries may be written back when their destination Hoss : Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture CCS ’26, November 15-19,2026, Netherlands 
+
+page is serviced. Accordingly, we write 𝑋 𝑡 +1 = 𝑋 𝑡 + 𝐴 𝑡 − 𝐷 𝑡 , where 
+
+𝐴 𝑡 ∈ { 0, 1} is the insertion indicator and 𝐷 𝑡 is the number of tuples written back. Conditioned on 𝑋 𝑡 = 𝑥 , exactly 𝑥 of the 𝑁 tuples already reside in the stash. Under the uniform-access assumption, the next logical access hits one of these tuples with probability 
+
+𝑥 /𝑁 , so a fresh insertion happens with probability 1 − 𝑥 /𝑁 . Thus 
+
+E[𝐴 𝑡 | 𝑋 𝑡 = 𝑥 ] = 1 − 𝑥 /𝑁 . At the same time, each of the 𝑥 queued tuples matches the currently processed page with probability 1 /𝐾 ,so E[𝐷 𝑡 | 𝑋 𝑡 = 𝑥 ] = 𝑥 /𝐾 . Combining the two terms gives the one-step drift E[𝑋 𝑡 +1 − 𝑋 𝑡 | 𝑋 𝑡 = 𝑥 ] = 1 − 𝑥 𝑁 − 𝑥 𝐾 .This expression already shows where the stash stabilizes: the equilibrium is the point where the expected change becomes zero. Solving 1 − 𝑥 𝑁 − 𝑥 𝐾 = 0 gives 𝑥 ∗ = 𝑁 𝐾 𝑁 +𝐾 . Moreover, if the stash is above this level, say 𝑥 = 𝑥 ∗ + 𝑟 for some 𝑟 > 0, then the drift becomes E[𝑋 𝑡 +1 − 𝑋 𝑡 | 𝑋 𝑡 = 𝑥 ∗ + 𝑟 ] = −𝑟   1 
+
+> 𝑁
+
++ 1
+
+> 𝐾
+
+ < 0. In other words, once the stash grows above 𝑥 ∗, the process has a restoring tendency that pulls it back. We now extend this expectation bound into a tail bound. Since in one step, at most one tuple is inserted and at most ℓmax tu-ples are written back, so the stash size changes by at most ℓmax 
+
+in absolute value. We then apply the same negative-drift concen-tration technique used in [62], which yields Pr [𝑋 𝑡 ≥ 𝑥 ∗ + 𝑢 ] ≤ 
+
+exp 
+
+
+
+−Ω
+
+ 𝑢 2
+
+> 𝑥 ∗ℓ2max
+
+ 
+
+. Setting 𝑢 = 𝑐 ℓ max 
+
+√𝑥 ∗ ln 𝑁 for some constant 
+
+𝑐 > 1 gives Pr [𝑋 𝑡 ≥ 𝑥 ∗ + 𝑢 ] ≤ 1/𝑁 . □
+
+This stash analysis shows that the stash size is bounded and does not grow indefinitely. We further validate this empirically in § 6.2. 
+
+## 6 Evaluation 
+
+We now discuss our evaluation of Hoss to quantify its performance and scalability. We conduct end-to-end comparisons with prior work, analyze system bottlenecks, and examine cost breakdowns, memory usage, and overheads. 
+
+## 6.1 Evaluation Setup 
+
+Hoss implementation. We implement Hoss in CUDA C++17, with about 8.1K lines of code (LoC), which keeps the trusted computing base (TCB) relatively small. We build the system using NVIDIA CUDA 12.9 (nvcc 12.9.86). By default, Hoss offloads the final layer to the host, as this layer dominates the memory footprint. However, the design is not tied to this choice—since CORAM is generic, we can offload additional layers as well. We include separate experi-ments to evaluate different offloading configurations in § 6.4. For host storage, we use a block size of 16 slots (i.e., 𝐾 = 𝑁 /16). Each block initially contains 8 real records and 8 dummy entries to main-tain a uniform layout. We allocate the host storage region using 
+
+cudaMallocManaged and configure it so that these pages are not cached in GPU HBM. This setup stresses the access path and lets us measure the worst-case performance when accessing layer-0 data. On the GPU, we use a ChaCha20 -based random number generator for all randomness in CORAM. 
+
+Baseline systems. We use Compass [148] as our main baseline for end-to-end comparison. To our knowledge, it is the current state-of-the-art in oblivious semantic search with open-source arti-facts. We also include Bolt [62] as a baseline ORAM design in our 
+
+Table 1: Dataset Summary Dataset 𝑁 𝑀 𝑑 Size ( hnswlib ) Size (LTb) # Queries                                
+
+> LAION 100K 64 512 247 MB 210 MB 1,000 SIFT-1M 1M 64 128 996 MB 637 MB 10,000 TripClick 1.5M 128 768 5.9 GB 4.7 GB 1,175 MSMarco 8.8M 128 768 34 GB 27 GB 6,980 LAION SIFT1M TripClick MSMarco 10 2
+> 10 3
+> 10 4
+> Latency (ms)
+> 63x 60x 99x 89x 36x 35x 58x 53x 26x 25x 41x 45x
+> Hoss (recall=0.9) Hoss (recall=0.95) Hoss (recall=0.98) Compass (recall=0.9)
+
+Figure 4: End-to-end query performance comparison. 
+
+microbenchmarks, which focus specifically on ORAM performance. Bolt is, to our knowledge, the first design that leverages isolated HBM ( Pmem ) to accelerate ORAM operations. We evaluate Com-pass and Hoss on the same machine to enable a fair performance comparison. For BOLT, since we do not have access to the special-ized hardware (e.g., the U55C FPGA) used in their evaluation, we report the best performance numbers from their original paper [62]. While obtained on different hardware, these results still provide a useful point of reference. 
+
+Testbed. All experiments run on a dual-socket server with two AMD EPYC 9124 CPUs (32 cores / 64 hardware threads in total) with SEV-SNP, 256GB of system memory, and an NVIDIA H100 PCIe GPU operating in CC mode. We deploy Hoss inside a con-fidential VM (CVM), with the GPU configured in CC mode and passed through directly to the VM. 
+
+Datasets. Unless otherwise specified, we use the same datasets as Compass, including Laion100K, Sift1M, TripClick, and MSMarco. Table 1 summarizes their key characteristics. To construct our linear table representation, we implement a simple converter that takes graphs generated by hnswlib [65], a widely-used HNSW library, and transforms them into our format. As shown in Table 1, our linear representation is smaller than the original hnswlib format, mainly because it eliminates pointer-based structures. 
+
+## 6.2 End-to-End Performance Benchmark 
+
+Comparison with Compass. We first compare Hoss with Com-pass in an end-to-end benchmark. Specifically, we run semantic queries on all four datasets and tune the recall (e.g., by adjusting 
+
+𝑒 𝑓 in HNSW) to reach a target threshold. We then measure the average query time. Figure 4 shows the results. From Figure 4, we see that Hoss outperforms Compass across all settings, achieving at least 60 × speedup at 0.9 recall and up to 99 ×.We also observe that the performance gap widens at larger scales (e.g., TripClick and MSMarco). Compass only reports results up to 0.9 recall, while Hoss can operate at higher accuracy levels. We therefore also evaluate Hoss at 0.95 and 0.98 recall by increasing the HNSW parameter 𝑒 𝑓 . Even at 0.98 recall, Hoss still achieves CCS ’26, November 15-19,2026, Netherlands LAION SIFT1M TripClick MSMarco 10 100 1000 Normalised Slowdown   
+
+> 148.9× 357.1× 184.6× 196.0× 5.4× 15.6× 5.0× 5.1×
+> Hoss (recall=0.9) Hoss (recall=0.95) Hoss (recall=0.98) Compass (recall=0.9)
+
+Figure 5: Normalized slowdown comparison. LAION SIFT1M TripClick MSMarco 10 3 
+
+> 10 4
+> 10 5
+> 10 6
+> 10 7
+> Stash Size (entries)
+> max=11,378 max=112,434 max=171,248 max=987,528
+
+Figure 6: Stash sizes over 10 × data_size accesses. 
+
+significant speedups over Compass at 0.9 recall, for example, up to 45 × on MSMarco. This shows significant improvements of Hoss over the SOTA oblivious semantic search system. Since Hoss and Compass run on different hardware, we also report normalized slowdowns to isolate the cost of oblivious primi-tives (Figure 5). Each system is normalized to its own non-private baseline, which factors out hardware effects and focuses on oblivi-ous overheads. The Hoss baseline uses a GPU kernel that preserves the same HNSW logic and offloading as Hoss, but accesses data directly without CORAM primitives. For Compass, we implement the same HNSW algorithm on CPU and use it as the baseline. We observe that Compass exhibits substantially larger normal-ized slowdowns across all groups, often exceeding 100 × and up to 357 ×, whereas Hoss remains below 6 × in most cases. For both systems, SIFT1M shows the largest slowdown. This is due to its lower dimensionality (128 vs. 768), which reduces data movement cost and makes the ORAM overhead, such as remapping and posi-tion lookup, more prominent. In higher-dimensional datasets, data movement dominates execution time in both the private system and its baseline, so the additional cost of ORAM contributes a smaller fraction, leading to lower normalized slowdowns. This also explains the trend in Hoss at higher recall levels. As recall increases, both Hoss and its non-private baseline become dominated by data move-ment and copying. The relative impact of ORAM overhead therefore decreases, resulting in slightly lower normalized slowdowns. 
+
+Memory usage experiments. We next examine the memory usage of Hoss. Most components are fixed and can be reported directly. The stash, however, is dynamic: its size depends on accesses but is theoretically bounded with high probability. To validate this in practice, we run a stress experiment that performs a large number of CORAM accesses (10 × of data sizes) and tracks the maximum stash size over time (Figure 6). We then report the max stash usage together with static size components (e.g., position maps, host storage, etc.) to provide a complete memory breakdown (Table 2). Figure 6 shows that stash sizes remain bounded even under sustained stress accesses. Throughout the entire run, the maxi-mum stash size stays well below 12% of the total data entries (raw 
+
+Table 2: Complete memory breakdown Dataset Pos. Map Buckets Max Stash Total GPU % 
+
+LAION 0.4 MB 440.2 MB 25.0 MB 465.6 MB 5.5% SIFT-1M 3.8 MB 1.44 GB 82.8 MB 1.52 GB 5.6% TripClick 5.8 MB 10.18 GB 586.0 MB 10.76 GB 5.4% MSMarco 33.7 MB 59.09 GB 3.30 GB 62.42 GB 5.3% 
+
+Table 3: Projected capacity under full GPU HBM usage. We select GPUs that support GPU TEE mode. Platform GPU HBM Host Raw Data 
+
+A100 [97] 40 GB 694 GB 347 GB H100 [98] 80 GB 1.39 TB 694 GB H200 [101] 141 GB 2.45 TB 1.22 TB GH200 NVL2 [100] 288 GB 5.00 TB 2.50 TB data). From the full memory breakdown (Table 2), we observe that GPU memory (position map + maximum stash) accounts for only about 5 .5% of total storage. This is because host blocks are 2 × over-provisioned, with half of each block occupied by dummy entries. Overall, Hoss uses GPU memory efficiently, requiring only a small 
+
+Pmem footprint to support large datasets. Our machines have limited host memory, which prevents us from conducting stress tests to evaluate the extreme scalability that Hoss can support. However, based on the observed memory char-acteristics, we can project its scalability and provide guidance for modern data center environments, where servers may be equipped with very large host memory (e.g., exceeding 4TB [68]). We assume the same bucket size (e.g., 16 entries), so the GPU memory fraction remains stable at around 5 .5% (as by Theorem 5.4). We then esti-mate the raw data size as half of the host bucket region to quantify the max data size supported under full GPU Pmem utilization. The projection figures are in Table 3. We can see that, with full GPU 
+
+Pmem utilization and higher-end GPUs such as GH200-NVL, Hoss has potential to scale to terabytes semantic data. 
+
+## 6.3 CORAM Micro-benchmark 
+
+In this section, we conduct microbenchmarks to evaluate the per-formance of our CORAM design and compare it with the SOTA ORAM system, Bolt, which also leverages Pmem .
+
+Comparison with Bolt. We use the same benchmark setup as Bolt, which includes two sets of experiments. The first varies the number of data entries while keeping the tuple size fixed, and measures the average ORAM access latency. The second fixes the dataset size and varies the value size. For consistency, we use the same data format and scale settings as Bolt, where each ORAM entry is an address–value pair with a 4B address and an 8B value by default. Figure 7 reports the results of both experiments. Figure 7(a) shows the results when varying the number of data entries. Across all settings, Hoss consistently outperforms Bolt, achieving up to 101 × speedup. This gain comes primarily from our linear table layout, which allows direct position map lookups, while Bolt relies on a hash table mechanism [62]. Hoss : Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture CCS ’26, November 15-19,2026, Netherlands 100K 500K 1M 5M 10M Data Size (N) 10 1              
+
+> 10 0
+> 10 1
+> 10 2
+> Time (s)  101x 59x 42x 29x 27x
+> (a) Vary Data Size
+> 8B 16B 32B 64B 128B 256B Value Size 10 0
+> 10 1
+> 10 2
+> 42x 44x 43x 40x 37x 44x
+> (b) Vary Value Size
+> BOLT HetCSS
+
+Figure 7: Performance comparison with BOLT. 100K 200K 500K 1M 2M 5M 10M Data Size (N) 0.2 0.4 0.6 Time (s)      
+
+> 2.8x 1.6x 2.2x 1.5x 1.8x 1.4x 1.8x 1.6x 2.0x 1.5x 1.8x 1.4x 1.8x 1.3x
+> (a) Vary Data Size
+> 32 64 128 256 512 768 Dimension (d) 0.25 0.50 0.75 1.00 1.25
+> 1.4x 1.2x 2.0x 1.4x 2.1x 1.6x 1.9x 1.5x 2.0x 1.8x 1.7x 1.5x
+> (b) Vary Dimension
+> Sequential Batch (no coalesce) Coalesced
+
+Figure 8: Performance comparison of different ORAM modes. 
+
+We observe that the performance gap narrows as the dataset size increases. This is expected, as Bolt achieves an asymptotic band-width cost of 𝑂 (log log 𝑁 ), while ours is 𝑂 ( log 𝑁   
+
+> log log 𝑁
+
+). Nevertheless, Bolt’s design does not map well to GPU execution, and Hoss still maintains a substantial advantage, with speedups of up to 27 ×.Figure 7(b) shows the value scaling experiment. Here, we can see that across all settings, Hoss delivers consistent improvements over Bolt, with speedups of up to 44 ×.
+
+Performance gains from coalescing. A key design contribution of CORAM is its coalescing mechanism. To isolate its impact, we implement two ablation variants: one disables coalescing while pre-serving batched execution, and the other further disables batching, issuing all accesses sequentially. We compare these two variants with the full CORAM design in terms of access latency. We use the same two scaling experiments as before, but with data that better reflects semantic workloads. Unless otherwise specified, we use a dataset with 1M entries and 128-dimensional embeddings. In the value-scaling experiment, we vary the embedding dimension from 32 to 768. Figure 8 shows the results. From both figures, we see that CORAM consistently outperforms the both variants. The speedup reaches up to 2 .8× over fully sequen-tial, and 1 .8× over batched mode. Comparing CORAM with the batched variant without coalescing, we observe that the benefit of coalescing becomes more pronounced as the embedding dimension increases. This is expected because larger embeddings incur higher I/O costs, allowing coalescing to eliminate more redundant memory accesses and thus achieve greater performance gains. 
+
+## 6.4 Offloading Mode Experiments 
+
+In this section, we evaluate Hoss under different offloading strate-gies. In addition to offloading only the final layer, we progressively offload more layers to the host, up to the extreme case where only metadata (e.g., position map and stash) reside in the GPU TEE’s 
+
+Pmem . This experiment requires reconfiguring the system and stor-age layouts across settings. To keep it manageable, we focus on Recall = 0.9 Recall = 0.98 010 20 30 40 50 Latency (ms) 
+
+> 19.5 47.8 20.1 48.4 20.6 49.0 20.7 49.1
+> Offloaded Layers L0 L0-1 L0-2 All
+
+Figure 9: Offloading experiments. 
+
+the Sift1M workload, which is sufficient to capture the trends un-der different offloading strategies. Figure 9 shows the performance under these configurations. From the figure, offloading additional layers introduces extra overhead and increases query latency. However, the increase is modest compared to only L0 offloading. For example, in the recall = 0.9 setting, offloading all layers adds only 6% overhead relative to offloading L0 alone. This behavior is expected for two reasons. First, HNSW layers shrink exponentially toward the top, so while offloading more layers increases ORAM accesses, the incremental cost per layer is exponentially smaller. Second, HNSW performs far fewer node accesses in upper layers: these layers use simple greedy traversal with small candidate sets, whereas the final layer relies on beam search and explores many more nodes. This also explains why at recall = 0.98 the additional overhead is even smaller: achieving higher recall makes the final-layer search more expensive, amortizing the cost of offloading upper layers. Overall, offloading more layers leads to only minor performance degradation. 
+
+## 7 Discussion 
+
+We briefly discuss extensions enabled by Hoss to illustrate its broader applicability. A full exploration is beyond the scope of this paper and left to future work. 
+
+Volume and timing hiding. Standard obliviousness definitions [54, 93, 117, 122] focus on making access sequences indistinguishable when they have the same length. This means they do not capture timing or volume leakage [21, 24, 34, 60, 72, 106], where different queries naturally lead to different amounts of work. In practice, these leakages are often handled with separate, orthogonal tech-niques [7, 17, 108, 128, 129]. Hoss follows the standard definition of obliviousness, but can also be extended to address timing and volume leakage. Intuitively, for the upper-layer searches running on the GPU, the access patterns are hidden, so volume leakage is not a concern, but timing can still vary. A possible fix is to pad execution to a fixed upper bound so that all queries take the same time before moving to the final layer. For offloaded layers, volume leakage be-comes more visible. For instance, in HNSW beam search [87], nodes visited are skipped, which creates data-dependent volume patterns. One way to handle this is to always fetch candidate nodes and do the filtering inside the GPU, so externally the behavior looks the same. Similarly, we can remove early stopping and instead run a fixed number of exploration steps to smooth out timing differences. 
+
+Inter-query parallelism. Inter-query parallelism [51] is a appeal-ing feature in many retrieval systems and modern database engines. CCS ’26, November 15-19,2026, Netherlands 
+
+Unlike intra-query parallelism, which focuses on accelerating a sin-gle query as in Hoss, this approach executes multiple, potentially heterogeneous queries concurrently to improve overall through-put. This design is particularly attracting for GPU-based systems, where a single query often cannot fully utilize the available parallel resources [29, 44]. However, supporting inter-query parallelism is fundamentally challenging in ORAM contexts, as naïve parallelism can easily violate security guarantees [11, 25, 83]. The coordination logic usually needs carefully design and made oblivious as well [25]. That said, the GPU’s Pmem opens up new opportunities. As shown in our CORAM design, parallel accesses can be efficiently coordinated within Pmem . While our current setting does not con-sider identical accesses within a batch (e.g., the same node), the design can be extended to support general parallel processing. In particular, when such conflicts arise, we can internally replay the ORAM logic: issuing a single real access with remapping, while serving the remaining requests as randomized dummy accesses. This preserves ORAM invariants while enabling batched execution, providing a foundation for efficient inter-query parallelism. 
+
+Adapting to other oblivious systems. Although Hoss is designed for HNSW-based semantic search, its core ideas are not tied to a specific algorithm or workload. In particular, the CPU-bypassed execution model and GPU-assisted ORAM are general abstractions that apply beyond HNSW and even beyond semantic search. For ex-ample, Hoss can support other graph-based algorithms [105, 121], as long as the graph can be expressed in our linear table repre-sentation. Adapting to a new graph workload primarily requires changing the access interface while reusing the same ORAM back-end. More broadly, the ORAM abstraction itself is not specialized to graphs, but rather a batched key-value access interface, mak-ing it straightforward to map a wide range of algorithms onto it. Beyond graph workloads, these abstractions naturally extend to other oblivious systems, such as relational databases [47, 84, 146] and time-series databases [37, 49]. Overall, Hoss provides a general and reusable foundation for building high-performance oblivious systems across diverse application domains. 
+
+Dynamic index support. Although this work focuses on secure search over a pre-built HNSW index, CORAM is not limited to static indexes. Dynamic index-management primitives naturally build on the same search primitive. We assume the ORAM storage is pre-allocated with sufficient free space for future growth. For example, insertion first performs an oblivious search to identify the insertion neighbors, followed by a bounded number of graph updates [87]. Deletion can leverage the standard lazy-deletion mechanism [65] by obliviously marking a node as deleted, and the reclaimed space can be reused by subsequent insertions. If the reserved ORAM capacity is eventually exhausted due to continuous growth, the data owner can periodically rebuild the index. 
+
+## 8 Related Work 
+
+ORAM and oblivious data systems. ORAMs has long been the canonical abstraction for hiding memory-access patterns on un-trusted storage [10–12, 20, 54, 55, 110, 117, 122, 123, 131, 145]. A parallel line of work developed the oblivious algorithms with which execution’s memory accesses do not depend on inputs, which covers sorting networks [4, 9, 16, 57], shuffle [53, 119] and more advanced data processing [17, 27, 33, 43, 84, 113, 128, 129]. As obliviousness moved from cryptographic theory into systems, in recent years, there has made a series end-to-end data processing systems that de-livers strigent obliviousness guarantees, such as ZeroTrace [118], Oblix [91], ObliDB [47], and many more [3, 26, 62, 113, 114, 145]. Compass [148] is the SOTA oblivious semantic search system that to achieve high-accuracy encrypted semantic search [148]. Never-theless, these works rely on the traditional assumption of only an 
+
+𝑂 (1)-sized Pmem , or require a trusted proxy or client [11, 148]. As a result, they remain subject to classical ORAM lower bounds and the associated performance overheads. 
+
+Secure memory hardware. Due to the high cost of ORAM and other oblivious primitives, prior work has explored secure memory hardware [2, 14, 31, 45, 62, 104, 139] that conceals memory channels and directly hides access patterns without relying on oblivious primitives. However, these designs typically target limited-capacity memory resources, such as registers [139], BRAMs [2, 14, 104], or specialized memory nodes [31, 45]. As a result, they are either not general-purpose or provide only limited capacity. More recent work moves to on-package HBM to hide access patterns, leading to a new class of systems [62, 67, 127] that are significantly faster than traditional oblivious designs. Hoss follows this direction by leveraging HBM as Pmem , while addressing unique challenges in supporting semantic searches through significant co-design. To our knowledge, this is the first work of its kind. 
+
+Accelerator TEEs. TEE designs have traditionally focused on CPUs, with prominent examples including Intel SGX [35], AMD SEV [1], and Arm TrustZone [111]. With the rise of accelerators as a central component in modern data centers, recent work has expanded TEE support to these platforms. In particular, GPU-based TEEs have emerged as the dominant direction [32, 40, 61, 86, 124, 130, 135, 144], with production deployments such as NVIDIA’s con-fidential computing offerings [102]. FPGA-based TEEs [8, 62, 143] target specialized low-latency confidential workloads, while ASIC-based TEEs [41, 124, 125] integrate security directly into neural processing units for protecting ML pipelines. These works primar-ily ensure the confidentiality of data values. However, they do not directly address leakage through data-dependent execution, where memory accesses or control flow reveal sensitive informa-tion. Hoss builds on accelerator-based TEEs and complements them with mechanisms that rigorously control data-dependent behavior, thereby reducing leakage from access patterns. 
+
+## 9 Conclusion 
+
+Oblivious semantic search faces a fundamental tension between strong privacy and practical performance. We revisit this tension in the context of GPU TEEs and show that large on-package HBM opens a new path. By treating HBM as a larger Pmem , we reduce reliance on expensive ORAM operations. Guided by this insight, we build Hoss, a heterogeneous TEE-based system that combines GPU and CPU enclaves for efficient, scalable, and secure HNSW-based retrieval. The design confines data-dependent execution to GPU-resident Pmem and uses a redesigned ORAM interface for host memory to protect data contents and access patterns without prohibitive overhead. Hoss shows that strong security can coexist with high performance and scalability. Hoss : Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture CCS ’26, November 15-19,2026, Netherlands 
+
+## References 
+
+[1] Advanced Micro Devices, Inc. 2026. AMD Secure Encrypted Virtualization (SEV). https://www.amd.com/en/developer/sev.html. (2026). Accessed: 2026-04-17. [2] Shaizeen Aga and Satish Narayanasamy. 2017. Invisimem: Smart memory de-fenses for memory bus side channel. ACM SIGARCH Computer Architecture News 
+
+45, 2 (2017), 94–106. [3] Haseeb Ahmed, Nachiket Rao, Abdelkarim Kati, Florian Kerschbaum, and Sujaya Maiyya. 2025. OasisDB: An Oblivious and Scalable System for Relational Data. 
+
+Proceedings of the VLDB Endowment 18, 11 (7 2025), 4478–4491. https://doi.org/ 10.14778/3749646.3749707 [4] Miklós Ajtai, János Komlós, and Endre Szemerédi. 1983. An O(n log n) Sorting Network. In Proceedings of the fifteenth annual ACM symposium on Theory of computing . 1–9. [5] Ayaz Akram, Venkatesh Akella, Sean Peisert, and Jason Lowe-Power. 2022. Sok: Limitations of confidential computing via tees for high-performance compute systems. In 2022 IEEE International Symposium on Secure and Private Execution Environment Design (SEED) . IEEE, 121–132. [6] Ghadeer Almusaddar, Yicheng Zhang, Saber Ganjisaffar, Barry Williams, Yu David Liu, Dmitry Ponomarev, and Nael Abu-Ghazaleh. 2025. ShadowScope: GPU Monitoring and Validation via Composable Side Channel Signals. arXiv preprint arXiv:2509.00300 (2025). [7] Ghous Amjad, Sarvar Patel, Giuseppe Persiano, Kevin Yeo, and Moti Yung. 2021. Dynamic volume-hiding encrypted multi-maps with applications to searchable encryption. Cryptology ePrint Archive (2021). [8] Md Armanuzzaman and Ziming Zhao. 2022. BYOTee: Towards building your own trusted execution environments using FPGA. arXiv preprint arXiv:2203.04214 
+
+(2022), 123. [9] Gilad Asharov, TH Hubert Chan, Kartik Nayak, Rafael Pass, Ling Ren, and Elaine Shi. 2020. Bucket oblivious sort: An extremely simple oblivious sort. In Symposium on Simplicity in Algorithms . SIAM, 8–14. [10] Gilad Asharov, Ilan Komargodski, Wei-Kai Lin, Kartik Nayak, Enoch Peserico, and Elaine Shi. 2020. OptORAMa: optimal oblivious RAM. In Advances in Cryptology– EUROCRYPT 2020: 39th Annual International Conference on the Theory and Appli-cations of Cryptographic Techniques, Zagreb, Croatia, May 10–14, 2020, Proceedings, Part II 30 . Springer, 403–432. [11] Gilad Asharov, Ilan Komargodski, Wei-Kai Lin, Enoch Peserico, and Elaine Shi. 2022. Optimal Oblivious Parallel RAM. In Proceedings of the 2022 Annual ACM-SIAM Symposium on Discrete Algorithms (SODA) . SIAM, 2459–2521. [12] Gilad Asharov, Ilan Komargodski, and Yehuda Michelson. 2023. Futorama: A concretely efficient hierarchical oblivious ram. In Proceedings of the 2023 ACM SIGSAC Conference on Computer and Communications Security . 3313–3327. [13] Martin Aumüller, Erik Bernhardsson, and Alexander Faithfull. 2017. ANN-Benchmarks: A Benchmarking Tool for Approximate Nearest Neighbor Algo-rithms. In International Conference on Similarity Search and Applications (SISAP) .https://doi.org/10.48550/arXiv.1807.05614 [14] Amro Awad, Yipeng Wang, Deborah Shands, and Yan Solihin. 2017. Obfusmem: A low-overhead access obfuscation for trusted memories. In Proceedings of the 44th Annual International Symposium on Computer Architecture . 107–119. [15] Hannah Bast, Björn Buchhold, and Elmar Haussmann. 2016. Semantic search on text and knowledge bases. Foundations and Trends® in Information Retrieval 10, 2–3 (2016), 119–271. [16] Kenneth E Batcher. 1968. Sorting networks and their applications. In Proceedings of the April 30–May 2, 1968, spring joint computer conference . 307–314. [17] Johes Bater, Xi He, William Ehrich, Ashwin Machanavajjhala, and Jennie Rogers. 2018. Shrinkwrap: efficient sql query processing in differentially private data federations. Proceedings of the VLDB Endowment 12, 3 (2018). [18] Jon Louis Bentley. 1975. Multidimensional binary search trees used for associative searching. Commun. ACM 18, 9 (1975), 509–517. [19] Alina Beygelzimer, Sham Kakade, and John Langford. 2006. Cover trees for nearest neighbor. In Proceedings of the 23rd international conference on Machine learning . 97–104. [20] Vincent Bindschaedler, Muhammad Naveed, Xiaorui Pan, XiaoFeng Wang, and Yan Huang. 2015. Practicing oblivious access on cloud storage: the gap, the fallacy, and the new way forward. In Proceedings of the 22nd ACM SIGSAC Conference on Computer and Communications Security . 837–849. [21] Laura Blackstone, Seny Kamara, and Tarik Moataz. 2019. Revisiting leakage abuse attacks. Cryptology ePrint Archive (2019). [22] Jesús Bobadilla, Fernando Ortega, Antonio Hernando, and Abraham Gutiérrez. 2013. Recommender systems survey. Knowledge-based systems 46 (2013), 109– 132. [23] Claudio Canella, Jo Van Bulck, Michael Schwarz, Moritz Lipp, Benjamin Von Berg, Philipp Ortner, Frank Piessens, Dmitry Evtyushkin, and Daniel Gruss. 2019. A systematic evaluation of transient execution attacks and defenses. In 28th USENIX Security Symposium . 249–266. [24] David Cash, Paul Grubbs, Jason Perry, and Thomas Ristenpart. 2015. Leakage-abuse attacks against searchable encryption. In Proceedings of the 22nd ACM SIGSAC conference on computer and communications security . 668–679. [25] Anrin Chakraborti and Radu Sion. 2018. ConcurORAM: High-throughput state-less parallel multi-client ORAM. arXiv preprint arXiv:1811.04366 (2018). [26] Javad Ghareh Chamani, Ioannis Demertzis, Dimitrios Papadopoulos, Charalam-pos Papamanthou, and Rasool Jalili. 2023. GraphOS: Towards Oblivious Graph Processing. Proceedings of the VLDB Endowment 16, 13 (2023), 4324–4338. [27] Zhao Chang, Dong Xie, Sheng Wang, and Feifei Li. 2022. Towards Practical Oblivious Join. In 2022 International Conference on Management of Data . 803–817. [28] Hao Chen, Ilaria Chillotti, Yihe Dong, Oxana Poburinnaya, Ilya Razenshteyn, and M Sadegh Riazi. 2020. {SANNS }: Scaling up secure approximate {k-Nearest }
+
+neighbors search. In 29th USENIX Security Symposium . 2111–2128. [29] Qi Chen, Bing Zhao, Haidong Wang, Mingqin Li, Chuanjie Liu, Zengzhong Li, Mao Yang, and Jingdong Wang. 2021. Spann: Highly-efficient billion-scale approximate nearest neighborhood search. Advances in Neural Information Processing Systems 34 (2021), 5199–5212. [30] Tiejun Cheng, Qingliang Li, Yanli Wang, and Stephen H Bryant. 2011. Identifying compound-target associations by combining bioactivity profile similarity search and public databases mining. Journal of Chemical Information and Modeling 51, 9 (2011), 2440–2448. [31] Kwanghoon Choi, Igjae Kim, Sunho Lee, and Jaehyuk Huh. 2024. ShieldCXL: A Practical Obliviousness Support with Sealed CXL Memory. ACM Transactions on Architecture and Code Optimization (2024). [32] Marcin Chrapek, Siyuan Shen, Patrick Iff, Tiancheng Chen, Mikhail Khalilov, Marcin Copik, Maciej Besta, and Torsten Hoefler. 2026. SecPerf: Demystifying Cost of Confidential HPC. In 2026 IEEE International Parallel and Distributed Processing Symposium (IPDPS) . IEEE, 850–867. [33] Shumo Chu, Danyang Zhuo, Elaine Shi, and TH Hubert Chan. 2021. Differentially oblivious database joins: Overcoming the worst-case curse of fully oblivious algorithms. Cryptology ePrint Archive (2021). [34] J Chuang, A Seto, N Berrios, S van Schaik, C Garman, and D Genkin. 2026. Tee. fail: Breaking trusted execution environments via ddr5 memory bus interposition. In 2026 IEEE Symposium on Security and Privacy (SP). Los Alamitos, CA, USA: IEEE Computer Society . 1894–1912. [35] Victor Costan and Srinivas Devadas. 2016. Intel SGX explained. Cryptology ePrint Archive (2016). [36] Reza Curtmola, Juan Garay, Seny Kamara, and Rafail Ostrovsky. 2006. Search-able symmetric encryption: improved definitions and efficient constructions. In 
+
+Proceedings of the 13th ACM conference on Computer and communications security .79–88. [37] Emma Dauterman, Mayank Rathee, Raluca Ada Popa, and Ion Stoica. 2022. Waldo: A private time-series database from function secret sharing. In 2022 IEEE Sympo-sium on Security and Privacy (SP) . IEEE, 2450–2468. [38] Ioannis Demertzis, Javad Ghareh Chamani, Dimitrios Papadopoulos, and Char-alampos Papamanthou. 2020. Dynamic Searchable Encryption with Small Client Storage.. In NDSS .[39] Ioannis Demertzis, Dimitrios Papadopoulos, and Charalampos Papamanthou. 2018. Searchable encryption with optimal locality: Achieving sublogarithmic read efficiency. In Annual International Cryptology Conference . Springer, 371–406. [40] Yunjie Deng, Chenxu Wang, Shunchang Yu, Shiqing Liu, Zhenyu Ning, Kevin Leach, Jin Li, Shoumeng Yan, Zhengyu He, Jiannong Cao, et al. 2022. Strongbox: A gpu tee on arm endpoints. In Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communications Security . 769–783. [41] Aritra Dhar, Clément Thorens, Lara Magdalena Lazier, and Lukas Cavigelli. 2024. Ascend-cc: Confidential computing on heterogeneous npu for emerging generative ai workloads. arXiv preprint arXiv:2407.11888 (2024). [42] Ruyi Ding, Tianhong Xu, Xinyi Shen, Aidong Adam Ding, and Yunsi Fei. 2025. MoEcho: Exploiting Side-Channel Attacks to Compromise User Privacy in Mixture-of-Experts LLMs. In Proceedings of the 2025 ACM SIGSAC Conference on Computer and Communications Security . 2159–2173. [43] Sam Dittmer and Rafail Ostrovsky. 2020. Oblivious tight compaction in O (n) time with smaller constant. In International Conference on Security and Cryptography for Networks . Springer, 253–274. [44] Matthijs Douze, Alexandr Guzhva, Chengqi Deng, Jeff Johnson, Gergely Szilvasy, Pierre-Emmanuel Mazaré, Maria Lomeli, Lucas Hosseini, and Hervé Jégou. 2024. The Faiss library. (2024). arXiv:cs.LG/2401.08281 [45] Kha Dinh Duy and Hojoon Lee. 2022. In-Memory Acceleration of Data-Intensive Confidential Computing. IEEE Transactions on Cloud Computing (2022). [46] Joshua J Engelsma, Anil K Jain, and Vishnu Naresh Boddeti. 2022. HERS: Homo-morphically encrypted representation search. IEEE Transactions on Biometrics, Behavior, and Identity Science 4, 3 (2022), 349–360. [47] Saba Eskandarian and Matei Zaharia. 2019. ObliDB: Oblivious Query Processing for Secure Databases. Proceedings of the VLDB Endowment 13, 2 (2019), 169–183. https://doi.org/10.14778/3364324.3364331 [48] Dmitry Evtyushkin, Ryan Riley, Nael CSE Abu-Ghazaleh, ECE, and Dmitry Pono-marev. 2018. Branchscope: A new side-channel attack on directional branch predictor. ACM SIGPLAN Notices 53, 2 (2018), 693–707. [49] Muhammad Faisal, Jerry Zhang, John Liagouris, Vasiliki Kalavri, and Mayank Varia. 2023. {TVA }: A multi-party computation system for secure and expressive time series analytics. In 32nd USENIX Security Symposium . 5395–5412. CCS ’26, November 15-19,2026, Netherlands 
+
+[50] Weiqi Feng, Xinle Cao, Adam O’Neill, and Chuanhui Yang. 2025. Enabling Index-free Adjacency in Oblivious Graph Processing with Delayed Duplications. 
+
+Cryptology ePrint Archive (2025). [51] Sumit Ganguly, Waqar Hasan, and Ravi Krishnamurthy. 1992. Query optimization for parallel execution. In Proceedings of the 1992 ACM SIGMOD international conference on management of data . 9–18. [52] Yunfan Gao, Yun Xiong, Xinyu Gao, Kangxiang Jia, Jinliu Pan, Yuxi Bi, Yixin Dai, Jiawei Sun, Haofen Wang, Haofen Wang, et al. 2023. Retrieval-augmented generation for large language models: A survey. arXiv preprint arXiv:2312.10997 
+
+2, 1 (2023), 32. [53] Badih Ghazi, Rasmus Pagh, and Ameya Velingker. 2019. Scalable and differ-entially private distributed aggregation in the shuffled model. arXiv preprint arXiv:1906.08320 (2019). [54] Oded Goldreich. 1987. Towards a theory of software protection and simulation by oblivious RAMs. In Proceedings of the nineteenth annual ACM symposium on Theory of computing . 182–194. [55] Oded Goldreich and Rafail Ostrovsky. 1996. Software protection and simulation on oblivious RAMs. Journal of the ACM (JACM) 43, 3 (1996), 431–473. [56] Cheng Gongye, Yukui Luo, Xiaolin Xu, and Yunsi Fei. 2023. Side-Channel-Assisted Reverse-Engineering of Encrypted DNN Hardware Accelerator IP and Attack Surface Exploration. In 2024 IEEE Symposium on Security and Privacy (SP) . IEEE Computer Society, 1–1. [57] Michael T Goodrich. 2014. Zig-zag sort: A simple deterministic data-oblivious sorting algorithm running in o (n log n) time. In Proceedings of the forty-sixth annual ACM symposium on Theory of computing . 684–693. [58] Ben Gras, Kaveh Razavi, Herbert Bos, and Cristiano Giuffrida. 2018. TLBleed: When Protecting Your CPU Caches Is Not Enough. Black Hat USA (2018). [59] Mathieu Gross, Nisha Jacob, Andreas Zankl, and Georg Sigl. 2019. Breaking trustzone memory isolation through malicious hardware on a modern fpga-soc. In Proceedings of the 3rd ACM Workshop on Attacks and Solutions in Hardware Security Workshop . 3–12. [60] Paul Grubbs, Marie-Sarah Lacharité, Brice Minaud, and Kenneth G Paterson. 2018. Pump up the volume: Practical database reconstruction from volume leakage on range queries. In Proceedings of the 2018 ACM SIGSAC Conference on Computer and Communications Security . 315–331. [61] Zhongshu Gu, Enriquillo Valdez, Salman Ahmed, Julian James Stephen, Michael Le, Hani Jamjoom, Shixuan Zhao, and Zhiqiang Lin. 2026. Blueprint, Bootstrap, and Bridge: A Security Look at NVIDIA GPU Confidential Computing. In Pro-ceedings of the 9th MLSys Conference .[62] Yitong Guo, Hongbo Chen, Haobin Hiroki Chen, Yukui Luo, XiaoFeng Wang, and Chenghong Wang. 2025. BOLT: Bandwidth-Optimized Lightning-Fast Oblivious Map powered by Secure HBM Accelerators. arXiv preprint arXiv:2509.01742 
+
+(2025). [63] Yanan Guo, Zhenkai Zhang, and Jun Yang. 2024. GPU Memory Exploitation for Fun and Profit. In 33rd USENIX Security Symposium . 4033–4050. [64] Alexander Halavais. 2017. Search engine society . John Wiley & Sons. [65] hnmslib. 2024. hnswlib: Header-only library for fast approximate nearest neigh-bor search. https://github.com/nmslib/hnswlib. (2024). Accessed: 2026-04-14. [66] Xing Hu, Ling Liang, Shuangchen Li, Lei Deng, Pengfei Zuo, Yu Ji, Xinfeng Xie, Yufei Ding, Chang Liu, Timothy Sherwood, and Yuan Xie. 2020. Deepsniffer: A DNN model extraction framework based on learning architectural hints. In 
+
+Proceedings of the Twenty-Fifth International Conference on Architectural Support for Programming Languages and Operating Systems . 385–399. [67] Tyler Hunt, Zhipeng Jia, Vance Miller, Ariel Szekely, Yige Hu, Christopher J Ross-bach, and Emmett Witchel. 2020. Telekine: Secure computing with cloud {GPUs }.In 17th USENIX Symposium on Networked Systems Design and Implementation (NSDI 20) . 817–833. [68] ITPro. 2026. HPE ProLiant Compute DL340 Gen12 Review. https://www.itpro. com/infrastructure/servers-and-storage/hpe-proliant-compute-dl340-gen12-review-an-appealing-alternative-to-dual-socket-xeon-6-rack-servers. (Feb. 2026). Accessed: 2026-04-23. [69] Antonia Januszewicz, Jiachen Zhao, Meng Jiang, and Taeho Jung. 2026. RAGtime-PIANO: Efficient Secure Remote RAG. (2026). [70] Grace Jia, Alex Wong, and Anurag Khandelwal. 2025. Found in Translation: A Generative Language Modeling Approach to Memory Access Pattern Attacks. In 
+
+34th USENIX Security Symposium . 7957–7975. [71] Fatahalian Kayvon. 2004. Understanding the efficiency of GPU algorithms for matrix-matrix multiplication. In SIGGRAPH/EUROGRAPHICS Conference On Graphics Hardware, Proceedings of the ACM SIGGRAPH/EUROGRAPHICS confer-ence on Graphics hardware table of contents, Grenoble, France, 2004 .[72] Georgios Kellaris, George Kollios, Kobbi Nissim, and Adam O’neill. 2016. Generic attacks on secure outsourced databases. In Proceedings of the 2016 ACM SIGSAC Conference on Computer and Communications Security . 1329–1340. [73] Hyeyoung Ko, Suyeon Lee, Yoonseo Park, and Anna Choi. 2022. A survey of recommendation systems: recommendation models, techniques, and application fields. Electronics 11, 1 (2022), 141. [74] Paul Kocher, Jann Horn, Anders Fogh, Daniel Genkin, Daniel Gruss, Werner Haas, Mike Hamburg, Moritz Lipp, Stefan Mangard, Thomas Prescher, Michael Schwarz, and Yuval Yarom. 2019. Spectre Attacks: Exploiting Speculative Execution. In 
+
+40th IEEE Symposium on Security and Privacy (S&P’19) .[75] Ang Li, Shuaiwen Leon Song, Jieyang Chen, Jiajia Li, Xu Liu, Nathan R Tallent, and Kevin J Barker. 2019. Evaluating modern gpu interconnect: Pcie, nvlink, nv-sli, nvswitch and gpudirect. IEEE Transactions on Parallel and Distributed Systems 31, 1 (2019), 94–110. [76] Ge Li, Mohit Tiwari, and Michael Orshansky. 2022. Power-based attacks on spatial dnn accelerators. ACM Journal on Emerging Technologies in Computing Systems (JETC) 18, 3 (2022), 1–18. [77] Jingyu Li, Zhicong Huang, Min Zhang, Cheng Hong, Jian Liu, Tao Wei, and Wenguang Chen. 2025. Panther: Private approximate nearest neighbor search in the single server setting. In Proceedings of the 2025 ACM SIGSAC Conference on Computer and Communications Security . 365–379. [78] Yinan Li, Bailu Ding, Ziyun Wei, Lukas M Maas, Momin Al-Ghosien, Spyros Blanas, Nicolas Bruno, Carlo Curino, Matteo Interlandi, Craig Peeper, et al. 2025. Scaling GPU-Accelerated Databases beyond GPU Memory Size. Proceedings of the VLDB Endowment 18, 11 (2025), 4518–4531. [79] Moritz Lipp, Michael Schwarz, Daniel Gruss, Thomas Prescher, Werner Haas, Stefan Mangard, Paul Kocher, Daniel Genkin, Yuval Yarom, and Mike Hamburg. 2018. Meltdown. arXiv preprint arXiv:1801.01207 (2018). [80] Jingjing Liu, Chang Liu, and Nicholas J Belkin. 2020. Personalization in text information retrieval: A survey. Journal of the Association for Information Science and Technology 71, 3 (2020), 349–369. [81] Yu-Chen Lo, Stefano E Rensi, Wen Torng, and Russ B Altman. 2018. Machine learning in chemoinformatics and drug discovery. Drug discovery today 23, 8 (2018), 1538–1546. [82] Kenneth López-Pérez, Juan F Avellaneda-Tamayo, Lexin Chen, Edgar López-López, K Eurídice Juárez-Mercado, José L Medina-Franco, and Ramón Alain Miranda-Quintana. 2024. Molecular similarity: Theory, applications, and per-spectives. Artificial intelligence chemistry 2, 2 (2024), 100077. [83] Jacob R Lorch, Bryan Parno, James Mickens, Mariana Raykova, and Joshua Schiffman. 2012. Toward practical private access to data centers via parallel oram. Cryptology ePrint Archive (2012). [84] Lovingmage. 2024. Synopsis Assisted Secure Collaborative Analytics. https: //github.com/lovingmage/SPECIAL/. (2024). [85] Yukui Luo, Cheng Gongye, Shaolei Ren, Yunsi Fei, and Xiaolin Xu. 2020. Stealthy-Shutdown: Practical Remote Power Attacks in Multi-Tenant FPGAs. In 2020 IEEE 38th International Conference on Computer Design (ICCD) . IEEE, 545–552. [86] Haohui Mai, Jiacheng Zhao, Hongren Zheng, Yiyang Zhao, Zibin Liu, Mingyu Gao, Cong Wang, Huimin Cui, Xiaobing Feng, and Christos Kozyrakis. 2023. Honeycomb: Secure and Efficient {GPU } Executions via Static Validation. In 
+
+17th USENIX Symposium on Operating Systems Design and Implementation (OSDI 23) . 155–172. [87] Yu A Malkov and Dmitry A Yashunin. 2018. Efficient and robust approximate nearest neighbor search using hierarchical navigable small world graphs. IEEE transactions on pattern analysis and machine intelligence 42, 4 (2018), 824–836. [88] Yu A. Malkov and D. A. Yashunin. 2020. Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs. 
+
+IEEE Transactions on Pattern Analysis and Machine Intelligence 42, 4 (2020), 824– 836. https://doi.org/10.1109/TPAMI.2018.2889473 [89] Christoph Mangold. 2007. A survey and classification of semantic search ap-proaches. International Journal of Metadata, Semantics and Ontologies (2007). [90] Yuanqing Miao, Yingtian Zhang, Dinghao Wu, Danfeng Zhang, Gang Tan, Rui Zhang, and Mahmut Taylan Kandemir. 2024. Veiled Pathways: Investigating Covert and Side Channels Within GPU Uncore. In 2024 57th IEEE/ACM Interna-tional Symposium on Microarchitecture (MICRO) . IEEE, 1169–1183. [91] Pratyush Mishra, Rishabh Poddar, Jerry Chen, Alessandro Chiesa, and Raluca Ada Popa. 2018. Oblix: An efficient oblivious search index. In 2018 IEEE Symposium on Security and Privacy (SP’18) . IEEE, 279–296. [92] Michael Mitzenmacher and Eli Upfal. 2017. Probability and computing: Random-ization and probabilistic techniques in algorithms and data analysis . Cambridge university press. [93] Tarik Moataz, Travis Mayberry, Erik-Oliver Blass, and Agnes Hui Chan. 2015. Resizable tree-based oblivious RAM. In Financial Cryptography and Data Security: 19th International Conference, FC 2015, San Juan, Puerto Rico, January 26-30, 2015, Revised Selected Papers 19 . Springer, 147–167. [94] Blaise Munyampirwa, Vihan Lakshman, and Benjamin Coleman. 2024. Down with the Hierarchy: The’H’in HNSW Stands for" Hubs". arXiv preprint arXiv:2412.01940 
+
+(2024). [95] Ajay Nayak, Pratheek B, Vinod Ganapathy, and Arkaprava Basu. 2021. (mis) managed: A novel tlb-based covert channel on gpus. In Proceedings of the 2021 ACM Asia Conference on Computer and Communications Security . 872–885. [96] Ravan Nazaraliyev, Yicheng Zhang, Sankha Baran Dutta, Andres Marquez, Kevin Barker, and Nael Abu-Ghazaleh. 2025. Not so Refreshing: Attacking GPUs using RFM Rowhammer Mitigation. In 34th USENIX Security Symposium . 5641–5660. [97] NVIDIA Corporation. 2020. NVIDIA A100 Tensor Core GPU Datasheet. https: //www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-nvidia-us-2188504-web.pdf. (2020). Accessed: 2026-04-14. Hoss : Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture CCS ’26, November 15-19,2026, Netherlands 
+
+[98] NVIDIA Corporation. 2022. NVIDIA H100 Tensor Core GPU. https://www.nvid ia.com/en-us/data-center/h100/. (2022). Accessed: 2026-04-14. [99] NVIDIA Corporation. 2024. CUDA C Programming Guide. https://docs.nvidia.co m/cuda/cuda-c-programming-guide/. (2024). [100] NVIDIA Corporation. 2024. NVIDIA GH200 Grace Hopper Superchip. https: //www.nvidia.com/en- us/data- center/grace- hopper- superchip/. (2024). Accessed: 2026-04-14. [101] NVIDIA Corporation. 2024. NVIDIA H200 Tensor Core GPU. https://www.nvid ia.com/en-us/data-center/h200/. (2024). Accessed: 2026-04-14. [102] NVIDIA Corporation. 2025. NVIDIA Secure AI with Blackwell and Hopper GPUs. https://docs.nvidia.com/nvidia-secure-ai-with-blackwell-and-hopper-gpus-whitepaper.pdf. (2025). White paper, accessed March 2026. [103] NVIDIA Developer Blog. 2023. Confidential Computing on NVIDIA H100 GPUs for Secure and Trustworthy AI. https://developer.nvidia.com/blog/confidential-computing-on-h100-gpus-for-secure-and-trustworthy-ai/. (July 2023). [104] Hyunyoung Oh, Adil Ahmad, Seonghyun Park, Byoungyoung Lee, and Yun-heung Paek. 2020. Trustore: Side-channel resistant storage for sgx using intel hybrid cpu-fpga. In Proceedings of the 2020 ACM SIGSAC Conference on Computer and Communications Security . 1903–1918. [105] Hiroyuki Ootomo, Akira Naruse, Corey Nolet, Ray Wang, Tamas Feher, and Yong Wang. 2024. Cagra: Highly parallel graph construction and approximate nearest neighbor search for gpus. In 2024 IEEE 40th International Conference on Data Engineering (ICDE) . IEEE, 4236–4247. [106] Simon Oya and Florian Kerschbaum. 2021. Hiding the access pattern is not enough: Exploiting search pattern leakage in searchable encryption. In 30th USENIX security symposium . 127–142. [107] James Jie Pan, Jianguo Wang, and Guoliang Li. 2023. Survey of vector database management systems. arXiv preprint arXiv:2310.14021 (2023). [108] Sarvar Patel, Giuseppe Persiano, Kevin Yeo, and Moti Yung. 2019. Mitigating leakage in secure cloud-hosted data structures: Volume-hiding for multi-maps via hashing. In Proceedings of the 2019 ACM SIGSAC conference on computer and communications security . 79–93. [109] Peter Pessl, Daniel Gruss, Clémentine Maurice, Michael Schwarz, and Stefan Mangard. 2016. {DRAMA }: Exploiting {DRAM } addressing for {Cross-CPU }
+
+attacks. In 25th USENIX security symposium . 565–581. [110] Benny Pinkas and Tzachy Reinman. 2010. Oblivious RAM revisited. In Advances in Cryptology–CRYPTO 2010: 30th Annual Cryptology Conference, Santa Barbara, CA, USA, August 15-19, 2010. Proceedings 30 . Springer, 502–519. [111] Sandro Pinto and Nuno Santos. 2019. Demystifying arm trustzone: A compre-hensive survey. ACM computing surveys (CSUR) 51, 6 (2019), 1–36. [112] Qdrant. 2024. Vector Search Benchmarks. https://qdrant.tech/benchmarks/. (2024). Accessed: 2026-03-30. [113] Lianke Qin, Rajesh Jayaram, Elaine Shi, Zhao Song, Danyang Zhuo, and Shumo Chu. 2022. Adore: Differentially oblivious relational database operators. arXiv preprint arXiv:2212.05176 (2022). [114] Lina Qiu, Georgios Kellaris, Nikos Mamoulis, Kobbi Nissim, and George Kollios. 2023. Doquet: Differentially Oblivious Range and Join Queries with Private Data Structures. Proceedings of the VLDB Endowment 16, 13 (2023), 4160–4173. [115] Martin Raab and Angelika Steger. 1998. “Balls into bins”—A simple and tight analysis. In International Workshop on Randomization and Approximation Tech-niques in Computer Science . Springer, 159–170. [116] Nils Reimers and Iryna Gurevych. 2019. Sentence-bert: Sentence embeddings using siamese bert-networks. In Proceedings of the 2019 conference on empirical methods in natural language processing and the 9th international joint conference on natural language processing (EMNLP-IJCNLP) . 3982–3992. [117] Ling Ren, Christopher Fletcher, Albert Kwon, Emil Stefanov, Elaine Shi, Marten Van Dijk, and Srinivas Devadas. 2015. Constants count: Practical improvements to oblivious {RAM }. In 24th USENIX Security Symposium . 415–430. [118] Sajin Sasy, Sergey Gorbunov, and Christopher W. Fletcher. 2018. ZeroTrace: Oblivious Memory Primitives from Intel SGX. In Network and Distributed System Security Symposium (NDSS) .[119] Sajin Sasy, Aaron Johnson, and Ian Goldberg. 2022. Fast Fully Oblivious Com-paction and Shuffling. In Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communications Security . 2565–2579. [120] Jaiyam Sharma and Saket Navlakha. 2018. Improving Similarity Search with High-dimensional Locality-sensitive Hashing. arXiv preprint arXiv:1812.01844 
+
+(2018). https://doi.org/10.48550/arXiv.1812.01844 [121] Xuanhua Shi, Zhigao Zheng, Yongluan Zhou, Hai Jin, Ligang He, Bo Liu, and Qiang-Sheng Hua. 2018. Graph processing on GPUs: A survey. ACM Computing Surveys (CSUR) 50, 6 (2018), 1–35. [122] Emil Stefanov, Marten van Dijk, Elaine Shi, T-H Hubert Chan, Christopher Fletcher, Ling Ren, Xiangyao Yu, and Srinivas Devadas. 2018. Path ORAM: an extremely simple oblivious RAM protocol. Journal of the ACM (JACM) (2018). [123] Afonso Tinoco, Sixiang Gao, and Elaine Shi. 2023. EnigMap:External-Memory Oblivious Map for Secure Enclaves. In 32nd USENIX Security Symposium .[124] Kapil Vaswani, Stavros Volos, Cédric Fournet, Antonio Nino Diaz, Ken Gordon, Balaji Vembu, Sam Webster, David Chisnall, Saurabh Kulkarni, Graham Cunning-ham, et al. 2022. Confidential machine learning within graphcore ipus. arXiv preprint arXiv:2205.09005 (2022). [125] Kapil Vaswani, Stavros Volos, Cédric Fournet, Antonio Nino Diaz, Ken Gordon, Balaji Vembu, Sam Webster, David Chisnall, Saurabh Kulkarni, Graham Cunning-ham, et al. 2023. Confidential computing within an {AI } accelerator. In 2023 USENIX Annual Technical Conference (USENIX ATC 23) . 501–518. [126] Vasily Volkov. 2010. Better performance at lower occupancy. In Proceedings of the GPU technology conference, GTC , Vol. 10. San Jose, CA, 16. [127] Stavros Volos, Kapil Vaswani, and Rodrigo Bruno. 2018. Graviton: Trusted execution environments on {GPUs }. In 13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18) . 681–696. [128] Chenghong Wang, Johes Bater, Kartik Nayak, and Ashwin Machanavajjhala. 2021. DP-Sync: Hiding update patterns in secure outsourced databases with differ-ential privacy. In Proceedings of the 2021 International Conference on Management of Data . 1892–1905. [129] Chenghong Wang, Johes Bater, Kartik Nayak, and Ashwin Machanavajjhala. 2022. IncShrink: Architecting Efficient Outsourced Databases using Incremental MPC and Differential Privacy. arXiv preprint arXiv:2203.05084 (2022). [130] Chenxu Wang, Junjie Huang, Yujun Liang, Xuanyao Peng, Yuqun Zhang, Feng-wei Zhang, Jiannong Cao, Hang Lu, Rui Hou, Shoumeng Yan, et al. 2026. SoK: Analysis of Accelerator TEE Designs.. In NDSS .[131] Xiao Shaun Wang, Kartik Nayak, Chang Liu, TH Hubert Chan, Elaine Shi, Emil Stefanov, and Yan Huang. 2014. Oblivious data structures. In Proceedings of the 2014 ACM Conference on Computer and Communications Security . 215–226. [132] Yunling Wang, Jianfeng Wang, and Xiaofeng Chen. 2016. Secure searchable encryption: a survey. Journal of communications and information networks (2016). [133] Manuel Widmoser, Daniel Kocher, et al. 2025. SHINE: A Scalable HNSW Index in Disaggregated Memory. arXiv preprint arXiv:2507.17647 (2025). [134] Peter Willett, John M Barnard, and Geoffrey M Downs. 1998. Chemical similarity searching. Journal of chemical information and computer sciences (1998), 983–996. [135] Xiaolong Wu, Dave Jing Tian, and Chung Hwan Kim. 2023. Building gpu tees using cpu secure enclaves with gevisor. In Proceedings of the 2023 ACM Symposium on Cloud Computing . 249–264. [136] Yi-Fu Wu, Minseung Lee, and Sungjin Ahn. 2024. Structured World Model-ing via Semantic Vector Quantization. In International Conference on Learning Representations (ICLR) . https://doi.org/10.48550/arXiv.2402.01203 [137] Yun Xiang, Zhuangzhi Chen, Zuohui Chen, Zebin Fang, Haiyang Hao, Jinyin Chen, Yi Liu, Zhefu Wu, Qi Xuan, and Xiaoniu Yang. 2020. Open dnn box by power side-channel attack. IEEE Transactions on Circuits and Systems II: Express Briefs 67, 11 (2020), 2717–2721. [138] Lee Xiong, Chenyan Xiong, Ye Li, Kwok-Fung Tang, Jialin Liu, Paul Bennett, et al. 2020. Approximate nearest neighbor negative contrastive learning for dense text retrieval. arXiv preprint arXiv:2007.00808 (2020). [139] Min Xu, Antonis Papadimitriou, Andreas Haeberlen, and Ariel Feldman. 2019. 
+
+Hermetic: Privacy-preserving distributed analytics without (most) side channels .Technical Report. University of Pennsylvania Department of Computer and Information Science. https://haeberlen.cis.upenn.edu/papers/hermetic-tr.pdf [140] Yuval Yarom and Katrina Falkner. 2014. FLUSH+ RELOAD: A high resolution, low noise, l3 cache Side-Channel attack. In 23rd USENIX security symposium .[141] Zhenkai Zhang, Tyler Allen, Fan Yao, Xing Gao, and Rong Ge. 2023. Tunnels for Bootlegging: Fully Reverse-Engineering GPU TLBs for Challenging Isolation Guarantees of NVIDIA MIG. In Proceedings of the 2023 ACM SIGSAC Conference on Computer and Communications Security . 960–974. [142] Zhenkai Zhang, Kunbei Cai, Yanan Guo, Fan Yao, and Xing Gao. 2024. 
+
+{Invalidate+ Compare }: A {Timer-Free } { GPU } Cache Attack Primitive. In 
+
+33rd USENIX Security Symposium . 2101–2118. [143] Mark Zhao, Mingyu Gao, and Christos Kozyrakis. 2022. Shef: Shielded enclaves for cloud fpgas. In Proceedings of the 27th ACM International Conference on Archi-tectural Support for Programming Languages and Operating Systems . 1070–1085. [144] Shixuan Zhao, Zhongshu Gu, Md Salman Ahmed, Ray Valdez, Hani Jamjoom, and Zhiqiang Lin. 2025. GPU Travelling: Efficient Confidential Collaborative Training with TEE-Enabled GPUs. In Proceedings of the 2025 ACM SIGSAC Con-ference on Computer and Communications Security . 2653–2667. [145] Leqian Zheng, Zheng Zhang, Wentao Dong, Yao Zhang, Ye Wu, and Cong Wang. 2024. H2O2RAM: A High-Performance Hierarchical Doubly Oblivious RAM. 
+
+arXiv preprint arXiv:2409.07167 (2024). [146] Wenting Zheng, Ankur Dave, Jethro G Beekman, Raluca Ada Popa, Joseph E Gonzalez, and Ion Stoica. 2017. Opaque: An oblivious and encrypted distributed analytics platform. In 14th USENIX Symposium on Networked Systems Design and Implementation (NSDI 17) . 283–298. [147] Mingxun Zhou, Elaine Shi, and Giulia Fanti. 2024. Pacmann: Efficient private approximate nearest neighbor search. In The Thirteenth International Conference on Learning Representations .[148] Jinhao Zhu, Liana Patel, Matei Zaharia, and Raluca Ada Popa. 2025. Compass: Encrypted semantic search with high accuracy. In 19th USENIX Symposium on Operating Systems Design and Implementation (OSDI 25) . 915–938. [149] Pengfei Zuo, Yu Hua, Ling Liang, Xinfeng Xie, Xing Hu, and Yuan Xie. 2020. Sealing neural network models in secure deep learning accelerators. arXiv preprint arXiv:2008.03752 (2020). CCS ’26, November 15-19,2026, Netherlands 
+
+## A Open Science 
+
+The artifacts necessary for evaluating the contributions of Hoss are available in an anonymous repository: https://anonymous.4ope n.science/r/hetcss-7758/. The repository includes the implementa-tion, experiment scripts, benchmark workloads, configuration files, dataset preparation scripts, plotting scripts, and instructions for reproducing the main experimental results reported in the paper. 
+
+## B Ethical Considerations 
+
+This work proposes Hoss, a privacy-enhancing system for obliv-ious semantic search using heterogeneous CPU–GPU TEEs. The goal of the system is to protect outsourced embedding datasets and query-dependent access patterns from an untrusted cloud software stack. Therefore, the intended impact of the work is positive, partic-ularly for sensitive search workloads such as biomedical retrieval, enterprise search, and private retrieval-augmented generation. This work does not involve human subjects, user studies, or the collection of new personal data. Our evaluation uses benchmark datasets and system-level performance measurements, and we do not collect or analyze private user queries. The work also does not attack deployed third-party systems or disclose new vulnerabilities. The adversarial analysis is limited to a clearly specified threat model and is used only to motivate and evaluate a defensive system. The main ethical risk is possible over-interpretation of the secu-rity guarantees. To mitigate this risk, the paper explicitly states its threat model, security goals, and infrastructure assumptions. Hoss assumes standard TEE protections, encrypted inter-TEE commu-nication, and dedicated GPU TEE execution, and it does not claim protection against out-of-scope threats such as availability attacks, malicious inputs, or invasive physical side channels. Like other privacy-enhancing technologies, Hoss could in prin-ciple be used in undesirable applications. However, the techniques presented in this paper are intended to reduce privacy leakage in legitimate outsourced search deployments. We believe the benefits of enabling efficient confidential semantic search outweigh the lim-ited dual-use risks, provided that real-world deployments follow applicable legal, organizational, and access-control requirements. 
+
+## C Generative AI Usage 
+
+The authors used ChatGPT for minor editorial assistance, including grammar checking, spelling correction, and light style polishing. No substantive scientific content, citations, or technical claims were generated by the tool. All AI-assisted edits were manually reviewed and verified by the authors.

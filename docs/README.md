@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-06</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-07</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 4 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 6 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>4</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-06 22:09:11 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-07 22:28:12 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,7 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精读聚焦AI生成系统代码的运行时校验，速读覆盖数据竞争检测、日志框架与智能合约漏洞注入。最值得关注方向：对抗生成器下“重生成+运行时验证”思路，以及超越传统锁机制的静态数据竞争检测。普通读者可优先精读首篇，速读四篇从系统安全与可靠性扩展视野。</p>
+<p>今日聚焦机密计算与系统安全，精读两篇8分论文并速读两篇安全相关研究。</p>
+<p>最值得关注：Serverless工作负载在机密虚拟机中的性能表现，以及异构GPU-CPU-TEE架构下的隐语义搜索方案。</p>
+<p>普通读者可优先追踪机密计算在云原生与AI检索场景中的落地进展。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -78,12 +80,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">1 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Don&#x27;t Trust the Code, Check Its Effects: Runtime Refinement for Regenerated Systems Code Under an Adversarial Generator">Don&#x27;t Trust the Code, Check Its Effects: Runtime Refinement for Regenerated Systems Code Under an Adversarial Generator</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Performance Study of Serverless Workloads in Confidential Virtual Machines">Performance Study of Serverless Workloads in Confidential Virtual Machines</span></li><li><span class="dpr-home-dashboard-paper-title" title="Hoss: Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture">Hoss: Fast Oblivious Semantic Search with Heterogeneous GPU-CPU-TEE Architecture</span></li><li><span class="dpr-home-dashboard-paper-title" title="An Empirical Analysis of CodeQL False Positives and Query Refinements for Java Vulnerabilities">An Empirical Analysis of CodeQL False Positives and Query Refinements for Java Vulnerabilities</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -91,12 +93,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Beyond Locks and Thread IDs: Static Data Race Detection Off The Beaten Path (Extended Version)">Beyond Locks and Thread IDs: Static Data Race Detection Off The Beaten Path (Extended Version)</span></li><li><span class="dpr-home-dashboard-paper-title" title="Influence of Logging Frameworks on Bind9">Influence of Logging Frameworks on Bind9</span></li><li><span class="dpr-home-dashboard-paper-title" title="Automated Vulnerability Injection in Smart Contracts Using Large Language Models">Automated Vulnerability Injection in Smart Contracts Using Large Language Models</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Cost-Aware Hierarchical Multi-Agent Ransomware Detection and Family Attribution">Cost-Aware Hierarchical Multi-Agent Ransomware Detection and Family Attribution</span></li><li><span class="dpr-home-dashboard-paper-title" title="When LLM Decompilers Recompile More and Preserve Less">When LLM Decompilers Recompile More and Preserve Less</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 </div>
 
