@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-09</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-10</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 9 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>7</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-09 21:23:02 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-10 21:50:03 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日更新9篇论文，聚焦漏洞检测与AI安全，其中2篇精读、7篇速读。</p>
-<p>最值得关注：SemVul用语义增强图神经网络提升漏洞检测精度（9.0分），VEX-Bench系统评估LLM判断供应链漏洞可利用性（8.0分）。</p>
-<p>建议优先精读SemVul与VEX-Bench，后续可关注硬件安全与GPU内存基准扩展视野。</p>
+<p>2026-09-10 安全日报精选 5 篇，精读两篇 8.0 分论文，聚焦 Windows 恶意软件检测的复合 AI 系统权衡与机密虚拟机中未修改 TLS 服务的会话证明。最值得看的是复合 AI 检测在准确率、效率与对抗鲁棒性间的取舍，以及机密计算下不改动 TLS 也能实现会话证明的思路。普通读者可先读这两篇精读，再按兴趣速览 BFT 共识、端侧 LLM 混淆保护和自动化漏洞检测查询生成三个方向。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -83,7 +81,7 @@
     <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SemVul: Semantic-Enhanced Graph Neural Networks for Code Property Graph-based Vulnerability Detection">SemVul: Semantic-Enhanced Graph Neural Networks for Code Property Graph-based Vulnerability Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="VEX-Bench: Benchmarking LLM Agents for Assessing Exploitability of Software Supply Chain Vulnerabilities">VEX-Bench: Benchmarking LLM Agents for Assessing Exploitability of Software Supply Chain Vulnerabilities</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Windows Malware Detector as a Compound AI System: Trade-Offs in Accuracy, Efficiency, and Adversarial Robustness">Windows Malware Detector as a Compound AI System: Trade-Offs in Accuracy, Efficiency, and Adversarial Robustness</span></li><li><span class="dpr-home-dashboard-paper-title" title="Session Attestation for Unmodified TLS Services in Confidential Virtual Machines">Session Attestation for Unmodified TLS Services in Confidential Virtual Machines</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
@@ -93,12 +91,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">7 篇</strong>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="SWE-Test: Benchmarking LLM Vulnerability Discovery via Input Prediction">SWE-Test: Benchmarking LLM Vulnerability Discovery via Input Prediction</span></li><li><span class="dpr-home-dashboard-paper-title" title="Hardware Trojan Threats to Multi-Chiplet Photonic Neural Network Accelerators">Hardware Trojan Threats to Multi-Chiplet Photonic Neural Network Accelerators</span></li><li><span class="dpr-home-dashboard-paper-title" title="Towards Standardized Evaluation of GPU Memory Safety with GMSBench">Towards Standardized Evaluation of GPU Memory Safety with GMSBench</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Breaking Fault Lines: Unifying TEE-Assisted BFT Consensus in Partially Trusted Worlds">Breaking Fault Lines: Unifying TEE-Assisted BFT Consensus in Partially Trusted Worlds</span></li><li><span class="dpr-home-dashboard-paper-title" title="Understanding the Security Boundary of Obfuscation-based On-Device LLM Protection">Understanding the Security Boundary of Obfuscation-based On-Device LLM Protection</span></li><li><span class="dpr-home-dashboard-paper-title" title="Towards Scalable and Cost-Efficient Vulnerability Detection: A Study on Automatic Query Generation">Towards Scalable and Cost-Efficient Vulnerability Detection: A Study on Automatic Query Generation</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>7</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
 </div>
 
