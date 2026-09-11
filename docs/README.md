@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-10</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-11</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 8 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-10 21:50:03 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-11 22:00:43 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,7 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>2026-09-10 安全日报精选 5 篇，精读两篇 8.0 分论文，聚焦 Windows 恶意软件检测的复合 AI 系统权衡与机密虚拟机中未修改 TLS 服务的会话证明。最值得看的是复合 AI 检测在准确率、效率与对抗鲁棒性间的取舍，以及机密计算下不改动 TLS 也能实现会话证明的思路。普通读者可先读这两篇精读，再按兴趣速览 BFT 共识、端侧 LLM 混淆保护和自动化漏洞检测查询生成三个方向。</p>
+<p>今日筛读 8 篇安全论文，精读 3 篇、速读 5 篇，最高分落在面向可信执行环境的缓存替换方案 HermiCache（9.0/10）。</p>
+<p>最值得关注的是 TEE 场景下的侧信道/缓存优化，以及《Beyond Static Guarantees》揭示的&quot;静态检查通过、动态运行失败&quot;这一安全敏感代码与 LLM 生成 Python 代码的落差（8.0/10）。</p>
+<p>普通读者可先看这两篇精读了解风险点，再按兴趣速览预硅信息流追踪、自动化渗透测试状态建模与多域数据隔离综述。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -78,12 +80,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Windows Malware Detector as a Compound AI System: Trade-Offs in Accuracy, Efficiency, and Adversarial Robustness">Windows Malware Detector as a Compound AI System: Trade-Offs in Accuracy, Efficiency, and Adversarial Robustness</span></li><li><span class="dpr-home-dashboard-paper-title" title="Session Attestation for Unmodified TLS Services in Confidential Virtual Machines">Session Attestation for Unmodified TLS Services in Confidential Virtual Machines</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="HermiCache: Enclave-Aware Cache Replacement for Trusted Execution Environments">HermiCache: Enclave-Aware Cache Replacement for Trusted Execution Environments</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond Static Guarantees: Measuring the Static-Pass Dynamic-Fail Gap in Security-Sensitive and LLM-Generated Python Code">Beyond Static Guarantees: Measuring the Static-Pass Dynamic-Fail Gap in Security-Sensitive and LLM-Generated Python Code</span></li><li><span class="dpr-home-dashboard-paper-title" title="&quot;They don&#x27;t care about this&quot;: A Systematic Study of TEE Build Reproducibility in the Wild">&quot;They don&#x27;t care about this&quot;: A Systematic Study of TEE Build Reproducibility in the Wild</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -91,12 +93,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Breaking Fault Lines: Unifying TEE-Assisted BFT Consensus in Partially Trusted Worlds">Breaking Fault Lines: Unifying TEE-Assisted BFT Consensus in Partially Trusted Worlds</span></li><li><span class="dpr-home-dashboard-paper-title" title="Understanding the Security Boundary of Obfuscation-based On-Device LLM Protection">Understanding the Security Boundary of Obfuscation-based On-Device LLM Protection</span></li><li><span class="dpr-home-dashboard-paper-title" title="Towards Scalable and Cost-Efficient Vulnerability Detection: A Study on Automatic Query Generation">Towards Scalable and Cost-Efficient Vulnerability Detection: A Study on Automatic Query Generation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing">Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Staying on the Attack Path: Structured State for Long-Horizon Automated Penetration Testing">Staying on the Attack Path: Structured State for Long-Horizon Automated Penetration Testing</span></li><li><span class="dpr-home-dashboard-paper-title" title="SoK: Secure Software-Based Multi-Domain Data Segregation">SoK: Secure Software-Based Multi-Domain Data Segregation</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>
 </div>
 
