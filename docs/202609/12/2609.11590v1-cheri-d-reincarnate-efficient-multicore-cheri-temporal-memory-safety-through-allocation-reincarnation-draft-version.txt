@@ -1,0 +1,478 @@
+Title: CHERI-D Reincarnate: efficient multicore CHERI temporal memory safety through allocation reincarnation (draft version)
+
+URL Source: https://arxiv.org/pdf/2609.11590v1
+
+Published Time: Fri, 11 Sep 2026 01:13:09 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# CHERI-D Reincarnate: efficient multicore CHERI temporal memory safety through allocation reincarnation (draft version) 
+
+## Yuecheng Wang 
+
+University of Cambridge United Kingdom yuecheng.wang@cl.cam.ac.uk 
+
+## Jonathan Woodruff 
+
+University of Cambridge United Kingdom jonathan.woodruff@cl.cam.ac.uk 
+
+## Simon W. Moore 
+
+University of Cambridge United Kingdom simon.moore@cl.cam.ac.uk 
+
+## Abstract 
+
+We propose CHERI-D Reincarnate ( Reinc ), an architectural extension to CHERI for scalable and efficient temporal mem-ory safety. Prior work CHERI-D has a finite-width genera-tion ID stored at a fixed location, requiring an object to be quarantined when its ID is exhausted. Reinc further provides use-after-free mitigation while permitting immediate freed memory reuse for objects through allocation reincarnation :rather than quarantining an allocation slot upon ID exhaus-tion, Reinc dynamically assigns a new ID to that slot when its current ID is exhausted. Exhausted IDs are quarantined and later reclaimed, while the underlying memory remains available for immediate reuse. By quarantining IDs rather than memory, Reinc enables continuous reuse of memory in the common case, substantially reducing both memory-sweep frequency and quarantine memory overhead. 
+
+Reinc further introduces coherent ID caching while retain-ing a fully decentralized ID organization. Temporal metadata remains colocated with the memory it protects, preserving locality while avoiding centralized metadata structures. To support multicore execution, Reinc connects physical co-herence events to the virtually addressed ObjID buffer using lightweight reverse-map and filter-based mechanisms. We implement Reinc as a hardware-software co-design spanning CHERI-Toooba (superscalar FPGA softcore), QEMU, LLVM/Clang and CheriBSD [6–8, 16]. Across our evaluated workloads, Reinc substantially reduces memory-sweep fre-quency and memory quarantine while incurring low perfor-mance and hardware overhead. 
+
+## 1 Introduction 
+
+CHERI provides fine-grained spatial memory safety by re-placing conventional pointers with hardware-protected ca-pabilities carrying bounds, permissions, and provenance [22]. Temporal safety remains more challenging: capabilities can be freely copied and may remain reachable after the lifetime of the allocation they reference has ended. The deployed CHERI temporal safety solution, Cornu-copia Reloaded [11], employs a software-based approach that delays reallocation until a sweep of the address space has revoked dangling heap capabilities. Unfortunately, memory quarantining can significantly affect allocator optimization, memory footprint, and cache efficiency [20, 23]. When added to the cost of revocation sweeps, overall system performance and resource usage can be prohibitively impacted. Recent work, including Picasso[12] and CHERI-D (pro-nounced, “cherry-dee"), has demonstrated support for stronger temporal safety guarantees at much greater efficiency [21]. Picasso tracks object validity in a global bit-vector table indexed by a large object ID field in each capability, and CHERI-D places an 8-bit generation ID in line with alloca-tions that are smaller than one page. Both provide temporal guarantees by checking metadata on memory access; capa-bilities pointing to freed objects are instantly revoked by clearing the validity bit (Picasso) or incrementing the object ID (CHERI-D). CHERI-D has several advantages over Picasso; placing IDs inline with allocation data makes the approach more scalable, and counters use metadata memory more efficiently than bit vectors. However, we see several opportunities for CHERI-D
+
+to be improved. While CHERI-D allowed expressing a range of ID locations, it associated IDs statically with allocation slots, unnecessarily forcing memory to be quarantined upon ID exhaustion. In addition, CHERI-D only supported objects of less than 4 KiB; while small objects are by far the most common, large objects disproportionately contribute to quar-antine wastage and dominate many applications [21]. Finally, both Picasso and CHERI-D have been evaluated only under a single-core setup due to the complexity of synchronizing the virtually addressed metadata buffer across multiple cores. We propose CHERI-D Reincarnate ( Reinc ), an architec-tural extension to CHERI and a hardware-software co-design for supporting temporal safety for application-class multi-core systems and long-running, allocation-intensive work-loads. The key observation behind Reinc is that exhausting an identity need not exhaust the memory it protects . Instead, 
+
+Reinc quarantines the exhausted ID and reincarnates the al-location slot under another available ID, allowing the under-lying memory to remain immediately reusable. Quarantined IDs can subsequently be reclaimed after a memory sweep that invalidates outstanding capabilities carrying those IDs. If reclamation completes before all available ID locations have been exhausted, the memory itself never needs to enter quarantine. arXiv:2609.11590v1 [cs.AR] 10 Sep 2026 Wang et al. 
+
+Reinc further extends ID-based temporal protection from 4 KiB to 1 GiB and addresses the multicore coherence prob-lem introduced by private ObjID buffers. It keeps cached ObjIDs coherent across cores using lightweight mechanisms that reuse existing cache-coherence invalidation and L1-replacement events. Our evaluation shows that Reinc incurs average runtime overheads of 1.7% for SPEC CPU2006 INT, 0.7% for SQLite, and 0.3% for PARSEC, while substantially reducing sweeping and memory quarantine overhead; for example, the SQLite benchmark requires no memory sweeps under Reinc , com-pared with 267 under Cornucopia Reloaded. In this work, we make the following contributions: 
+
+• We introduce allocation reincarnation and ID quaran-tine and reclamation , decoupling ID exhaustion from memory quarantine by reclaiming exhausted IDs in-dependently of their underlying allocations. 
+
+• We extend ID-based temporal protection to objects up to 1 GiB and design two lightweight coherence mechanisms for synchronizing private ObjID buffers across cores using existing cache-coherence and L1-replacement events. 
+
+• We implement Reinc as a complete hardware-software co-design spanning CHERI-Toooba, QEMU, LLVM/Clang, CheriBSD, MRS, and jemalloc, demonstrating strict UAF mitigation with immediate memory reuse on a multicore CHERI system. 
+
+• We evaluate Reinc using SPEC CPU2006 INT, PAR-SEC, SQLite, NIST Juliet, and MSET, demonstrating strict UAF mitigation while substantially reducing memory-sweep frequency and memory quarantine. 
+
+## 2 Background 
+
+2.1 CHERI 
+
+CHERI extends conventional architectures with hardware-enforced capabilities , which replace ordinary pointers with protected references carrying bounds, permissions, and prove-nance information. Memory accesses through a capability are constrained to its authorized address range and permis-sions, providing fine-grained spatial memory safety. CHERI follows a decentralized protection model: capabilities carry their access authority directly, avoiding centralized pointer metadata and allowing protection state to follow the exist-ing memory hierarchy. However, CHERI capabilities do not inherently encode object lifetime: a capability may remain valid after the object it references has been freed, motivating several hardware-software temporal-safety mechanisms. 
+
+2.2 Cornucopia Reloaded 
+
+Cornucopia Reloaded [11] enforces temporal safety for the heap using quarantine and revocation. Freed allocations are quarantined until a revocation sweep identifies and revokes dangling capabilities before the memory can be reused. This avoids adding metadata lookup to common-case memory accesses. However, quarantine delays memory reuse and incurs performance and memory overheads for sometimes-frequent memory sweeps. It also does not provide strict use-after-free protection between deallocation and reuse. 
+
+2.3 Picasso 
+
+Picasso introduces a centralized table to record object va-lidity, storing an object ID in each capability pointer and validating the corresponding bit of the table on each memory access[12]. This mechanism provides immediate use-after-free protection and often has very low performance over-head. However, centralized allocation of object IDs causes unexpected overheads; ID exhaustion can result in frequent sweeps; and table fragmentation can result in poor ID table buffering performance. 
+
+2.4 CHERI-D
+
+Following CHERI’s decentralized protection model, CHERI-D
+
+distributes ID metadata inline with allocations, relying on CHERI bounds to preserve integrity [21]. Each capability records the location of its allocation’s ObjID, which can of-ten reside in unused fragmentation and incur no additional memory overhead. On each memory access, hardware com-pares the capability’s ObjID with the corresponding memory ObjID and traps on a mismatch. On deallocation, CHERI-D advances the memory ID be-fore returning the object to the allocator, immediately inval-idating capabilities from the previous generation. However, finite-width IDs eventually become exhausted after repeated reuse, at which point CHERI-D marks the ID as exhausted and falls back to memory quarantine. An ID-aware memory sweep subsequently invalidates outstanding capabilities as-sociated with exhausted IDs, allowing them to be reclaimed. This combination of decentralized ID metadata, immediate al-location slot reuse, and ID-aware invalidation sweeps forms the basis for Reinc .
+
+2.5 Temporal metadata buffer 
+
+To reduce the latency of repeated ID accesses, Picasso intro-duces a color buffer [12], and CHERI-D introduces an object-ID (ObjID) buffer [21] to cache recently accessed temporal metadata. In particular, CHERI-D relies on the ObjID buffer to cache IDs to allow most memory accesses to validate the object ID without an additional load for the metadata. The ObjID buffer effectively operates as a virtually addressed cache, enabling ID lookup to proceed directly from the vir-tual address without waiting for address translation. This is important because ObjID validation lies on the latency-critical memory-access path; a virtually addressed buffer avoids both translation and memory access for ObjIds in the common case. However, CHERI-D’s ObjID buffer and Picasso’s color buffer operate independently of the processor’s conventional CHERI-D Reincarnate 
+
+cache-coherence hierarchy. An ID update in memory, there-fore, does not naturally invalidate or update a correspond-ing entry in the ObjID buffer. This problem is compounded by its virtually addressed organization: conventional cache-coherence protocols operate on physical addresses, whereas ObjID-buffer entries are identified using virtual addresses. A physical addresses from cache coherence messages, there-fore, cannot be directly matched to a particular ObjID-buffer entry, while virtual aliases further prevent a simple one-to-one correspondence between virtual and physical addresses. This limitation becomes critical for multicore temporal safety. A remote core may continue to retain the previous ID in its private ObjID buffer after another core has updated the corresponding memory ID. A stale capability can therefore continue to match the obsolete locally cached ID and may not reliably trap. Picasso and the original CHERI-D design have consequently been evaluated only in single-core configura-tions with single-threaded workloads. Supporting multicore execution requires bridging physical cache-coherence events with the virtually addressed ObjID buffer while preserving its ability to perform ID lookup without physical-address translation on the critical memory-access path. 
+
+## 3 System and threat model 
+
+As with Picasso and CHERI-D, Reinc strengthens tempo-ral safety relative to Cornucopia Reloaded by protecting against both use-after-free (UAF) and use after-reallocation (UAR). Cornucopia Reloaded prevents UAR by delaying freed memory reuse until dangling capabilities are revoked by a memory sweep, but it does not prevent access to an object while it remains in quarantine. Reinc instead revokes capa-bilities immediately on free using its ID mechanism, trapping dereference of dangling capabilities. 
+
+Trust model and software topology 
+
+Reinc retains the software topology and trust model of Cor-nucopia Reloaded: the Malloc revocation shim (MRS) [11] and allocator remain user-space components. MRS maintains capabilities covering the underlying allocator-managed allocations and returns capabilities tightly bound to application-requested object sizes. The ID metadata lies outside of the application-accessible bounds, while MRS per-forms ID management using ordinary loads and stores using allocator capabilities. This arrangement does not require new privileged instructions, but still maintains ID integrity in application code. Following prior work [11, 12, 21, 23], Reinc focuses on user-space heap temporal safety. Extending ID support to kernel and stack memory is left for future work. 
+
+## 4 Reinc Design 
+
+Reinc extends CHERI-D with additional IDMODEs to sup-port immediate memory reuse for objects of up to 1 GiB and 
+
+Table 1. Object-ID modes in Reinc .                            
+
+> Mode Object size ID placement IDLOC gran.
+> 0<63 B 128 B region-relative 16 B 163 B–4 KiB Page-relative 1 B 24–32 KiB Top-relative 1 KiB 332–256 KiB Top-relative 8 KiB 4256 KiB–2 MiB Top-relative 64 KiB 52–16 MiB Top-relative 512 KiB 616–128 MiB Top-relative 4 MiB 7128 MiB–1 GiB Top-relative 32 MiB
+
+introduces allocation reincarnation , allowing multiple IDs to be dynamically associated with an allocation slot over time. ID reassignment allows IDs to be quarantined for reclama-tion while allowing the underlying memory to remain in use. The Reinc IDLOC encoding facilitates reuse by placing ID locations in pairs. These innovations allow continuous reuse of allocation slots in the common case. 
+
+Reinc further extends CHERI-D by specifying strict co-herence for ID buffering without fence instructions. This is both necessary to maintain safety in multicore systems, and convenient for programmers. 
+
+4.1 Reinc architecture extension 
+
+Reinc encodes an 8-bit ID as well as an address of an expected-to-match in-memory ID. The Reinc capability format is shown in Figure 1. The Reinc architectural extension includes the following: 
+
+• An 8-bit capability ID field represents the lifetime that a capability is authorized to access, as shown in Figure 1. 
+
+• A 3-bit capability ID mode (IDMODE) field differenti-ates capabilities using the inline ID storage scheme, the in-page scheme of the original CHERI-D, and the large inline-object scheme 4.2. 
+
+• A 6-bit capability ID location (IDLOC) field encodes the memory ID location according to the scheme se-lected by IDMODE. ID 0 is reserved for unchecked, “immortal" caps, such as MRS-maintained underlying capabilities; all user heap capa-bilities bear non-0 IDs. Updating the capability ID , IDMODE 
+
+and IDLOC fields is only allowed to be conducted on ID 0 capabilities. 
+
+4.2 Large inline object ID design 
+
+To extend the object-ID support beyond the 4 KiB boundary of the original CHERI-D design, Reinc introduces six addi-tional IDMODEs (2-7), along with a new encoding of IDLOC 
+
+that enables the hardware to precisely locate an object’s ID metadata in these IDMODEs . The original encoding of CHERI-D relies on naturally occurring hardware boundaries, particularly cache-line and page boundaries, to derive the location of an object’s ID. Wang et al. 
+
+Figure 1. CHERI capability extended with Reinc support Modes 2-7 introduce a new top-relative ID representa-tion for larger objects that span multiple pages. As the sup-ported object size increases, these modes use progressively coarser alignment for ID-location pairs. Table 1 summarizes the object-size range and alignment granularity supported by each. 
+
+Reinc derives the ID location relative to the capability’s upper bound( top ) under IDMODEs (2-5). For these modes, the object’s ID location is placed immediately beyond the application-visible capability top, often within the internal fragmentation (unused space) in the underlying allocation slot. This organization follows the same principle as the inline-ID scheme of the original CHERI-D design: ID meta-data is co-located with the underlying allocation; it lies out-side of the bounds of the application-visible capability and is safe from modification by the application. 
+
+Locality-Preserving ID Placement. This top-relative, co-located ID organization is preferred to maintaining IDs in a separate shadow-memory structure or external metadata table because it preserves the spatial locality between an object and its temporal metadata. When object accesses and their corresponding ID lookups target nearby memory, ID metadata naturally benefits from existing memory optimiza-tions, avoiding additional cache and TLB pressure . For example, Reinc ’s top-relative organization allows ID lookup for multi-page objects to benefit from superpage mappings that can include both data and ID in a single TLB entry. 
+
+Concurrency-friendly ID placement. Programmers care-fully arrange data structures to avoid contention in con-current programs. Reinc also naturally respects these opti-mizations, avoiding a new centralized metadata structure on which ID accesses from multiple cores would contend. 
+
+Handling Exceptionally Large Objects. Extending ID-based protection beyond 1 GiB would require additional capability-encoding space for allocations that are rare in mea-sured workloads. Reinc instead immediately unmaps such allocations upon deallocation, causing subsequent accesses through dangling capabilities to fault. Unmapping pages at this granularity is particularly efficient as they are likely to be unmappable at the super-page (2MiB) or giga-page (1GiB) granularities. This hybrid approach allows Reinc to dedicate the limited capability encoding space to the object sizes for which efficient ID-based reuse is most beneficial while relying on page-level virtual-memory protection for exceptionally large allocations. 
+
+4.3 Allocation reincarnation 
+
+Reinc allows an allocation slot to be associated with multiple successive IDs, extending the number of temporal genera-tions through which it can be safely reused. Each 8-bit ID provides up to 255 generations, with IDLOC selecting among ID locations that can be associated with an allocation slot. As in CHERI-D, deallocation advances the selected memory ID, immediately revoking capabilities from the previous genera-tion. Rather than quarantining memory on ID exhaustion, as in CHERI-D, Reinc reincarnates the allocation slot. When an ID reaches 255, IDLOC is updated to select a non-exhausted ID associated with the same allocation slot, providing a fresh sequence of temporal generations. Capabilities belonging to previous generations remain associated with the old ID and remain revoked while the underlying memory continues to be reused without being quarantined. 
+
+4.4 ID Quarantine and Reclamation 
+
+Allocation reincarnation decouples ID exhaustion from mem-ory quarantine . Allocation slots can be reincarnated using a new ID location associated with the same slot when the current ID location is exhausted. Memory quarantine is re-quired only when all IDs available to an allocation slot are exhausted, and no further reincarnation is possible. Exhausted IDs, however, do not remain unavailable indefi-nitely. Reinc complements allocation reincarnation with an ID quarantine and reclamation mechanism. When an ID reaches its terminal generation, Reinc quarantines the exhausted ID. ID quarantine temporarily removes the ex-hausted ID location from circulation until a memory sweep invalidates all outstanding capabilities pointing to quaran-tined IDs. After the sweep completes, Reinc reclaims ID locations by resetting their generation state, making them available for future use. A frequently reused allocation slot can therefore cycle through its current ID while previously exhausted IDs progress through quarantine, sweeping in-validation, and reclamation. This strategy is fundamentally superior to a wider ID field; Reinc allows for an effectively infinite temporal generation space without a larger ID. ID quarantine substantially reduces quarantine-induced memory pressure by allowing memory to remain in use indefinitely. This property is particularly important for long-running, allocation-intensive workloads, where quarantine can cause continuous, high memory overhead. 
+
+4.5 ID Placement and Lookup 
+
+As shown in Table 1, modes 0 and 1 retain the ID-placement schemes of CHERI-D for small objects. In mode 0, IDLOC CHERI-D Reincarnate 
+
+selects an ID address anywhere in a 64-byte cache line shared with the allocation. In mode 1, IDLOC selects an ID address from the top 64-bytes of the 4 KiB page that contains the allocation. Because both modes use fixed, address-derived re-gions, capability bounds narrowing does not require explicit tracking of changes to the capability top. For larger objects, Modes 2–7 locate IDs relative to the capability upper bound ( top ), using a granularity of 1 KiB, 8 KiB, 64 KiB, 512 KiB, 4 MiB, and 32 MiB, respectively. 
+
+IDLOC[4:0] encodes the displacement from the aligned top to the ID metadata. The progressively coarser granularity allows the same five-bit displacement to scale to increasingly large objects, supporting allocations of up to 1 GiB. IDLOC[5] 
+
+independently selects between the two adjacent IDs used for allocation reincarnation. Algorithm 1 summarizes ID-address reconstruction and the updates required to preserve the ID location when capa-bility bounds are narrowed. 
+
+Preserving ID location across bounds narrowing. Top-relative placement must account for CHERI capability deriva-tion: narrowing capability bounds can reduce the capabil-ity top and would otherwise cause a derived capability to reconstruct a different ID address. Reinc therefore incre-ments IDLOC[4:0] by the number of mode-specific granu-larity boundaries crossed as the top decreases, preserving the original ID location. IDLOC[5] remains unchanged, keeping reincarnation selection independent of bounds narrowing. 
+
+4.6 Coherence-Aware ID Management 
+
+Reinc must maintain Object-ID (ObjID) coherence across cores to preserve temporal safety. When one core updates an object’s ID, other cores may retain stale IDs in their pri-vate ObjID buffers; without invalidation, these stale entries could continue to validate revoked capabilities. Subsequent accesses must therefore observe the updated ID through the coherent memory hierarchy. The most straightforward approach to ensure coherence is to enforce an inclusive policy between the L1 data cache and the ObjId buffer. If the ObjId buffer only holds IDs that are currently present in the coherent L1 data cache, then we can be certain that no newer value of the ID exists in the system. Unfortunately, this is challenging because the ObjID buffer is virtually addressed, and cache-coherence events operate on physical addresses. To connect physical coherence events to the virtually addressed ObjID buffer without affecting its critical lookup path or substantially modifying the memory subsystem, Reinc reuses existing coherence-invalidation and local L1-replacement events. We explore two approaches. The first maintains a reverse map from physical metadata lines to virtual ObjID locations, enabling selective invalidation of affected entries. In the cor-ner case that conflicting virtual mappings are found to map 
+
+Algorithm 1 Reinc ID address reconstruction and IDLOC 
+
+preservation. 𝐴 denotes the access address, 𝑇 the capa-bility top, 𝑀 the IDMODE , and 𝐿 the six-bit IDLOC field. AlignDown (𝑥, 𝑔 ) rounds 𝑥 down to the nearest 𝑔 -byte bound-ary.  
+
+> 1:
+
+function Granularity( 𝑀 ) 
+
+> 2:
+
+return {1 KiB , 8 KiB , 64 KiB , 512 KiB , 4 MiB , 32 MiB }[ 𝑀 −
+
+2] 
+
+> 3:
+
+end function  
+
+> 4:
+
+function IDAddr( 𝐴,𝑇 , 𝑀, 𝐿 ) 
+
+> 5:
+
+if 𝑀 = 0 then  
+
+> 6:
+
+𝑅 ← AlignDown (𝐴, 64 B ) 
+
+> 7:
+
+return 𝑅 + 16 B × 𝐿 [4:0 ] − 1 − 𝐿 [5] 
+
+> 8:
+
+else if 𝑀 = 1 then  
+
+> 9:
+
+𝑅 ← AlignDown (𝐴, 4 KiB ) 
+
+> 10:
+
+return 𝑅 + 4032 B + 𝐿  
+
+> 11:
+
+else  
+
+> 12:
+
+𝐺 ← Granularity (𝑀 ) 
+
+> 13:
+
+𝑅 ← AlignDown (𝑇 , 𝐺 ) 
+
+> 14:
+
+return 𝑅 + 𝐿 [4:0 ] × 𝐺 − 1 − 𝐿 [5] 
+
+> 15:
+
+end if  
+
+> 16:
+
+end function  
+
+> 17:
+
+function UpdateIDLoc( 𝑇 old ,𝑇 new , 𝑀, 𝐿 ) 
+
+> 18:
+
+𝐺 ← Granularity (𝑀 ) 
+
+> 19:
+
+𝑅 𝑜 ← AlignDown (𝑇 old , 𝐺 ) 
+
+> 20:
+
+𝑅 𝑛 ← AlignDown (𝑇 new , 𝐺 ) 
+
+> 21:
+
+if 𝑅 𝑛 < 𝑅 𝑜 then  
+
+> 22:
+
+Δ ← ( 𝑅 𝑜 − 𝑅 𝑛 )/ 𝐺  
+
+> 23:
+
+𝐿 ′ [4:0 ] ← 𝐿 [4:0 ] + Δ 
+
+> 24:
+
+𝐿 ′ [5] ← 𝐿 [5] 
+
+> 25:
+
+return 𝐿 ′ 
+
+> 26:
+
+else  
+
+> 27:
+
+return 𝐿  
+
+> 28:
+
+end if  
+
+> 29:
+
+end function 
+
+to the same physical line, indicate aliasing, we conservatively trigger a full-buffer flush. The second approach combines the structured ID layout with a lightweight Bloom-style physical-address filter. Events that cannot affect cached IDs are ignored, while possible matches conservatively flush the ObjID buffer. The imple-mentations of these mechanisms are described in section 5.2 
+
+## 5 Reinc Implementations 
+
+5.1 Reinc software support 
+
+Reinc extends CheriBSD’s Malloc Revocation Shim (MRS), which wraps the system allocator to provide heap temporal safety through quarantine and capability revocation. MRS intercepts deallocations and quarantines freed objects until Wang et al. 
+
+the quarantine reaches its reclamation threshold, triggering a sweep that invalidates dangling capabilities before the memory is returned to the allocator. Reinc modifies this path to immediately revoke freed objects by incrementing their ID, and allowing immediate reuse of the allocation slot. When the slot is found to be exhausted, MRS performs allocation reincarnation with ID-level quarantine, and finally triggers reclamation when the sweep threshold is reached. 
+
+ID Quarantine and Reclamation through Sweeping. 
+
+Reinc extends the MRS (Cornucopia Reloaded) quarantine mechanism to quarantine an exhausted ID independently of its underlying allocation. On free , when the current ID reaches its terminal value, which is defined as 254 , Reinc 
+
+marks it as exhausted by setting it to 255 and checks whether another ID associated with the allocation remains available. If so, only the exhausted ID is inserted into the quarantine, recording its IDLOC , while the allocation is immediately re-turned to the allocator for subsequent reincarnation. Each quarantined ID also contributes the size of its associated allo-cation to a virtual quarantine size . This accounting allows the exhausted ID to contribute to the existing quarantine thresh-old and hence to trigger revocation, without withholding the corresponding memory from the allocator. Quarantined IDs are reclaimed using CHERI-D’s ID-based invalidation sweep algorithm without relying on the shadow bitmap used for Cornucopia Reloaded. During a memory sweep, the “revoker" examines capabilities carrying object IDs and invalidates a capability if its associated ID has reached the value 255 . Thus, Reinc can identify and invalidate ca-pabilities using exhausted ID locations while the allocation slot itself has already been reincarnated under another ID. After the sweep completes, Reinc reclaims each quaran-tined ID by temporarily selecting its recorded IDLOC and resetting the corresponding quarantined ID to zero, making the ID available for future reincarnations. If all IDs associ-ated with an allocation slot are exhausted before ID reclama-tion, the allocation slot itself is quarantined; after a memory sweep, all of its IDs are reset and the memory is again re-turned to the allocator. 
+
+5.1.1 Allocator-enforced alignment. To satisfy the align-ment requirements of the top-relative IDMODEs , Reinc re-quests appropriately aligned allocations through the alloca-tor’s aligned allocation interface. This allows the required memory layout to be enforced without modifying the al-locator’s internal placement mechanisms. Importantly, the required alignment is smaller than the allocator alignment for each size class to ensure that IDs can be placed within internal fragmentation if any is available. The resulting place-ment constraint is therefore modest and imposes minimal additional pressure on memory. 
+
+Immediate unmapping of super-large allocations. Be-sides the allocator modifications required by CHERI-D to support IDMODE 1, Reinc requires that very large allo-cations be immediately unmapped upon deallocation. For objects beyond the size range supported by Reinc ’s ID-based protection, we leverage the operating system’s virtual-memory protection to provide use-after-free mitigation. Specif-ically, page-aligned allocations of at least 1 GiB are returned directly to the operating system upon deallocation using 
+
+pages_unmap() to remove their virtual-memory mappings. As these pages can largely be unmapped at super-page (2MiB) or giga-page (1GiB) granularity, this operation should be remarkably efficient. Once free() completes, the virtual address range previously occupied by the allocation is no longer mapped, causing subsequent accesses through dan-gling capabilities to fault. 
+
+5.2 Reinc implementation on CHERI-Toooba 
+
+Reinc architectural support. Reinc further extends the hardware implementation of CHERI-D with the additional architectural changes that it requires, in particular, updating 
+
+TLOC on upper bound shrinkage and hardware ID lookup for additional IDMODEs .
+
+Multicore coherent ID buffer. Reinc maintains Object-ID (ObjID) coherence by coupling the core-private ObjID buffer with the existing cache hierarchy of CHERI-Toooba, without modifying the underlying coherence protocol. In order to enforce an inclusive policy between the ObjID buffer and the L1 data cache, ObjID-buffer state must be invalidated both when an L1 line is invalidated by coherence and when it is locally replaced from the L1, since an ID that is not in the L1 data cache may be modified in the system without generating an invalidation observed by this core. We implement the two coherence mechanisms described in Section 4.6 using the existing L1 coherence-invalidation and local replacement events. Each event provides the physi-cal address of the affected cache line, which is used by either the filter or reverse map to determine whether the ObjID-buffer state must be invalidated. The filter-based design exploits the software-enforced meta-data layout described in 5.1.1. For metadata organized at a 1 KiB granularity, only the final 64-byte line of each 1 KiB region can contain IDs, 
+
+𝐹 1K = (lineAddr [3 : 0 ] = 4′ℎ𝐹 ) , (1) while for layouts using a 4 KiB or larger granularity, the relevant line is the final line of a 4 KiB page, 
+
+𝐹 4K = (lineAddr [5 : 0 ] = 6′ℎ3𝐹 ) . (2) We combine this static layout filter with a small Bloom-style physical-address filter, recording cache lines may have cor-responding entries in the ObjID buffer. Lines that pass the layout check are queried against the Bloom filter. A miss re-quires no action, while a hit conservatively flushes the ObjID buffer. False positives are safe and result only in unneces-sary flushes. The static filter reduces the number of Bloom CHERI-D Reincarnate 
+
+filter queries and opportunities for false-positive flushes, while the Bloom filter detects evicted cache lines that might currently be held in the ObjID buffer. Together, these mech-anisms avoid flushes for most unrelated L1 events with little additional hardware, as shown in Table 2. The reverse-map design maintains a small mapping from physical metadata cache lines to their corresponding virtual ObjID locations. On either a coherence invalidation or a local L1 replacement, the physical line is looked up in the reverse map. Since each 64-byte metadata line corresponds to four 16-byte ObjID-buffer entries, the recovered virtual address is aligned to 64 bytes, and the entries at offsets {0, 16 , 32 , 48 }
+
+from 𝑉 line are invalidated. ObjID buffer entries are 16 bytes, and a 64-byte data cache line could be spread across four ObjID buffer entries. If so, these entries are invalidated sequentially, allowing only one virtual address to be stored per reverse-map entry. If the same physical metadata line is observed through different virtual lines, Reinc detects the alias and conservatively clears both the ObjID buffer and reverse-map state. The two designs trade hardware cost for invalidation pre-cision. The Bloom-filter design requires less hardware but may conservatively flush the entire buffer on a false posi-tive, whereas the reverse map requires additional memory resources but normally invalidates only the affected entries. Both reuse existing coherence-invalidation and local L1 re-placement events, require no new coherence messages or protocol states, and leave the timing-critical virtually ad-dressed ObjID lookup path unchanged. Local L1 replacement is handled conservatively because eviction does not necessarily imply that the underlying Ob-jIDs have been modified; a line may simply be displaced due to cache pressure. Since the mechanisms cannot determine whether a replacement will be followed by a modification that makes cached ObjIDs stale, they invalidate the corre-sponding entries to preserve correctness. This conservation may introduce additional ObjID-buffer misses and ID ac-cesses, but it enables coherence through simple, core-local changes without invasive modifications to the memory hi-erarchy. Future work could eliminate unnecessary invali-dation through tighter integration with the existing cache-coherence protocol. 
+
+## 6 Evaluation 
+
+We evaluate Reinc using an FPGA implementation based on CHERI-Toooba [16]. Reinc is implemented as a hardware– software co-design spanning the CHERI software stack, in-cluding the LLVM compiler toolchain, CheriBSD, and the user-space allocator, together with QEMU and the CHERI-Toooba hardware implementation. For performance and hardware evaluation, we deploy the modified CHERI-Toooba system on a VCU118 FPGA. The system is configured with two cores, each with an 8-way 
+
+Table 2. FPGA resource utilization reported by Vivado 2019.        
+
+> Resource Baseline Reinc Reverse Filter LUT Logic 261552 275345 (+5.27%) 279448 (+6.84%) 277642 (+6.15%) Registers 129099 140749 (+9.02%) 146217 (+13.26%) 144376 (+11.83%) LUT Memory 5343 5823 (+8.98%) 6575 (+23.06%) 5842 (+9.34%)
+
+32 KB L1 data cache, and a shared 16-way 1 MB last-level cache connected to the CHERI tag controller and DRAM. We synthesize the design using Vivado 2019 at a clock frequency of 25 MHz. We evaluate Reinc along four dimensions: 
+
+• Hardware area overhead. We evaluate the hardware area overhead introduced by Reinc by reporting the FPGA resource utilization of the Reinc extensions relative to the baseline CHERI-Toooba. 
+
+• Temporal safety. We evaluate the temporal-safety guarantees provided by Reinc using version 1.3 of the U.S. NIST SARD Juliet Test Suite [5] and the MSET framework [19]. 
+
+• Performance. We use SPEC CPU2006 INT, PARSEC, and SQLite workloads [4, 9, 13], with execution time overhead as the primary performance metric. 
+
+• Quarantine and sweep behavior. We also collect 
+
+Reinc ’s quarantine memory overhead and the number of memory sweeps to compare with CHERI-D as well as Cornucopia Reloaded. 
+
+6.1 Hardware area 
+
+As shown in Table 2, both coherence designs introduce lim-ited overall FPGA resource overhead, although the reverse map increases LUT-memory use by 23.06% relative to the baseline in exchange for selective invalidation. Both designs avoid adding logic to the timing-critical ObjID lookup path. 
+
+6.2 Security 
+
+We evaluate Reinc using the NIST SARD Juliet Test Suite [5] and MSET [19]. We execute all 2422 applicable CWE-415 (Double Free) and CWE-416 (Use After Free) Juliet tests on our FPGA implementation and use MSET-generated tests to exercise additional temporal-safety patterns. 
+
+Use-After-Free. Both our FPGA-based and QEMU-based 
+
+Reinc prototype implementations have successfully exe-cuted all provided CWE-416 good test cases and detected and trapped all 416 vulnerabilities in the “bad” cases. These results demonstrate that the architectural mechanism intro-duced by Reinc enables CHERI to provide true use-after-free mitigation, extending beyond Cornucopia Reloaded’s use-after-reallocation mitigation [11] and is in the same class Wang et al. 
+
+as CHERIoT [3], PoisonCap [20], Picasso [12], and CHERI-D [21]. We also confirm correctness using the 12 generated heap use-after-free cases in the MSET benchmark suite [19]. Of the eight executable cases, four exercise use after realloca-tion and are rejected by existing capability revocation, while four access memory between deallocation and reuse and are rejected by Reinc ’s ID validation. 
+
+Multicore ID-coherence microbenchmark. We construct a two-thread ID-coherence test to validate Reinc ’s coher-ence mechanism. This test requires that a remote ID update must be propagated across cores for temporal-safety enforce-ment to remain correct. Both cores first access the same object, causing its memory ID to be cached in their respec-tive private ID buffers. Core 1 retains a capability carrying the current ID, while Core 0 subsequently updates the ob-ject’s memory ID, emulating the ID transition that occurs during deallocation or reincarnation. Core 1, therefore, holds both a stale capability and, potentially, a stale copy of the object’s memory ID in its private ID buffer. This scenario exposes a limitation of the previous CHERI-D
+
+and Picasso hardware in a multicore setting [12, 21]. An ID update performed by core 0 does not invalidate the corre-sponding state cached in core 1’s private ID buffer. Con-sequently, when core 1 subsequently dereferences its stale capability, the capability’s old ID may still match the stale ID retained in its local ID buffer. The access can therefore pass the ID check even though the object’s memory ID may have already been changed by another core. In other words, updating an object’s ID on one core may not guarantee that stale capabilities to that object will be immediately rejected on another core. In Reinc hardware, when core 0 modifies an object ID, the write targets an ID-storage region. The resulting coherence invalidation observed by Core 1 triggers its ObjID-buffer coherence mechanism. With the reverse-map design, the cor-responding ObjID-buffer entries are selectively invalidated; with the Bloom-filter design, a filter match conservatively flushes the entire ObjID buffer. In either case, the stale ID is removed, ensuring subsequent accesses load an up-to-date ID and trap if they are from stale capabilities. Both Reinc coherence designs consistently detect stale-capabilities, even with remote ID updates, verifying that 
+
+Reinc successfully enforces the cross-core temporal-safety. 
+
+Double Free. We also evaluated our Reinc prototype imple-mentations to preserve the double free security properties that CHERI-D preserved, and Reinc has successfully passed all 1636 tests in the CWE-415: Double Free class of the Juliet Test Suite [5]. 
+
+Figure 2. SPEC CPU2006 INT runtime overhead of Cornu-copia Reloaded and Reinc relative to baseline CHERI without revocation. 
+
+6.3 Performance 
+
+We evaluate three Reinc configurations: without multicore coherence, with the reverse map, and with the lightweight filter. 
+
+SPEC CPU2006 INT. To evaluate the performance and memory-utilization improvements of Reinc over prior work, we use the CHERI-supported subset of the SPEC CPU2006 INT benchmarks [13]. Consistent with prior performance evaluations on CHERI-Toooba [12, 17, 20], we primarily use the train input configuration. 
+
+Reinc substantially reduces the performance overhead of Cornucopia Reloaded, particularly for allocation-intensive workloads such as omnetpp , and incurs an average overhead of 1.7%. These improvements stem primarily from immediate memory reuse and reduced sweep frequency, as reflected in Table 3. For the majority of the benchmarks, Reinc in-curs 0 revocation and quarantine events. The filter-based and reverse-map coherence mechanisms also remain effi-cient, incurring average overheads of 3.2% and 2.5%, respec-tively. Reinc has also substantially reduced the DRAM traffic overhead, incurring only 6%, whereas Cornucopia Reloaded incurs 48.2%, as shown in Figure 6 in Appendix A. 
+
+SQLite. We evaluate SQLite’s speedtest1 , which exercises allocations across object sizes beyond CHERI-D’s 4 KiB limit. As shown in Figure 3, Reinc incurs only 0.7% average run-time overhead, compared with 4.3% for Cornucopia Reloaded, while reducing the maximum runtime overhead from 22.6% to 2.1%. The reverse-map and filter configurations similarly incur average overheads of 1.2% and 0.9%, respectively. CHERI-D Reincarnate 100 110 120 130 140 142 145 150 160 161 170 180 190 200 210 230 240 250 260 270 280 290 300 310 320 400 410 500 510 520 980 990 TOTAL 
+
+SQLite speedtest1 phase ID 0.9 1.0 1.1 1.2 1.3 Normalized execution time     
+
+> 1.00 1.06 1.05 1.00 1.02 1.02 1.00 1.10 1.03 1.04 1.01 1.14 1.14 1.23 1.02 1.02 1.01 1.00 1.00 1.02 1.01 1.09 1.13 1.01 1.00 1.07 1.01 1.07 1.01 1.16 1.00 1.00 1.01 1.01 1.01 1.00 1.00 1.01 1.00 1.01 1.01 1.01 1.01 1.01 1.01 1.01 1.00 1.00 1.01 1.00 1.00 1.01 1.01 1.01 1.01 1.00 1.00 1.01 1.01 1.02 1.01 1.02 1.01 1.00 1.01 1.01 1.02 1.00 1.01 1.01 1.00 1.02 1.01 1.01 1.01 1.02 1.02 1.02 1.01 1.01 1.02 1.00 1.00 1.02 1.01 1.02 1.01 1.02 1.00 1.02 1.01 1.02 1.02 1.02 1.01 1.00 1.01 1.01 1.02 1.00 1.01 1.01 1.00 1.01 1.01 1.01 1.01 1.01 1.02 1.02 1.01 1.01 1.01 1.00 1.00 1.01 1.01 1.01 1.01 1.01 1.00 1.02 1.00 1.02 1.02 1.02 1.01 1.00  1.043x 1.007x 1.012x 1.009x
+> Baseline (1.0x) Cornucopia Reloaded ReInc ReInc (with reverse map) ReInc (with filter)
+
+Figure 3. Normalized performance overhead of Reinc (0.7%, 2.1% maximum), Reinc with filter (0.9%, 1.9% maximum), Reinc 
+
+with reverse map(1.2% average, 2.1% maximum), and Cornucopia Reloaded (4.3% average, 22.6% maximum) across the operational phases of SQLite speedtest1 .blackscholes swaptions streamcluster fluidanimate canneal x264 freqmine Geomean 0510 15 20 25 30 
+
+> Runtime overhead (%)
+> 0.0 11.6 -0.0 0.0 0.0 0.4 1.8 1.9 -0.1 0.7 0.1 0.0 0.3 0.6 0.2 0.3 0.1 0.7 -0.2 -0.2 0.7 0.6 0.1 0.3
+
+cornucopia reinc_reverse reinc_filter 
+
+(a) Single-thread runtime overhead blackscholes swaptions streamcluster fluidanimate canneal x264 freqmine Geomean 0510 15 20 25 30 
+
+> Runtime overhead (%)
+> 0.1 21.9 0.2 0.2 -0.0 0.5 1.8 3.3 0.5 1.1 0.1 -0.0 0.6 0.6 0.3 0.5 0.1 1.1 -0.1 -0.1 0.6 0.5 0.1 0.3
+
+cornucopia reinc_reverse reinc_filter (b) Two-thread runtime overhead 
+
+Figure 4. PARSEC runtime overhead of Cornucopia Reloaded and Reinc relative to the baseline CHERI without revocation. This improvement corresponds directly to reduced quar-antine and revocation pressures. As shown in Table 3, Cor-nucopia Reloaded performs 267 memory sweeps during exe-cution, whereas Reinc requires 1 (0 without ID-sweep recla-mation). Reinc also triggers 90 memory-quarantine events, compared with 221K for Cornucopia Reloaded and 146K for CHERI-D.
+
+PARSEC. We evaluate the overhead of Reinc on multi-threaded workloads using seven applications from PARSEC [4]: 
+
+blackscholes, swaptions, streamcluster, fluidanimate, canneal, x264 , and freqmine . PARSEC complements the single-threaded SPEC CPU2006 INT evaluation by exercising shared-memory workloads in which Reinc ’s multicore ID-coherence mech-anisms are active. Our VCU118 FPGA platform supports at most two CHERI-Toooba cores, each with a single hardware thread; therefore, we evaluate both one- and two-thread executions. Figures 4a and 4b report the one- and two-thread results, respectively. Reinc maintains low overhead when moving from single-threaded to two-threaded execution, including when either multicore coherence mechanism is enabled. The filter-based design performs comparably to the more precise reverse map design despite conservatively flushing the ObjID buffer on possible matches. As shown in Table 3, Cornucopia Reloaded incurs low overhead for most PARSEC workloads, but swaptions ’ high allocation and reuse rate triggers frequent revocation sweeps, resulting in substantially higher overhead. Reinc instead reduces revocation pressure through allocation reincarnation and ID-level quarantine, retaining low overhead for this workload. Wang et al. 
+
+Table 3. Allocation, revocation, and memory-quarantine behavior. The benchmark column gives allocation count in parentheses. Entries are S/Q , where S and Q denote revo-cation sweeps and memory-quarantine events, respectively. For Reinc , a bracketed S value gives the sweep count when ID-sweep reclamation is disabled. For SPEC CPU2006, “tr” and “ref” denote the train and reference input sets, respec-tively.                                                                                
+
+> Benchmark (Alloc.) Corn. CHERI-DReinc
+> SPEC CPU2006
+> bzip2-tr (30) 2/24 2/24 0/0 bzip2-ref (30) 0/24 0/24 0/0 gobmk-tr (51K) 11/51K 6/28K 0/0 gobmk-ref (133K) 23/133K 2/82K 0/0 hmmer-tr (170K) 16/170K 1/693 0/134 hmmer-ref (1.0M) 124/1.0M 2/3.9K 0/782 sjeng-tr (6) 0/1 0/1 0/0 sjeng-ref (6) 5/1 0/1 0/0 libquantum-tr (109) 1/107 1/58 0/0 libquantum-ref (150) 11/149 11/57 0/0 h264ref-tr (38K) 12/38K 12/5.1K 0/0 h264ref-ref (38K) 12/38K 12/5.1K 0/0 omnetpp-tr (130M) 2792/130M 12/151K 15[2]/99K omnetpp-ref (267M) 608/267M 6/304K 0/200K astar-tr (347K) 38/347K 9/2.7K 0/47 astar-ref (1.1M) 187/1.1M 27/13K 0/94 xalancbmk-tr (1.1M) 2/1.1M 0/34K 0/1K xalancbmk-ref (135M) 291/135M 9/2.5M 0/178K
+> SQLite
+> speedtest1 (221K) 267/221K 242/146K 1[0]/90
+> PARSEC
+> blackscholes (14) 1/6 1/3 0/0 swaptions (19.7M) 9516/19.7M 7384/6.6M 7/27K streamcluster (1.8K) 0/1.8K 0/8 0/2 fluidanimate (15K) 1/15K 1/10 0/0 canneal (872) 0/866 0/3 0/0 x264 (270K) 11/270K 0/375 0/353 freqmine (611) 3/592 2/562 0/0
+
+Our FPGA resource budget limits this evaluation to two cores; while these results nevertheless demonstrate low mul-ticore coherence overhead, we were not able to evaluate many-core scalability. However, as IDs are distributed with data and propagate using traditional cache coherence, we do not expect performance scaling to deviate greatly from the baseline. 
+
+6.4 Reducing memory-quarantine overhead 
+
+In addition to performance improvements, Reinc substan-tially reduced the amount of memory held in quarantine through allocation reincarnation . As shown in Table 3, Reinc 
+
+incurs significantly fewer memory-quarantine events than Cornucopia Reloaded and CHERI-D, with no memory-quarantine events for the majority of the evaluated benchmarks. Quarantine-event count alone does not capture the amount of memory withheld from reuse. We therefore measure both peak memory-quarantine occupancy and its time-weighted average over execution. Figure 5a and Figure 5b show that 
+
+Reinc substantially reduces peak quarantine memory over-head. ID quarantine and reclamation mechanisms not only reduce how often memory enters quarantine, but also sub-stantially reduce the peak memory in quarantine, as a large proportion of the quarantine budget is occupied by alloca-tion slots that were successfully reincarnated and are not consuming memory. 
+
+## 7 Related work 
+
+Use-after-reallocation mitigation. CHERIvoke introduced sweeping capability revocation for CHERI, with Cornucopia, Cornucopia Reloaded, and CHERIoT subsequently devel-oping related quarantine-and-revocation mechanisms [11, 23, 24]. These approaches generally prevent the immediate reuse of freed memory by quarantining it until dangling ca-pabilities are identified and revoked. Reinc improves upon Reloaded by enforcing strict use-after-free detection and allowing immediate memory reuse. Software-based approaches have also explored temporal memory safety. DangNull nullifies dangling pointers during object deallocation [14], while CETS maintains metadata to validate pointer dereferences at runtime [15]. MarkUs and Minesweeper instead provide temporal safety through software-based memory-management and reclamation mech-anisms [2, 10]. Managed-memory systems avoid dangling pointers through automatic lifetime management; garbage collectors like Oilpan [18] in Chromium’s Blink engine use this technique. 
+
+Memory tagging. Arm’s Memory Tagging Extension (MTE) associates tags on pointers with out-of-band tags on each memory word. With only four tag bits, frequent memory reuse inevitably causes tag aliasing, providing only proba-bilistic temporal safety. Combining MTE with Cornucopia Reloaded can provide deterministic temporal safety [1], but limits reuse to 15 generations before quarantine. Moreover, because MTE tags memory at a fixed granularity, changing a large object’s tag requires updating tags throughout the object, with cost increasing with object size. In contrast, Reinc uses per-allocation IDs so that an entire object is invalidated with a single write; and uses reincarna-tion so that exhausted IDs can be reclaimed while memory remains in use. 
+
+Centralized hardware metadata tables. CHERI has gen-erally followed a decentralized design philosophy, avoiding centralized metadata structures and additional indirection. CHERIoT and Picasso instead maintain temporal metadata in CHERI-D Reincarnate    
+
+> (a) Time-weighted average memory-quarantine occupancy. (b) Maximum memory-quarantine occupancy.
+
+Figure 5. Quarantine memory overhead across the evaluated workloads. Average quarantine overhead is the time-weighted average of 𝑄 (𝑡 )/ 𝐴 (𝑡 ) over execution, where 𝑄 (𝑡 ) is memory-quarantine occupancy and 𝐴 (𝑡 ) is allocated memory at time 𝑡 .Maximum quarantine overhead (Max-Q) is 𝑄 (𝑡 𝑞 )/ 𝐴 (𝑡 𝑞 ) at the point 𝑡 𝑞 of maximum memory-quarantine occupancy. Values are percentages. SPEC CPU2006 results use the reference inputs. centralized hardware tables. While practical for CHERIoT’s single-core embedded setting [3], this organization is harder to scale to application-class multicore systems with large, potentially NUMA, memories. Separating metadata from ob-ject data also reduces locality and may require additional address translation during validation, increasing TLB and metadata-cache pressure. Picasso reduces memory-sweep frequency using a 21-bit capability color, but consumes substantial capability-encoding space; using fewer bits would increase color-reuse and revocation pressure [12]. Together with its centralized metadata, this complicates scaling to allocation-intensive multicore systems. Reinc requires only 17 capability bits to achieve full scalability with decentralized metadata storage. 
+
+Memory poisoning. PoisonCap extends Cornucopia Reloaded to provide strict, hierarchical use-after-free mitigation on CHERI [20]. It introduces Poison capabilities , which are writ-ten into freed memory and cause subsequent accesses to trap. Unlike Reinc , PoisonCap does not enable immediate reuse of freed memory; instead, it reduces the microarchitectural cost of memory quarantine by improving its cache efficiency. While PoisonCap does not substantially reduce memory-sweep frequency as Reinc does, it provides a broader secu-rity model, supporting strict use-after-free protection across multiple allocation layers and also provides initialization safety. The two approaches address complementary aspects of CHERI temporal safety: PoisonCap strengthens protec-tion and reduces the microarchitectural cost of quarantine, whereas Reinc reduces the need for memory quarantine and revocation by enabling immediate memory reuse, ID quarantine with reincarnation, and ID reclamation. 
+
+## 8 Future work 
+
+Hierarchical temporal memory safety. Reinc currently protects heap allocations at the libc allocator layer. As high-lighted by PoisonCap, however, use-after-free vulnerabilities can also arise at other allocation layers, including kernel allocators and application-specific nested allocators [20]. Ex-tending Reinc to provide scalable temporal protection across multiple allocation layers, while preserving its decentralized ID management and efficient allocation reincarnation, is an important direction for future work. 
+
+Reinc -integrated memory allocator. Our current Reinc 
+
+software support is implemented in the MRS wrapper rather than directly in the underlying memory allocator. This in-troduces additional overhead because MRS must recover the underlying allocation and associated metadata to locate and update object IDs during allocation and deallocation. A native Reinc -aware allocator could instead perform ID selection, update, quarantine, and reclamation directly using allocator metadata already available on these critical paths, eliminating much of this wrapper overhead. 
+
+## 9 Conclusion 
+
+Reinc demonstrates that strong temporal memory safety can be achieved with substantially lower memory-sweep frequency and quarantine memory overhead. Its key mecha-nism, allocation reincarnation , allows an allocation slot whose current ID is exhausted to be immediately reincarnated with a new ID location, rather being placed in quarantine. Reinc 
+
+also supports efficient cross-core synchronization of the IDs Wang et al. 
+
+which extends temporal safety support on multi-core sys-tems. Reinc thus decouples temporal-identity reuse from memory reuse, providing a scalable approach to temporal safety for application and server class CHERI systems while preserving CHERI’s decentralized architecture. These ad-vancements demonstrate that temporal safety can be en-forced on CHERI systems not only low cycle overhead, but very low memory overhead as well. CHERI-D Reincarnate 
+
+## References 
+
+[1] 2026. For Discussion: MSR’s CHERI+MTE Composition · Issue #340 ·
+
+Riscv/Riscv-Cheri. https://github.com/riscv/riscv-cheri/issues/340. [2] Sam Ainsworth and Timothy M. Jones. 2020. MarkUs: Drop-in Use-after-Free Prevention for Low-Level Languages. In 2020 IEEE Symposium on Security and Privacy (SP) . IEEE, San Francisco, CA, USA, 578–591. doi: 10.1109/SP40000.2020.00058 
+
+[3] Saar Amar, Tony Chen, David Chisnall, Felix Domke, Nathaniel Wesley Filardo, Kunyan Liu, Robert M Norton, Yucong Tao, Robert N M Watson, and Hongyan Xia. 2023. CHERIoT: Rethinking Security for Low-Cost Embedded Systems. (2023). [4] Christian Bienia, Sanjeev Kumar, Jaswinder Pal Singh, and Kai Li. 2008. The PARSEC Benchmark Suite: Characterization and Architectural Implications. In Proceedings of the 17th International Conference on Parallel Architectures and Compilation Techniques (PACT) . ACM, 72–81. doi: 10.1145/1454115.1454128 
+
+[5] Tim Boland and Paul E. Black. 2012. Juliet 1.1 C/C++ and Java Test Suite. Computer 45, 10 (Oct. 2012), 88–90. doi: 10.1109/MC.2012.345 
+
+[6] CTSRD-CHERI Project. 2026. CTSRD-CHERI/Cheribsd. [7] CTSRD-CHERI Project. 2026. CTSRD-CHERI/Llvm-Project. [8] CTSRD-CHERI Project. 2026. CTSRD-CHERI/Qemu. [9] D. Richard Hipp. 2026. SQLite Home Page. https://sqlite.org/. [10] Márton Erdős, Sam Ainsworth, and Timothy M. Jones. 2022. MineSweeper: A “Clean Sweep” for Drop-in Use-after-Free Prevention. In Proceedings of the 27th ACM International Conference on Architectural Support for Programming Languages and Operating Systems . ACM, Lausanne Switzerland, 212–225. doi: 10.1145/3503222.3507712 
+
+[11] Nathaniel Wesley Filardo, Brett F. Gutstein, Jonathan Woodruff, Jessica Clarke, Peter Rugg, Brooks Davis, Mark Johnston, Robert Norton, David Chisnall, Simon W. Moore, Peter G. Neumann, and Robert N. M. Watson. 2024. Cornucopia Reloaded: Load Barriers for CHERI Heap Temporal Safety. In Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 . ACM, La Jolla CA USA, 251–268. doi: 10.1145/3620665.3640416 
+
+[12] Merve Gülmez, Ruben Sturm, Hossam ElAtali, Håkan Englund, Jonathan Woodruff, N. Asokan, and Thomas Nyman. 2026. PICASSO: Scaling CHERI Use-After-Free Protection to Millions of Allocations Using Colored Capabilities. doi: 10.48550/ARXIV.2602.09131 
+
+[13] John L. Henning. 2006. SPEC CPU2006 Benchmark Descriptions. 
+
+SIGARCH Comput. Archit. News 34, 4 (Sept. 2006), 1–17. doi: 10.1145/1186736.1186737 
+
+[14] Byoungyoung Lee et al. 2015. DangNull: Preventing Use-After-Free with Dangling Pointers Nullification. In NDSS .[15] Santosh Nagarakatte et al. 2010. CETS: Compiler Enforced Temporal Safety for C. In ISMM .[16] Peter Rugg, Jonathan Woodruff, Alexandre Joannou, and Simon W. Moore. 2024. A Suite of Processors to Explore CHERI-RISC-V Micro Architecture. In 2024 27th Euromicro Conference on Digital System Design (DSD) . IEEE, Paris, France, 351–360. doi: 10.1109/DSD64264.2024.00054 
+
+[17] Peter David Rugg. 2023. Efficient Spatial and Temporal Safety for Microcontrollers and Application-Class Processors . Technical Report. Computer Laboratory, University of Cambridge. 189 pages pages. doi: 10.48456/TR-984 
+
+[18] The Chromium Project. 2024. Oilpan: Garbage Collection for Blink. 
+
+https://chromium.googlesource.com/chromium/src/+/main/third_ party/blink/renderer/platform/heap/README.md . Accessed: 2026-07-19. [19] Emanuel Vintila, Philipp Zieris, and Julian Horsch. 2025. Evaluating the Effectiveness of Memory Safety Sanitizers. In Proceedings of the 46th IEEE Symposium on Security and Privacy (SP) . IEEE Computer Society. doi: 10.1109/SP61157.2025.00088 
+
+[20] Yuecheng Wang, Jonathan Woodruff, Alfredo Mazzinghi, Peter Rugg, Alexandre Joannou, Samuel W. Stark, Robert N. M. Watson, and Simon W. Moore. 2026. PoisonCap: Efficient Hierarchical Temporal Safety for CHERI. arXiv:2605.13210 [cs.AR] doi: 10.48550/arXiv.2605.13210 
+
+[21] Yuecheng Wang, Jonathan Woodruff, Alfredo Mazzinghi, Peter Rugg, Samuel W. Stark, Alexandre Joannou, Robert N. M. Watson, and Simon W. Moore. 2026. CHERI-D: Secure and Efficient Inline Object ID for CHERI Temporal Memory Safety. arXiv:2606.19055 [cs.AR] doi: 10.48550/arXiv.2606.19055 
+
+[22] Robert N. M. Watson, Peter G. Neumann, Jonathan Woodruff, Michael Roe, Hesham Almatary, Jonathan Anderson, John Baldwin, Graeme Barnes, David Chisnall, Jessica Clarke, Brooks Davis, Lee Eisen, Nathaniel Wesley Filardo, Franz A. Fuchs, Richard Grisenthwaite, Alexandre Joannou, Ben Laurie, A. Theodore Markettos, Simon W. Moore, Steven J. Murdoch, Kyndylan Nienhuis, Robert Norton, Alexander Richardson, Peter Rugg, Peter Sewell, Stacey Son, and Hongyan Xia. 2023. Capability Hardware Enhanced RISC Instructions: CHERI Instruction-Set Architecture (Version 9) .Technical Report. Computer Laboratory, University of Cambridge. 523 pages pages. doi: 10.48456/TR-987 
+
+[23] Nathaniel Wesley Filardo, Brett F. Gutstein, Jonathan Woodruff, Sam Ainsworth, Lucian Paul-Trifu, Brooks Davis, Hongyan Xia, Edward Tomasz Napierala, Alexander Richardson, John Baldwin, David Chisnall, Jessica Clarke, Khilan Gudka, Alexandre Joannou, A. Theodore Markettos, Alfredo Mazzinghi, Robert M. Norton, Michael Roe, Peter Sewell, Stacey Son, Timothy M. Jones, Simon W. Moore, Peter G. Neumann, and Robert N. M. Watson. 2020. Cornucopia: Temporal Safety for CHERI Heaps. In 2020 IEEE Symposium on Security and Privacy (SP) . IEEE, San Francisco, CA, USA, 608–625. doi: 10.1109/SP40000.2020.00098 
+
+[24] Hongyan Xia, Jonathan Woodruff, Sam Ainsworth, Nathaniel W. Filardo, Michael Roe, Alexander Richardson, Peter Rugg, Peter G. Neumann, Simon W. Moore, Robert N. M. Watson, and Timothy M. Jones. 2019. CHERIvoke: Characterising Pointer Revocation Using CHERI Capabilities for Temporal Memory Safety. In Proceedings of the 52nd Annual IEEE/ACM International Symposium on Microarchitecture (MICRO) . 545–557. doi: 10.1145/3352460.3358288 Wang et al. 
+
+## A SPEC DRAM traffic overhead 
+
+Figure 6. SPEC CPU2006 INT DRAM traffic overhead of Cornucopia Reloaded and Reinc relative to baseline CHERI without revocation.

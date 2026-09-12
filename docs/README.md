@@ -4,24 +4,24 @@
     <a class="dpr-home-notice-tutorial" href="#/tutorial/README">使用教程 <span aria-hidden="true">›</span></a>
   </div>
   <div class="dpr-home-notice-entry">
-    <time class="dpr-home-notice-date" datetime="2026-08-28">08.28</time>
+    <time class="dpr-home-notice-date" datetime="2026-09-09">09.09</time>
     <div>
-      <strong class="dpr-home-notice-entry-title">区间日报可正常点开</strong>
-      <span class="dpr-home-notice-entry-summary">长时间窗日报会挂在结束日那天的日历格上，此前点击没有反应，现在可以正常展开查看。</span>
+      <strong class="dpr-home-notice-entry-title">90天/365天 arXiv 专题回溯</strong>
+      <span class="dpr-home-notice-entry-summary">支持分片召回、断点评审与分页查看，核心论文与待复核结果分开展示。DeepSeek 费用按实际用量计算，不下载全量 PDF。</span>
     </div>
   </div>
   <div class="dpr-home-notice-entry">
-    <time class="dpr-home-notice-date" datetime="2026-07-20">07.20</time>
+    <time class="dpr-home-notice-date" datetime="2026-09-09">09.09</time>
     <div>
-      <strong class="dpr-home-notice-entry-title">反馈功能上线</strong>
-      <span class="dpr-home-notice-entry-summary">新增反馈功能，欢迎大家踊跃反馈各种建议，我们会第一时间查看并协调处理。</span>
+      <strong class="dpr-home-notice-entry-title">ECCV 2026 已更新</strong>
+      <span class="dpr-home-notice-entry-summary">已收录 2,834 篇论文，摘要与 PDF 链接齐全，可按会议年份检索。EMNLP 2026 暂待可信官方数据开放。</span>
     </div>
   </div>
   <div class="dpr-home-notice-entry">
-    <time class="dpr-home-notice-date" datetime="2026-07-19">07.19</time>
+    <time class="dpr-home-notice-date" datetime="2026-09-05">09.05</time>
     <div>
-      <strong class="dpr-home-notice-entry-title">首页新增社区统计</strong>
-      <span class="dpr-home-notice-entry-summary">现在可以看到今天看论文的人数和项目加入人数。</span>
+      <strong class="dpr-home-notice-entry-title">CVPR 2026 已更新</strong>
+      <span class="dpr-home-notice-entry-summary">已收录 CVPR 2026 官方 Open Access 论文 4,042 篇，可在会议检索中查看。EMNLP 2026 预计于 10 月中下旬更新，具体以官方论文集开放时间为准。</span>
     </div>
   </div>
   <div class="dpr-home-site-stats" data-dpr-site-stats hidden aria-live="polite">
@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-11</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-12</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 8 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 3 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-11 22:00:43 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-12 20:58:29 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日筛读 8 篇安全论文，精读 3 篇、速读 5 篇，最高分落在面向可信执行环境的缓存替换方案 HermiCache（9.0/10）。</p>
-<p>最值得关注的是 TEE 场景下的侧信道/缓存优化，以及《Beyond Static Guarantees》揭示的&quot;静态检查通过、动态运行失败&quot;这一安全敏感代码与 LLM 生成 Python 代码的落差（8.0/10）。</p>
-<p>普通读者可先看这两篇精读了解风险点，再按兴趣速览预硅信息流追踪、自动化渗透测试状态建模与多域数据隔离综述。</p>
+<p>今天扫完 3 篇安全与体系结构论文，其中 1 篇精读、2 篇速读。</p>
+<p>最值得看的是精读的 CHERI-D Reincarnate（8.0/10），它用&quot;分配再生&quot;思路在多核 CHERI 上做高效时序内存安全，另两篇 6.0 分的速读分别关注硅前安全测试的硬件信息流追踪，以及 MCP 服务器中仅凭描述检测间接提示注入漏洞。</p>
+<p>普通读者可先读 CHERI-D 摘要了解内存安全硬件方向，若关注 AI 供应链安全再补看 MCP 提示注入那篇。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -80,12 +80,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="HermiCache: Enclave-Aware Cache Replacement for Trusted Execution Environments">HermiCache: Enclave-Aware Cache Replacement for Trusted Execution Environments</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beyond Static Guarantees: Measuring the Static-Pass Dynamic-Fail Gap in Security-Sensitive and LLM-Generated Python Code">Beyond Static Guarantees: Measuring the Static-Pass Dynamic-Fail Gap in Security-Sensitive and LLM-Generated Python Code</span></li><li><span class="dpr-home-dashboard-paper-title" title="&quot;They don&#x27;t care about this&quot;: A Systematic Study of TEE Build Reproducibility in the Wild">&quot;They don&#x27;t care about this&quot;: A Systematic Study of TEE Build Reproducibility in the Wild</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CHERI-D Reincarnate: efficient multicore CHERI temporal memory safety through allocation reincarnation (draft version)">CHERI-D Reincarnate: efficient multicore CHERI temporal memory safety through allocation reincarnation (draft version)</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -93,12 +93,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">5 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing">Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Staying on the Attack Path: Structured State for Long-Horizon Automated Penetration Testing">Staying on the Attack Path: Structured State for Long-Horizon Automated Penetration Testing</span></li><li><span class="dpr-home-dashboard-paper-title" title="SoK: Secure Software-Based Multi-Domain Data Segregation">SoK: Secure Software-Based Multi-Domain Data Segregation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing">Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing</span></li><li><span class="dpr-home-dashboard-paper-title" title="No-Box Vulnerability Analysis: Description-only Detection of Indirect Prompt Injection Vulnerabilities in MCP Servers">No-Box Vulnerability Analysis: Description-only Detection of Indirect Prompt Injection Vulnerabilities in MCP Servers</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 </div>
 
