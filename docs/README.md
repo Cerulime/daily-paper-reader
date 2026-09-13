@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-12</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-13</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
     <strong class="dpr-home-dashboard-count">共 3 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-12 20:58:29 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-13 21:09:19 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今天扫完 3 篇安全与体系结构论文，其中 1 篇精读、2 篇速读。</p>
-<p>最值得看的是精读的 CHERI-D Reincarnate（8.0/10），它用&quot;分配再生&quot;思路在多核 CHERI 上做高效时序内存安全，另两篇 6.0 分的速读分别关注硅前安全测试的硬件信息流追踪，以及 MCP 服务器中仅凭描述检测间接提示注入漏洞。</p>
-<p>普通读者可先读 CHERI-D 摘要了解内存安全硬件方向，若关注 AI 供应链安全再补看 MCP 提示注入那篇。</p>
+<p>今日速读 3 篇，聚焦 Rust 安全抽象漏洞、脚本恶意软件威胁情报识别与大模型应用、芯片流片前硬件信息流追踪。最值得关注的是《UnsafeChecker》对 Rust 安全抽象健全性漏洞的检测（7.0 分），以及用 LLM 从脚本恶意软件中提取可行动威胁情报的基准（6.0 分）。普通读者可优先了解 Rust 安全边界的常见坑，并留意 LLM 在威胁情报自动化上的落地进展。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -80,12 +78,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">1 篇</strong>
+    <strong class="dpr-home-dashboard-count">0 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CHERI-D Reincarnate: efficient multicore CHERI temporal memory safety through allocation reincarnation (draft version)">CHERI-D Reincarnate: efficient multicore CHERI temporal memory safety through allocation reincarnation (draft version)</span></li></ul>
+<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
+
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -93,12 +91,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing">Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing</span></li><li><span class="dpr-home-dashboard-paper-title" title="No-Box Vulnerability Analysis: Description-only Detection of Indirect Prompt Injection Vulnerabilities in MCP Servers">No-Box Vulnerability Analysis: Description-only Detection of Indirect Prompt Injection Vulnerabilities in MCP Servers</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="UnsafeChecker: Finding Soundness Bugs in Rust Safe Abstractions">UnsafeChecker: Finding Soundness Bugs in Rust Safe Abstractions</span></li><li><span class="dpr-home-dashboard-paper-title" title="SCRIPTIOC-BENCH: A Benchmark for Recognizing Actionable Threat Intelligence from Script-Based Malware using LLMs">SCRIPTIOC-BENCH: A Benchmark for Recognizing Actionable Threat Intelligence from Script-Based Malware using LLMs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing">Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
 </div>
 
