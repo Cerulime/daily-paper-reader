@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-13</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-14</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 3 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>4</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-13 21:09:19 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-14 22:19:50 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,7 +69,10 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日速读 3 篇，聚焦 Rust 安全抽象漏洞、脚本恶意软件威胁情报识别与大模型应用、芯片流片前硬件信息流追踪。最值得关注的是《UnsafeChecker》对 Rust 安全抽象健全性漏洞的检测（7.0 分），以及用 LLM 从脚本恶意软件中提取可行动威胁情报的基准（6.0 分）。普通读者可优先了解 Rust 安全边界的常见坑，并留意 LLM 在威胁情报自动化上的落地进展。</p>
+<p>今日共生成 5 篇推荐（精读 1 篇，速读 4 篇）</p>
+<p>精读：《MicroHasTEE: Bare-Metal Haskell for Type-Level Peripheral Ownership on Armv8-M》（8.0/10）</p>
+<p>速读：《PrivEscalate: Measuring and Augmenting the Threat of LLM-Automated Linux Privilege Escalation》（6.0/10）, 《Investigating Developer-Reported Software Security Testing Challenges》（6.0/10）, 《IDORacle: Template-Guided SQL-Sink Mediation for Object-Level Authorization in Java Applications》（6.0/10）</p>
+<p>这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -78,12 +81,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">0 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="MicroHasTEE: Bare-Metal Haskell for Type-Level Peripheral Ownership on Armv8-M">MicroHasTEE: Bare-Metal Haskell for Type-Level Peripheral Ownership on Armv8-M</span></li></ul>
   </div>
-
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -91,12 +94,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="UnsafeChecker: Finding Soundness Bugs in Rust Safe Abstractions">UnsafeChecker: Finding Soundness Bugs in Rust Safe Abstractions</span></li><li><span class="dpr-home-dashboard-paper-title" title="SCRIPTIOC-BENCH: A Benchmark for Recognizing Actionable Threat Intelligence from Script-Based Malware using LLMs">SCRIPTIOC-BENCH: A Benchmark for Recognizing Actionable Threat Intelligence from Script-Based Malware using LLMs</span></li><li><span class="dpr-home-dashboard-paper-title" title="Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing">Efficient Hardware Information-Flow Tracking for Pre-Silicon Security Testing</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="PrivEscalate: Measuring and Augmenting the Threat of LLM-Automated Linux Privilege Escalation">PrivEscalate: Measuring and Augmenting the Threat of LLM-Automated Linux Privilege Escalation</span></li><li><span class="dpr-home-dashboard-paper-title" title="Investigating Developer-Reported Software Security Testing Challenges">Investigating Developer-Reported Software Security Testing Challenges</span></li><li><span class="dpr-home-dashboard-paper-title" title="IDORacle: Template-Guided SQL-Sink Mediation for Object-Level Authorization in Java Applications">IDORacle: Template-Guided SQL-Sink Mediation for Object-Level Authorization in Java Applications</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 </div>
 
