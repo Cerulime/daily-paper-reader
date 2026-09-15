@@ -1,0 +1,1541 @@
+1
+PLC-Bin2Src: Retrieving Corresponding
+Structured Text Source Files for PLC Binaries
+Ang Jia, Yaxin Duan, He Jiang, Ming Fan, Zhilei Ren, and Xiaochen Li
+Abstract—PLC developers reuse existing components and third-party libraries to reduce the cost of developing new applications, but this
+reuse can also introduce security risks. When components are distributed only in binary form, provenance tracing, vulnerability
+assessment, and security auditing become more difficult. To support these analyses, binary2source matching can retrieve the
+corresponding Structured Text (ST) source file for a PLC binary from a candidate source repository. However, due to the properties of
+PLC software, this task faces three challenges: cross-platform compilation heterogeneity, a binary–source representation gap, and
+inadequate representations of PLC semantics. Therefore, we present PLC-Bin2Src, a cross-platform binary2source matching framework
+that retrieves corresponding ST source files for binaries produced by CODESYS, GEB, OpenPLC v2, and OpenPLC v3. First,
+PLC-Bin2Src uses platform-aware binary frontends to recover user control logic across toolchains. Then, ST-to-C conversion and shared
+normalization are used to reduce syntactic differences between source- and binary-side representations. Next, control–data flow graphs
+(CDFGs) and function call graphs (FCGs) are constructed to capture program semantics, while recovered symbols provide
+complementary identity evidence. Finally, PLC-Bin2Src compares these representations and combines their similarity scores to rank
+source candidates. We evaluate PLC-Bin2Src on PLC-BEAD. The results show that PLC-Bin2Src achieves 95.89% Recall@1, 99.66%
+Recall@5, and an MRR of 0.9769 across four PLC platforms.
+Index Terms—PLC, Structured Text, Binary2Source Matching, Software Composition Analysis
+✦
+1
+INTRODUCTION
+P
+ROGRAMMABLE logic controllers (PLCs) are core execu-
+tion components of industrial automation systems. De-
+ployed PLC programs control physical processes by cyclically
+reading field inputs, executing control logic, and updating
+actuators [1], [2]. PLC developers reuse existing components
+and third-party libraries to reduce development costs, but
+this reuse can also introduce security risks. Moreover, some
+reused libraries are delivered only in compiled form. For
+example, CODESYS supports compiled-library pack-
+ages for library distribution. Downstream developers can
+integrate these packages without access to their source code
+or implementation details [3], [4]. This binary-only reuse
+makes it difficult for analysts to identify the incorporated
+components, their logic, and their origins.
+Software composition analysis addresses this visibility
+problem by identifying reused components and linking them
+to known source implementations. Existing PLC binary
+reverse engineering frameworks, such as ICSREF [2] and
+PLC-BinX [5], focus on reconstructing executable structure
+and control semantics from proprietary artifacts. They do not
+identify which source file corresponds to a binary artifact.
+Binary2source matching is therefore needed to retrieve the
+corresponding source implementations and support the
+creation of dependency inventories, vulnerability assessment,
+provenance tracing, and security auditing [6]–[8].
+PLC software is commonly written in Structured Text (ST)
+and compiled into executable artifacts by platform-specific
+Corresponding author: He Jiang. E-mail: jianghe@dlut.edu.cn.
+Ang Jia, Yaxin Duan, He Jiang, Zhilei Ren, and Xiaochen Li are with the
+School of Software, Dalian University of Technology, Dalian, China.
+Ming Fan is with the School of Cyber Science and Engineering, Xi’an Jiaotong
+University, Xi’an, China.
+toolchains. Fig. 1 illustrates the cross-platform representa-
+tion gap and the binary–source representation gap using
+ACOSH.ST from PLC-BEAD [9]. Binaries generated from this
+ST program yield three different ARM-level views: OpenPLC
+v3 implements SQRT and LN through calls to type-specific
+runtime functions; CODESYS v3 compiles SQRT to a floating-
+point square-root instruction and invokes REAL32__LN indi-
+rectly; and GEB calls gebx math functions and geb_hook.
+Even with the same instruction set architecture, instruction
+context, call targets, and recovered function boundaries differ
+across platforms. These binary views also share little surface
+syntax with ST. Therefore, binary2source matching for PLC
+software faces three challenges:
+1)
+Cross-platform compilation heterogeneity. PLC platforms
+differ in binary formats, compilation toolchains, and
+runtime organization, so the same ST logic can yield
+different function boundaries, instruction patterns,
+and call structures.
+2)
+Binary–source representation gap. ST expresses control
+logic through typed variables, structured statements,
+and function calls, whereas binaries encode it as
+machine instructions, memory accesses, and runtime
+calls. Compilation can obscure variable identities
+and type information, reorganize expressions, and
+introduce temporary values and explicit conversions.
+Corresponding computations and data accesses can
+therefore have substantially different surface forms,
+making direct comparison unreliable.
+3)
+Inadequate representations of PLC semantics. PLC pro-
+grams can contain similar operations yet implement
+different control logic, since the role of each operation
+depends on its surrounding context. Representations
+arXiv:2609.08563v2  [cs.SE]  14 Sep 2026
+
+
+2
+(a) ST source file
+ACOSH.ST
+FUNCTION ACOSH : REAL
+VAR_INPUT
+X : REAL;
+END_VAR
+ACOSH := LN(SQRT(
+X * X - 1.0) + X);
+END_FUNCTION
+(b) OpenPLC v3 binary
+ACOSH
+@ 0x000410B4
+VMUL.F32 S15, S15, S15
+VSUB.F32 S15, S15, S14
+BL SQRT__REAL__REAL
+VADD.F32 S15, S14, S15
+BL LN__REAL__REAL
+VSTR S0, [FP, #-0xC]
+(c) CODESYS v3 binary
+ACOSH
+@ 0x00022050
+VMUL.F32 S16, S16, S17
+VLDR S17, [PC, #0x60] ; 1.0
+VSUB.F32 S16, S16, S17
+VSQRT.F32 S16, S16
+VLDR S17, [SL, #8] ; X
+VADD.F32 S16, S16, S17
+...
+MOV PC, R6
+; REAL32__LN
+(d) GEB binary
+dt_FN_ACOSH_exec
+@ 0x00011214
+VMUL.F32 S15, S15, S15
+VSUB.F32 S15, S15, S14
+BL gebx_SQRT_REAL
+VADD.F32 S15, S14, S15
+BL gebx_LN_REAL
+BL geb_hook
+• Program/function identifiers
+• Key semantic operations
+Fig. 1. Four views of ACOSH.ST: (a) ST source; (b) OpenPLC v3 ARM disassembly; (c) CODESYS v3 ARM disassembly; and (d) GEB ARM
+disassembly.
+based on isolated operations or local patterns may
+therefore fail to distinguish semantically different
+source candidates. Incomplete binary-level evidence
+makes these distinctions harder to capture reliably.
+We propose PLC-Bin2Src, a binary2source matching
+framework for PLC binaries, to address these challenges.
+First, platform-aware binary frontends address cross-
+platform compilation heterogeneity by recovering user
+control logic through toolchain-specific disassembly, core-
+function extraction, and decompilation. Second, an ST-to-
+C source frontend expresses source control logic in C to
+help bridge the binary–source representation gap. Shared
+normalization aligns variable and memory-access forms, type
+conversions, and platform-specific operation and library-call
+names across the source- and binary-side representations.
+Third, PLC-Bin2Src constructs three complementary pro-
+gram representations: control–data flow graphs (CDFGs)
+for intraprocedural control–data dependencies, function call
+graphs (FCGs) for interprocedural call relationships, and
+recovered symbols for complementary identity evidence.
+Finally, PLC-Bin2Src converts the features of each represen-
+tation into file-level vectors, compares the corresponding
+binary and source vectors, and combines their similarity
+scores to rank source candidates.
+We evaluate PLC-Bin2Src on PLC-BEAD [9]. PLC-Bin2Src
+achieves 95.89% Recall@1, 99.66% Recall@5, and an MRR
+of 0.9769 when retrieving corresponding ST source files for
+PLC binaries compiled for four platforms: CODESYS, GEB,
+OpenPLC v2, and OpenPLC v3.
+This paper makes the following contributions:
+•
+To the best of our knowledge, PLC-Bin2Src is the
+first binary2source matching framework for retrieving
+corresponding ST source files for PLC binaries.
+•
+PLC-Bin2Src provides a unified framework for align-
+ing PLC binaries with ST source code. Platform-aware
+binary frontends, ST-to-C conversion, and shared
+normalization bring both sides into comparable C-
+like forms for subsequent representation construction
+and matching.
+•
+PLC-Bin2Src constructs three complementary pro-
+gram representations (CDFGs, FCGs, and recovered
+symbols) and combines their similarity scores to rank
+candidate ST files.
+•
+We evaluate PLC-Bin2Src on PLC-BEAD. PLC-Bin2Src
+achieves 95.89% Recall@1, 99.66% Recall@5, and an
+MRR of 0.9769 across the four platforms.
+2
+BACKGROUND
+2.1
+PLC Program Model and Compilation Process
+PLCs typically execute control tasks through a cyclic scan
+mechanism that reads field inputs, runs user control logic,
+and updates outputs [10]. The IEC 61131-3 standard specifies
+PLC programming languages and their program organi-
+zation. ST is a textual language suitable for expressing
+conditional decisions, loops, numerical operations, and
+function calls. An ST program consists of program orga-
+nization units (POUs), including PROGRAM, FUNCTION, and
+FUNCTION_BLOCK, and these POUs jointly describe control
+logic through variable access and function calls [1].
+PLC source code must be transformed by a platform
+compilation toolchain into a binary that can execute on the
+controller. In OpenPLC, for example, MATIEC translates an
+IEC 61131-3 program into equivalent C code, which a native
+compiler then converts into an executable for the target plat-
+form [11]. Compilation introduces wrapper functions, cyclic
+scheduling, variable-access interfaces, temporary values, and
+runtime support logic. Disassembly can recover low-level
+arithmetic and calls, but source logic remains distributed
+across user functions, wrappers, and the cyclic execution
+chain; this semantic mismatch motivates binary2source
+matching.
+2.2
+Cross-Platform Differences in PLC Binaries
+PLC platforms vary in binary format, target architecture,
+compilation toolchain, runtime organization, and symbol-
+naming rules [5], [9], [12]. Fig. 1 illustrates these differences
+using the same ACOSH.ST program. Panel (a) expresses
+the computation as a nested ST expression. In panel (b),
+OpenPLC v3 exposes ARM floating-point instructions to-
+gether with typed mathematical runtime calls. Panel (c)
+shows the CODESYS v3 ACOSH code area: multiplication,
+subtraction, square root, and addition remain visible as
+floating-point instructions, while REAL32__LN is reached
+through an indirect call. Panel (d) shows that GEB retains
+related floating-point operations but uses gebx runtime calls
+and an additional hook. Thus, the same source program
+
+
+3
+yields different function contexts, call targets, memory-access
+forms, and recoverable semantic units across platforms.
+The comparison also shows that surface-level similar-
+ity is not a reliable cross-platform signal. OpenPLC uses
+typed runtime calls, GEB uses gebx calls and a hook, and
+CODESYS combines a hardware square-root instruction with
+an indirect logarithm call. Binary2source matching must
+therefore localize the code regions that carry user control
+logic and normalize operations, calls, and identifiers from
+platform-specific representations before comparing them
+with ST source files.
+3
+METHOD
+PLC-Bin2Src models binary2source matching as a source-
+candidate ranking problem. Fig. 2 summarizes its three
+stages: preprocessing, representation construction, and simi-
+larity calculation. The preprocessing stage recovers binary-
+side core functions, transforms source-side ST programs,
+and normalizes both representations. The representation-
+construction stage builds control–data flow graph (CDFG),
+function call graph (FCG), and recovered-symbol represen-
+tations and converts their features into term frequency–
+inverse document frequency (TF-IDF) vectors. The figure
+shows the three representations in blue, green, and orange,
+respectively. The similarity-calculation stage computes cosine
+similarities separately for the three representations, combines
+them with fixed equal weights, ranks every compatible ST
+file, and returns the top-k candidates. In the figure, Scdfg,
+Sfcg, and Ssymbol denote the similarity scores for the three
+representations; the corresponding w terms are all fixed at
+1/3; and Sfused denotes the resulting score used for ranking.
+3.1
+Preprocessing
+Fig. 3 illustrates how the two frontends transform ACOSH into
+comparable representations. The binary frontend extracts and
+decompiles core functions to obtain a C-like representation,
+while the source frontend converts the ST program into a C
+representation. In the figure, the upper and lower parts show
+binary-side and source-side processing, respectively; blue
+identifies program units and core functions, red highlights
+operations and calls traceable across representations, and
+ellipses indicate omitted auxiliary code.
+3.1.1
+Binary Frontend
+The binary frontend extracts function-level representations
+related to user control logic from binaries produced by
+different PLC platforms. It comprises disassembly, core-
+function extraction, and decompilation. The upper part of
+Fig. 3 shows the resulting representation for ACOSH.
+Disassembly: The system parses deployment artifacts
+and recovers the function identifiers, address ranges, and
+program structures required for core-function extraction. For
+OpenPLC and GEB ELF files, it obtains function boundaries
+and call relationships from standard binary structures and
+disassembly. A CODESYS .app file is a proprietary applica-
+tion container without the header and section table of a stan-
+dard ELF file, so it requires a different process. For CODESYS,
+the binary frontend obtains recovered executable ranges, call
+relationships, and metadata-linked POU names as inputs.
+The resulting boundaries, address ranges, and POU-name
+clues support subsequent CODESYS core-function extraction.
+Core-function extraction: Using the recovered informa-
+tion, PLC-Bin2Src applies platform-specific rules to select
+core functions associated with user control logic. For Open-
+PLC, it retains the cyclic-execution wrapper and user func-
+tions. For GEB, it selects program-, function-, and function-
+block execution routines according to the dt_PR_*_exec,
+dt_FN_*_exec, and dt_FB_*_exec naming patterns. For
+CODESYS, it associates metadata-linked entry pointers with
+recovered function ranges and uses function calls to identify
+POU execution candidates while reducing the priority of
+common templates and runtime routines. The extracted core
+functions are then passed to the decompilation stage.
+Decompilation: After core-function extraction, PLC-
+Bin2Src generates C-like representations for all platforms. For
+OpenPLC and GEB, target functions are selected from ELF
+function information and directly decompiled. For CODESYS,
+POU execution candidates are first recovered from function
+boundaries, recovered symbols, and call information. Then,
+the address ranges of selected POU functions are decompiled
+into C-like code. The call relations between POU roots and
+helper functions are still preserved.
+3.1.2
+Source Frontend
+The source frontend transforms ST programs into function-
+level representations comparable to the binary-side repre-
+sentations. PLC-Bin2Src does not directly match raw ST
+text, but instead performs two steps in sequence: ST-to-C
+conversion and core-function extraction. The lower part of
+Fig. 3 shows the conversion of ACOSH from ST source code
+to a C representation.
+ST-to-C conversion: For each ST source sample, PLC-
+Bin2Src reads the source program and uses the MATIEC
+compiler [11] to generate a C-style representation. It then uses
+a C preprocessor to resolve macros, variable-access wrappers,
+and conditional-compilation structures in the generated code,
+obtaining effective C code after macro replacement and
+conditional selection.
+Core-function extraction: From the generated C-like
+representation, the system extracts functions that represent
+user control logic. It excludes program0, initialization rou-
+tines, and platform-support functions such as copy, print,
+and dump; it prioritizes the function or function-block body
+whose name corresponds to the current sample. When name
+clues are insufficient, the *_body__ body generated by the
+compilation toolchain is retained as a candidate, keeping the
+source-side representation focused on user control logic.
+3.1.3
+Normalization
+The source-side C representation and the binary-side C-like
+representation differ in their naming conventions, memory-
+access forms, and expressions of equivalent operations. PLC-
+Bin2Src reduces these differences through normalization
+rules for operation names, variable and memory-access
+forms, and numerical literals. These rules standardize both
+common code forms and the labels used in subsequent
+representation construction.
+Operation normalization: Different PLC toolchains can
+implement the same mathematical operation through dif-
+ferently named runtime functions. PLC-Bin2Src removes
+
+
+4
+Input
+PLC binary
+ST source
+Source frontend
+ST-to-C conversion
+ST
+C
+ST → C
+Core function extraction 
+Cosine similarity
+Cosine similarity
+Cosine similarity
+𝑆𝑐𝑑𝑓𝑔
+𝑆𝑓𝑐𝑔
+𝑆𝑆𝑦𝑚𝑏𝑜𝑙
+∗𝑤𝑐𝑑𝑓𝑔
+∗𝑤𝑓𝑐𝑔
+∗𝑤𝑠𝑦𝑚𝑏𝑜𝑙
+Σ
+𝑆𝑓𝑢𝑠𝑒𝑑
+Top-k 
+candidate 
+selection
+Rank 1
+Rank 2
+Rank 3
+…
+Rank k
+Similarity Calculation
+Representation Construction
+CDFG
+Binary-side
+Source-side
+TF-IDF
+TF-IDF vector
+…
+TF-IDF vector
+…
+FCG
+TF-IDF
+TF-IDF vector
+…
+TF-IDF vector
+…
+Source-side
+Binary-side
+Symbol
+TF-IDF
+TF-IDF vector
+…
+TF-IDF vector
+…
+Binary-side
+Source-side
+Function Name
+Function Name
+Preprocessing
+Binary frontend
+Core function
+extraction
+Decompilation
+C
+Normalization
+Weighted 
+similarity
+Recovered Symbol
+Recovered Symbol
+Disassembly 
+Fig. 2. Overview of the PLC-Bin2Src workflow.
+(c) ST source file
+FUNCTION ACOSH:REAL
+VAR_INPUT
+X : REAL;
+END_VAR
+ACOSH := LN(SQRT(X*X-1.0)+X);
+END_FUNCTION
+PROGRAM program0
+VAR
+LocalVar0 : REAL;
+LocalOUT  : REAL;
+END_VAR
+LocalOUT := ACOSH(LocalVar0);
+END_PROGRAM
+(d) Source-side C representation
+REAL ACOSH(..., REAL X){
+...
+ACOSH = LN__REAL__REAL(true, NULL,
+(REAL)(SQRT__REAL__REAL(true,
+NULL, (REAL)((X*X)-1.0))+X));
+...}
+void PROGRAM0_body__(...){
+...
+guarded_assign(..., 
+ACOSH( true, NULL, 
+(REAL)data__->LOCALVAR0 ));
+...}
+Source frontend
+(a) Binary-side disassembly
+(b) Binary-side C-like representation
+int __fastcallPROGRAM0_body__(...){
+...
+if ( !(*(_BYTE *)(result + 12) & 2) ){
+...
+result = ACOSH(1, 0, a3);
+}
+}
+int  __fastcallACOSH(..., float a3){
+...
+if ( (_BYTE)result )
+{
+SQRT__REAL__REAL(1u, 0, a3);
+result = LN__REAL__REAL(1u, 0, v3);
+...
+}
+}
+PROGRAM0_body__ @ 0x00039978
+...
+0x399A0 FLDS S15, [R3]
+0x399B0 BL ACOSH
+0x399BC FSTS S15, [R3,#8]
+...
+ACOSH @ 0x000397FC
+...
+0x39858 FMULS S15,S15,S15
+0x39860 FSUBS S15,S15,S14
+0x39870 BL 
+SQRT__REAL__REAL
+0x3987C FADDS S15,S14,S15
+0x3988C BL LN__REAL__REAL
+Binary frontend
+Function/POU identifiers
+Key operations and calls
+Fig. 3. Binary-side and source-side frontend processing for ACOSH.
+recognized compiler-generated decorations and type suf-
+fixes from call names and maps known platform-specific
+interfaces to common operation labels. For example,
+SQRT__REAL__REAL and gebx_SQRT_REAL are both as-
+sociated with SQRT. Recognized primitive-operation calls
+are also mapped to the corresponding arithmetic or logi-
+cal operator categories. This allows operations expressed
+through different calling conventions and naming schemes
+to contribute comparable features. On the GEB binary side,
+runtime-hook calls such as geb_hook are filtered to reduce
+features introduced by runtime support code.
+Variable and memory-access normalization: Source-
+side code often accesses PLC variables through named
+fields, whereas binary-side C-like code may express ac-
+cesses through temporary variables and pointer offsets. PLC-
+Bin2Src abstracts local-variable names in structural features
+while retaining their occurrences for local definition–use
+analysis. It also rewrites recognized memory-access patterns
+into common slot or memory labels. Explicit source-side
+.value and .flags fields retain their value and flag roles.
+On the binary side, access widths and recurring offset
+patterns provide heuristic cues for assigning these roles; other
+recognized accesses receive generic memory labels. These
+abstractions reduce dependence on concrete variable names
+and address displacements without requiring the original
+structure layout to be fully recovered.
+Numeric normalization: PLC-Bin2Src standardizes com-
+mon Boolean and null-pointer forms and removes recognized
+cast syntax before feature extraction. For example, alternative
+Boolean expressions are converted to common forms, and
+0x02 is normalized to 2. During feature extraction, numer-
+ical literals are represented by normalized constant labels.
+
+
+5
+The token-level rules retain selected values, including 0, 1,
+and 2, while grouping other values under a generic constant
+label; further structural abstraction can merge these labels
+into a common constant category. This reduces sensitivity
+to literal formatting and concrete numerical values when
+comparing operation and dependency patterns.
+3.2
+Representation Construction
+From the normalized function-level representations, PLC-
+Bin2Src constructs the CDFG and FCG representations
+to capture intraprocedural and interprocedural structure,
+respectively. The Symbols representation separately sum-
+marizes recovered-symbol and identifier evidence without
+encoding graph topology.
+3.2.1
+CDFG
+The CDFG representation describes control and data seman-
+tics within functions. A control-flow graph (CFG) charac-
+terizes program execution transitions, whereas a data-flow
+graph (DFG) describes variable definitions and uses and the
+propagation of operation results. A CDFG jointly expresses
+control and data relationships within the same structure [13],
+[14]. PLC-Bin2Src constructs a task-oriented CDFG for
+binary2source matching. The conditions, operations, calls,
+variables, and dependencies available after preprocessing
+are organized around the extracted core functions to form
+function-level CDFG representations.
+PLC-Bin2Src constructs CDFGs by extracting semantic
+events such as conditional decisions, loop control, assign-
+ment statements, function calls, memory reads and writes,
+and arithmetic expressions from the normalized C-like
+representations.
+The graph mainly includes three types of nodes:
+•
+Operation nodes: program events such as conditional
+branches, loops, assignments, function calls, and
+returns;
+•
+Arithmetic nodes: expression operations such as addi-
+tion, subtraction, multiplication, division, comparison,
+and logical operations;
+•
+Data nodes: local variables, memory objects, and
+constants.
+Directed edges between nodes record control and data
+semantics:
+•
+Control relationships describe conditional constraints
+and the local execution order of semantic events
+within a function;
+•
+Data relationships describe propagation from vari-
+ables or constants to arithmetic nodes, from operation
+results to subsequent operations, and from return
+values to target variables.
+For function calls, the system further recovers call nodes
+and their argument order from the syntactic structure of
+expressions, connects explicit variable definitions to subse-
+quent uses, and, when determinable, establishes propagation
+relationships from call return values to temporary variables
+or return targets. Consecutive calls and their local execution
+order are also encoded as structural features to retain call–
+data relationships recoverable on both the binary and source
+sides.
+a
+Binary-side CDFG
+CALL SQRT
+v3
+CALL LN
+result
+RET
+<root>
+a3 (LocalVar0)
+CALL ACOSH
+SLOT0.value (LocalOUT)
+ACOSH
+PROGRAM0_body__
+b Source-side CDFG
+X
+MUL
+1.0
+SUB
+CALL SQRT
+ADD
+CALL LN
+RET
+CALL ACOSH
+LocalOUT
+ACOSH
+PROGRAM program0
+data dependency
+control flow
+a3 (X)
+X
+acosh
+LocalVar0
+<root>
+Fig. 4. Binary-side and source-side CDFG subgraphs of ACOSH.
+After graph construction, PLC-Bin2Src converts the avail-
+able control, data, and call items into CDFG documents.
+When statement-level graph structure is recoverable, it per-
+forms two iterations of Weisfeiler–Lehman graph kernel (WL)
+relabeling [15] and extracts first- to third-order token n-grams
+to describe local subgraph patterns and the order of consec-
+utive operations. It further records recoverable call-related
+structures, including call nodes, arguments, definition–use
+relationships, and call sequences. All CDFG documents are
+mapped into a common feature space during vectorization
+to obtain comparable CDFG vector representations.
+In Fig. 4, we select representative nodes and dependency
+edges to show the local CDFG semantic subgraphs formed
+around the core computation and function calls on the binary
+and source sides of ACOSH. Panels (a) and (b) correspond
+to the binary and source sides, respectively. The source
+side retains a relatively complete arithmetic hierarchy of
+the expression, whereas the binary side reflects the call
+results, temporary variables, and return-value propagation
+relationships that can be recovered during decompilation.
+Red edges indicate data dependencies, blue edges indicate
+control flow or local execution order, and <root> marks the
+program-entry node.
+3.2.2
+FCG
+The FCG representation describes how calls are organized
+among program units. Nodes represent functions, edges
+represent direct call relationships, and node labels distin-
+guish roles such as program entries, core functions, library
+functions, and auxiliary functions [16]. Fig. 5 presents the
+call relationships on the binary and source sides of ACOSH.
+The left and right graphs show the binary and source sides,
+respectively; PROGRAM, CORE, and LIB denote the program-
+
+
+6
+PROGRAM
+LIB 
+1
+2
+PROGRAM
+LIB 
+1
+2
+CORE
+CORE
+Fig. 5. Binary-side and source-side function-call graphs of ACOSH.
+entry, core-function, and library-function roles, respectively,
+and the numbers denote direct-call counts.
+Using the core functions and call information obtained
+during preprocessing, PLC-Bin2Src constructs an FCG for
+each normalized binary- and source-side representation. It
+uses the program entry or extracted core function as the root
+semantic node and derives structural features from its callees,
+call relationships, and auxiliary-function roles.
+The FCG encodes both call topology and normalized
+function roles. Call edges are derived from direct or stati-
+cally resolved indirect call relationships in the normalized
+function-level representations. Node labels use unified roles
+such as INIT, PROGRAM, CORE, LIB, RUNTIME, and
+HELPER.
+3.2.3
+Symbols
+The Symbols representation is an independent lexical sum-
+mary of function names and related identifiers that can
+be extracted from source code and binaries. Unlike CDFG
+and FCG, this representation does not encode operations,
+dependencies, or call topology. For PLC binaries that have
+not been stripped or that retain partial symbol clues, this
+evidence can directly support binary2source matching [17].
+To construct the Symbols representation, PLC-Bin2Src
+extracts recovered-symbol labels and related identifiers from
+the normalized binary and source representations, then
+maps them to semantic roles using associations provided
+by preprocessing. It excludes items assigned generic roles
+such as PROGRAM, INIT, and RUNTIME and generates two
+feature types, NAME_LABEL and NAME_ROLE. Local-variable
+names and ordinary syntactic identifiers are not used as the
+primary recovered-symbol evidence.
+For example, the binary-side and source-side Symbols
+documents for ACOSH each contain one occurrence of
+NAME_LABEL:ACOSH, which records the recovered function
+identity, and one occurrence of NAME_ROLE:CORE, which
+records its semantic role. In general, the feature counts de-
+pend on the recovered evidence available in each document.
+3.2.4
+TF-IDF Vectorization
+After extracting features for the three representations, PLC-
+Bin2Src maps binary and source features into a shared
+vector space for each representation type. The CDFG fea-
+ture set consists of structural labels obtained through WL
+relabeling, n-grams of normalized tokens, and sequences of
+call labels. The FCG feature set records function-role labels
+and directed caller–callee relationships to describe the local
+call structure. The Symbols feature set records normalized
+recovered-symbol names and their associated semantic roles.
+TF-IDF weighting is applied separately to the features of
+each representation: it reduces the influence of features
+common across the candidate corpus and emphasizes more
+discriminative features. PLC-Bin2Src therefore obtains the
+following vectors for binary sample b and source sample s:
+vb
+cdfg,
+vb
+fcg,
+vb
+symbol,
+vs
+cdfg,
+vs
+fcg,
+vs
+symbol.
+The resulting binary-side and source-side CDFG, FCG,
+and Symbols vectors are comparable, with each pair defined
+in the feature space of its representation type.
+3.3
+Similarity Calculation
+The similarity-calculation stage computes separate similarity
+scores for the three representations between a binary query
+and each source candidate, takes their equal-weight average,
+and orders the candidates by their fused scores.
+3.3.1
+Cosine Similarity
+Given a binary query b and a source candidate s, PLC-Bin2Src
+separately compares their CDFG, FCG, and Symbols vectors.
+Let the set of representation types be
+R = {cdfg, fcg, symbol}.
+For any representation type r ∈R, the vectors of the
+binary query and source candidate are denoted by vb
+r and
+vs
+r, respectively. Their similarity for representation type r is
+computed using cosine similarity:
+Sr(b, s) =
+vb
+r · vs
+r
+∥vbr∥2∥vsr∥2
+.
+(1)
+The system thus obtains one independently computed
+similarity score for each of the three representations:
+Scdfg(b, s),
+Sfcg(b, s),
+Ssymbol(b, s).
+The three scores quantify similarity in function-level
+control–data representations, program-level call represen-
+tations, and recovered-symbol evidence, respectively, and
+serve as inputs to equal-weight fusion.
+3.3.2
+Equal-Weight Similarity Fusion
+A single representation captures only one aspect of program
+semantics. PLC-Bin2Src therefore assigns equal weights to
+the similarity scores from the three representations, allowing
+intraprocedural structure, program-level call relationships,
+and recovered-symbol evidence to jointly determine candi-
+date ranking.
+For any binary sample b and source candidate s, PLC-
+Bin2Src computes the final matching score as
+Sfused(b, s) = 1
+3 (Scdfg(b, s) + Sfcg(b, s) + Ssymbol(b, s)) .
+(2)
+Equivalently, the three weights shown in Fig. 2 satisfy
+wcdfg = wfcg = wsymbol = 1/3. The resulting scalar score is
+used for candidate ranking.
+
+
+7
+3.3.3
+Top-k Candidate Selection
+For a binary sample b, PLC-Bin2Src computes its fused score
+with every ST program in the given source-candidate set Sb
+and ranks the candidates by sorting the scores in descending
+order.
+Formally, let the source-candidate set of binary query b
+be Sb. PLC-Bin2Src computes the fused score between b and
+each candidate s ∈Sb:
+Sfused(b, s),
+s ∈Sb.
+The candidate sequence is then obtained by sorting the
+fused scores in descending order:
+πb = argsort↓
+s∈Sb Sfused(b, s).
+(3)
+The position of the true source code in candidate sequence
+πb is denoted by rank(b). A smaller value indicates that the
+correct correspondence ranks closer to the top. The first k
+elements of πb form the top-k candidate set returned by
+PLC-Bin2Src.
+4
+EVALUATION
+We evaluate the effectiveness of PLC-Bin2Src, the contribu-
+tions of different representation combinations, and computa-
+tional efficiency through the following research questions:
+•
+RQ1: How effective is PLC-Bin2Src in matching PLC
+binaries compiled by different platforms to their
+corresponding source files?
+•
+RQ2: How do different combinations of the three se-
+mantic representations affect binary2source matching
+performance?
+•
+RQ3: What is the runtime cost of each stage of PLC-
+Bin2Src?
+4.1
+Experimental Setup
+4.1.1
+Evaluation Dataset
+PLC-BEAD [9] contains 2431 samples. We evaluate 2358 sam-
+ples for which a unique binary–source correspondence can
+be established and all three representations can be generated.
+These samples cover CODESYS, GEB, OpenPLC v2, and
+OpenPLC v3. All 73 excluded samples are from CODESYS.
+For 29 samples, the current MATIEC pipeline does not
+generate valid C-like representations because of unresolved
+library calls or POU types, compiler-access exceptions, or
+syntax and naming conflicts. For the remaining 44 samples,
+we cannot establish a unique, verifiable mapping to a source
+file. Table 1 reports the resulting platform distribution: 482
+CODESYS samples, 617 GEB samples, 619 OpenPLC v2
+samples, and 640 OpenPLC v3 samples.
+For each toolchain, we construct a compatible candidate
+corpus containing the corresponding 482, 617, 619, or 640 ST
+programs. Every source program in a corpus can be compiled
+into a valid binary by that toolchain and has a known binary
+correspondence. A source program is not inherently platform
+specific; if several toolchains compile the same ST program
+successfully, it can appear in several corpora. For each binary
+query, PLC-Bin2Src scores every source candidate in the
+compatible corpus and sorts the candidates by fused score.
+Implementation: The binary frontend uses IDA Pro and
+the Hex-Rays Decompiler to generate C-like representations
+TABLE 1
+Numbers of valid samples used in the experiments.
+Platform
+Binary form
+Number of samples
+CODESYS
+.app application container
+482
+GEB
+ARM ELF
+617
+OpenPLC v2
+ARM ELF (.exe file)
+619
+OpenPLC v3
+ARM ELF (.exe file)
+640
+Total
+–
+2358
+of target functions [18]. For OpenPLC wrapper functions that
+Hex-Rays fails to decompile, a specialized ARM32 lifter uses
+Capstone [19] disassembly, available symbol information,
+and predefined wrapper templates to generate approximate
+C-like representations. The source frontend uses MATIEC to
+convert ST into a C-style representation [11] and then uses
+a C preprocessor to expand macros. The system constructs
+the CDFG, FCG, and Symbols feature documents, computes
+a similarity score for each representation, and applies fixed
+equal-weight fusion. The method requires no training.
+Baseline selection: To the best of our knowledge, no
+existing approach directly supports binary2source match-
+ing between PLC binaries and ST source files. Existing
+binary2source methods primarily target conventional C/C++
+binaries [7], [8], [20], [21], and cannot be directly applied to
+the PLC artifacts in PLC-BEAD. Therefore, we do not include
+a direct external baseline. Instead, we use the individual
+CDFG, FCG, and Symbols representations and their pairwise
+combinations as controlled internal baselines to evaluate the
+contribution of each representation and their fusion.
+4.1.2
+Evaluation Metrics
+We use the following metrics to evaluate binary2source
+matching performance:
+•
+Recall@k: the proportion of queries for which the true
+source code appears among the top k candidates.
+•
+Mean reciprocal rank (MRR): the mean of the recip-
+rocal ranks of the correct source across all samples,
+reflecting overall ranking quality.
+For a query set B, let the position of the true source
+code in the candidate list for query b be rank(b). Recall@k is
+defined as
+Recall@ k = 1
+|B|
+X
+b∈B
+I(rank(b) ≤k) .
+(4)
+Here, I(·) is the indicator function. We report results for
+k = 1 and k = 5, which measure the proportions of queries
+for which the true source code is ranked first and within the
+top five, respectively.
+MRR is defined as
+MRR = 1
+|B|
+X
+b∈B
+1
+rank(b).
+(5)
+Unlike Recall@1 and Recall@5, which consider only
+whether a match occurs within a specific ranking range,
+MRR is more sensitive to the exact position of the true source
+code in the candidate list. When the true source code ranks
+closer to the top, its reciprocal rank and the MRR increase.
+
+
+8
+Recall@1, Recall@5, and MRR evaluate binary2source
+matching from three perspectives: first-position retrieval,
+coverage of the leading candidate set, and overall ranking
+quality, respectively.
+4.2
+RQ1: Overall and Platform-Level Matching Results
+We aggregate the ranks of all queries and then report results
+by platform. Table 2 reports Recall@1, Recall@5, and MRR
+overall and for each platform.
+TABLE 2
+Overall and platform-level matching results.
+Platform
+Number of
+samples
+Recall@1 Recall@5 MRR
+Number not
+ranked first
+CODESYS
+482
+98.55%
+99.38% 0.9895
+7
+GEB
+617
+95.79%
+99.84% 0.9770
+26
+OpenPLC v2
+619
+94.83%
+99.68% 0.9716
+32
+OpenPLC v3
+640
+95.00%
+99.69% 0.9725
+32
+Overall
+2358
+95.89%
+99.66% 0.9769
+97
+On the 2358 valid samples, PLC-Bin2Src achieves 95.89%
+Recall@1, 99.66% Recall@5, and an MRR of 0.9769. Across
+the four platforms, Recall@1 ranges from 94.83% to 98.55%,
+and Recall@5 ranges from 99.38% to 99.84%. CODESYS has
+the highest Recall@1 and OpenPLC v2 the lowest, with a
+difference of 3.72 percentage points.
+Answer to RQ1: PLC-Bin2Src achieves 95.89% Recall@1
+on 2358 queries. Among the 97 queries for which the true
+source is not ranked first, 89 still place it within the top five.
+4.3
+RQ2: Representation Combination Analysis
+To compare the evidence provided by different representa-
+tions, we evaluate each representation individually, all three
+pairwise combinations, and the full configuration using all
+three representations. Similarity scores from the included
+representations contribute equally: the weight is 1 when
+using one representation, 1/2 per score when using two, and
+1/3 per score when using all three. Table 3 reports the results
+over all 2358 queries.
+TABLE 3
+Matching results for different representation combinations.
+Representation combination
+Recall@1
+Recall@5
+MRR
+CDFG only
+73.11%
+85.79%
+0.7902
+FCG only
+91.94%
+98.52%
+0.9501
+Symbols only
+81.89%
+88.30%
+0.8483
+CDFG+FCG
+93.55%
+98.69%
+0.9594
+CDFG+Symbols
+93.21%
+99.41%
+0.9601
+FCG+Symbols
+93.77%
+99.24%
+0.9633
+PLC-Bin2Src
+95.89%
+99.66%
+0.9769
+Among the individual representations, FCG performs
+best, with 91.94% Recall@1. Equal pairwise fusion yields
+93.55% Recall@1 for CDFG+FCG, 93.21% for CDFG+Symbols,
+and 93.77% for FCG+Symbols. The full configuration with
+equal weights for all three similarity scores reaches 95.89%
+Recall@1, 99.66% Recall@5, and an MRR of 0.9769, improving
+on the strongest pairwise combination by 2.12 percentage
+points, 0.42 percentage points, and 0.0136, respectively.
+These results show that function-level control–data repre-
+sentations, program-level call representations, and topology-
+independent symbol evidence provide complementary sig-
+nals for candidate ranking.
+Answer to RQ2: Fixed equal-weight fusion of the sim-
+ilarities from all three representations outperforms every
+individual representation and every equal-weight pairwise
+combination, achieving 95.89% Recall@1, 99.66% Recall@5,
+and an MRR of 0.9769.
+4.4
+RQ3: Runtime Cost by Stage
+We report runtime for three pipeline stages. Preprocessing
+covers the source and binary frontends, representation con-
+struction builds the CDFG, FCG, and Symbols representations
+and performs TF-IDF vectorization, and similarity calculation
+includes cosine similarity, equal-weight fusion, and candidate
+ranking.
+Preprocessing
+Representation
+construction
+Similarity
+calculation
+0.1
+1
+10
+100
+1000
+180.8
+468
+45.7
+2.15
+775
+10.6
+0.67
+939
+68.8
+1.61
+1141
+78.2
+1.88
+Runtime (s)
+Shared source
+CODESYS
+GEB
+OpenPLC v2
+OpenPLC v3
+Fig. 6. Runtime evaluation by pipeline stage.
+Figure 6 reports total runtime in seconds on a logarithmic
+scale. The source repository is preprocessed once in 180.81 s.
+Across the four platforms, binary preprocessing requires
+467.73–1141.17 s and dominates the total cost, whereas repre-
+sentation construction requires 10.56–78.24 s and similarity
+calculation requires only 0.67–2.15 s.
+Answer to RQ3: Once preprocessing and representation
+construction are complete, PLC-Bin2Src performs full-corpus
+binary2source matching in only 0.67–2.15 s across the four
+platforms.
+4.5
+Analysis of Results Not Ranked First
+Among the 97 queries for which the true source is not ranked
+first, 89 still place it within the top five: 73 rank it second and
+16 rank it third through fifth. The remaining eight place it
+outside the top five. The median score difference between the
+first-ranked incorrect candidate and the true source is 0.00975.
+Most errors therefore occur among leading candidates with
+similar scores, although a small number place the true source
+substantially lower.
+Four representative cases illustrate these errors. For the
+GEB query FT_TN16, FT_TN8 is ranked first and the true
+
+
+9
+source is ranked third. For STACK_32 on OpenPLC v2,
+STACK_16 is ranked first and the true source is ranked sec-
+ond; their FCG and Symbols scores are identical, while their
+CDFG scores differ by only 0.000028. In both cases, name
+normalization removes the numeric suffixes that distinguish
+the variants, making their normalized names identical and
+weakening the naming evidence available for matching. For
+the CODESYS query _ARRAY_ADD, the recovered symbol
+slice is incorrectly associated with _ARRAY_ABS, causing all
+name-bearing representations to favor that candidate and
+placing the true source at rank 216. Finally, for the GEB
+query URL_TO_STRING, _RMP_B is ranked first and the true
+source is ranked 305th. In this case, no symbol is recovered,
+and neither the CDFG nor the FCG representation provides
+sufficiently discriminative features.
+These cases show three recurring patterns. First, variants
+within the same function family can receive identical or
+nearly equal similarity scores for the individual represen-
+tations. Second, differences in retained types, constants, or
+intermediate operations may leave too little fine-grained
+evidence to change the ranking. Third, inaccurate fron-
+tend associations can distort the resulting evidence, as in
+_ARRAY_ADD. Similar errors occur in OpenPLC v2 and
+v3, suggesting that related compilation toolchains preserve
+similar features for some function variants.
+5
+DISCUSSION
+The evaluated binaries retain recoverable naming clues from
+the PLC compilation and packaging toolchains represented
+in PLC-BEAD. PLC-Bin2Src does not introduce these names
+from the source code. In GEB and OpenPLC, the binaries ex-
+pose compiler-generated POU and function names, whereas
+CODESYS .app containers preserve binary-visible names
+and pointers in metadata records. PLC-BinX reports the
+same platform behavior and associates the recovered names
+with function-level representations. We therefore follow
+PLC-BEAD and PLC-BinX in analyzing these engineering-
+generated compiled artifacts [5], [9]. This use of information
+recoverable from compiled PLC artifacts is also consistent
+with prior PLC reverse-engineering studies [2], [12].
+Recoverable symbols are useful but incomplete matching
+evidence. As shown in Table 3, the Symbols-only configura-
+tion achieves 81.89% Recall@1, whereas CDFG+Symbols and
+FCG+Symbols reach 93.21% and 93.77%, respectively. Equal-
+weight fusion of the similarities from all three representations
+reaches 95.89%. Thus, even when naming clues are widely
+available, they do not uniquely determine source correspon-
+dence. CDFG and FCG contribute complementary control–
+data and call-organization evidence that distinguishes among
+candidates sharing similar names or function roles. PLC-
+Bin2Src therefore uses recovered symbols as a comple-
+mentary representation rather than reducing binary2source
+matching to name comparison, consistent with naming-
+aware binary-similarity research [17].
+6
+THREATS TO VALIDITY
+6.1
+Construct Validity
+The experiments inherit their ground-truth correspondences
+from the data organization of PLC-BEAD [9]. Any errors
+in the source–binary correspondences, platform labels, or
+compilation artifacts of the original samples will also enter
+the evaluation.
+6.2
+Internal Validity
+Core-function extraction, decompilation, ST-to-C conversion,
+semantic normalization, and feature extraction depend on
+multiple analysis tools and rules. IDA Pro/Hex-Rays de-
+compilation results, Capstone disassembly, MATIEC code
+generation, and the project’s parsing and normalization pro-
+cesses may all produce omissions or representation bias [11],
+[18], [19], [22]–[24]. The experiments use consistent frontend
+processes, candidate sets, and evaluation rules for all query
+corpora to reduce differences in processing conditions, but
+tool errors cannot be eliminated.
+6.3
+External Validity
+This paper evaluates CODESYS, GEB, OpenPLC v2, and
+OpenPLC v3, but these platforms do not cover all PLC
+vendors, compilation toolchains, architectures, and optimiza-
+tion configurations. The evaluation follows PLC-BEAD and
+PLC-BinX in using engineering-generated compiled artifacts
+from the covered toolchains, which retain recoverable nam-
+ing clues [5], [9]. The conclusions therefore concern these
+toolchains and artifact types; binaries subjected to deliberate
+symbol stripping or name obfuscation constitute additional
+conditions for future evaluation. The fixed equal-weight
+fusion rule may also not be optimal when the quality of
+the extracted representations in other datasets or platform
+distributions differs substantially from that in PLC-BEAD.
+7
+RELATED WORK
+7.1
+General-Purpose Binary2Source Matching
+Binary2source matching identifies correspondences between
+binary artifacts and source code, supporting software com-
+position analysis, code-reuse detection, and provenance
+tracing. Existing approaches can be broadly grouped by
+their principal matching evidence into string-based, structure-
+based, and learning-based methods.
+String-based methods. These methods exploit strings, iden-
+tifiers, constants, and other lexical features that can be
+extracted from both source code and binaries. BAT combines
+strings with compression similarity and binary differencing
+to identify code reuse in firmware [25]. OSSPolice uses string
+and function features to detect open-source components in
+mobile applications [6], while B2SFinder matches source and
+binary feature instances for open-source reuse detection [26].
+B2SMatcher uses string literals and exported function names
+for coarse matching and supplements them with function-
+level constants and call-graph degrees for fine-grained
+version identification [27].
+Structure-based methods. These methods compare relations
+among program elements to reduce dependence on exact lex-
+ical correspondence. BinPro combines constants, library calls,
+function-call relationships, and iterative bipartite function
+matching to determine binary provenance [7]. BugGraph,
+GraphBinMatch, and BSMDG use attributed control-flow
+
+
+10
+graphs, call relationships, or decompiler-derived graph struc-
+tures to preserve program semantics across compilation [28]–
+[30]. Their designs are related to broader graph representa-
+tions, including program dependence graphs [13], Weisfeiler–
+Lehman neighborhood aggregation [15], and ProGraML’s
+joint representation of control, data, and call relations [14].
+Function-call graphs and recoverable names can provide
+additional program-level evidence [16], [17].
+Learning-based methods. These methods learn a shared
+representation in which corresponding source and binary
+code are close. CodeCMR uses a text model and a graph
+neural network to encode source and binary functions,
+respectively [20]. XLIR reduces cross-language and cross-
+representation differences through intermediate representa-
+tions [21], while CrossCode2Vec combines abstract-syntax
+paths with hierarchical sequence models to learn cross-
+representation features [31]. BinaryAI combines transformer-
+based function embeddings with link-time locality for binary
+software composition analysis [8]. Recent work also uses
+strings, constants, and external calls as anchors before
+reranking source functions with a large language model [32].
+Related learning-based binary-similarity methods, including
+Gemini, DeepBinDiff, Order Matters, and Trex, further
+demonstrate the value of structural and execution-semantic
+representations across compilation [33]–[36].
+7.2
+PLC Binary Analysis
+PLC binary analysis must account for platform-specific
+compilation toolchains, executable formats, and runtime
+organizations. ICSREF identifies domain-specific features
+in CODESYS binaries to recover function boundaries, call
+relationships, and control flow [2]. Benkraouda et al. show
+that programming language, compiler version, target archi-
+tecture, and PLC vendor all affect binary representations [12].
+Other studies reconstruct PLC control logic, recover program
+structures, or decompile proprietary artifacts by exploiting
+platform and runtime characteristics [37]–[40].
+Recovered PLC structures also support downstream
+security analysis. ICSFuzz and ICS-QUARTZ use binary-
+level control information for instrumented and scan-cycle-
+aware fuzzing, while ICSPatch derives data-dependence
+information for vulnerability localization and runtime hot-
+patching [41]–[43]. PLC-BEAD provides 2431 paired binaries
+and ST programs spanning CODESYS, GEB, OpenPLC v2,
+and OpenPLC v3 [9]. Built on this corpus, PLC-BinX supports
+cross-platform core-function identification and function-level
+semantic recovery [5].
+The two bodies of work address complementary aspects
+of PLC binary2source matching. Existing binary2source
+methods are mainly designed for general-purpose software
+and conventional executable or decompiler representations.
+Existing PLC binary-analysis methods recover and analyze
+semantics from platform-specific artifacts but do not identify
+the corresponding ST source file from a candidate repository.
+PLC-Bin2Src connects these directions through platform-
+aware semantic recovery, aligned binary and source rep-
+resentations, and source-candidate ranking.
+8
+CONCLUSION
+This paper presents PLC-Bin2Src for retrieving the ST source
+files corresponding to binary artifacts from CODESYS, GEB,
+OpenPLC v2, and OpenPLC v3. PLC-Bin2Src constructs com-
+parable CDFG, FCG, and recovered-symbol representations
+and combines their similarity scores for candidate ranking.
+On PLC-BEAD, it achieves 95.89% Recall@1, 99.66% Recall@5,
+and an MRR of 0.9769 across the four platforms. These results
+demonstrate the feasibility of cross-platform binary2source
+matching for opaque PLC binaries and provide a foundation
+for broader provenance and composition analysis.
+REFERENCES
+[1]
+International Electrotechnical Commission, IEC 61131-3:2013, Pro-
+grammable Controllers—Part 3: Programming Languages, IEC Std.,
+2013.
+[2]
+A. Keliris and M. Maniatakos, “ICSREF: A framework for auto-
+mated reverse engineering of industrial control systems binaries,”
+in Network and Distributed System Security Symposium (NDSS), 2019.
+[3]
+CODESYS
+GmbH,
+“Command:
+Save
+project
+as
+compiled
+library,” CODESYS Online Help. [Online]. Available: https://
+content.helpme-codesys.com/en/CODESYS%20Development%
+20System/_cds_cmd_save_project_as_compiled_library.html,
+accessed: Sep. 5, 2026.
+[4]
+——, “Deployment and licensing,” CODESYS Library De-
+velopment
+Summary.
+[Online].
+Available:
+https://content.
+helpme-codesys.com/en/LibDevSummary/deployment.html, ac-
+cessed: Aug. 30, 2026.
+[5]
+A.
+Jia,
+Y.
+Duan,
+H.
+Jiang,
+Z.
+Tian,
+Z.
+Ren,
+and
+X.
+Li,
+“PLC-BinX: A cross-platform binary code analysis framework
+for PLC binaries,” arXiv:2605.17392, 2026. [Online]. Available:
+https://arxiv.org/abs/2605.17392
+[6]
+R. Duan, A. Bijlani, M. Xu, T. Kim, and W. Lee, “Identifying open-
+source license violation and 1-day security risk at large scale,” in
+2017 ACM SIGSAC Conference on Computer and Communications
+Security, 2017, pp. 2169–2185.
+[7]
+D. Miyani, Z. Huang, and D. Lie, “BinPro: A tool for binary source
+code provenance,” arXiv:1711.00830, 2017. [Online]. Available:
+https://arxiv.org/abs/1711.00830
+[8]
+L. Jiang, J. An, H. Huang, Q. Tang, S. Nie, S. Wu, and Y. Zhang,
+“BinaryAI: Binary software composition analysis via intelligent
+binary source code matching,” in IEEE/ACM 46th International
+Conference on Software Engineering, 2024, pp. 1–13.
+[9]
+Y. G. Achamyeleh, S. Y. Yu, G. Q. Araya, and M. A. A. Faruque,
+“Bridging the binary analysis gap: A cross-compiler dataset and
+neural framework for industrial control systems,” in 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V.2,
+2025, pp. 5260–5269.
+[10] E. López-Morales, U. Planta, C. Rubio-Medrano, A. Abbasi,
+and A. A. Cardenas, “SoK: Security of programmable logic
+controllers,” in 33rd USENIX Security Symposium (USENIX Security
+24), 2024, pp. 7103–7122. [Online]. Available: https://www.usenix.
+org/conference/usenixsecurity24/presentation/lopez-morales
+[11] MATIEC Project, “MATIEC: IEC 61131-3 compiler,” Software
+documentation, accessed: Aug. 26, 2026. [Online]. Available:
+https://openplcproject.gitlab.io/matiec/
+[12] H. Benkraouda, A. Agrawal, D. Tychalas, M. Sazos, and M. Ma-
+niatakos, “Towards PLC-specific binary analysis tools: An investi-
+gation of CODESYS-compiled PLC software applications,” in 5th
+Workshop on CPS and IoT Security and Privacy, 2023, pp. 83–89.
+[13] J. Ferrante, K. J. Ottenstein, and J. D. Warren, “The program
+dependence graph and its use in optimization,” ACM Transactions
+on Programming Languages and Systems, vol. 9, no. 3, pp. 319–349,
+1987.
+[14] C. Cummins, Z. V. Fisches, T. Ben-Nun, T. Hoefler, M. F. P.
+O’Boyle, and H. Leather, “ProGraML: A graph-based program
+representation for data flow analysis and compiler optimizations,”
+in 38th International Conference on Machine Learning, ser. Proceedings
+of Machine Learning Research, vol. 139, 2021, pp. 2244–
+2253. [Online]. Available: https://proceedings.mlr.press/v139/
+cummins21a.html
+[15] N. Shervashidze, P. Schweitzer, E. J. van Leeuwen, K. Mehlhorn,
+and K. M. Borgwardt, “Weisfeiler-lehman graph kernels,” Journal
+of Machine Learning Research, vol. 12, pp. 2539–2561, 2011. [Online].
+Available: https://www.jmlr.org/papers/v12/shervashidze11a.
+html
+
+
+11
+[16] X. Hu, T.-c. Chiueh, and K. G. Shin, “Large-scale malware indexing
+using function-call graphs,” in 16th ACM Conference on Computer
+and Communications Security, 2009, pp. 611–620.
+[17] B. Xia, J. Pang, X. Zhou, Z. Shan, J. Wang, and F. Yue, “Binary code
+similarity analysis based on naming function and common vector
+space,” Scientific Reports, vol. 13, no. 1, 2023, art. no. 15676.
+[18] Hex-Rays, “IDA Pro disassembler and debugger,” Computer
+software, accessed: Aug. 26, 2026. [Online]. Available: https:
+//hex-rays.com/ida-pro/
+[19] Capstone Project, “Capstone disassembly framework,” Computer
+software, accessed: Aug. 26, 2026. [Online]. Available: https:
+//www.capstone-engine.org/
+[20] Z.
+Yu,
+W.
+Zheng,
+J.
+Wang,
+Q.
+Tang,
+S.
+Nie,
+and
+S.
+Wu,
+“CodeCMR:
+Cross-modal
+retrieval
+for
+function-
+level binary source code matching,” in Advances in Neural
+Information
+Processing
+Systems
+33,
+2020,
+pp.
+3872–3883.
+[Online]. Available: https://papers.nips.cc/paper/2020/hash/
+285f89b802bcb2651801455c86d78f2a-Abstract.html
+[21] Y. Gui, Y. Wan, H. Zhang, H. Huang, Y. Sui, G. Xu, Z. Shao,
+and H. Jin, “Cross-language binary-source code matching with
+intermediate representations,” in IEEE International Conference on
+Software Analysis, Evolution and Reengineering (SANER), 2022, pp.
+601–612.
+[22] D. Andriesse, X. Chen, V. van der Veen, A. Slowinska, and
+H. Bos, “An in-depth analysis of disassembly on full-scale
+x86/x64 binaries,” in 25th USENIX Security Symposium, 2016, pp.
+583–600. [Online]. Available: https://www.usenix.org/conference/
+usenixsecurity16/technical-sessions/presentation/andriesse
+[23] K. Pei, J. Guan, D. Williams-King, J. Yang, and S. Jana, “XDA:
+Accurate, robust disassembly with transfer learning,” in Network
+and Distributed System Security Symposium (NDSS), 2021.
+[24] Z. Gao, Y. Cui, H. Wang, S. Qin, Y. Wang, Z. Bolun, and C. Zhang,
+“DecompileBench: A comprehensive benchmark for evaluating
+decompilers in real-world scenarios,” in Findings of the Association
+for Computational Linguistics: ACL 2025, 2025, pp. 23 250–23 267.
+[25] A. Hemel, K. T. Kalleberg, R. Vermaas, and E. Dolstra, “Finding
+software license violations through binary code clone detection,”
+in 8th Working Conference on Mining Software Repositories, 2011, pp.
+63–72.
+[26] M. Feng, Z. Yuan, F. Li, G. Ban, Y. Xiao, S. Wang, Q. Tang, H. Su,
+C. Yu, J. Xu, A. Piao, J. Xue, and W. Huo, “B2SFinder: Detecting
+open-source software reuse in COTS software,” in 34th IEEE/ACM
+International Conference on Automated Software Engineering (ASE),
+2019, pp. 1038–1049.
+[27] G. Ban, L. Xu, Y. Xiao, X. Li, Z. Yuan, and W. Huo, “B2SMatcher:
+Fine-grained version identification of open-source software in
+binary files,” Cybersecurity, vol. 4, 2021, art. no. 21.
+[28] Y. Ji, L. Cui, and H. H. Huang, “BugGraph: Differentiating source-
+binary code similarity with graph triplet-loss network,” in 2021
+ACM Asia Conference on Computer and Communications Security, 2021,
+pp. 702–715.
+[29] A. TehraniJamsaz, H. Chen, and A. Jannesari, “GraphBinMatch:
+Graph-based similarity learning for cross-language binary and
+source code matching,” in 2024 IEEE International Parallel and
+Distributed Processing Symposium Workshops (IPDPSW), 2024, pp.
+506–515.
+[30] G. Aljebreen, R. Alnanih, F. Eassa, M. Khemakhem, K. Jambi, and
+M. U. Ashraf, “Binary–source code matching based on decom-
+pilation techniques and graph analysis,” International Journal of
+Advanced Computer Science and Applications, vol. 16, no. 5, 2025.
+[31] G. Yu, J. An, J. Lyu, W. Huang, W. Fan, Y. Cheng, and A. Sui,
+“CrossCode2Vec: A unified representation across source and binary
+functions for code similarity detection,” Neurocomputing, vol. 620,
+2025, art. no. 129238.
+[32] C. E. Gagnon, S. H. H. Ding, P. Charland, and B. C. M. Fung,
+“Practical source code recovery from binary functions using
+anchor-based retrieval and LLM reasoning,” arXiv:2607.09452,
+2026. [Online]. Available: https://arxiv.org/abs/2607.09452
+[33] X. Xu, C. Liu, Q. Feng, H. Yin, L. Song, and D. Song, “Neural
+network-based graph embedding for cross-platform binary code
+similarity detection,” in 2017 ACM SIGSAC Conference on Computer
+and Communications Security, 2017, pp. 363–376.
+[34] Y. Duan, X. Li, J. Wang, and H. Yin, “DeepBinDiff: Learning
+program-wide code representations for binary diffing,” in Network
+and Distributed System Security Symposium (NDSS), 2020.
+[35] Z. Yu, R. Cao, Q. Tang, S. Nie, J. Huang, and S. Wu, “Order
+matters: Semantic-aware neural networks for binary code similarity
+detection,” Proceedings of the AAAI Conference on Artificial Intelligence,
+vol. 34, no. 1, pp. 1145–1152, 2020.
+[36] K. Pei, Z. Xuan, J. Yang, S. Jana, and B. Ray, “Learning approximate
+execution semantics from traces for binary function similarity,”
+IEEE Transactions on Software Engineering, vol. 49, no. 4, pp. 2776–
+2790, 2023.
+[37] S. A. Qasim, J. Lopez, Jr., and I. Ahmed, “Automated reconstruction
+of control logic for programmable logic controller forensics,” in
+Information Security, ISC 2019.
+Springer, 2019, pp. 402–422.
+[38] S. A. Qasim, J. M. Smith, and I. Ahmed, “Control logic forensics
+framework using built-in decompiler of engineering software in
+industrial control systems,” Forensic Science International: Digital
+Investigation, vol. 33, 2020, art. no. 301013.
+[39] C. Sang, J. Wu, J. Li, and M. Guizani, “From control application
+to control logic: PLC decompile framework for industrial control
+system,” IEEE Transactions on Information Forensics and Security,
+vol. 19, pp. 8685–8700, 2024.
+[40] Y. Geng, X. Che, R. Ma, Q. Wei, M. Wang, and Y. Chen, “Control
+logic attack detection and forensics through reverse-engineering
+and verifying PLC control applications,” IEEE Internet of Things
+Journal, vol. 11, no. 5, pp. 8386–8400, 2024.
+[41] D. Tychalas, H. Benkraouda, and M. Maniatakos, “ICSFuzz:
+Manipulating I/Os and repurposing binary code to enable
+instrumented fuzzing in ICS control applications,” in 30th
+USENIX Security Symposium (USENIX Security 21), 2021, pp. 2847–
+2862. [Online]. Available: https://www.usenix.org/conference/
+usenixsecurity21/presentation/tychalas
+[42] C. Villa, C. Doumanidis, H. Lamri, P. H. N. Rajput, and M. Ma-
+niatakos, “ICS-QUARTZ: Scan cycle-aware and vendor-agnostic
+fuzzing for industrial control systems,” in Network and Distributed
+System Security Symposium (NDSS), 2025.
+[43] P.
+H.
+N.
+Rajput,
+C.
+Doumanidis,
+and
+M.
+Maniatakos,
+“ICSPatch: Automated vulnerability localization and non-intrusive
+hotpatching in industrial control systems using data dependence
+graphs,” in 32nd USENIX Security Symposium (USENIX Security
+23), 2023, pp. 6861–6876. [Online]. Available: https://www.usenix.
+org/conference/usenixsecurity23/presentation/rajput

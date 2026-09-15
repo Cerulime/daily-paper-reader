@@ -1,0 +1,3271 @@
+Enforcement of In-Kernel Stateful Security Policies via eBPF∗
+Extended Version
+Letterio Galletta
+IMT School for Advanced Studies Lucca
+Lucca, Italy
+letterio.galletta@imtlucca.it
+Abstract
+Many attacks against workloads running on multi-tenant systems
+are multi-step and history-dependent: sequences of innocuous op-
+erations whose malicious nature emerges only over an execution
+trace. Defending against them requires security policies that are
+stateful, are enforced within the kernel, and have a precise semantics.
+Currently deployed proposals fail on at least one count: kernel’s
+built-in syscall filtering and classical MAC frameworks are state-
+less, while current eBPF-based tools express their policies through
+ad hoc YAML rules that cannot capture temporal relations among
+events, and whose semantics is defined only by the implementation.
+We present BPFence, an in-kernel runtime-verification frame-
+work that satisfies the properties above. BPFence provides a policy
+language with a formal semantics that can express temporal rela-
+tions among events. It also provides a type system that statically
+distinguishes events the kernel can control from those it can only
+observe. Every well-typed policy is compiled into a finite-state mon-
+itor proved correct with respect to its semantics, and then into eBPF
+programs that run inside the kernel. We evaluate BPFence on seven
+case studies drawn from real-world attack patterns, and on a set
+of micro- and macro-benchmarks to show that the enforcement
+overhead remains compatible with production deployment.
+1
+Introduction
+Cloud-native deployments rely on a single shared kernel to host
+hundreds of mutually distrustful workloads: containers of different
+tenants, microservices managed by an orchestrator, and short-lived
+sandboxes spawned by build pipelines. In this setting, the kernel is
+a critical isolation boundary, and a single compromised process can
+become a foothold for container escape, lateral movement across
+tenants, or persistent access to host resources. Operators rely on
+security policies to constrain which operations a workload may
+perform and keep that boundary effective. However, vulnerabilities
+such as Dirty Pipe [42] witness how attackers can exploit the sys-
+tem calls allowed by default container profiles to escalate from a
+compromised application to host privileges by invoking operations
+that look innocuous in isolation. What distinguishes such attacks
+is that the malicious behavior is multi-step and history-dependent: a
+write to a sensitive file followed by an exec syscall, or a successful
+invocation of ptrace followed by a shell spawn. Containing these
+attack chains or simply detecting them reliably requires security
+policies that talk about execution traces, not just about individual
+syscalls or system events.
+∗This is the extended version of the paper appearing in Proc. ACM SIGSAC Conference
+on Computer and Communications Security (CCS ’26). It includes the appendices with
+the full formal development and the additional language constructs omitted from the
+proceedings version.
+In this setting, effective security policies must satisfy three com-
+plementary requirements. First, they must be stateful: they need
+to remember the relevant history of the monitored entity, e.g., a
+process or a container, and react to sequences of events and time
+windows. Second, the policy language must have a well-defined
+semantics: the operator must be able to say what a policy denotes
+independently of its implementation, and the toolchain must be
+able to reject policies it cannot enforce, rather than silently accept-
+ing them and producing a monitor whose behavior diverges from
+the operator’s intent. Third, enforcement must happen inside the
+kernel: a userspace monitor sits on the wrong side of the syscall
+boundary, pays a context switch on every relevant event, and is
+exposed to time-of-check/time-of-use races. In-kernel enforcement,
+by contrast, mediates the operation synchronously, on the same
+execution path that performs it, and observes exactly the arguments
+the kernel will use. Unfortunately, the mechanisms practitioners
+actually deploy fail to meet at least one of these three requirements.
+On the one hand, system-call filters such as seccomp-bpf [27]
+run entirely in the kernel, but their policies are stateless: a filter can-
+not remember that the same process has just opened /etc/shadow.
+Most production seccomp profiles, therefore, are simple static allow
+lists. Mandatory access control frameworks such as SELinux [45]
+and AppArmor [8] are more expressive, but their decisions are still
+stateless with respect to recent history and their policies are noto-
+riously hard to author and audit. On the other hand, modern eBPF-
+based runtime security tools such as Falco [14] and Tetragon [9]
+leverage programmable in-kernel storage and can react to security-
+relevant events, providing the mechanisms for stateful monitoring.
+However, they miss the second requirement: their policies are ex-
+pressed through ad hoc YAML rules whose semantics is defined
+only by the implementation: there is no specification of what a
+rule denotes, no static check that a rule asks the kernel to enforce
+something the kernel can in fact enforce. In addition, multi-step
+and bounded-time properties must be encoded as collections of cor-
+related rules whose joint behavior is left to the operator’s intuition.
+These previous efforts show that the in-kernel machinery to
+enforce programmable policy is already available, but what is still
+missing is a policy layer that meets all requirements at once: ex-
+pressive enough to talk about execution traces and time windows,
+equipped with a semantics the toolchain and the operator can rea-
+son about, and enforced inside the kernel.
+Our proposal. This paper presents BPFence, an in-kernel runtime-
+verification framework that meets the three requirements above.
+BPFence offers a policy language with a formal trace semantics
+whose constructs capture recurring classes of stateful security prop-
+erties: safety obligations, bounded-response liveness, historical
+predicates, sliding-window counts, and cross-event correlation. A
+arXiv:2609.13930v1  [cs.CR]  12 Sep 2026
+
+
+Letterio Galletta
+type system distinguishes events the kernel can actually control
+(deny or terminate before they take effect) from those it can only
+observe, and statically rejects policies that ask the kernel to en-
+force something it cannot. Each well-typed policy is compiled to a
+monitor that is provably correct with respect to its semantics, and
+then to eBPF programs that run inside the kernel. While related
+ideas have appeared separately in prior work, BPFence is the first
+framework to combine them under the eBPF verifier’s constraints:
+the policy language is designed to trade expressiveness for verifier-
+compatibility, so that the resulting monitors not only pass the eBPF
+verifier checks but also run with an acceptable overhead, as our
+evaluation confirms.
+Concretely, this paper makes the following contributions:
+• A policy language for in-kernel stateful security properties (Sec-
+tion 5) with a denotational trace semantics and a type system that
+statically separates controllable from observable events, ruling
+out policies the kernel cannot enforce.
+• A monitor synthesis procedure (Section 6) that turns every well-
+typed policy into a finite-state monitor. We prove that this moni-
+tor is correct with respect to the policy language semantics.
+• A compilation schema (Section 7) that turns synthesized moni-
+tors into eBPF programs accepted by the in-kernel verifier and
+enforced synchronously on controllable events.
+• A PoC implementation (Section 8) including the BPFence com-
+piler and runtime, and an essential standard library of LSM hook
+schemas and policy templates. We evaluate the effectiveness of
+our implementation on seven case studies drawn from real-world
+attack patterns; compare the expressiveness of our policy lan-
+guage against some upstream Falco/Tetragon rules; and measure
+the monitoring overhead via micro- and macro-benchmarks.
+Before presenting these contributions, Section 2 reviews the
+necessary background. Section 3 outlines BPFence through an
+example, and Section 4 states our threat model. After presenting
+the contributions, Section 9 situates BPFence with respect to the
+relevant literature, and Section 10 draws some conclusions and
+discusses future work. All the auxiliary notions required by our
+formal development, the proofs of our theorems, and further details
+on our implementation are in Appendices B and C. The artifact to
+reproduce our experiments is available online [30].
+2
+Background
+Extended BPF (eBPF) [13] is a technology that allows user-defined
+programs to run inside the Linux kernel in response to system
+events, without modifying kernel source code or loading kernel
+modules. An eBPF program is compiled to a platform-independent
+bytecode, loaded into the kernel, JIT-compiled to native code, and
+attached to a kernel hook.
+Kernel hooks intercept and modify the kernel execution flow at
+predefined points. They determine when an eBPF program executes
+and what it can observe or control. Three hook families are relevant
+to security monitoring: (i) LSM hooks belong to the Linux Security
+Module framework [47] and execute the eBPF program at security
+decision points before a sensitive operation completes: if the pro-
+gram returns an error code, the operation is blocked synchronously;
+(ii) tracepoints [33] are static probe points scattered throughout the
+kernel that trigger a program after an event has occurred, so they
+can only observe, not block, a syscall; (iii) kprobes [31] are dynamic
+probes that can be attached to any kernel routine to collect de-
+bugging and performance information non-disruptively. Only LSM
+hooks make an event controllable, so we can deny the action or
+kill the offending process; tracepoints and kprobes make it only
+observable, so we can only raise an alert. This distinction led us to
+design the type system of Section 5 that statically rejects policies
+attempting to deny an observable-only event.
+At load time, every eBPF program is statically verified by the
+in-kernel BPF verifier, which enforces memory safety and guaran-
+tees termination: programs with uninitialized registers, unbounded
+loops, out-of-bounds accesses, or excessive instruction complexity
+are rejected. These constraints ensure that eBPF programs cannot
+crash or hang the kernel, but they restrict the class of express-
+ible computations, a limitation that affects the design of the policy
+language of Section 5 and the compilation strategy of Section 7.
+eBPF programs communicate with one another and with user
+space through BPF maps: key–value data structures that reside in
+kernel memory and persist across program invocations. There are
+several map types; the ones most relevant to us are hash maps,
+arrays, and ring buffers. Maps are shared, so two eBPF programs
+attached to different hooks can interact using the same map.
+3
+BPFence in a Nutshell
+Consider an attacker who gains initial access to a remote host, e.g.,
+via a web vulnerability, and attempts an SSH lateral movement: read
+an SSH private key (/home/user/.ssh/id_rsa), open a connection
+to port 22 on an internal host, and execute a command on the remote
+machine. Each individual action is legitimate: many services read
+SSH keys, connect on port 22, or spawn shells or subprocesses. Only
+the full three-step sequence reveals the attack [36].
+To detect such an attack sequence and enforce a response to
+block the offending operations, we define the following BPFence
+policy:
+1 import stdlib linux files
+// read syscall
+2 import stdlib linux network
+// connect syscall
+3 import stdlib linux process
+// exec syscall
+4
+5 let key_read = happened(
+6
+read("/root/.ssh/*") or read("/home/*/.ssh/*")
+7 )
+8
+9 let ssh_connected = happened(
+10
+connect(_, 22)
+11 ) when key_read
+12
+13 policy lateral_movement {
+14
+apply to pid action kill
+15
+forbid exec(_) when ssh_connected
+16 }
+The policy involves three events raised by invoking three syscalls:
+read (file open and read), connect, and exec (process execution).
+Each event is bound to an LSM hook via an event schema defini-
+tion provided by the standard library (e.g., read maps to the LSM
+hook security_file_open, which intercepts both open and read
+operations). The actual parameters of each syscall are automatically
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+extracted at runtime and made available as event fields in the policy
+(e.g., the file path for read, the destination port for connect).
+The let declaration at line 5 introduces the history predicate
+key_read. This predicate becomes true when the monitored process
+reads the SSH private keys of the admin or a user from their .ssh
+directory. Once this happens, the predicate remains true in the
+future: the happened operator records whether a predicate has ever
+been satisfied. The predicate ssh_connected at line 9 is conditioned
+on the previous one: it becomes true only when a connection to
+port 22 is attempted and key_read is already true. An isolated SSH
+connection or an isolated key read does not affect it. Note that in
+the two definitions the syntax * matches zero or more characters
+within a single directory level, and _ denotes “any address”.
+The policy lateral_movement is defined at line 13. Its header
+specifies that the enforcement scope is at the process level (apply
+to pid), namely one monitor instance per process. The body of the
+policy contains a single forbid clause guarded by ssh_connected:
+when the predicate holds, any subsequent exec call is blocked and
+the process is terminated (action kill in the policy header). For
+this to be possible in practice, the exec event in the forbid clause
+must be bound to an LSM hook that can deny the corresponding
+operation (controllable event). Our type system statically ensures
+the enforceability of the policy: it assigns the violation type 𝐶
+(controllable) to the event exec according to its hook and checks
+that the kill action is indeed compatible with the type. Had exec
+been bound to a tracepoint (observable only), the compiler would
+have rejected the policy due to a type mismatch.
+For the lateral movement policy, the compiler generates three
+BPF programs, one per hook, that share their state through a com-
+mon eBPF map. A user-space daemon loads the generated BPF
+bytecode, sets up the shared state, attaches the programs to the
+corresponding hooks, and starts dispatching violation events that
+the loaded programs generate. The next sections formalize each
+phase and present the implementation.
+Finally, note that current eBPF-based monitoring tools cannot en-
+force policies such as the lateral movement above. seccomp-bpf [27]
+and AppArmor [8] are stateless: they can block all connections to
+port 22 or none, but cannot condition the decision on a previously
+observed file read. Falco [14] can only alert on individual events;
+multi-step detection requires external engines. Tetragon [9] can
+block operations, but its filtering conditions can only inspect fields
+of the current event: there is no mechanism to maintain state across
+events and condition a decision on what happened earlier. Addi-
+tional comparisons are in Section 8.
+4
+Threat Model
+We consider a Linux host running user-space processes, possibly
+inside containers, monitored by BPFence. We assume the BPFence
+loader installs the compiled monitors before process execution be-
+gins. The trusted computing base (TCB) comprises the Linux kernel
+(including the eBPF verifier and runtime), the BPFence compiler,
+its loader, and the hardware.
+The attacker can execute arbitrary code in a monitored process
+and can issue any system call supported by the execution envi-
+ronment. Attack strategies include multi-step privilege escalation,
+lateral movement, and data exfiltration. We do not address kernel
+exploits, verifier bugs, or side-channel attacks. We assume that the
+attacker cannot compromise any component of the TCB, and that
+they do not actively try to evade known BPFence policies (e.g., by
+splitting a kill chain across distinct processes via fork) or attack
+the monitor itself.
+Under this threat model, we show that the generated monitors
+enjoy soundness (no false positives) and detection completeness (no
+missed violations), assuming that events are attached to the relevant
+hooks. For controllable events, enforcement is synchronous: the of-
+fending system call is denied before the kernel operation completes.
+We also assume that updates to the monitor states are atomic and
+that policy reloads never expose a partially configured monitor, so
+guarantees hold throughout the lifetime of each monitored process;
+Sections 7.2 and 8.1 discuss how the implementation discharges
+these assumptions.
+5
+The Policy Language
+BPFence policies are written in a declarative domain-specific lan-
+guage (DSL) whose formal semantics is defined over a data-aware
+temporal logic. The logic operates on traces of events that abstractly
+represent the system calls invoked by a running program, and com-
+bines three key features: temporal operators from timed linear
+temporal logic with past [6]; a three-valued semantics over the
+domain B3 = {ok, pending, violated} to express monitor decisions;
+and data-aware event predicates that bind and constrain field values
+across events via correlation variables. In addition, a type system
+statically classifies each policy by how violations arise at runtime
+and ensures that enforcement actions are associated only with
+policies whose violations can be effectively intercepted.
+We present the trace model (Section 5.1), the temporal logic
+(Section 5.2), the DSL (Section 5.3), and its type system (Section 5.4).
+5.1
+Event Model
+We abstractly represent a program execution as a trace of events
+generated by system call invocations. According to the nature of
+events in eBPF, we distinguish between two types: events that can
+be intercepted via LSM hooks, enabling pre-event enforcement, and
+events that are only observable post hoc via tracepoints or kprobes.
+Formally, let Σ = Σ𝐶⊎Σ𝑂be a finite set of event types, partitioned
+into controllable events Σ𝐶and observable events Σ𝑂. An event 𝑒is
+a tuple ⟨𝐸, fields,𝑡⟩where 𝐸∈Σ, fields is a finite typed parameter
+map, and 𝑡is a monotone timestamp. An execution trace is a finite,
+time-ordered sequence of events 𝜎= 𝑒1𝑒2 · · ·𝑒𝑛with 𝑒𝑖.𝑡< 𝑒𝑖+1.𝑡
+where we use the dot notation to access the fields of 𝑒. In the
+following, we denote by 𝜎𝑘a trace of length 𝑘and by 𝑒𝑘its last
+event.
+5.2
+Data-aware Temporal Logic
+Our data-aware temporal logic is defined at two levels: event pred-
+icates and temporal formulas, both of which use a three-valued
+semantics with an environment to handle variable binding.
+Event predicates. Intuitively, an event predicate is a propositional
+formula evaluated on the events of a trace. Since events carry data
+values, we introduce the notions of variables and guards to refer to
+these values and express constraints over them.
+
+
+Letterio Galletta
+Formally, let V be a set of variables (ranged over by 𝑋,𝑌, . . .).
+An event predicate is defined as:
+𝑃::= 𝛼| ¬𝑃| 𝑃∧𝑃| 𝑃∨𝑃
+𝛼::= (𝐸,𝑔)
+𝑔::= true | field ∼ℓ| field = ?𝑋| field = 𝑋| 𝑔∧𝑔
+where an event atom 𝛼= (𝐸,𝑔) pairs an event type 𝐸with a guard
+𝑔. A guard 𝑔is a conjunction of constraints over the fields of an
+event, where ℓ∈Val is a literal value, ∼∈{=, ≠, <, ≤, >, ≥} is a
+comparison operator, and field denotes the name of an event field.
+In addition, a guard introduces two variable constructs with distinct
+roles: field = ?𝑋is a binding, which captures the value of a field into
+a fresh variable 𝑋; whereas field = 𝑋is a constraint, requiring the
+field to be equal to the previously bound variable 𝑋. Note that the
+correspondence between kernel hooks and the events referenced
+in our predicates 𝑃is assumed to be given by Σ.
+We assume hereafter that a well-formedness condition holds:
+each variable must be bound before use, and no bindings may
+appear under ¬ or ∨(see Appendix B.1.1). Given an event 𝑒and
+an environment 𝜌: V →Val, we interpret an event predicate 𝑃
+on a three-valued boolean domain 𝐾3 = {true, false, na} using a
+strong Kleene semantics [28]. The idea is that inapplicable value
+na captures situations in which the event 𝑒is not among those 𝑃
+is talking about. Formally, the semantics of event predicate 𝑃is
+given by J𝑃K𝑎(𝑒, 𝜌) = (𝑣, 𝜌′) where 𝑣∈𝐾3 and 𝜌′ is an updated
+environment with new bindings introduced by the guards of 𝑃. The
+complete definition of J·K𝑎is in Appendix B.1.2. Hereafter, we write
+J𝑃K𝑎(𝜎𝑘, 𝜌) to denote the application of J·K𝑎to the last event 𝑒𝑘of
+a trace 𝜎𝑘.
+Example 5.1 (Event predicates). Consider the event predicate at
+line 6 of the policy of Section 3, written as
+𝑃𝑘= (read, path ∼/root/.ssh/*) ∨
+(read, path ∼/home/*/.ssh/*)
+where ∼denotes glob matching, and the following three events:
+𝑒1 = ⟨read, {path ↦→/home/alice/.ssh/id_rsa}, 𝑡1⟩
+𝑒2 = ⟨connect, {dest ↦→10.0.0.7, port ↦→22}, 𝑡2⟩
+𝑒3 = ⟨read, {path ↦→/etc/hosts}, 𝑡3⟩.
+We have J𝑃𝑘K𝑎(𝑒1, ∅) = (true, ∅) because the event arguments
+match those of the second disjunct. In contrast, J𝑃𝑘K𝑎(𝑒2, ∅) =
+(na, ∅): the predicate 𝑃𝑘does not apply to 𝑒2 because it simply
+does not concern connect events. Finally, J𝑃𝑘K𝑎(𝑒3, ∅) = (false, ∅):
+the event type of 𝑒3 matches, but the guard fails on both disjuncts.
+Telling false apart from na allows the monitor to evaluate predicates
+over unrelated event types without spurious violations.
+Temporal formulas. The syntax of temporal formulas is:
+𝜙::= 𝑃| ¬𝜙| 𝜙∧𝜙| <𝜙| 𝐺𝜙| 𝑃1 𝐹≤Δ 𝑃2
+where 𝑃is an event predicate, < is the once operator,𝐺is the always
+operator, and 𝐹≤Δ is a bounded eventually operator where Δ ∈N is
+a finite temporal bound: 𝑃1 𝐹≤Δ 𝑃2 requires that every time 𝑃1 holds,
+𝑃2 holds within Δ time units. We assume that a well-formedness
+condition holds to ensure each variable is bound before use and
+that no binding appears under ¬ or < (see Appendix B.1.1).
+The temporal formulas are evaluated over the semantic domain
+B3 = {ok, pending, violated}. The value ok indicates that the moni-
+tor has not detected any violation so far, while violated indicates
+that a bad prefix has been detected. The value pending denotes that
+the truth of the formula cannot yet be decided due to open obli-
+gations: based on the information currently available, the monitor
+requires additional future events to reach a verdict.
+Formally, given a trace 𝜎𝑘and an environment 𝜌, the semantics
+of a formula 𝜙is given by J𝜙K(𝜎𝑘, 𝜌) = (𝑣, 𝜌′) where 𝑣∈B3 and 𝜌′
+is an updated environment. The evaluation function J·K is induc-
+tively defined over the syntax of formulas. Below, we illustrate the
+semantics of the once and always operators through an example
+and report the definition of J·K for the case of bounded response;
+the other cases are in Appendix B.1.3.
+Example 5.2 (Once and always). Consider the predicate 𝑃𝑘of Ex-
+ample 5.1 and the trace 𝜎3 = 𝑒1𝑒2𝑒3 built from the events taken from
+that example. Also, let 𝑃𝑒be the single-atom predicate (exec, true).
+We have that J<𝑃𝑘K(𝜎3, ∅) = ok since 𝑒1 reads a key; in contrast,
+J<𝑃𝑒K(𝜎3, ∅) = pending because no exec has occurred yet and a fu-
+ture one could still make it ok. Finally, J𝐺(¬𝑃𝑘)K(𝜎3, ∅) = violated,
+since 𝑃𝑘holds on the prefix 𝑒1, making ¬𝑃𝑘violated there, and no
+extension can retract it. Both temporal operators look at all the
+prefixes of 𝜎3, but do so differently: the once operator asks whether
+some prefix succeeded, whereas the always operator asks whether
+some prefix failed.
+For bounded response formulas 𝑃1𝐹≤Δ𝑃2, the pending value rep-
+resents an obligation that is still unresolved: if the obligation is not
+fulfilled within the specified time bound, a violation occurs. We
+define the active instance set generated every time 𝑃1 holds:
+I(𝜎𝑘, 𝜌)
+def=
+
+(𝑖, 𝜌𝑖,𝑑𝑖)
+ 𝑖< 𝑘, J𝑃1K𝑎(𝜎𝑖, 𝜌) = (true, 𝜌𝑖), 𝑑𝑖= 𝑒𝑖.𝑡+ Δ
+	
+where every instance (𝑖, 𝜌𝑖,𝑑𝑖) records the index 𝑖of the event
+where 𝑃1 was true, the produced environment 𝜌𝑖, and the absolute
+deadline 𝑑𝑖. An instance (𝑖, 𝜌𝑖,𝑑𝑖) is satisfied on 𝜎𝑘if:
+sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑘)
+def
+⇐⇒
+∃𝑗∈(𝑖,𝑘]. 𝑒𝑗.𝑡≤𝑑𝑖∧𝜋1
+ J𝑃2K𝑎(𝜎𝑗, 𝜌𝑖) = true
+Then, the semantics of the formula is:
+J𝑃1 𝐹≤Δ 𝑃2K(𝜎𝑘, 𝜌) = (𝑣, 𝜌)
+where
+𝑣=
+
+
+violated
+∃(𝑖, 𝜌𝑖,𝑑𝑖) ∈I(𝜎𝑘, 𝜌). 𝑒𝑘.𝑡> 𝑑𝑖∧¬sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑘)
+pending
+∃(𝑖, 𝜌𝑖,𝑑𝑖) ∈I(𝜎𝑘, 𝜌). 𝑒𝑘.𝑡≤𝑑𝑖∧¬sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑘)
+ok
+otherwise
+The first case captures the situation in which the deadline has
+expired, and the expected event has never occurred; from that point
+on, the violation is definitive and cannot be remedied by any future
+events. The second case captures the situation in which there is still
+time before the deadline, and thus the monitor can continue waiting.
+The third case captures the situation in which the formula becomes
+ok within the prescribed time bound. Note that the pending value
+arises only when an obligation is active, but its deadline has not yet
+expired, and that it is always transient since all deadlines are finite.
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+Example 5.3 (Bounded response and bindings). Consider the fol-
+lowing formula 𝜙, which requires every file to be closed within five
+seconds of being opened:
+𝜙= 𝐺 (open, ino = ?𝑋) 𝐹≤5s (close, ino = 𝑋)
+The open atom binds the i-node field to the variable 𝑋, and the
+close atom then constrains its own i-node to match 𝑋. In this way,
+the two events are correlated by the value of the i-node. Upon
+the event 𝑒4 = ⟨open, {ino ↦→8123},𝑡4⟩the open atom yields
+(true, {𝑋↦→8123}), so the instance (4, {𝑋↦→8123},𝑡4 + 5s) en-
+ters I, and the close atom is evaluated under the environment it
+records. Only a close on i-node 8123 satisfies the instance, making
+sat hold and the verdict ok. Any event other than a close of i-node
+8123 leaves the verdict pending; once the deadline expires, it turns
+violated. Note that the correlation between related open and close
+events would not be possible without 𝑋.
+5.3
+The BPFence DSL
+The BPFence DSL is a user-oriented declarative language for ex-
+pressing security policies. It provides structured constructs for com-
+mon security patterns, including safety, bounded response, history-
+based, and taint policies. The DSL is intentionally designed to ensure
+online monitorability and runtime enforceability and to effectively
+target eBPF. The DSL has no independent semantics, but each pol-
+icy denotes a formula of the temporal logic defined above: the DSL
+is thus a monitorable fragment of the logic. Note that since JΠK
+is a function of a single trace, BPFence can express and monitor
+only trace properties: hyperproperties such as non-interference are
+outside the scope of this paper.
+Syntax. Given a finite set of event types Σ, the abstract syntax
+of a BPFence program is:
+Π ::= ⟨𝑑∗𝑝,𝐴⟩
+where 𝑑∗is a (possibly empty) sequence of historical-predicate
+definitions, 𝑝is the policy body, and 𝐴∈{Alert, Deny, Kill} is
+the action to take when a violation occurs:
+𝑑::= let 𝐻:= happened(𝑃)[when 𝐻′]
+𝑝::= forbid 𝑃[when 𝐻] | when 𝑃1 then within Δ 𝑃2 | 𝑝1 ∧𝑝2
+where 𝑃, 𝑃1, 𝑃2 are event predicates introduced above, 𝐻, 𝐻′ ∈Id
+are historical-predicate identifiers, and Δ ∈N is a finite time bound.
+A historical-predicate definition 𝑑introduces a predicate that
+captures a property depending on the past history of events. A dec-
+laration introduces a new predicate named 𝐻and may include an
+optional when clause, conditioning the definition of 𝐻on another
+historical predicate 𝐻′. Historical predicates can be referenced in
+the policy body 𝑝. A forbid clause specifies an event predicate
+𝑃that must never hold; it may optionally include a when clause,
+restricting the prohibition to situations in which the historical pred-
+icate 𝐻holds. A when . . . then within clause expresses a bounded
+response property: whenever 𝑃1 holds, 𝑃2 must hold within the time
+bound Δ. Finally, policy clauses can be combined via conjunction.
+Semantics. The semantics is given by first translating the policy
+into a temporal formula and then interpreting this formula on a
+trace 𝜎𝑘. More precisely, we proceed as follows. The historical-
+predicate declarations 𝑑∗evaluate to a definition environment 𝐷
+mapping each identifier 𝐻to a logical formula. We have 𝐷(𝐻) = <𝑃
+for let 𝐻:= happened(𝑃), and 𝐷(𝐻) = <(𝐷(𝐻′) ∧𝑃) for the when
+clause. Acyclicity of 𝑑∗(enforced statically by the type system)
+ensures 𝐷is well-defined.
+Then, given a definition environment 𝐷and a policy body 𝑝, we
+define the function J𝑝K𝐷
+DSL that maps policies to temporal formulas,
+inductively on the syntax of 𝑝:
+Jforbid 𝑃K𝐷
+DSL = 𝐺(¬𝑃)
+Jforbid 𝑃when 𝐻K𝐷
+DSL = 𝐺 ¬(𝐷(𝐻) ∧𝑃)
+Jwhen 𝑃1 then within Δ 𝑃2K𝐷
+DSL = 𝐺 𝑃1 𝐹≤Δ 𝑃2
+
+J𝑝1 ∧𝑝2K𝐷
+DSL = J𝑝1K𝐷
+DSL ∧J𝑝2K𝐷
+DSL
+A forbid clause is translated into a𝐺formula, while a when . . . then
+within clause is translated into an always bounded-response for-
+mula. From the definition above, it follows directly that every policy
+is translated into a conjunction of 𝐺formulas.
+Example 5.4 (From policy to formula). Consider the lateral_
+movement policy of Section 3, whose body 𝑝is the clause forbid
+𝑃𝑒when ssh_connected, where 𝑃𝑒is as in Example 5.2. The two
+let declarations yield an environment 𝐷with the bindings
+𝐷(key_read) = <𝑃𝑘
+𝐷(ssh_connected) = <(<𝑃𝑘∧𝑃𝑐)
+where 𝑃𝑐= (connect, port = 22) and 𝑃𝑘is as in Example 5.1,
+making it evident that the second declaration is conditioned on the
+first. By the forbid–when case of J·K𝐷
+DSL we obtain
+J𝑝K𝐷
+DSL = 𝐺 ¬(𝐷(ssh_connected) ∧𝑃𝑒)
+= 𝐺 ¬(<(<𝑃𝑘∧𝑃𝑐) ∧𝑃𝑒)
+as the denotation of our policy. Note that the nesting of < ensures
+that the inner <𝑃𝑘already holds when the connection occurs, and
+that both hold when the exec is attempted.
+Finally, given a BPFence program Π = ⟨𝑑∗𝑝,𝐴⟩and a trace 𝜎𝑘,
+the semantics of Π is defined as:
+JΠK(𝜎𝑘) ≜𝜋1
+ J𝜙K(𝜎𝑘, ∅) ∈B3
+where 𝜙= J𝑝K𝐷(𝑑∗)
+DSL
+.
+We first translate Π into a temporal formula 𝜙, evaluate 𝜙on the
+trace 𝜎𝑘and an empty environment ∅, and take the resulting value
+in B3: ok means no clause is violated and no obligation is pending;
+pending means at least one 𝐹≤Δ obligation is active but its deadline
+has not expired; violated means a safety clause is violated now, or a
+deadline has elapsed without the required event. Crucially, violated
+is irrevocable: no future extension of the trace can undo it. When a
+violation occurs, the monitor performs action 𝐴.
+Formal results. The following two results characterize the mon-
+itorability of our language. The first establishes that once a DSL
+program detects a violation, no future event can undo the decision:
+Theorem 5.5 (Violation Persistence). For every DSL program
+Π and finite traces 𝜎𝑘, 𝜎𝑗such that 𝜎𝑘is a prefix of 𝜎𝑗, if JΠK(𝜎𝑘) =
+violated then JΠK(𝜎𝑗) = violated.
+The second result ensures that each violating trace has a first
+violating prefix:
+
+
+Letterio Galletta
+Proposition 5.6 (Existence of the first violating prefix).
+Let Π be a DSL program and 𝜎𝑘be a finite trace such that JΠK(𝜎𝑘) =
+violated. There exists a unique prefix 𝜎𝑖∗of 𝜎𝑘such that
+𝑖∗= min{ 𝑖≤𝑘| JΠK(𝜎𝑖) = violated }.
+We call 𝜎𝑖∗the first violating prefix of 𝜎𝑘.
+5.4
+Type System
+The semantics defines when an execution trace violates a policy
+but does not guarantee that a policy can be effectively enforced at
+runtime. In particular, a semantically valid policy may still be: not
+enforceable, because a violation is triggered by an observable event
+that can only be detected after its occurrence; or not directly enforce-
+able, because the violation arises from a deadline expiration rather
+than from a specific controllable event. To address these issues, we
+introduce a type system that classifies DSL programs according to
+how violations may arise at runtime: due to a controllable event
+(type 𝐶), an observable event (type 𝑂), or by a deadline expiration
+(type 𝑇). The type system statically verifies that the action 𝐴asso-
+ciated with the program is compatible with its violation type, e.g.,
+Deny is permitted only for policies of type 𝐶. Since types describe
+modes of violation and enforcement capabilities, we refer to them
+as violation types. In addition to the typing rules presented here,
+our implementation also verifies standard well-formedness: every
+identifier must be declared before use, historical-predicate defini-
+tions must be acyclic, and values used in event-predicate guards
+must match the types declared in the corresponding event schemas.
+Types and type environment. The set of violation types consists
+of three elements 𝜏∈T = {𝐶, 𝑂, 𝑇} where 𝐶means that the
+violation is triggered by a controllable event; 𝑂that the violation
+is caused by an observable event; and 𝑇that the violation arises
+from a deadline expiration or the absence of an event. The types
+are ordered to form a finite lattice 𝐶⊑𝑂⊑𝑇: 𝐶⊑𝑂because a
+controllable event is a special case of an observable one, and 𝑂⊑𝑇
+because a violation anchored to a specific event is strictly more
+enforceable than one determined by a timeout. We denote by ⊔the
+join operator.
+The classification of events as controllable or observable de-
+pends on the deployment environment. We capture this dependency
+through a typing environment Γ, which assigns to each event type
+𝐸∈Σ its corresponding violation type: Γ(𝐸) = 𝐶if the event 𝐸
+can be intercepted via an LSM hook, and Γ(𝐸) = 𝑂if 𝐸is obtained
+through a tracepoint or kprobe hook.
+Since policy bodies may refer to historical predicates 𝐻, we intro-
+duce an environment Θ: Id →T that records the violation type of
+each identifier. The environment Θ is constructed inductively from
+the historical-predicate definitions 𝑑∗occurring in the program, as
+defined by the rules in Appendix B.1.5.
+Typing rules. The most relevant typing rules are in Figure 1
+(the full set is in Appendix B.1.5). The rules for event predicates,
+characterized by the judgment Γ ⊢𝑃: 𝜏, assign a violation type 𝜏
+to an event predicate 𝑃under the environment Γ. The type for an
+event 𝛼= (𝐸,𝑔) is taken from the environment Γ (rule PEvent).
+Rule PAnd joins the types of the two sub-terms to ensure that a
+violation can occur in the worst possible way.
+The rules for policies have typing judgments of the form Γ; Θ ⊢
+𝑝: 𝜏. Rule Comp takes the join of the types of the two sub-terms,
+reflecting that a violation may arise from either of the conjuncts.
+In rule Forbid, the resulting type is that of the event predicate 𝑃,
+reflecting the fact that forbid denotes a safety property whose vio-
+lations are always anchored to a specific event. Rule ForbidWhen
+is similar, but the type is 𝜏𝐻⊔𝜏𝑃, where 𝜏𝑃is the type of 𝑃and
+𝜏𝐻is the type of the historical predicate 𝐻. In the previous two
+rules, the join means that a violation occurs when both 𝐷(𝐻) and
+𝑃hold simultaneously. Since both event predicates and historical
+predicates are typed in {𝐶,𝑂}, in either case the resulting type
+is at most 𝑂, never 𝑇: no timeout can cause a violation. In rule
+Response, the premises Γ ⊢𝑃1 : 𝜏1 and Γ ⊢𝑃2 : 𝜏2 ensure that 𝑃1
+and 𝑃2 are well-typed event predicates, but their types do not affect
+the resulting type 𝑇, which is determined solely by the temporal
+structure 𝐹≤Δ: any policy with a bounded-response obligation may
+produce a timeout violation, regardless of whether the involved
+events are controllable or observable.
+Rule Prog derives the environment Θ from the declarations 𝑑∗,
+obtains the violation type 𝜏of the policy body 𝑝, and checks that
+the action 𝐴is compatible with 𝜏via the predicate Allowed:
+Allowed(𝜏,𝐴) ≜
+(
+𝐴∈{Alert, Deny, Kill}
+if 𝜏= 𝐶,
+𝐴= Alert
+if 𝜏∈{𝑂,𝑇}.
+The actions Deny and Kill are permitted only when 𝜏= 𝐶, while
+the action Alert is always permitted, since the monitor can al-
+ways raise a warning. Note that the type 𝜏of a policy depends
+on the hooks available in the deployment environment: the same
+event may have type 𝐶where an LSM hook is available and type 𝑂
+otherwise, making the policy Deny-able in the first case and only
+Alert-able in the second.
+Example 5.7 (Typing a policy). Consider again the lateral_
+movement policy of Section 3, on a deployment where read, connect,
+and exec are all bound to LSM hooks, so that Γ assigns 𝐶to all
+of them. The let declarations yield an environment Θ such that
+Θ(key_read) = Θ(ssh_connected) = 𝐶. To type the policy, we
+apply rule ForbidWhen, which joins the type of ssh_connected
+with that of exec, resulting in Γ; Θ ⊢𝑝: 𝐶for its body 𝑝. Since
+Allowed(𝐶, Kill) holds, Prog accepts the program with the kill
+action. Consider extending the policy with a new clause denoting
+the formula of Example 5.3, which requires every file to be closed
+within five seconds of being opened. Even when Γ assigns𝐶to both
+open and close, rule Response assigns the type𝑇to the new clause
+because the violation may come from the expiry of the deadline.
+By rule Comp, the type propagates to the whole program, so, for
+the Allowed predicate to hold, the action can only be Alert.
+Type soundness. The following theorem establishes the sound-
+ness of the type system with respect to the semantics: the violation
+type 𝜏assigned to a policy is a sound upper bound on the controlla-
+bility class of the event that triggers the violation at runtime, when
+such an event exists:
+Theorem 5.8 (Type Soundness). Let Γ be a type environment,
+Π = ⟨𝑑∗𝑝,𝐴⟩be a DSL program such that Γ; ∅⊢𝑑∗: Θ and Γ; Θ ⊢
+𝑝: 𝜏. For each finite trace 𝜎𝑘such that JΠK(𝜎𝑘) = violated, let 𝜎𝑖∗be
+the first violating prefix of 𝜎𝑘. Then:
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+PEvent
+Γ ⊢(𝐸,𝑔) : Γ(𝐸)
+PAnd
+Γ ⊢𝑃1 : 𝜏1
+Γ ⊢𝑃2 : 𝜏2
+Γ ⊢𝑃1 ∧𝑃2 : 𝜏1 ⊔𝜏2
+Comp
+Γ; Θ ⊢𝑝1 : 𝜏1
+Γ; Θ ⊢𝑝2 : 𝜏2
+Γ; Θ ⊢𝑝1 ∧𝑝2 : 𝜏1 ⊔𝜏2
+Forbid
+Γ ⊢𝑃: 𝜏
+Γ; Θ ⊢forbid 𝑃: 𝜏
+ForbidWhen
+Γ ⊢𝑃: 𝜏
+𝜏𝐻= Θ(𝐻)
+Γ; Θ ⊢forbid 𝑃when 𝐻: 𝜏⊔𝜏𝐻
+Response
+Γ ⊢𝑃1 : 𝜏1
+Γ ⊢𝑃2 : 𝜏2
+Γ; Θ ⊢when 𝑃1 then within Δ 𝑃2 : 𝑇
+Prog
+Γ; ∅⊢𝑑∗: Θ
+Γ; Θ ⊢𝑝: 𝜏
+Allowed(𝜏,𝐴)
+Γ ⊢⟨𝑑∗𝑝, 𝐴⟩: ✓
+Figure 1: Relevant typing rules for BPFence DSL.
+• if 𝜏∈{𝐶,𝑂}, the violation is triggered by an offending event
+𝑒𝑖∗such that Γ(𝑒𝑖∗.type) ⊑𝜏;
+• if 𝜏= 𝑇, either the violation is triggered by an offending event
+𝑒𝑖∗such that Γ(𝑒𝑖∗.type) ⊑𝑂, or it is due to a deadline expi-
+ration: there exists a bounded-response sub-formula 𝑃1𝐹≤Δ𝑃2
+of J𝑝K𝐷
+DSL and an instance (𝑖, 𝜌𝑖,𝑑𝑖) ∈I(𝜎𝑖∗, ∅) of its active
+instance set such that 𝑒𝑖∗.𝑡> 𝑑𝑖and ¬ sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑖∗).
+6
+Monitor Synthesis
+A DSL program is transformed into a monitor automaton that per-
+forms the monitoring and the enforcement. We first introduce a
+normal form to capture a structural property of the denotations of
+DSL programs (Section 6.1). We then define the synthesis function
+GenMon, which translates such normal form into a monitor, and
+establish that the resulting monitor is sound and complete with
+respect to the semantics of BPFence DSL (Section 6.2).
+6.1
+Normal Form
+Every formula produced by the denotation function J·KDSL of Sec-
+tion 5 either has the 𝐺operator at the outermost level or is a
+conjunction of two formulas. Since the operator 𝐺distributes over
+∧(Proposition B.2), we can always collect all conjuncts under a
+single 𝐺, obtaining the following normal form:
+𝐺
+Û
+𝑖∈𝐼
+¬𝜓𝑖∧
+Û
+𝑗∈𝐽
+ 𝑃𝑗
+1 𝐹≤Δ𝑗𝑃𝑗
+2
+
+where each𝜓𝑖is either an event predicate 𝑃or a formula of the form
+<𝜙𝐻∧𝑃, whereas 𝑃𝑗
+1, 𝑃𝑗
+2 are event predicates, Δ𝑗∈N is a finite
+bound, and 𝐼, 𝐽are finite index sets. The formula <𝜙𝐻is the one
+associated by 𝐷with the historical predicate 𝐻. The rationale is that
+the normal form highlights two kinds of constraints a policy can
+express. The conjuncts ¬𝜓𝑖express safety conditions: a violation
+occurs when𝜓𝑖holds on the current event, either because the event
+predicate 𝑃is satisfied directly (forbid 𝑃), or because both the past
+condition <𝜙𝐻and the predicate 𝑃hold simultaneously (forbid
+𝑃when 𝐻). The conjuncts 𝑃𝑗
+1𝐹≤Δ𝑗𝑃𝑗
+2 express bounded-response
+obligations that are violated by a deadline expiry.
+Given a DSL program Π = ⟨𝑑∗𝑝,𝐴⟩, we define the normaliza-
+tion function NF(Π) inductively on the structure of 𝑝(see Ap-
+pendix B.2.1). Intuitively, for a forbid clause, it produces a safety
+conjunct ¬𝜓𝑖; for a then within clause, it produces a bounded-
+response conjunct 𝑃𝑗
+1𝐹≤Δ𝑃𝑗
+2. For a conjunction 𝑝1 ∧𝑝2, it applies NF
+recursively to 𝑝1 and 𝑝2, and merges the resulting formulas into a
+single 𝐺. The normalization is correct with respect to the semantics
+of formulas, processes each clause exactly once, and terminates in a
+number of steps equal to the number of clauses in 𝑝(Theorem B.4).
+Example 6.1 (Normal form of a two-clause policy). Consider the
+lateral_movement policy of Section 3 extended, as in Example 5.7,
+with a bounded-response clause that requires every file to be closed
+within five seconds of being opened. Denote by 𝑃𝑜= (open, ino =
+?𝑋) and by 𝑃𝑐𝑙= (close, ino = 𝑋) the two predicates of Ex-
+ample 5.3. The body of the extended policy is the conjunction
+𝑝= 𝑝1 ∧𝑝2 of the two clauses, so its denotation is J𝑝K𝐷
+DSL =
+J𝑝1K𝐷
+DSL ∧J𝑝2K𝐷
+DSL:
+J𝑝1K𝐷
+DSL = 𝐺 ¬(<(<𝑃𝑘∧𝑃𝑐) ∧𝑃𝑒)
+J𝑝2K𝐷
+DSL = 𝐺 𝑃𝑜𝐹≤5s 𝑃𝑐𝑙
+
+where the denotation of 𝑝1 is the one computed in Example 5.4.
+Each clause of 𝑝thus carries its own 𝐺. The normalization function
+NF collects the two into a single one:
+NF(Π) = 𝐺 ¬(<(<𝑃𝑘∧𝑃𝑐) ∧𝑃𝑒) ∧𝑃𝑜𝐹≤5s 𝑃𝑐𝑙
+
+6.2
+Building Monitor Automata
+The normal form plays a key role in monitor synthesis: by the
+semantics of 𝐺, every violated outcome of NF(Π) on a prefix 𝜎𝑘is
+due to a violation of at least one conjunct, either a safety conjunct
+¬𝜓𝑖or a bounded-response conjunct 𝑃𝑗
+1𝐹≤Δ𝑗𝑃𝑗
+2. This separation
+allows us to construct the monitor compositionally: we synthesize
+a local automaton for each conjunct and then combine them into a
+single monitor by parallel composition.
+Specifically, a monitor automaton is a tuple
+A = ⟨𝑄, 𝑞0, Mem, →, bad⟩
+where 𝑄is a finite control-state set, 𝑞0 is the initial state, Mem is
+the monitor memory (defined below), →is the transition relation,
+and bad ⊆𝑄× Mem is the set of bad configurations. Below, we
+first define the monitor memory and then the synthesis function
+GenMon to translate each conjunct into a local monitor.
+Monitor memory. The memory consists of two components. The
+first records whether each past formula <𝜙𝐻occurring in the safety
+conjuncts of NF(Π) has been satisfied at some point in the past
+(historical memory). The second records the set of active obligations
+and a violation flag for each bounded-response conjunct.
+Formally, let Φ< denote the set of past formulas <𝜙𝐻occur-
+ring in NF(Π). The historical memory is a function H : Φ< →
+{ok, pending} where H (<𝜙𝐻) = ok means that <𝜙𝐻has been sat-
+isfied in the past, whereas H (<𝜙𝐻) = pending means that it is has
+not. The historical memory is monotone: once an entry becomes
+ok, it remains ok on all subsequent steps of the monitor.
+For each bounded-response conjunct 𝑃𝑗
+1𝐹≤Δ𝑗𝑃𝑗
+2, the monitor
+maintains a clause state (𝐼𝑗, 𝑓𝑗). The set 𝐼𝑗collects the currently
+
+
+Letterio Galletta
+active instances: each instance (𝑑, 𝜌) records the absolute deadline
+𝑑and the environment 𝜌captured when 𝑃𝑗
+1 matched. The flag
+𝑓𝑗∈{ok, violated} is set to violated when at least one instance
+expires without the required response, and remains ok otherwise.
+The monitor memory is then a pair 𝑚= (H, J), where H is the
+historical memory and J maps each bounded-response conjunct
+𝑗∈𝐽to a clause state (𝐼𝑗, 𝑓𝑗). We denote by 𝑚H and 𝑚J the first
+and the second element of 𝑚, respectively.
+Safety automaton. For each safety conjunct ¬𝜓𝑖in NF(Π), the
+synthesis function GenMon returns a safety monitor automaton
+𝐴𝑠
+𝑖= ⟨𝑄𝑠,𝑞𝑠
+0, Mem, →𝑠
+𝑖, bad𝑠⟩where:
+𝑄𝑠= {ok, violated},
+𝑞𝑠
+0 = ok,
+bad𝑠= {(violated,𝑚) | 𝑚∈Mem}.
+Note that the violation condition depends solely on the control state:
+𝐴𝑠
+𝑖is in violation if and only if its state is violated, regardless of the
+memory contents. The transition relation →𝑠
+𝑖is defined by the rules
+S-* at the top of Figure 2. In the rules, we use an evaluation function
+EJ𝜓𝑖KH(𝑒) ∈𝐾3 that evaluates a safety conjunct 𝜓𝑖on a single
+event 𝑒using the current historical memory H to resolve past sub-
+formulas. For 𝜓𝑖= 𝑃, evaluation reduces to the evaluation of the
+predicate 𝑃on𝑒. For𝜓𝑖= <𝜙𝐻∧𝑃, we first resolve the past condition
+by looking it up in H: if H (<𝜙𝐻) = pending, the evaluation results
+in false regardless of 𝑃; otherwise the evaluation results in the
+evaluation of 𝑃on 𝑒. Rule S-Viol fires when 𝜓𝑖evaluates to true on
+the event 𝑒under the current historical memory 𝑚H: in this case,
+the automaton transitions to the violated state. Rule S-Ok covers
+the cases false and na, both of which leave the automaton in the ok
+state: na means the current event is irrelevant to 𝜓𝑖and does not
+constitute a violation. Rule S-Absorb makes violated an absorbing
+state: once a safety violation is detected, it is irrevocable, mirroring
+the semantics of 𝐺(¬𝜓𝑖).
+Bounded-response automaton. For each bounded-response con-
+junct 𝑃𝑗
+1 𝐹≤Δ𝑗𝑃𝑗
+2, the synthesis function GenMon constructs a bounded-
+response automaton 𝐴𝑟
+𝑗= ⟨𝑄𝑟,𝑞𝑟
+0, Mem, →𝑟
+𝑗, bad𝑟⟩where:
+𝑄𝑟= {ok, violated},
+𝑞𝑟
+0 = ok,
+bad𝑟= {(violated,𝑚) | 𝑚∈Mem}.
+The automaton tracks the clause state (𝐼𝑗, 𝑓𝑗) in the shared memory.
+For each event 𝑒, the automaton: (i) checks whether any active
+instance has expired without satisfaction; (ii) removes from 𝐼𝑗all
+instances that are expired or satisfied by 𝑒; and (iii) adds a new
+instance if 𝑃𝑗
+1 is triggered by 𝑒, recording the deadline 𝑒.𝑡+ Δ𝑗
+and the environment 𝜌′ captured at activation. These steps are
+performed by the update function 𝑈((𝐼𝑗, 𝑓𝑗),𝑒).
+The transition relation →𝑟
+𝑗is defined by the rules R-* in Figure 2,
+where 𝑚′ is the memory 𝑚updated with the new clause state. Rule
+R-Ok fires when the memory update produces the violation flag
+ok: no active instance has expired without satisfaction, so the au-
+tomaton remains in ok and the clause state is updated to (𝐼′, ok),
+reflecting the removal of satisfied instances and the possible addi-
+tion of a new one. Rule R-Viol fires when the update produces the
+violation flag violated: some active instance has expired without
+satisfaction, so the automaton transitions to the violated state and
+the clause state is updated to (𝐼′, violated). Rule R-Absorb makes
+the violated state absorbing: once a deadline violation is detected,
+the memory is left unchanged and the violation is irrevocable.
+Monitor automaton. Given a normal form formula NF(Π), the
+synthesis function GenMon constructs the global monitor as the
+parallel composition of one local automaton for each conjunct:
+A =
+
+∥𝑖∈𝐼𝐴𝑠
+𝑖
+
+∥
+
+∥𝑗∈𝐽𝐴𝑟
+𝑗
+
+where the set of control states is 𝑄= Î
+𝑖∈𝐼𝑄𝑠× Î
+𝑗∈𝐽𝑄𝑟, the
+initial state 𝑞0 is given componentwise by (𝑞0)𝑖= 𝑞𝑠
+0 for every
+𝑖∈𝐼and (𝑞0)𝑗= 𝑞𝑟
+0 for every 𝑗∈𝐽, the initial monitor memory is
+𝑚= (H, J) such that H maps every entry to pending and J maps
+every 𝑗to the clause state (∅, ok). A global configuration (𝑞,𝑚) is
+bad if and only if at least one local automaton is in violated:
+bad = {(𝑞,𝑚) | ∃𝑖∈𝐼. 𝑞𝑖= violated ∨∃𝑗∈𝐽. 𝑞𝑗= violated}.
+On each event 𝑒, the monitor transition performs two steps. First,
+the historical memory H is updated to H ′: for each past formula
+<𝜙𝐻, the corresponding entry is set to ok if 𝜙𝐻holds on 𝑒, and
+left unchanged otherwise. This update is performed before any
+local automaton fires, so that all automata read the same updated
+H ′. Second, all local automata fire independently: for every 𝑖∈𝐼
+the automaton 𝐴𝑠
+𝑖performs a →𝑠
+𝑖transition, and for every 𝑗∈𝐽
+the automaton 𝐴𝑟
+𝑗performs a →𝑟
+𝑗transition, on the same updated
+memory. Since safety automata do not modify any clause state and
+the clause states of distinct bounded-response automata are disjoint,
+all updates are independent. The formal definition of the global
+monitor behavior is in Appendix B.2.4.
+After each event 𝑒, the monitor applies the enforcement function
+Enf to the updated configuration (𝑞′,𝑚′):
+Enf(𝑞′,𝑚′) =
+(
+allow
+if (𝑞′,𝑚′) ∉bad
+𝐴
+otherwise
+where 𝐴∈{Alert, Deny, Kill} is the declared action in the DSL
+program. Recall that for a well-typed program, the type system
+guarantees statically that 𝐴respects the nature of the event 𝑒.
+Note that the resulting monitor is deterministic (Proposition B.7)
+and has size linear in the size of the formula and historical-predicate
+declarations (Proposition B.8). These two properties are critical to
+achieve an effective eBPF implementation.
+Correctness. The following theorems ensure the correctness of
+the monitor synthesis function GenMon. Soundness guarantees
+that the monitor never raises false alarms, whereas detection com-
+pleteness guarantees that every semantic violation is eventually
+detected. Together, they ensure that the monitor is faithful to the
+formal semantics of NF(Π):
+Theorem 6.2 (Soundness). For every DSL program Π and finite
+trace 𝜎𝑘, if A = GenMon(NF(Π)) reaches a bad configuration after
+reading 𝜎𝑘, then JΠK(𝜎𝑘) = violated.
+Theorem 6.3 (Completeness). For every DSL program Π and
+finite trace 𝜎𝑘, if JΠK(𝜎𝑘) = violated, then A = GenMon(NF(Π))
+reaches a bad configuration on some prefix 𝜎𝑘′ with 𝑘′ ≤𝑘, provided
+that (i) every event relevant to the policy is delivered to the monitor
+and (ii) at least one event is delivered after every deadline expiration.
+Note that detection completeness requires two additional as-
+sumptions: first, that every event relevant to the policy is delivered
+to the monitor without loss; second, that for bounded-response
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+S-Viol
+EJ𝜓𝑖K𝑚H (𝑒) = true
+(ok,𝑚)
+𝑒−→
+𝑠
+𝑖(violated,𝑚)
+S-Ok
+EJ𝜓𝑖K𝑚H (𝑒) ≠true
+(ok,𝑚)
+𝑒−→
+𝑠
+𝑖(ok,𝑚)
+S-Absorb
+(violated,𝑚)
+𝑒−→
+𝑠
+𝑖(violated,𝑚)
+R-Ok
+𝑈(𝑚J (𝑗),𝑒) = (𝐼′, ok)
+𝑚′
+J = 𝑚J [𝑗↦→(𝐼′, ok)]
+(ok,𝑚)
+𝑒−→
+𝑟
+𝑗(ok,𝑚′)
+R-Viol
+𝑈(𝑚J (𝑗),𝑒) = (𝐼′, violated)
+𝑚′
+J = 𝑚J [𝑗↦→(𝐼′, violated)]
+(ok,𝑚)
+𝑒−→
+𝑟
+𝑗(violated,𝑚′)
+R-Absorb
+(violated,𝑚)
+𝑒−→
+𝑟
+𝑗(violated,𝑚)
+Figure 2: Rules defining the transition relations →𝑠
+𝑖and →𝑟
+𝑗of the local automata 𝐴𝑠
+𝑖and 𝐴𝑟
+𝑗, for every 𝑖∈𝐼and 𝑗∈𝐽.
+clauses, at least one event is delivered after every deadline expira-
+tion, so that the monitor has the opportunity to detect the timeout.
+The first assumption holds when the eBPF hook is attached before
+any relevant event can occur; the second is satisfied in practice by
+the continuous stream of kernel events.
+7
+Compilation to eBPF
+This section describes how a monitor A produced in Section 6
+is compiled into concrete eBPF programs that enforce the policy
+inside the Linux kernel. We give an overview of the compilation
+scheme (Section 7.1), show how the monitor state is realized via
+BPF maps (Section 7.2), present the per-event processing logic (Sec-
+tion 7.3), and then describe the runtime support that completes the
+enforcement loop (Section 7.4).
+7.1
+Compilation Overview
+Each eBPF program is attached to exactly one kernel hook and can
+only intercept events raised at that hook. A policy, however, can
+refer to events from multiple hooks: a bounded-response clause
+𝑃𝑗
+1 𝐹≤Δ𝑗𝑃𝑗
+2 may trigger on one hook and expect a response on an-
+other, and a safety conjunct ¬(<𝜙𝐻∧𝑃) may record a historical
+flag on one hook and check it on another. The BPFence compiler
+therefore translates a policy Π into one BPF program per hook
+mentioned in the policy. Since these programs collectively imple-
+ment the single monitor A, they must share the monitor memory
+(H, J) so that the state written by one program is visible to the
+others.
+Concretely, the compilation of a program Π is driven by its nor-
+mal form NF(Π) (Section 6.1), which splits the policy into safety
+conjuncts ¬𝜓𝑖and bounded-response conjuncts 𝑃𝑗
+1 𝐹≤Δ𝑗𝑃𝑗
+2. Each
+conjunct maps directly to a block of generated code: safety con-
+juncts become if–goto checks implementing the rules S-Viol/S-Ok
+of Figure 2, while bounded-response conjuncts become lookups
+and updates on the monitor state implementing the 𝑈function
+and the rules R-Viol/R-Ok. Since the number of clauses is fixed,
+all conjuncts are unrolled at compile time: the generated code is a
+straight-line sequence with no loops, which guarantees that every
+program passes the eBPF verifier’s termination check.
+Additionally, the generated programs run in the kernel and cap-
+ture events from all processes simultaneously, making the monitor
+inherently system-wide. However, policies track the behavior of
+individual entities independently, e.g., a taint flag set by one pro-
+cess must not propagate to another. A policy defines the unit of
+monitoring by declaring a scope (pid, tgid, cgroup, or namespace):
+two events belong to the same monitored entity if they share the
+same scope value. To achieve this grouping, on each intercepted
+event, the generated code extracts an execution key 𝜅using an ap-
+propriate BPF helper (e.g., bpf_get_current_pid_tgid() for per-
+process scope, bpf_get_current_cgroup_id() for per-container
+scope). The execution key 𝜅partitions the monitor memory: each
+monitored entity maintains its own independent copy (H𝜅, J𝜅).
+However, kernel identifiers can be recycled, for example, once a pro-
+cess exits, its pid can be reassigned to an unrelated process, which
+would then inherit the state accumulated under the same key. For
+pid-scoped policies, the generated code therefore invalidates the
+historical memory of a key when the process it identifies exits, so
+that the monitor memory follows the lifetime of that process and
+not the reuse of its identifier. Below, we detail how this per-entity
+state is concretely stored and shared across programs.
+7.2
+Representing the Monitor State
+eBPF programs have no heap and no writable global variables, so
+the only mechanism for keeping persistent state is the BPF map.
+The generated BPFence programs use statically sized BPF maps to
+maintain the per-entity monitor memory (H𝜅, J𝜅).
+The historical memory H𝜅is implemented by a hash table keyed
+by a pair (𝜅,ℎ), where ℎis a compile-time numeric identifier as-
+signed to each historical predicate <𝜙𝐻. When the generated pro-
+gram evaluates 𝜙𝐻to true, it sets the corresponding entry to 1; the
+entry is never reset while the monitored entity exists, preserving
+the monotonicity of H.
+The active instance set 𝐼𝑗of each bounded-response clause is
+stored in a map keyed by a pair (𝜅, 𝑗), where each entry holds a
+deadline (a timestamp in nanoseconds) and the correlation envi-
+ronment 𝜌′ captured at activation of the instance, encoded as a
+fixed-size byte array. When the map is full, an LRU policy discards
+the least-recently-used entry; as long as all the active instances fit
+in it, the generated program faithfully realizes the formal semantics
+of 𝐼𝑗of Section 6.2, which assumes an unbounded 𝐼𝑗.
+The memory space required by a monitored entity can be deter-
+mined by analyzing the policy: since the keys have the form (𝜅,ℎ)
+and (𝜅, 𝑗), an entity occupies at most |Φ<| entries of the first map
+and |𝐽| of the second.
+Finally, the monitor is system-wide and its programs run on every
+core, so the state of one entity may be updated concurrently. The
+generated code relies on the atomic operations the kernel provides
+
+
+Letterio Galletta
+1
+SEC("lsm/hook_name")
+2
+int BPF_PROG(bpfence_hook, ...) {
+3
+// 1. Key extraction and target filter
+4
+u64 kappa = bpf_get_current_pid_tgid();
+5
+if (!in_target_set(kappa)) return 0;
+6
+7
+// 2. Event extraction
+8
+struct bpfence_ev ev;
+9
+extract_fields(&ev, ctx);
+10
+11
+// 3. Historical-flag update UpdH
+12
+for each <𝜙𝐻∈H:
+// unrolled during compilation
+13
+if (𝜙𝐻holds on ev)
+14
+history_map[kappa, h] = 1;
+15
+16
+// 4. Safety-clause checks ¬𝜓𝑖
+17
+for each 𝜓𝑖∈𝑆:
+// unrolled during compilation
+18
+if (J𝜓𝑖K𝐻𝜅(ev))
+19
+goto violation;
+20
+21
+// 5. Bounded-response update 𝑃𝑗
+1 𝐹≤Δ𝑗𝑃𝑗
+2
+22
+for each clause j in R:
+// unrolled during compilation
+23
+rv = response_map[kappa, j];
+24
+if (rv && expired(rv))
+// (i) detect
+25
+goto violation;
+26
+if (rv && 𝑃𝑗
+2 matches ev) // (ii) satisfy
+27
+delete response_map[kappa, j];
+28
+if (𝑃𝑗
+1 matches ev)
+// (iii) activate
+29
+response_map[kappa, j] =
+30
+{ deadline: now + Δ𝑗, env: 𝜌′ };
+31
+32
+return 0; // allow
+33
+violation:
+34
+emit_alert(kappa, policy, clause, ...);
+35
+// Deny: return -EPERM;
+36
+// Kill: bpf_send_signal(SIGKILL);
+37
+}
+Figure 3: Pseudocode of a generated BPF program.
+for eBPF maps, and makes atomic those updates that read a value
+and write it back.
+7.3
+Per-event Processing
+Figure 3 shows the pseudocode of a generated BPF program. For
+each intercepted event 𝑒, the program first extracts the execution
+key 𝜅from the event context and, if the policy restricts enforcement
+to a target set, short-circuits to allow for entities outside it (lines
+3–5). The code then reads the relevant event fields from the hook
+arguments into a local instance of a suitable structure (lines 7–9).
+The core of the program implements the monitor behavior as
+described in Section 6.2. The program first evaluates all historical
+predicates: for each <𝜙𝐻, if 𝜙𝐻holds on the current event, the
+corresponding entry in H𝜅is set to 1 (lines 11–14). All historical
+updates are performed before any safety or response check, so that
+subsequent evaluations read an updated H𝜅. Next, for each safety
+conjunct ¬𝜓𝑖, the program evaluates J𝜓𝑖KH𝜅on the current event.
+If the result is true, the event violates ¬𝜓𝑖, and the program jumps
+immediately to the enforcement handler (lines 16–19). Finally, for
+each bounded-response clause 𝑃𝑗
+1 𝐹≤Δ𝑗𝑃𝑗
+2, the program updates
+the active instance set 𝐼𝑗following a three-phase logic: it detects
+expired instances, removes satisfied ones, and activates new ones
+when 𝑃𝑗
+1 matches (lines 21–30).
+When a violation is detected, the BPF program applies the ac-
+tion declared in the policy: Deny returns -EPERM from the LSM
+hook, blocking the operation before it completes; Kill invokes
+bpf_send_signal(SIGKILL); Alert emits the violation event to
+user space without blocking. A bounded-response violation occurs
+when a deadline expires without the required response. Since the
+BPF program only executes when an event arrives, the runtime dae-
+mon provides a dedicated timeout scanner that periodically checks
+for expired deadlines.
+7.4
+Runtime Support
+A user-space daemon loads the generated BPF programs and at-
+taches them to their corresponding kernel hooks. When a policy
+spans multiple hooks, the programs must share the monitor mem-
+ory (H𝜅, J𝜅) introduced in Section 7.2. The daemon achieves this
+sharing by loading programs sequentially: after the first program
+is loaded, the daemon binds each subsequent program’s map slots
+to the maps already created by the first, so that all programs in the
+policy read and write the same BPF maps. This mechanism enables
+cross-hook correlation of variables and values.
+Once all programs are attached, the daemon performs two tasks.
+First, it polls a shared ring buffer where the BPF programs write vi-
+olation events (each carrying the policy identifier, execution key 𝜅,
+violated clause, and contextual information) and dispatches them
+to a configurable handler. Second, it runs a timeout scanner that pe-
+riodically checks the response map for expired deadlines, detecting
+bounded-response violations.
+8
+Implementation and Evaluation
+BPFence has been implemented as two open-source tools available
+online [30]: a compiler that translates policies into loadable eBPF
+programs, and a daemon that loads the eBPF programs, attaches
+them to their corresponding kernel hooks, and manages the viola-
+tion notification. Section 8.1 briefly presents our implementation,
+whereas Section 8.2 presents the experimental evaluation.
+8.1
+Implementation
+The implementation consists of an OCaml compiler (∼7𝐾LoC) and a
+C runtime daemon (∼2𝐾LoC). The compiler translates a .bpfence
+source file into C files, which are then compiled to .bpf.o objects
+via clang and loaded by the daemon. In addition to the tasks de-
+scribed in Section 7.4, the daemon dispatches violation events and
+manages policy updates. Violation events are processed by a con-
+figurable handler chain that ships with three built-in handlers: log
+(structured logging to file or stdout), alert (forwarding to syslog),
+and exec (execution of a shell command to handle the event). Policy
+updates can be applied at runtime, without interrupting enforce-
+ment, upon receipt of a suitable Linux signal.
+A subtle but critical invariant of the daemon concerns the order in
+which the compiled programs are started. eBPF programs attached
+to LSM hooks start intercepting system calls the moment they are
+linked to their hook, so if the daemon attached a deny or kill
+policy before configuring its set of target processes, the policy
+would momentarily apply to every process on the host. To avoid this
+race, the daemon enforces a three-phase initialization: it first loads
+each BPF object into the kernel, creating the maps, then populates
+the target map with the PIDs or cgroup identifiers, and only at
+the end attaches the programs to their hooks. The same invariant
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+is preserved across policy reloads: new programs are loaded, and
+their target map is transferred from the old instance before the old
+programs are detached, so there is no time window in which an
+unconfigured monitor is live.
+The user can control how much space is allocated to the monitor
+memory, either directly or through one of four available profiles.
+The daemon applies this choice before the loading phase and refuses
+to start when the requested capacity is below the requirements
+recorded by the compiler in the generated object.
+The compiler and the daemon also implement two countermea-
+sures against techniques an attacker may use to evade a policy.
+These countermeasures are a first step towards strengthening the
+threat model of Section 4, which assumes an attacker that does
+not actively evade the deployed policies. The first targets evasion
+through fork: a policy scoped to pid correlates events from a single
+process, so an attacker who splits a kill chain across a fork would
+present the monitor with two unrelated processes. The compiler,
+therefore, emits additional programs that propagate a process’s
+history to its children and reclaim it when the process exits. The
+second targets evasion through file aliasing: a path is one of the
+names of a file rather than the file itself, so symbolic and hard links,
+bind mounts, and renames give an attacker distinct names for the
+same file. When a policy mentions literal paths, the compiler keys
+the match on the file’s identity and keeps it up to date as files are
+created, aliased, or removed.
+Beyond the core constructs of Section 5, the implementation
+supports further language features to simplify policy creation. It
+provides four additional temporal operators: bounded sequences
+(sequence 𝑃1 then within Δ1 𝑃2 . . . ) for multi-step actions
+with per-step deadlines, bounded until (while 𝑃1 then within
+Δ 𝑃2) for asserting that a condition 𝑃2 must occur within Δ once
+𝑃1 holds, bounded count (count 𝐸≥𝑁
+within Δ) for detect-
+ing 𝑁or more occurrences of an event in a sliding window, and
+bounded safety (forbid P when G within Δ). Bounded sequences
+desugar into independent bounded-response clauses of the base
+temporal logic. Bounded until, count, and bounded safety are com-
+piled via dedicated schemes. To promote reuse, the DSL supports
+parameterized templates and policy inheritance. A policy can de-
+clare parameters that are bound at instantiation time via the use
+construct, allowing a single template to be reused across different
+policies. A policy can also extend another, inheriting its clauses and
+optionally adding or specializing them. Both mechanisms are re-
+solved at desugaring time and do not affect the formal semantics of
+the language. In addition, BPFence ships a standard library of event
+schemas covering common Linux subsystems (file operations, pro-
+cess lifecycle, network connections, raw kernel events) and reusable
+policy templates, e.g., Chinese Wall, sandboxing, data-loss preven-
+tion, and rate limiting. More details on all additional constructs,
+their compilation, and the standard library are in Appendix C.
+8.2
+Experimental Evaluation
+Our experimental evaluation addresses three research questions:
+RQ1. What overhead does a BPFence monitor impose on hooked
+system calls, and how does it scale with policy complexity?
+RQ2. Can BPFence monitors block real attack patterns while
+avoiding false positives on benign workloads?
+Table 1: Monitor execution time per open/close syscall (base-
+line without monitor: 1318 ns/op).
+Configuration
+BPF (ns/op)
+Overhead
+B-1
+𝐶=1 clause
+240 ± 2
+18.2%
+B-1
+𝐶=5 clauses
+249 ± 2
+18.9%
+B-1
+𝐶=20 clauses
+295 ± 2
+22.4%
+B-2
+𝐻=1 predicate
+260 ± 1
+19.7%
+B-2
+𝐻=5 predicates
+341 ± 2
+25.9%
+B-2
+𝐻=10 predicates
+432 ± 2
+32.8%
+B-3
+𝐾=1−100 targets
+61 ± 1
+4.6%
+B-4
+No path extraction
+71 ± 1
+5.4%
+B-5
+Non-targeted process
+61 ± 1
+4.6%
+RQ3. What policies can BPFence easily express and enforce that
+existing tools cannot?
+All experiments ran on a laptop with an Intel Core i7-1195G7 (4
+cores, 8 threads, 2.90 GHz base clock), 32 GB RAM, Ubuntu 24.04,
+Linux kernel 6.8.0. All runs were performed with the CPU frequency
+pinned to the base clock (governor performance, turbo disabled).
+8.2.1
+RQ1: Runtime Overhead. We evaluated BPFence on five
+micro-benchmarks (B-1 to B-5) and one macro-benchmark (B-6).
+Micro-benchmarks. The micro-benchmarks use a synthetic work-
+load consisting of a C program that invokes open/close syscalls
+𝑁=100,000 times. The monitor execution time is measured via the
+kernel’s built-in profiling infrastructure, which maintains, for each
+loaded BPF program, a cumulative invocation counter (run_cnt)
+and a cumulative execution-time counter (run_time_ns). By read-
+ing both counters before and after the 𝑁syscalls, we compute the
+per-invocation BPF cost as Δrun_time_ns/Δrun_cnt, where Δ de-
+notes the difference between the two readings, obtaining a direct
+kernel-level measurement without user-space timing noise. We
+repeat this process for 𝑅=10 trials and report mean ± standard de-
+viation. The overhead is computed as BPF cost/baseline cost × 100,
+where the baseline cost (1318 ns/op) is measured via clock_gettime
+without any BPF program loaded. The baseline was measured again
+after each run: it drifted by less than 1%, and the CPU never throttled.
+We generate synthetic policies attached to the security_file_open
+LSM hook. Each policy defines an event open with a string field
+(the file path), extracted via the kernel helper bpf_d_path.
+Table 1 reports the results of these benchmarks. The first two
+measure how the cost scales with the size of the policy. In bench-
+mark B-1, we vary the number of forbid clauses (𝐶) and show that
+the cost is nearly constant: from𝐶=1 to𝐶=20, the monitor execution
+time grows from 240 to 295 ns (∼3 ns per additional clause). Bench-
+mark B-2 varies the number of historical predicates (𝐻) in a policy
+and shows a linear cost: each predicate requires one BPF hash-map
+lookup, contributing ∼19 ns (from 260 ns at 𝐻=1 to 432 ns at 𝐻=10).
+The other three benchmarks allow us to understand where the
+fixed cost comes from. Benchmark B-4 repeats the measurement of
+B-1 at 𝐶=1 with an event taking an integer parameter, eliminating
+the call to bpf_d_path and the checks that accompany it: the cost
+drops to 71 ns, showing that resolving the file path accounts for
+∼169 ns, about 70% of the per-invocation cost. Benchmarks B-3 and
+
+
+Letterio Galletta
+B-5 measure a process that the policy does not target: the gener-
+ated code checks the target map and returns before extracting the
+event, so neither reaches bpf_d_path. Benchmark B-3 varies the
+number of scoped targets (𝐾=1 to 100) on the same path-based
+schema as B-1 at 𝐶=1. It confirms that the target lookup is constant
+in 𝐾: all configurations yield 61 ± 1 ns. Benchmark B-5 repeats the
+measurement on the integer schema of B-4, paying only 61 ns. In
+all benchmarks except B-3 and B-5, we use global scope, which is a
+worst case because every process pays the hook cost.
+Macro-benchmark. To assess the impact on an application work-
+load, we deploy a non-trivial policy on nginx serving a 1 KB static
+file. We generate sustained HTTP load using wrk with 2 threads
+and 100 connections, running each trial for 30 s and repeating for
+𝑅=10 trials. The load generator and the server are pinned to disjoint
+physical cores to prevent the measurement from being dominated
+by contention between them. The considered policy combines the
+post-exploitation sandbox (CS-1) with SSH lateral-movement detec-
+tion (CS-5), both described in the next subsection. During normal
+HTTP traffic, nginx never spawns a shell or reads SSH keys, so all
+historical predicates remain false throughout the test; the monitor
+still executes on every hooked syscall, but every guard evaluates
+to false and no violation is triggered. This represents the common
+case in production, where the monitor is active, but no attack is in
+progress. Without any policy, nginx sustains 155,798 ± 666 req/s;
+with the policy loaded, throughput drops to 147,223 ± 436 req/s, a
+reduction of 5.5%. Using the same kernel counters as above, the per-
+invocation BPF cost is 149 ns, consistent with the micro-benchmark
+results for policies of comparable complexity.
+Note that the per-invocation cost is not specific to BPFence, as
+every BPF-LSM monitor pays this cost whenever a hooked oper-
+ation occurs. In fact, the overhead of BPFence is similar to that
+of other monitors that rely on LSM hooks. For example, BPFCon-
+tain [17] reports 12.69–14.31% on Apache and up to 16.76% on
+micro-benchmarks, and BPFBox [18] 1.0–15.0% across the Phoronix
+suite. For the tools of Section 8.2.3, an independent study [22] re-
+ports 9.79% for Tetragon and 9.96% for Falco on a per-execution
+micro-benchmark, while their vendors report lower overheads. Our
+results, 5.5% on nginx and 4.6–5.4% per hooked syscall when the
+hook does not resolve a file path (B-3–B-5), sit at the low end of this
+range. Our comparison is indicative only, as the overheads above
+were measured across different workloads and machines.
+8.2.2
+RQ2: Attack Surface Reduction. We evaluated the effective-
+ness of BPFence on the seven case studies (CS-1 to CS-7) of Table 2.
+Each policy targets a post-exploitation syscall pattern associated
+with a documented attack or CVE (third column); the original ex-
+ploit is outside the scope of the policy. For each case study, we
+execute two trigger programs: an attack trigger that reproduces
+the syscall pattern, and a benign trigger that performs similar but
+legitimate operations.
+In all cases, the attack trigger is correctly blocked or alerted,
+whereas the benign trigger completes without interference (zero
+false negatives and zero false positives). In CS-1 (post-exploitation
+sandbox), the policy detects when a server process spawns a shell
+Table 2: Case studies: attack surface reduction. Outcome: how
+the attack trigger is handled. In all cases the benign trigger
+completes without interference.
+Scenario
+Motivation
+Outcome
+CS-1
+Post-exploit. sandbox
+Log4Shell [41]
+Killed
+CS-2
+Resource exhaustion
+Fork-bomb [38]
+Alerted
+CS-3
+Container isol. (BLP)
+CVE-2024-21626 [43]
+Denied
+CS-4
+Data exfiltration
+Equifax 2017 [46]
+Denied
+CS-5
+3-step SSH kill chain
+MITRE T1021 [35]
+Killed
+CS-6
+Persistence + FD leak
+Persistence [37]
+Killed
+CS-7
+Clark-Wilson (E2)
+Dirty Pipe [42]
+Denied
+and then prevents that shell from executing further binaries, open-
+ing network connections, or writing configuration files. This be-
+havioral pattern is common in post-exploitation steps. The policy
+relies on a historical predicate to condition the enforcement on a
+previous exec. In CS-2 (resource exhaustion), the policy raises an
+alert when a process clones itself more than 100 times within a 1 s
+time window, mitigating fork-bomb attacks, or opens more than
+50 new connections within a 10 s sliding time window, mitigating
+connection-flooding patterns. CS-3 (container isolation) enforces a
+Bell–LaPadula no-read-up / no-write-down policy across container
+cgroups, preventing information flows from a high-sensitivity con-
+tainer to a low one via the host file system. In CS-4 (data exfiltration),
+the policy detects when a process reads a sensitive file and sub-
+sequently opens a network connection; it correlates two events
+on different LSM hooks via cross-hook binding. Case study CS-5
+(SSH lateral movement) was already presented in Section 3: the
+policy detects a three-step kill chain in which the attacker reads
+an SSH private key, opens an outbound connection on port 22, and
+finally executes a command. The process is killed on the final exec.
+In CS-6 (persistence containment + FD-leak watchdog), the policy
+combines two clauses with different enforcement semantics: an
+inline safety check kills the process if it attempts post-exploitation
+persistence operations, e.g., exec(/usr/bin/crontab), or write to
+/etc/passwd, after a shell has been spawned, while a liveness obli-
+gation alerts when a file descriptor is opened but not closed within
+30 s, mitigating resource-leak patterns. Case study CS-7 (Clark–
+Wilson integrity) enforces the E2 rule of the Clark–Wilson model:
+protected files (e.g., /etc/passwd, setuid binaries) can be modified
+only by authorized processes. Any write from an unauthorized
+process is denied, blocking attacks such as Dirty Pipe, in which an
+unprivileged process bypasses standard permissions to overwrite a
+protected file. The policy uses a negated history guard of the form
+“forbid write unless an authorized program was executed”.
+Additionally, the artifact includes six further case studies (CS-8
+to CS-13), in which the attack trigger is a public proof-of-concept
+exploit for a documented (patched upstream) kernel vulnerability,
+and the policy forbids the system call patterns that may lead to
+the attack, e.g., the use of exotic crypto sockets. Since a policy
+describes the attack pattern rather than a specific bug, it may in-
+tercept multiple vulnerabilities. For example, the policy of CS-8
+covers copy_fail (CVE-2026-31431) and Fragnesia (CVE-2026-46300),
+which affect different kernel subsystems but share the same behav-
+ioral pattern: the setup of an exotic crypto socket followed by the
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+execution of a setuid binary. These case studies show that BPFence
+may also serve as a containment layer for this class of bugs when
+the patch is not yet deployed.
+8.2.3
+RQ3: Comparison with Existing Tools. To compare BPFence
+with production tools, we took four real rules from Falco [14]
+and Tetragon [9], two well-known open-source projects, and re-
+expressed each of them as a BPFence policy. The two Falco rules
+are Read sensitive file untrusted [15] and Write below binary direc-
+tories [16]: both belong to the default ruleset shipped with every
+Falco installation and are among the most cited examples in the
+project’s documentation and tutorials, targeting credential exfil-
+tration and binary tampering, respectively. The two Tetragon poli-
+cies are monitor-kernel-modules [10] and sys_mount [11], both
+taken from the examples in the upstream repository, and cover two
+attack surfaces that the documentation prominently advertises as
+use cases: kernel-rootkit installation and mount-based container
+escape. For each rule, we provide a direct port policy that reproduces
+the upstream behavior, and one or more companion policies that
+capture behavior the upstream rule cannot express. The policies
+and their attack and benign triggers are in the online repository.
+Falco’s Read sensitive file untrusted (∼35 LoC) matches reads
+of credential, SSH-key, TLS-key, and Kubernetes-secret files per-
+formed outside an allowlist of trusted readers, and raises an alert.
+Our direct port policy (∼16 LoC) keeps the same set of paths, but
+instead of a tracepoint uses the LSM hook security_file_open, so
+the same event can be synchronously denied. A companion policy
+denies the same reads only after the offending process has spawned
+a shell, capturing a “shell exec →credential read” post-exploitation
+kill chain [39]. Falco cannot express this stateful correlation, since
+its rule language is single-event and stateless. For Write below binary
+directories (∼19 LoC), we follow the same approach: a direct port
+(∼16 LoC) denies writes to /bin, /sbin, /usr/bin, /usr/lib, and
+similar locations, while the companion policy kills the offending
+process when it attempts these writes after a shell spawn.
+Tetragon’s monitor-kernel-modules policy (∼50 LoC) relies
+on the security_kernel_module_request and do_init_module
+hooks: it logs every attempt to load a kernel module but does not
+block it. Our direct port policy (∼7 LoC) relies on the same hooks
+but upgrades the action to a synchronous LSM deny, so the module
+is rejected before it is linked into the kernel. We provide two com-
+panion policies that perform cross-hook correlations that a single
+Tetragon policy cannot express. The first synchronously blocks the
+bpf() syscall when invoked with the argument BPF_PROG_LOAD
+for loading a BPF program or with the argument BPF_MAP_CREATE
+for creating a BPF map; the second policy blocks any bpf() syscall
+after the same process has loaded a kernel module, capturing in a
+single policy a kill chain in which an attacker first installs a kernel-
+mode rootkit [34] and then leverages BPF for further in-kernel
+persistence. Tetragon’s sys_mount policy (∼12 LoC) traces every
+mount syscall and reports its source and target without filtering or
+blocking. Our direct port policy (∼11 LoC) attaches to the LSM
+hook security_sb_mount and synchronously denies mounts of
+the filesystem types most commonly abused for container escape,
+such as proc and sysfs. The two companion policies extend it,
+considering multiple hooks: the first denies any bpf() syscall after
+a suspicious mount has been observed, capturing a kill chain in
+which an attacker first escapes the container by mounting host
+filesystems [40] and then uses BPF to consolidate the breakout;
+the second denies every outbound connect() after the process has
+spawned a shell, capturing post-escape lateral movement [35].
+We tested all four ports by providing an attack and a benign
+trigger for each policy, following the same approach as in RQ2: in
+every case the attack trigger is blocked, while the benign trigger
+completes without interference. The following observations emerge
+from the comparison. BPFence policies are typically shorter. Falco
+rules are intrinsically alert-only and operate on a single hook, be-
+cause they observe syscalls via tracepoints after the kernel has
+executed them; re-expressing them in BPFence turns detection
+into synchronous prevention with no change to the matching logic,
+simply by attaching the same predicate to the corresponding LSM
+hook. Tetragon supports synchronous enforcement, but its policies
+are single-hook by construction, so cross-event correlations such as
+“module load then BPF program load” or “shell exec then connect”
+cannot be expressed in a single policy, whereas BPFence’s historical
+predicates and when construct express these correlations directly
+inside one policy. The comparison also revealed two matching prim-
+itives that Tetragon offers and BPFence does not: testing whether
+a specific bit is set in a syscall flag argument, and filtering on the
+privileges of the calling process. We leave their implementation in
+BPFence for future work.
+9
+Related Work
+We discuss the two lines of research to which our work is closely
+related: in-kernel security monitoring and runtime verification.
+In-kernel security monitoring. Falco [14], Tetragon [9], and Kube-
+Armor [29] are the industry references for eBPF-backed runtime
+security: they express policies as YAML rules whose semantics is
+defined only by the implementation, and they do not statically dis-
+tinguish the hooks on which blocking is possible from those on
+which it is not. We compared BPFence against Falco and Tetragon in
+Section 8 (RQ3). The tool bpftrace [3] is complementary: a scripting
+language for kernel tracing focused on observability, with no LSM
+hook support and with write access restricted to error-injection
+points. BPFBox [18] and BPFContain [17] compile process confine-
+ment policies to eBPF LSM programs, demonstrating the feasibil-
+ity of the hook point but without temporal or stateful operators.
+Jia et al. [25] extend Seccomp-BPF with temporal specialization
+and counter-based checks at the system-call boundary; both are
+subsumed by BPFence’s policy language. More recently, eBPF-
+PATROL [19] applies eBPF to runtime threat recognition in con-
+tainerized environments, again without formal guarantees or a
+type discipline. The closest system in spirit is the Linux kernel’s
+own runtime verification subsystem [12, 32], upstream since v6.0,
+which loads hand-drawn deterministic automata as kernel modules
+attached to tracepoints and reacts to violations with printk or
+panic. BPFence shares the same goal of being an online monitor
+inside the kernel, but offers a DSL for the specification of policies
+with a formal semantics and a type system that statically separates
+controllable from merely observable hooks, delivers monitors as
+eBPF programs rather than kernel modules, attaches to LSM hooks
+as well, and scopes enforcement per process, namespace, or cgroup.
+
+
+Letterio Galletta
+Overall, none of these systems combines a policy language with
+formal semantics, a type discipline separating controllable from
+observable events, and provably correct compilation to in-kernel
+monitors, which is what BPFence contributes.
+Runtime verification. BPFence brings runtime verification inside
+the kernel. The construction of finite-state monitors from temporal-
+logic specifications dates back to the work of Bauer et al. [6] for
+LTL and TLTL, and to the automata-based techniques of Havelund
+and Roşu [21]. On the theoretical side, Schneider [44] and Basin et
+al. [5] characterized the classes of policies enforceable by execu-
+tion monitors; Aceto et al. [2] extended enforcement to first-order
+branching-time properties, and Hublet et al. [23, 24] developed
+proactive enforcement for metric first-order temporal logic together
+with scalable implementations. At the tool level, MonPoly [4] moni-
+tors metric first-order temporal properties over logs, JavaMOP [26]
+compiles parametric specifications into aspect-oriented instrumen-
+tation, and DejaVu [20] targets first-order past-time logic; decen-
+tralized variants such as RIARC [1] address the instrumentation
+of reactive components. All of these monitors rely on very expres-
+sive logics and run in user space, in the same address space as
+the monitored program, or offline over recorded traces; BPFence
+aims at in-kernel policy enforcement and realizes monitor synthesis
+under the constraints of the eBPF verifier: bounded memory, no
+unbounded loops, a fixed instruction budget. In-kernel enforcement
+requires trading off the expressiveness of the policy language with
+implementation constraints, as done in Section 7.
+10
+Conclusion
+We have presented BPFence, a runtime-verification framework
+to enforce trace-based security policies inside the Linux kernel.
+BPFence offers a policy language with a formal semantics over exe-
+cution traces and a type system that statically separates controllable
+from observable events. It then synthesizes, from every well-typed
+policy, a correct finite-state monitor, and compiles it to eBPF pro-
+grams that run synchronously inside the kernel. We implemented a
+PoC that includes a compiler and a runtime daemon to manage the
+policy life-cycle. We have evaluated our implementation on seven
+case studies drawn from real-world attack patterns and on micro-
+and macro-benchmarks to show that stateful security policies can
+be enforced inside the kernel with an acceptable overhead. Finally,
+we have qualitatively evaluated the expressiveness of our policy
+language against upstream Falco and Tetragon rules, showing that
+our language can prevent more complex attack patterns than these
+widely adopted tools.
+BPFence inherits two structural limitations from its target en-
+vironment. First, synchronous enforcement is only possible on
+events mediated by an LSM hook: policies whose violating events
+occur only through tracepoints or kprobes can be detected but not
+prevented. Second, the eBPF execution model forbids dynamic allo-
+cation; as a consequence, the monitor state is stored in fixed-size
+maps, whose capacity is set when a policy is loaded and checked
+against the requirements computed at compile time.
+There are several directions in which to extend the present work.
+On the language side, we plan to introduce richer predicates and
+inline aggregations, and lift correlation from kernel identities (pid,
+tgid, cgroup) to causal ones (process trees and data-flow taint):
+the propagation of history across fork (Section 8.1) is a first step,
+but attacks that spread through execve or across cooperating pro-
+cesses require the unit of monitoring itself to be defined by causal-
+ity rather than by a declared scope. On the formal side, we are
+interested in mechanizing our soundness proof and in monitor-
+ing hyperproperties such as non-interference, which lie beyond
+plain trace properties. On the deployment side, we plan to explore
+distributed enforcement across a cluster of containers, automatic
+policy synthesis from high-level intents or from observed benign
+behavior, and integration with container orchestrators to tie the
+life-cycle of policies to that of the workloads they protect.
+Acknowledgments
+We thank the anonymous reviewers for their comments and sugges-
+tions, which helped improve the paper. This work has been partially
+supported by RDS PTR 25-27 CYBER 2.1 “Progetto Cybersecurity”
+WP3 LA 3.21 – CUP: D63C24001060001.
+References
+[1] Luca Aceto, Duncan Paul Attard, Adrian Francalanza, and Anna Ingólfsdóttir.
+2024. Runtime Instrumentation for Reactive Components. In ECOOP (LIPIcs).
+Schloss Dagstuhl - Leibniz-Zentrum für Informatik, Dagstuhl, Germany, 2:1–2:33.
+doi:10.4230/LIPIcs.ECOOP.2024.2
+[2] Luca Aceto, Ian Cassar, Adrian Francalanza, and Anna Ingólfsdóttir. 2023. On
+First-Order Runtime Enforcement of Branching-Time Properties. Acta Informat-
+ica 60, 4 (2023), 385–451. doi:10.1007/s00236-023-00441-9
+[3] Alastair Robertson. 2024. bpftrace: High-Level Tracing Language for Linux.
+https://bpftrace.org/. Accessed: April 20, 2026.
+[4] David A. Basin, Matús Harvan, Felix Klaedtke, and Eugen Zalinescu. 2011. MON-
+POLY: Monitoring Usage-Control Policies. In RV (Lecture Notes in Computer Sci-
+ence). Springer, Berlin, Heidelberg, 360–364. doi:10.1007/978-3-642-29860-8_27
+[5] David A. Basin, Vincent Jugé, Felix Klaedtke, and Eugen Zalinescu. 2013. En-
+forceable Security Policies Revisited. ACM Trans. Inf. Syst. Secur. 16, 1 (2013), 3.
+doi:10.1145/2487222.2487225
+[6] Andreas Bauer, Martin Leucker, and Christian Schallhart. 2011. Runtime Veri-
+fication for LTL and TLTL. ACM Trans. Softw. Eng. Methodol. 20, 4, Article 14
+(2011), 64 pages. doi:10.1145/2000799.2000800
+[7] D.F.C. Brewer and M.J. Nash. 1989. The Chinese Wall security policy. In Proceed-
+ings. 1989 IEEE Symposium on Security and Privacy. 206–214. doi:10.1109/SECPRI.
+1989.36295
+[8] Canonical Ltd. 2024. AppArmor: Application Armor. https://apparmor.net.
+[9] Cilium Project. 2024. Tetragon: eBPF-based Security Observability and Runtime
+Enforcement. https://tetragon.io.
+[10] Cilium
+Project.
+2024.
+Tetragon
+TracingPolicy:
+monitor-kernel-modules.yaml.
+https://github.com/cilium/tetragon/blob/
+main/examples/tracingpolicy/host-changes/monitor-kernel-modules.yaml.
+[11] Cilium Project. 2024. Tetragon TracingPolicy: sys_mount.yaml. https://github.
+com/cilium/tetragon/blob/main/examples/tracingpolicy/sys_mount.yaml.
+[12] Daniel Bristot de Oliveira, Tommaso Cucinotta, and Rômulo Silva de Oliveira.
+2019. Efficient Formal Verification for the Linux Kernel. In Software Engineer-
+ing and Formal Methods: 17th International Conference, SEFM 2019, Proceedings.
+Springer-Verlag, Berlin, Heidelberg, 315–332. doi:10.1007/978-3-030-30446-1_17
+[13] eBPF Foundation. 2023. eBPF: Dynamically program the kernel for efficient
+networking, observability, tracing, and security. https://ebpf.io.
+[14] Falco Project. 2023. Falco: Cloud-Native Runtime Security. https://falco.org/
+docs/.
+[15] Falco Project. 2024. Falco default rule: Read sensitive file untrusted. https://falco.
+org/docs/reference/rules/default-rules/#Read_sensitive_file_untrusted.
+[16] Falco Project. 2024. Falco default rule: Write below binary directories. https:
+//falco.org/docs/reference/rules/default-rules/#Write_below_binary_dir.
+[17] William Findlay, David Barrera, and Anil Somayaji. 2021. BPFContain: Fixing
+the Soft Underbelly of Container Security. arXiv preprint arXiv:2102.06972.
+[18] William Findlay, Anil Somayaji, and David Barrera. 2020. bpfbox: Simple Precise
+Process Confinement with eBPF. In Proceedings of the 2020 ACM SIGSAC Confer-
+ence on Cloud Computing Security Workshop (CCSW). Association for Computing
+Machinery, New York, NY, USA, 91–103. doi:10.1145/3411495.3421358
+[19] Sangam Ghimire, Nirjal Bhurtel, Roshan Sahani, and Sudan Jha. 2025. eBPF-
+PATROL: Protective Agent for Threat Recognition and Overreach Limitation
+using eBPF in Containerized and Virtualized Environments. arXiv preprint
+arXiv:2511.18155.
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+[20] Klaus Havelund, Doron Peled, and Dogan Ulus. 2018. DejaVu: A Monitoring Tool
+for First-Order Temporal Logic. In MT@CPSWeek. IEEE, 12–13. doi:10.1109/MT-
+CPS.2018.00013
+[21] Klaus Havelund and Grigore Rosu. 2004. An Overview of the Runtime Verification
+Tool Java PathExplorer. Formal Methods Syst. Des. 24, 2 (2004), 189–215.
+[22] Jin Her, Jongseop Kim, Jinwoo Kim, and Seungsoo Lee. 2025. An In-Depth
+Analysis of eBPF-Based System Security Tools in Cloud-Native Environments.
+IEEE Access 13 (2025), 155588–155604. doi:10.1109/ACCESS.2025.3605432
+[23] François Hublet, Leonardo Lima, David Basin, Srđan Krstić, and Dmitriy Traytel.
+2024. Proactive Real-Time First-Order Enforcement. In Computer Aided Verifica-
+tion (CAV). Springer Nature Switzerland, Cham, 156–181. doi:10.1007/978-3-031-
+65630-9_8
+[24] François Hublet, Leonardo Lima, David Basin, Srđan Krstić, and Dmitriy Traytel.
+2025. Scaling Up Proactive Enforcement. In Computer Aided Verification (CAV).
+Springer Nature Switzerland, Cham, 370–392. doi:10.1007/978-3-031-98682-6_19
+[25] Jinghao Jia, YiFei Zhu, Dan Williams, Andrea Arcangeli, Claudio Canella, Hu-
+bertus Franke, Tobin Feldman-Fitzthum, Dimitrios Skarlatos, Daniel Gruss,
+and Tianyin Xu. 2023.
+Programmable System Call Security with eBPF.
+arXiv:2302.10366
+[26] Dongyun Jin, Patrick O’Neil Meredith, Choonghwan Lee, and Grigore Rosu. 2012.
+JavaMOP: Efficient parametric runtime monitoring framework. In ICSE. IEEE
+Computer Society, 1427–1430. doi:10.1109/ICSE.2012.6227231
+[27] The kernel development community. 2012. Seccomp-BPF: A Sandboxing Mecha-
+nism for Linux. https://www.kernel.org/doc/html/v4.13/userspace-api/seccomp_
+filter.html.
+[28] Stephen Cole Kleene. 1952. Introduction to Metamathematics. Ishi Press Interna-
+tional.
+[29] KubeArmor Project. 2024. KubeArmor: Cloud-Native Runtime Security Enforce-
+ment System. https://kubearmor.io.
+[30] Letterio Galletta. 2026. Enforcement of In-Kernel Stateful Security Policies via
+eBPF (Artifact). https://github.com/lillo/bpfence.
+[31] Linux kernel developers. 2024. Kernel Probes (Kprobes). Linux kernel documen-
+tation, https://www.kernel.org/doc/html/latest/trace/kprobes.html.
+[32] Linux kernel developers. 2024. Runtime Verification. Linux kernel documentation,
+https://docs.kernel.org/trace/rv/runtime-verification.html.
+[33] Linux kernel developers. 2024. Using the Linux Kernel Tracepoints. Linux kernel
+documentation, https://www.kernel.org/doc/html/latest/trace/tracepoints.html.
+[34] MITRE ATT&CK. 2024. T1014: Rootkit. https://attack.mitre.org/techniques/
+T1014/. Accessed: April 20, 2026.
+[35] MITRE ATT&CK. 2024.
+T1021: Remote Services.
+https://attack.mitre.org/
+techniques/T1021/. Accessed: April 20, 2026.
+[36] MITRE ATT&CK. 2024. T1021.004: Remote Services: SSH, Sub-technique. https:
+//attack.mitre.org/techniques/T1021/004/. Accessed: April 20, 2026.
+[37] MITRE ATT&CK. 2024. T1053: Scheduled Task/Job. https://attack.mitre.org/
+techniques/T1053/. Accessed: April 20, 2026.
+[38] MITRE ATT&CK. 2024. T1499: Endpoint Denial of Service. https://attack.mitre.
+org/techniques/T1499/. Accessed: April 20, 2026.
+[39] MITRE ATT&CK. 2024. T1552: Unsecured Credentials. https://attack.mitre.org/
+techniques/T1552/. Accessed: April 20, 2026.
+[40] MITRE ATT&CK. 2024.
+T1611: Escape to Host.
+https://attack.mitre.org/
+techniques/T1611/. Accessed: April 20, 2026.
+[41] National Institute of Standards and Technology. 2021. CVE-2021-44228 Detail
+– National Vulnerability Database. https://nvd.nist.gov/vuln/detail/cve-2021-
+44228. Accessed: April 20, 2026.
+[42] National Institute of Standards and Technology. 2022. CVE-2022-0847 Detail –
+National Vulnerability Database. https://nvd.nist.gov/vuln/detail/cve-2022-0847.
+Accessed: April 20, 2026.
+[43] National Institute of Standards and Technology. 2024. CVE-2024-21626 Detail
+– National Vulnerability Database. https://nvd.nist.gov/vuln/detail/cve-2024-
+21626. Accessed: April 20, 2026.
+[44] Fred B. Schneider. 2000. Enforceable Security Policies. ACM Trans. Inf. Syst.
+Secur. 3, 1 (2000), 30–50. doi:10.1145/353323.353382
+[45] Stephen Smalley, Chris Vance, and Wayne Salamon. 2001. Implementing SELinux
+as a Linux Security Module. Technical Report. NAI Labs.
+[46] U.S. Government Accountability Office. 2018. Data Protection: Actions Taken by
+Equifax and Federal Agencies in Response to the 2017 Breach. Technical Report
+GAO-18-559. GAO. https://www.gao.gov/products/gao-18-559
+[47] Chris Wright, Crispin Cowan, Stephen Smalley, James Morris, and Greg Kroah-
+Hartman. 2002. Linux Security Modules: General Security Support for the
+Linux Kernel. In 11th USENIX Security Symposium (USENIX Security 02). USENIX
+Association, San Francisco, CA, 17–31.
+A
+Generative AI Usage
+During the preparation of this work, the author used Anthropic’s
+Claude Code to scaffold the structure of the paper, revise its text,
+and develop the prototype implementation and the scripts needed
+for the experimental evaluations in Section 8 and for packaging the
+artifact. After using this tool, the author reviewed and edited the
+content of the paper as needed, and manually inspected, validated
+and tested the generated code. The author takes full responsibility
+for the final content of the publication.
+B
+Formal Development
+B.1
+Policy Language
+B.1.1
+Well-formedness Conditions. We define well-formedness con-
+ditions for the temporal logic of Section 5.2. We first define the
+function bnd to compute the set of variables whose bindings prop-
+agate to the enclosing context in a guard 𝑔, an event predicate 𝑃,
+and a temporal formula 𝜙(below, 𝛼.𝑔denotes the guard of 𝛼):
+bnd(true) = bnd(field ∼ℓ) = ∅
+bnd(field = ?𝑋) = {𝑋}
+bnd(field = 𝑋) = ∅
+bnd(𝑔1 ∧𝑔2) = bnd(𝑔1) ∪bnd(𝑔2)
+bnd(𝛼) = bnd(𝛼.𝑔)
+bnd(¬𝑃) = bnd(𝑃)
+bnd(𝑃1 ∧𝑃2) = bnd(𝑃1 ∨𝑃2) = bnd(𝑃1) ∪bnd(𝑃2)
+bnd(𝜙1 ∧𝜙2) = bnd(𝜙1) ∪bnd(𝜙2)
+bnd(¬𝜙) = bnd(𝜙)
+bnd(<𝜙) = bnd(𝐺𝜙) = bnd(𝑃1 𝐹≤Δ 𝑃2) = ∅
+Note that for the operators 𝐺𝜙, <𝜙, and 𝐹≤Δ, the set of variables is
+∅due to an intrinsic property of each operator: in all three cases,
+the semantics returns the environment 𝜌unchanged — 𝐺and 𝐹≤Δ
+return 𝜌invariant explicitly in their semantic clauses, and <𝜙eval-
+uates 𝜙under the empty environment and returns 𝜌unchanged. No
+new binding reaches the outer context, so computing ∅faithfully
+reflects the semantics.
+Figure 4 shows the well-formedness conditions for guards, event
+predicates, and temporal formulas (we denote by 𝜌∪𝑉the environ-
+ment obtained by extending 𝜌with a binding to a placeholder value
+for each variable in 𝑉). A guard 𝑔is well formed under an environ-
+ment 𝜌, written 𝜌⊢𝑔wf, iff it satisfies the rules G*. Intuitively, for
+each sub-term 𝑔1 ∧𝑔2 where 𝑔2 contains a constraint field = 𝑋, it
+must hold that 𝑋∈dom(𝜌) ∪bnd(𝑔1). Similarly, an event predicate
+𝑃is well formed under an environment 𝜌, written 𝜌⊢𝑃wf, iff it
+satisfies the rules P*. Intuitively, these rules enforce the follow-
+ing conditions: for each conjunction 𝑃1 ∧𝑃2 where 𝑃2 includes a
+constraint field = 𝑋, it must hold that 𝑋∈dom(𝜌) ∪bnd(𝑃1); no
+binding ?𝑋may be introduced under disjunction ∨.
+A temporal formula 𝜙is well formed under an environment 𝜌,
+in symbols 𝜌⊢𝜙wf, iff it satisfies the rules F*. Intuitively, rule
+FAnd requires that for each conjunction 𝜙1 ∧𝜙2 where 𝜙2 includes
+a constraint field = 𝑋, it must hold that 𝑋∈dom(𝜌) ∪bnd(𝜙1):
+bindings introduced by 𝜙1 are visible in 𝜙2. Rule FNeg has two
+independent premises: 𝜌⊢𝜙wf ensures that 𝜙is well formed under
+𝜌, and bnd(𝜙) = ∅ensures that no binding escapes from the negated
+formula. These premises are independent: a formula can be well
+formed and still produce bindings. The second premise is necessary
+because under negation a binding may never actually be produced:
+if 𝜙evaluates to violated, no field was matched and no variable
+was bound. Allowing bindings to escape from ¬𝜙would therefore
+be unsound. Rule FPast requires only bnd(𝜙) ∪use(𝜙) = ∅, i.e., 𝜙
+neither introduces nor uses correlation variables. A formula with
+no variables is well formed under any environment, so the explicit
+
+
+Letterio Galletta
+GTrue
+𝜌⊢true wf
+GLit
+𝜌⊢field ∼ℓwf
+GBind
+𝑋∉dom(𝜌)
+𝜌⊢field = ?𝑋wf
+GConstr
+𝑋∈dom(𝜌)
+𝜌⊢field = 𝑋wf
+GAnd
+𝜌⊢𝑔1 wf
+𝜌∪bnd(𝑔1) ⊢𝑔2 wf
+𝜌⊢𝑔1 ∧𝑔2 wf
+PAtom
+𝜌⊢𝛼.𝑔wf
+𝜌⊢𝛼wf
+PNeg
+𝜌⊢𝑃wf
+bnd(𝑃) = ∅
+𝜌⊢¬𝑃wf
+PAnd
+𝜌⊢𝑃1 wf
+𝜌∪bnd(𝑃1) ⊢𝑃2 wf
+𝜌⊢𝑃1 ∧𝑃2 wf
+Por
+𝜌⊢𝑃1 wf
+𝜌⊢𝑃2 wf
+bnd(𝑃1) = ∅
+bnd(𝑃2) = ∅
+𝜌⊢𝑃1 ∨𝑃2 wf
+FAnd
+𝜌⊢𝜙1 wf
+𝜌∪bnd(𝜙1) ⊢𝜙2 wf
+𝜌⊢𝜙1 ∧𝜙2 wf
+FNeg
+𝜌⊢𝜙wf
+bnd(𝜙) = ∅
+𝜌⊢¬𝜙wf
+FPast
+bnd(𝜙) ∪use(𝜙) = ∅
+𝜌⊢<𝜙wf
+FAlways
+𝜌⊢𝜙wf
+𝜌⊢𝐺𝜙wf
+FResp
+𝜌⊢𝑃1 wf
+𝜌∪bnd(𝑃1) ⊢𝑃2 wf
+𝜌⊢𝑃1 𝐹≤Δ 𝑃2 wf
+Figure 4: Well-formedness conditions for guards, event predicates, and temporal formulas.
+premise 𝜌⊢𝜙wf would be redundant and is omitted. The condition
+ensures that the semantics of <𝜙evaluates 𝜙on past prefixes under
+the empty environment, independently of the current 𝜌. If𝜙referred
+to variables bound in 𝜌, those bindings would be unavailable at
+past positions, making the evaluation ill-defined. Rule FAlways
+is direct: we check 𝜙is well formed. Rule FResp mirrors FAnd:
+the bindings introduced by 𝑃1 are visible in 𝑃2, expressed by the
+premise 𝜌∪bnd(𝑃1) ⊢𝑃2 wf.
+B.1.2
+Event Predicate Semantics. Let𝑒be an event and 𝜌: V →Val
+a correlation environment. The semantics of an event predicate is
+defined by the function J·K𝑎: P × E × Env →𝐾3 × Env, where
+P is the set of event predicates, E is the set of events, Env is the
+set of correlation environments, and 𝐾3 is the set {true, false, na}.
+The function J·K𝑎is defined inductively on the syntax of event
+predicates as follows (below ∼is an operator in {=, ≠, <, ≤, >, ≥}):
+Atoms: Given an event atom 𝛼= (𝐸,𝑔):
+J𝛼K𝑎(𝑒, 𝜌) =
+(
+J𝑔K(𝑒, 𝜌)
+if 𝑒.type = 𝐸
+(na, 𝜌)
+otherwise
+where J𝑔K(𝑒, 𝜌) = (𝑏, 𝜌′) is inductively defined as:
+JtrueK(𝑒, 𝜌) =  true, 𝜌
+Jfield = ?𝑋K(𝑒, 𝜌) =  true, 𝜌[𝑋↦→𝑒.params[field]]
+if 𝑋∉dom(𝜌)
+Jfield = 𝑋K(𝑒, 𝜌) =  𝑒.params[field] = 𝜌(𝑋), 𝜌
+if 𝑋∈dom(𝜌)
+Jfield ∼ℓK(𝑒, 𝜌) =  𝑒.params[field] ∼ℓ, 𝜌
+J𝑔1 ∧𝑔2K(𝑒, 𝜌) = (𝑏1 ∧𝑏2, 𝜌2),
+(𝑏𝑖, 𝜌𝑖) = J𝑔𝑖K(𝑒, 𝜌𝑖−1), 𝜌0 = 𝜌
+Negation:
+J¬𝑃K𝑎(𝑒, 𝜌) =
+(
+(¬𝑏, 𝜌)
+if 𝑏= 𝜋1
+ J𝑃K𝑎(𝑒, 𝜌) ∈{true, false}
+(na, 𝜌)
+otherwise
+Note that we do not add new bindings to the environment 𝜌: the
+well-formedness condition ensures that ¬𝑃introduces no new bind-
+ings.
+Conjunction:
+J𝑃1 ∧𝑃2K𝑎(𝑒, 𝜌) = 𝑟
+where (𝑏1, 𝜌1) = J𝑃1K𝑎(𝑒, 𝜌) and
+𝑟=
+
+
+(false, 𝜌)
+if 𝑏1 = false
+(true, 𝜌2)
+if 𝑏1 = true ∧(true, 𝜌2) = J𝑃2K𝑎(𝑒, 𝜌1)
+(false, 𝜌)
+if (false, 𝜌1) = J𝑃2K𝑎(𝑒, 𝜌1)
+(na, 𝜌)
+otherwise
+Note that the bindings introduced by 𝑃1 are visible in 𝑃2 (the con-
+junction is not commutative).
+Disjunction:
+J𝑃1 ∨𝑃2K𝑎(𝑒, 𝜌) = (𝑣, 𝜌)
+where (𝑏1, 𝜌) = J𝑃1K𝑎(𝑒, 𝜌), (𝑏2, 𝜌) = J𝑃2K𝑎(𝑒, 𝜌), and 𝑣is
+𝑣=
+
+
+true
+if 𝑏1 = true ∨𝑏2 = true
+false
+if 𝑏1 = false ∧𝑏2 = false
+na
+otherwise
+Note that 𝑃1 and 𝑃2 contain no binding by the well-formedness
+condition, so the environment always remains the same.
+Hereafter, we write J𝑃K𝑎(𝑒, 𝜌) = 𝑣, for𝑣∈𝐾3, to mean 𝜋1(J𝑃K𝑎(𝑒, 𝜌)) =
+𝑣, when the resulting environment is immaterial.
+B.1.3
+Temporal Formulas Semantics. The evaluation function J·K is
+inductively defined over the syntax of temporal formulas. Below, we
+report the semantics for all the constructs except for the bounded
+response, whose semantics is in Section 5.
+For an event predicate 𝑃:
+J𝑃K(𝜎𝑘, 𝜌) =
+
+
+(ok, 𝜌′)
+if J𝑃K𝑎(𝑒𝑘, 𝜌) = (true, 𝜌′)
+(violated, 𝜌)
+if J𝑃K𝑎(𝑒𝑘, 𝜌) = (false, 𝜌)
+(pending, 𝜌)
+if J𝑃K𝑎(𝑒𝑘, 𝜌) = (na, 𝜌)
+In case of violation, 𝜌does not change: no new binding occurs. If
+𝑒𝑘is irrelevant to the current predicate 𝑃, the result is pending: we
+postpone the decision.
+For the ¬ operator:
+J¬𝜙K(𝜎𝑘, 𝜌) =
+
+
+(violated, 𝜌)
+if J𝜙K(𝜎𝑘, 𝜌) = (ok, 𝜌)
+(ok, 𝜌)
+if J𝜙K(𝜎𝑘, 𝜌) = (violated, 𝜌)
+(pending, 𝜌)
+otherwise
+By our well-formedness conditions, no bindings are introduced, so
+𝜌remains the same.
+For conjunction:
+J𝜙1 ∧𝜙2K(𝜎𝑘, 𝜌) = (𝑣, 𝜌2)
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+where (𝑣1, 𝜌1) = J𝜙1K(𝜎𝑘, 𝜌), (𝑣2, 𝜌2) = J𝜙2K(𝜎𝑘, 𝜌1), and
+𝑣=
+
+
+violated
+if 𝑣1 = violated or 𝑣2 = violated
+pending
+if 𝑣1 = pending or 𝑣2 = pending
+ok
+otherwise
+The bindings introduced by 𝜙1 are visible in 𝜙2. We adopt an evalu-
+ation order from left to right to take care of bindings.
+For the once operator:
+J<𝜙K(𝜎𝑘, 𝜌) =
+(
+(ok, 𝜌)
+if ∃𝑖≤𝑘. 𝜋1(J𝜙K(𝜎𝑖, 𝜌)) = ok
+(pending, 𝜌)
+otherwise
+The once operator <𝜙holds on a prefix 𝜎𝑘if 𝜙held at some position
+𝑖≤𝑘, including the current one. It never produces violated: the
+absence of a past satisfaction yields pending, not a violation, since
+no finite prefix can witness that𝜙will never hold. Consequently, <𝜙
+is monotone: once ok, it remains ok on all subsequent prefixes. Note
+that the environment 𝜌is returned unchanged: the well-formedness
+condition ensures that 𝜙neither introduces nor uses correlation
+variables, so its evaluation is independent of 𝜌.
+For the always operator:
+J𝐺𝜙K(𝜎𝑘, 𝜌) =
+(
+(violated, 𝜌)
+if ∃𝑖≤𝑘. 𝜋1(J𝜙K(𝜎𝑖, 𝜌)) = violated
+(ok, 𝜌)
+otherwise
+where 𝜋1 is the standard projection operator. This operator ex-
+presses safety properties: every violation is due to a finite bad pre-
+fix. Consequently, 𝐺𝜙can only be ok or violated, never pending
+because it does not require that something happen in the future.
+B.1.4
+Formal Results.
+Theorem 5.5 (Violation Persistence). For every DSL program
+Π and finite traces 𝜎𝑘, 𝜎𝑗such that 𝜎𝑘is a prefix of 𝜎𝑗, if JΠK(𝜎𝑘) =
+violated then JΠK(𝜎𝑗) = violated.
+Proof. We proceed by induction on 𝑗−𝑘≥0.
+Base case (𝑗−𝑘= 0): trivial, 𝜎𝑗= 𝜎𝑘and the conclusion holds by
+hypothesis.
+Inductive step (𝑛= 𝑗−𝑘> 0): As the inductive hypothesis, assume
+the proposition holds for all pairs (𝜎𝑘, 𝜎𝑗′) with 𝑗′ −𝑘< 𝑛. We need
+to show the proposition for (𝜎𝑘, 𝜎𝑗) with 𝑗−𝑘= 𝑛. Since 𝑛> 0, the
+prefix 𝜎𝑗−1 exists and 𝜎𝑘is a prefix of 𝜎𝑗−1 with (𝑗−1)−𝑘= 𝑛−1 < 𝑛.
+By the inductive hypothesis applied to (𝜎𝑘, 𝜎𝑗−1) we have:
+JΠK(𝜎𝑗−1) = violated.
+Now, let 𝜙be the denotation of the program Π. By the definition
+of the semantic function, 𝜙has the form Ó𝑟
+ℓ=1 𝐺(𝜓ℓ), which can be
+rewritten as 𝐺(𝜓) with 𝜓= Ó𝑟
+ℓ=1𝜓ℓ.By the semantics of 𝐺:
+J𝐺(𝜓)K(𝜎𝑗−1, ∅) = violated =⇒∃ℎ≤𝑗−1. 𝜋1(J𝜓K(𝜎ℎ, ∅)) = violated.
+Since ℎ≤𝑗−1 < 𝑗, the same ℎwitnesses J𝐺𝜓K(𝜎𝑗, ∅) = violated,
+thus proving the thesis.
+□
+Proposition 5.6 (Existence of the first violating prefix).
+Let Π be a DSL program and 𝜎𝑘be a finite trace such that JΠK(𝜎𝑘) =
+violated. There exists a unique prefix 𝜎𝑖∗of 𝜎𝑘such that
+𝑖∗= min{ 𝑖≤𝑘| JΠK(𝜎𝑖) = violated }.
+We call 𝜎𝑖∗the first violating prefix of 𝜎𝑘.
+Proof. The set 𝑆= {𝑖≤𝑘| JΠK(𝜎𝑖) = violated} is non-empty
+since 𝑘∈𝑆by hypothesis, and finite since 𝑆⊆{1, . . . ,𝑘}. Hence
+𝑖∗= min𝑆exists and is unique.
+□
+The following proposition ensures that a formula introducing
+no binding leaves the correlation environment unchanged:
+Proposition B.1 (Environment invariance). For every tempo-
+ral formula 𝜙such that bnd(𝜙) = ∅, every finite trace 𝜎𝑘, and every
+environment 𝜌, there exists 𝑣∈B3 such that
+J𝜙K(𝜎𝑘, 𝜌) = (𝑣, 𝜌).
+Proof. We proceed by structural induction on 𝜙. For the nega-
+tion, once, always, and bounded-response cases, the thesis follows
+immediately from the corresponding semantic clauses, which re-
+turn 𝜌unchanged. For an event predicate 𝑃, bnd(𝑃) = ∅means
+that 𝑃contains no binding field = ?𝑋, hence J𝑃K𝑎(𝑒𝑘, 𝜌) returns 𝜌
+unchanged; by the semantics of predicates as formulas, J𝑃K(𝜎𝑘, 𝜌)
+returns 𝜌as well. For 𝜙1 ∧𝜙2 we have bnd(𝜙1) = bnd(𝜙2) = ∅;
+by the induction hypothesis on 𝜙1 we have that J𝜙1K(𝜎𝑘, 𝜌) leaves
+the environment unchanged, so 𝜙2 is evaluated under 𝜌. The thesis
+thus follows by the induction hypothesis on 𝜙2.
+□
+Below, we prove distributivity of 𝐺over conjunction against the
+three-valued semantics of Section 5.2.
+Proposition B.2 (Distributivity of 𝐺over ∧). For all tempo-
+ral formulas 𝜙1,𝜙2 such that bnd(𝜙1) = ∅, all finite traces 𝜎𝑘, and
+all environments 𝜌:
+𝜋1(J𝐺(𝜙1) ∧𝐺(𝜙2)K(𝜎𝑘, 𝜌)) = 𝜋1(J𝐺(𝜙1 ∧𝜙2)K(𝜎𝑘, 𝜌)).
+Proof. Since 𝐺always results in ok or violated, never pending,
+we show that the two sides agree on violated; the ok case is similar.
+By the semantics of 𝐺and conjunction:
+𝜋1(J𝐺(𝜙1) ∧𝐺(𝜙2)K(𝜎𝑘, 𝜌)) = violated
+⇐⇒𝜋1(J𝐺(𝜙1)K(𝜎𝑘, 𝜌)) = violated ∨
+𝜋1(J𝐺(𝜙2)K(𝜎𝑘, 𝜌)) = violated
+⇐⇒ ∃𝑖≤𝑘. 𝜋1(J𝜙1K(𝜎𝑖, 𝜌)) = violated ∨
+ ∃𝑗≤𝑘. 𝜋1(J𝜙2K(𝜎𝑗, 𝜌)) = violated
+and, by Proposition B.1, the hypothesis bnd(𝜙1) = ∅ensures that
+in J𝜙1 ∧𝜙2K(𝜎𝑖, 𝜌) the second conjunct is evaluated under 𝜌as well,
+hence:
+𝜋1(J𝐺(𝜙1 ∧𝜙2)K(𝜎𝑘, 𝜌)) = violated
+⇐⇒∃𝑖≤𝑘. 𝜋1(J𝜙1 ∧𝜙2K(𝜎𝑖, 𝜌)) = violated
+⇐⇒∃𝑖≤𝑘. 𝜋1(J𝜙1K(𝜎𝑖, 𝜌)) = violated ∨
+𝜋1(J𝜙2K(𝜎𝑖, 𝜌)) = violated.
+The two conditions are logically equivalent by the propositional
+equivalence  ∃𝑖. 𝐴(𝑖) ∨ ∃𝑗. 𝐵(𝑗)
+⇐⇒
+∃𝑖. 𝐴(𝑖) ∨𝐵(𝑖).
+□
+
+
+Letterio Galletta
+PEvent
+Γ ⊢(𝐸,𝑔) : Γ(𝐸)
+PNeg
+Γ ⊢𝑃: 𝜏
+Γ ⊢¬𝑃: 𝜏
+PAnd
+Γ ⊢𝑃1 : 𝜏1
+Γ ⊢𝑃2 : 𝜏2
+Γ ⊢𝑃1 ∧𝑃2 : 𝜏1 ⊔𝜏2
+POr
+Γ ⊢𝑃1 : 𝜏1
+Γ ⊢𝑃2 : 𝜏2
+Γ ⊢𝑃1 ∨𝑃2 : 𝜏1 ⊔𝜏2
+Comp
+Γ; Θ ⊢𝑝1 : 𝜏1
+Γ; Θ ⊢𝑝2 : 𝜏2
+Γ; Θ ⊢𝑝1 ∧𝑝2 : 𝜏1 ⊔𝜏2
+Forbid
+Γ ⊢𝑃: 𝜏
+Γ; Θ ⊢forbid 𝑃: 𝜏
+ForbidWhen
+Γ ⊢𝑃: 𝜏
+𝜏𝐻= Θ(𝐻)
+Γ; Θ ⊢forbid 𝑃when 𝐻: 𝜏⊔𝜏𝐻
+Response
+Γ ⊢𝑃1 : 𝜏1
+Γ ⊢𝑃2 : 𝜏2
+Γ; Θ ⊢when 𝑃1 then within Δ 𝑃2 : 𝑇
+DEmpty
+Γ; Θ ⊢𝜖: Θ
+DLet1
+𝐻∉dom(Θ)
+Γ ⊢𝑃: 𝜏
+Γ; Θ[𝐻↦→𝜏] ⊢𝑑∗: Θ′
+Γ; Θ ⊢(let 𝐻:= happened(𝑃)) 𝑑∗: Θ′
+DLet2
+𝐻∉dom(Θ)
+𝐻′ ∈dom(Θ)
+Γ ⊢𝑃: 𝜏
+Γ; Θ[𝐻↦→𝜏⊔Θ(𝐻′)] ⊢𝑑∗: Θ′
+Γ; Θ ⊢(let 𝐻:= happened(𝑃) when 𝐻′) 𝑑∗: Θ′
+Prog
+Γ; ∅⊢𝑑∗: Θ
+Γ; Θ ⊢𝑝: 𝜏
+Allowed(𝜏,𝐴)
+Γ ⊢⟨𝑑∗𝑝, 𝐴⟩: ✓
+Figure 5: Typing rules for BPFence DSL.
+B.1.5
+Type System. Figure 5 shows all the typing rules of our type
+system. We briefly comment on the rules not already discussed in
+Section 5.4. Rule PNeg obtains the type of 𝑃and returns it since the
+negation operator does not change the way a violation may occur.
+Rule POr is similar to the rule for conjunction: it takes the join of
+the types of the two sub-terms so as to ensure that a violation can
+occur in the worst way possible.
+The typing rules for historical-predicate declarations are char-
+acterized by the judgment Γ; Θ ⊢𝑑∗: Θ′, where Θ is the violation-
+type environment accumulated so far and Θ′ is the environment
+produced after processing 𝑑∗. Rule DEmpty returns Θ unchanged
+when the declaration sequence is empty. Rule DLet1 derives the
+type 𝜏of 𝑃under Γ, extends Θ with the binding 𝐻↦→𝜏, and pro-
+cesses the remaining definitions 𝑑∗in the extended environment,
+producing Θ′. Rule DLet2 follows the same approach for condi-
+tional declarations: it requires 𝐻′ ∈dom(Θ) to ensure that 𝐻′ has
+already been declared and to guarantee acyclicity. It extends Θ with
+𝐻↦→𝜏⊔Θ(𝐻′), where the join reflects that the violation type of
+𝐻depends on both the predicate 𝑃and the historical condition
+𝐻′. Both rules DLet1 and DLet2 require 𝐻∉dom(Θ) to prevent
+redefinition of identifiers. Note that both judgments only assign
+types in {𝐶,𝑂}: the type of an event predicate is either taken from
+Γ, whose codomain is {𝐶,𝑂}, or obtained by joining such types,
+and Θ is built from event-predicate types in the same way. The type
+𝑇is therefore introduced only by rule Response.
+Before proving type soundness, we prove an auxiliary result:
+Lemma B.3. Let 𝑒be an event; if Γ ⊢𝑃: 𝜏and J𝑃K𝑎(𝑒, ∅) ≠na,
+then Γ(𝑒.type) ⊑𝜏.
+Proof. By induction on the derivation Γ ⊢𝑃: 𝜏and then by
+cases on the last rule applied.
+Case PEvent: We have that 𝑃= (𝐸,𝑔) and 𝜏= Γ(𝐸). By the se-
+mantics we have J(𝐸,𝑔)K𝑎(𝑒, ∅) ≠na implies 𝑒.type = 𝐸. Therefore
+Γ(𝐸) = Γ(𝑒.type) = 𝜏.
+Case PNeg: We have that 𝑃= ¬𝑃′, Γ ⊢𝑃′ : 𝜏. By the semantics
+of negation, J¬𝑃K𝑎(𝑒, ∅) ≠na implies J𝑃′K𝑎(𝑒, ∅) ≠na. By the
+induction hypothesis applied to 𝑃′, Γ(𝑒.type) ⊑𝜏.
+Case PAnd: We have that 𝑃= 𝑃1 ∧𝑃2, 𝜏= 𝜏1 ⊔𝜏2, Γ ⊢𝑃1 : 𝜏1, and
+Γ ⊢𝑃2 : 𝜏2. By hypothesis, J𝑃1 ∧𝑃2K𝑎(𝑒, ∅) ≠na, and we proceed
+by cases on J𝑃1K𝑎(𝑒, ∅). If J𝑃1K𝑎(𝑒, ∅) ≠na, we can apply the induc-
+tion hypothesis to 𝑃1, obtaining Γ(𝑒.type) ⊑𝜏1 ⊑𝜏. Otherwise, if
+J𝑃1K𝑎(𝑒, ∅) = na, by the semantics of conjunction, the hypothesis
+J𝑃1 ∧𝑃2K𝑎(𝑒, ∅) ≠na implies J𝑃2K𝑎(𝑒, ∅) = false ≠na. By the in-
+duction hypothesis applied to 𝑃2, Γ(𝑒.type) ⊑𝜏2 ⊑𝜏. In all cases
+Γ(𝑒.type) ⊑𝜏.
+Case POr: We have that 𝑃= 𝑃1 ∨𝑃2, 𝜏= 𝜏1 ⊔𝜏2, Γ ⊢𝑃1 : 𝜏1,
+and Γ ⊢𝑃2 : 𝜏2. By hypothesis, J𝑃1 ∨𝑃2K𝑎(𝑒, ∅) ≠na, and we
+proceed by cases on J𝑃1K𝑎(𝑒, ∅). If J𝑃1K𝑎(𝑒, ∅) = true ≠na, by
+the induction hypothesis applied to 𝑃1, we have Γ(𝑒.type) ⊑𝜏1 ⊑
+𝜏. Otherwise, if J𝑃1K𝑎(𝑒, ∅) = false or J𝑃1K𝑎(𝑒, ∅) = na, by the
+semantics of disjunction, the hypothesis J𝑃1 ∨𝑃2K𝑎(𝑒, ∅) ≠na
+implies J𝑃2K𝑎(𝑒, ∅) ≠na. By the induction hypothesis applied to 𝑃2,
+Γ(𝑒.type) ⊑𝜏2 ⊑𝜏. In all cases Γ(𝑒.type) ⊑𝜏.
+□
+Finally, we prove Theorem 5.8:
+Theorem 5.8 (Type Soundness). Let Γ be a type environment,
+Π = ⟨𝑑∗𝑝,𝐴⟩be a DSL program such that Γ; ∅⊢𝑑∗: Θ and Γ; Θ ⊢
+𝑝: 𝜏. For each finite trace 𝜎𝑘such that JΠK(𝜎𝑘) = violated, let 𝜎𝑖∗be
+the first violating prefix of 𝜎𝑘. Then:
+• if 𝜏∈{𝐶,𝑂}, the violation is triggered by an offending event
+𝑒𝑖∗such that Γ(𝑒𝑖∗.type) ⊑𝜏;
+• if 𝜏= 𝑇, either the violation is triggered by an offending event
+𝑒𝑖∗such that Γ(𝑒𝑖∗.type) ⊑𝑂, or it is due to a deadline expi-
+ration: there exists a bounded-response sub-formula 𝑃1𝐹≤Δ𝑃2
+of J𝑝K𝐷
+DSL and an instance (𝑖, 𝜌𝑖,𝑑𝑖) ∈I(𝜎𝑖∗, ∅) of its active
+instance set such that 𝑒𝑖∗.𝑡> 𝑑𝑖and ¬ sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑖∗).
+Proof. Let 𝜙= J𝑝K𝐷
+DSL be the formula denoted by 𝑝, where 𝐷
+is the definition environment obtained from 𝑑∗. Let 𝜎𝑖∗be the first
+violating prefix of 𝜎𝑘. We proceed by induction on the derivation
+Γ; Θ ⊢𝑝: 𝜏and by cases on the last rule applied.
+Case Forbid: We know that 𝑝= forbid 𝑃, 𝜙= 𝐺(¬𝑃), 𝜏= 𝜏𝑃, and
+Γ ⊢𝑃: 𝜏𝑃. Since 𝑃is an event predicate, 𝜏𝑃∈{𝐶,𝑂} by the predi-
+cate typing rules, hence 𝜏∈{𝐶,𝑂}. By the semantics, JΠK(𝜎𝑖∗) =
+violated implies 𝜋1(J¬𝑃K(𝜎𝑖∗, ∅)) = violated, that in turn implies
+J𝑃K𝑎(𝑒𝑖∗, ∅) = false. Since J𝑃K𝑎(𝑒𝑖∗, ∅) ≠na, by Lemma B.3 and
+since 𝜏𝑃∈{𝐶,𝑂}, Γ(𝑒𝑖∗.type) ⊑𝜏𝑃= 𝜏.
+Case ForbidWhen: 𝑝= forbid 𝑃when 𝐻, 𝜙= 𝐺(¬(𝐷(𝐻) ∧𝑃))
+where 𝐷(𝐻) = <𝜙𝐻for some 𝜙𝐻, 𝜏= Θ(𝐻) ⊔𝜏𝑃, Γ ⊢𝑃: 𝜏𝑃
+and Θ(𝐻) = 𝜏𝐻. By the semantics, JΠK(𝜎𝑖∗) = violated implies
+𝜋1(J¬(𝐷(𝐻) ∧𝑃)K(𝜎𝑖∗, ∅)) = violated. By the semantics of nega-
+tion, this implies 𝜋1(J𝐷(𝐻) ∧𝑃K(𝜎𝑖∗, ∅)) = ok, that in turn implies
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+𝜋1(J𝐷(𝐻)K(𝜎𝑖∗, ∅)) = ok and 𝜋1(J𝑃K(𝜎𝑖∗, ∅)) = ok. The first condi-
+tion means that 𝐷(𝐻) = <𝜙𝐻holds on 𝜎𝑖∗, meaning there exists
+𝑗≤𝑖∗such that 𝜙𝐻was satisfied at some past position 𝑗. This
+means that a relevant past event occurred, but it does not iden-
+tify the offending event. The second condition J𝑃K𝑎(𝑒𝑖∗, ∅) = true
+identifies the offending event because it is satisfied by the current
+event 𝑒𝑖∗, which is the event that triggers the violation at the first
+violating prefix. Since J𝑃K𝑎(𝑒𝑖∗, ∅) = true ≠na, by Lemma B.3 ap-
+plied to 𝑃, Γ(𝑒𝑖∗.type) ⊑𝜏𝑃. Since 𝜏𝑃⊑𝜏𝐻⊔𝜏𝑃= 𝜏, we conclude
+Γ(𝑒𝑖∗.type) ⊑𝜏; moreover 𝜏𝑃,𝜏𝐻∈{𝐶,𝑂}, hence 𝜏∈{𝐶,𝑂}.
+Case Response: We know that 𝑝= when 𝑃1 then within Δ 𝑃2,
+𝜙= 𝐺(𝑃1𝐹≤Δ𝑃2), and 𝜏= 𝑇. Since the resulting type is 𝜏= 𝑇, it suf-
+fices to establish the second disjunct of the thesis, namely that the
+violation is due to a deadline expiration. By the semantics, we have
+that JΠK(𝜎𝑖∗) = violated implies 𝜋1(J𝑃1𝐹≤Δ𝑃2K(𝜎𝑖∗, ∅)) = violated.
+By the semantics of the operator 𝐹≤Δ, this means there exists
+(𝑖, 𝜌𝑖,𝑑𝑖) ∈I(𝜎𝑖∗, ∅) such that 𝑒𝑖∗.𝑡> 𝑑𝑖and ¬ sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑖∗),
+which is exactly the thesis, with 𝑃1𝐹≤Δ𝑃2 itself as the witness sub-
+formula.
+Case Comp: We have that 𝑝= 𝑝1 ∧𝑝2, 𝜙= 𝜙1 ∧𝜙2, 𝜏= 𝜏1 ⊔𝜏2, Γ; Θ ⊢
+𝑝1 : 𝜏1 and Γ; Θ ⊢𝑝2 : 𝜏2. By a straightforward auxiliary induction
+on the syntax of𝑝we have bnd(J𝑝K𝐷
+DSL) = ∅: the three base cases are
+𝐺-formulas and bnd(𝐺𝜓) = ∅by definition, while bnd(𝜙1 ∧𝜙2) =
+bnd(𝜙1) ∪bnd(𝜙2). Hence, both conjuncts are evaluated under the
+empty environment. By the semantics of conjunction, JΠK(𝜎𝑖∗) =
+violated implies 𝜋1(J𝜙1K(𝜎𝑖∗, ∅)) = violated or 𝜋1(J𝜙2K(𝜎𝑖∗, ∅)) =
+violated. Consider the case where 𝜙1 is violated; the other one
+is symmetric. Then 𝜎𝑖∗is also the first violating prefix of 𝑝1: if 𝜙1
+were violated at some 𝑗< 𝑖∗, the same clause for conjunction would
+give JΠK(𝜎𝑗) = violated, contradicting the minimality of 𝑖∗. The
+induction hypothesis for 𝑝1 thus applies at 𝜎𝑖∗, and we distinguish
+two cases on 𝜏1.
+If 𝜏1 ⊑𝑂, the induction hypothesis is the first item of the thesis
+for 𝑝1: there is an offending event 𝑒𝑖∗with Γ(𝑒𝑖∗.type) ⊑𝜏1, and the
+same event is offending for 𝑝1 ∧𝑝2. If 𝜏⊑𝑂, we must prove the
+first item, and Γ(𝑒𝑖∗.type) ⊑𝜏1 ⊑𝜏. If 𝜏= 𝑇, we must prove the
+second item, and Γ(𝑒𝑖∗.type) ⊑𝜏1 ⊑𝑂gives its first possibility.
+If instead𝜏1 = 𝑇, then𝜏= 𝑇⊔𝜏2 = 𝑇, so we must prove the second
+item of the thesis. Since 𝜏1 = 𝑇, the induction hypothesis is the
+second item of the thesis for 𝑝1. It gives us one of two possibilities.
+Either there is an offending event 𝑒𝑖∗for 𝑝1 with Γ(𝑒𝑖∗.type) ⊑
+𝑂, and the same event is offending for 𝑝1 ∧𝑝2. Or there exists a
+bounded-response sub-formula 𝑃1𝐹≤Δ𝑃2 of J𝑝1K𝐷
+DSL and an instance
+(𝑖, 𝜌𝑖,𝑑𝑖) ∈I(𝜎𝑖∗, ∅) such that 𝑒𝑖∗.𝑡> 𝑑𝑖and ¬ sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑖∗).
+Since J𝑝K𝐷
+DSL = J𝑝1K𝐷
+DSL ∧J𝑝2K𝐷
+DSL, the same sub-formula is one of
+J𝑝K𝐷
+DSL, and the same instance witnesses the thesis.
+□
+B.2
+Monitor Synthesis
+B.2.1
+Normal Form. Given a DSL program Π = ⟨𝑑∗𝑝,𝐴⟩and the
+definition environment 𝐷obtained from 𝑑∗, we define our normal-
+ization function NF as follows:
+NF(⟨𝑑∗𝑝,𝐴⟩) = NF(𝑝)
+NF(forbid 𝑃) = 𝐺(¬𝑃)
+NF(forbid 𝑃when 𝐻) = 𝐺(¬(𝐷(𝐻) ∧𝑃))
+NF(when 𝑃1 then within Δ 𝑃2) = 𝐺(𝑃1𝐹≤Δ𝑃2)
+NF(𝑝1 ∧𝑝2) = 𝐺(𝜙′
+1 ∧𝜙′
+2)
+where NF(𝑝1) = 𝐺(𝜙′
+1), and NF(𝑝2) = 𝐺(𝜙′
+2). Note that for every
+𝑝, NF(𝑝) = 𝐺(𝜙′) for a unique formula 𝜙′. Hereafter, we denote by
+<𝜙𝐻the past formula 𝐷(𝐻) associated with the historical predicate
+𝐻in the definition environment 𝐷.
+The following result ensures that our normalization process
+preserves the semantics of a DSL program:
+Theorem B.4 (Semantic preservation). For every program Π =
+⟨𝑑∗𝑝,𝐴⟩, let 𝜙= J𝑝K𝐷(𝑑∗)
+DSL
+be the formula denoted by Π. Then for
+every finite trace 𝜎𝑘:
+𝜋1(J𝜙K(𝜎𝑘, ∅)) = 𝜋1(JNF(𝑝)K(𝜎𝑘, ∅)).
+Proof. We proceed by structural induction on the syntax of 𝑝,
+showing that 𝜋1(J𝜙K(𝜎𝑘, ∅)) = 𝜋1(JNF(𝑝)K(𝜎𝑘, ∅)) for every finite
+trace 𝜎𝑘.
+Case forbid 𝑃: By the definition of J·K𝐷
+DSL we have 𝜙= 𝐺(¬𝑃);
+since NF(𝑝) = 𝐺(¬𝑃), 𝜙coincides syntactically with the normal
+form and the thesis holds trivially.
+Case forbid 𝑃when 𝐻: By the definition of J·K𝐷
+DSL we have 𝜙=
+𝐺(¬(𝐷(𝐻) ∧𝑃)), which is exactly NF(𝑝); hence 𝜙coincides syn-
+tactically with the normal form.
+Case when 𝑃1 then within Δ 𝑃2: By the definition of J·K𝐷
+DSL we
+have 𝜙= 𝐺(𝑃1𝐹≤Δ𝑃2); since NF(𝑝) = 𝜙, 𝜙coincides syntactically
+with the normal form and the thesis holds trivially.
+Case 𝑝1 ∧𝑝2: By the definition of J·K𝐷
+DSL we have 𝜙= 𝜙1 ∧𝜙2, where
+𝜙𝑖= J𝑝𝑖K𝐷(𝑑∗)
+DSL
+for𝑖∈{1, 2}; by the definition of NF on conjunctions,
+we have NF(𝑝) = 𝐺(𝜙′
+1 ∧𝜙′
+2) where 𝜙′
+𝑖is such that NF(𝑝𝑖) = 𝐺(𝜙′
+𝑖).
+By the definition, J·K𝐷
+DSL produces a 𝐺-formula or a conjunction of
+𝐺-formulas, and by the definition of bnd on 𝐺-formulas we have
+bnd(𝜙𝑖) = ∅, and bnd(𝐺(𝜙′
+𝑖)) = ∅as well. By Proposition B.1, the
+evaluation of 𝜙1 and of 𝐺(𝜙′
+1) leaves the environment unchanged,
+so in both J𝜙1 ∧𝜙2K(𝜎𝑘, ∅) and J𝐺(𝜙′
+1) ∧𝐺(𝜙′
+2)K(𝜎𝑘, ∅) the second
+conjunct is evaluated under ∅as well. Hence, by the semantics of
+conjunction, the value of each of the two formulas is determined
+by the values of its conjuncts. By the induction hypothesis and the
+definition of 𝜙′
+𝑖, for 𝑖∈{1, 2}:
+𝜋1(J𝜙𝑖K(𝜎𝑘, ∅)) = 𝜋1(JNF(𝑝𝑖)K(𝜎𝑘, ∅)) = 𝜋1(J𝐺(𝜙′
+𝑖)K(𝜎𝑘, ∅)).
+Hence:
+𝜋1(J𝜙K(𝜎𝑘, ∅)) = 𝜋1(J𝐺(𝜙′
+1) ∧𝐺(𝜙′
+2)K(𝜎𝑘, ∅))
+= 𝜋1(J𝐺(𝜙′
+1 ∧𝜙′
+2)K(𝜎𝑘, ∅))
+= 𝜋1(JNF(𝑝)K(𝜎𝑘, ∅))
+where the first step follows from the argument above, the second
+from Proposition B.2, and the third from the definition of NF on con-
+junctions. The hypothesis of Proposition B.2 holds: 𝜙′
+1 is built from
+bounded-response formulas and negations, and neither introduces
+bindings, so bnd(𝜙′
+1) = ∅.
+□
+
+
+Letterio Galletta
+B.2.2
+Safety Monitor. We formally define the evaluation function
+EJ𝜓KH(𝑒) ∈𝐾3 inductively on the structure of the conjunct 𝜓that
+can be either 𝑃or <𝜙𝐻∧𝑃:
+EJ𝑃KH(𝑒) = 𝜋1(J𝑃K𝑎(𝑒, ∅))
+EJ<𝜙𝐻∧𝑃KH(𝑒) =
+(
+false
+H (<𝜙𝐻) = pending
+𝜋1(J𝑃K𝑎(𝑒, ∅))
+otherwise
+Lemma B.5 (Safety evaluation soundness). Given a DSL pro-
+gram Π, for every safety conjunct 𝜓𝑖in NF(Π), finite trace 𝜎𝑘with
+𝑘≥1, and historical memory H such that for all <𝜙𝐻∈Φ<(Π):
+H (<𝜙𝐻) = ok
+=⇒
+𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok,
+we have:
+EJ𝜓𝑖KH(𝑒𝑘) = true
+=⇒
+𝜋1(J𝜓𝑖K(𝜎𝑘, ∅)) = ok.
+Proof. By cases on the structure of 𝜓𝑖.
+Case 𝜓𝑖= 𝑃: by definition of EJ·K·(·), EJ𝑃KH(𝑒𝑘) = J𝑃K𝑎(𝑒𝑘, ∅) =
+true. By the semantics of predicates as formulas, J𝑃K𝑎(𝑒𝑘, ∅) = true
+implies 𝜋1(J𝑃K(𝜎𝑘, ∅)) = ok.
+Case𝜓𝑖= <𝜙𝐻∧𝑃: By definition, EJ<𝜙𝐻∧𝑃KH(𝑒𝑘) = true requires
+H (<𝜙𝐻) = ok and J𝑃K𝑎(𝑒𝑘, ∅) = true. By the hypothesis on H,
+H (<𝜙𝐻) = ok implies 𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok. By the semantics of
+predicates as formulas, J𝑃K𝑎(𝑒𝑘, ∅) = true implies 𝜋1(J𝑃K(𝜎𝑘, ∅)) =
+ok. By the semantics of conjunction, we conclude:
+𝜋1(J<𝜙𝐻∧𝑃K(𝜎𝑘, ∅)) = ok.
+□
+Lemma B.6 (Safety evaluation completeness). Given a DSL
+program Π, for every safety conjunct𝜓𝑖in NF(Π), finite trace 𝜎𝑘with
+𝑘≥1, and historical memory H such that for all <𝜙𝐻∈Φ<(Π):
+𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok
+=⇒
+H (<𝜙𝐻) = ok,
+if 𝜋1(J𝜓𝑖K(𝜎𝑘, ∅)) = ok and J𝑃K𝑎(𝑒𝑘, ∅) ≠na, where 𝑃is the event
+predicate occurring in 𝜓𝑖, then:
+EJ𝜓𝑖KH(𝑒𝑘) = true.
+Proof. By cases on the structure of 𝜓𝑖.
+Case𝜓𝑖= 𝑃: By the semantics of predicates as formulas, 𝜋1(J𝑃K(𝜎𝑘, ∅)) =
+ok means J𝑃K𝑎(𝑒𝑘, ∅) = true, hence by definition of EJ·K·(·):
+EJ𝑃KH(𝑒𝑘) = true.
+Case𝜓𝑖= <𝜙𝐻∧𝑃: 𝜋1(J<𝜙𝐻∧𝑃K(𝜎𝑘, ∅)) = ok implies by the seman-
+tics of conjunction both 𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok and 𝜋1(J𝑃K(𝜎𝑘, ∅)) =
+ok. By the hypothesis on H, 𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok implies H (<𝜙𝐻) =
+ok. By the same argument as the case 𝜓𝑖= 𝑃, 𝜋1(J𝑃K(𝜎𝑘, ∅)) = ok
+implies J𝑃K𝑎(𝑒𝑘, ∅) = true.
+Therefore by definition of EJ·K·(·):
+EJ<𝜙𝐻∧𝑃KH(𝑒𝑘) = true.
+□
+B.2.3
+Bounded-response Monitor. We define the memory update
+function 𝑈used in the bounded-response monitor automaton. Con-
+sider a formula 𝑃𝑗
+1𝐹≤Δ𝑗𝑃𝑗
+2. Given an active instance set 𝐼𝑗, a violation
+flag 𝑓𝑗, and an event 𝑒, we define:
+vi(𝐼𝑗,𝑒) ⇐⇒∃(𝑑, 𝜌′) ∈𝐼𝑗. 𝑒.𝑡> 𝑑
+rm(𝐼𝑗,𝑒) = 𝐼𝑗\ {(𝑑, 𝜌′) | 𝑒.𝑡> 𝑑∨(𝑒.𝑡≤𝑑∧J𝑃𝑗
+2K𝑎(𝑒, 𝜌′) = true)}
+new(𝑒) =
+(
+{(𝑒.𝑡+ Δ𝑗, 𝜌′)}
+if J𝑃𝑗
+1K𝑎(𝑒, ∅) = (true, 𝜌′)
+∅
+otherwise
+where the predicate vi(𝐼𝑗,𝑒) detects whether any active instance
+has expired. The function rm(𝐼𝑗,𝑒) removes all instances that are
+either expired or satisfied by 𝑒. The function new(𝑒) produces a
+new instance if 𝑃𝑗
+1 is triggered by 𝑒. The order of application is
+fixed: vi is evaluated on the current 𝐼𝑗before rm and new update it.
+The memory update function is defined as𝑈((𝐼𝑗, 𝑓𝑗),𝑒) = (𝐼′
+𝑗, 𝑓′
+𝑗)
+where:
+𝐼′
+𝑗= rm(𝐼𝑗,𝑒)∪new(𝑒),
+𝑓′
+𝑗=
+(
+violated
+if 𝑓𝑗= violated ∨vi(𝐼𝑗,𝑒)
+ok
+otherwise.
+B.2.4
+Global Monitor. Consider a DSL program Π and its normal
+form formula NF(Π) that has safety and bounded response con-
+juncts indexed by the sets 𝐼and 𝐽, respectively. Recall that the states
+of the monitor A = GenMon(NF(Π)) are (|𝐼| + |𝐽|) tuples, whose
+elements track the corresponding state of each local automaton.
+Given a state 𝑞of A, we denote by 𝑞𝑘the 𝑘-th element of 𝑞. Recall
+that we denote by <𝜙𝐻the past formula 𝐷(𝐻) associated with the
+historical predicate 𝐻in the definition environment 𝐷built from
+the declarations 𝑑∗of Π.
+Before presenting the rule for the global monitor we formalize
+the operation to update the historical memory. More precisely, we
+define UpdH by recursion on the declaration sequence 𝑑∗occurring
+inside a DSL program Π:
+UpdH(H,𝑒,𝜖) = H
+UpdH(H,𝑒,𝑑∗· let 𝐻:= happened(𝑃)) =
+(
+H ′[<𝑃↦→ok]
+if J𝑃K𝑎(𝑒, ∅) = true
+H ′
+otherwise
+UpdH(H,𝑒,𝑑∗· let 𝐻:= happened(𝑃) when 𝐻′) =
+
+
+H ′[<(𝐷(𝐻′) ∧𝑃) ↦→ok]
+if H ′(<𝜙𝐻′) = ok ∧
+J𝑃K𝑎(𝑒, ∅) = true
+H ′
+otherwise
+where H ′ = UpdH(H,𝑒,𝑑∗) is the memory already updated for
+all preceding declarations, according to the order in which the
+declarations occur in 𝑑∗. Since we know that declarations 𝑑∗are
+acyclic by the type system, the updates follow a topological order.
+Rule Par below captures the behavior of the global monitor:
+Par
+H ′ = UpdH(H,𝑒,𝑑∗)
+∀𝑖∈𝐼. (𝑞𝑖, (H ′, J))
+𝑒−→
+𝑠
+𝑖(𝑞′
+𝑖, (H ′, J))
+∀𝑗∈𝐽. (𝑞𝑗, (H ′, J))
+𝑒−→
+𝑟
+𝑗(𝑞′
+𝑗, (H ′, J𝑗))
+J ′ = J
+
+𝑗↦→J𝑗(𝑗) | 𝑗∈𝐽
+
+(𝑞, (H, J))
+𝑒−→(𝑞′, (H ′, J ′))
+The first premise of Par updates the historical memory H to H ′
+by setting to ok every entry <𝜙𝐻whose formula 𝜙𝐻evaluates to
+true on the current event 𝑒, leaving all other entries unchanged. We
+update the memory following the declaration list 𝑑∗of the program
+Π. This update is monotone: entries already set to ok are never reset.
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+The second and the third premises fire the corresponding transition
+on the local automaton associated with the conjunct of the formula.
+The last premise changes the clause state of each bounded response
+𝑗to update the second component of the monitor memory. Since
+the updates of each bounded-response automaton are independent,
+we can simply merge the various updates to obtain J ′.
+Proposition B.7 (Determinism). For every DSL program Π and
+finite trace 𝜎𝑘, there exists a unique run
+(𝑞0,𝑚0)
+𝜎𝑘
+−−→(𝑞,𝑚).
+Proof. It suffices to show that for every configuration (𝑞,𝑚)
+and event 𝑒, there exists a unique configuration (𝑞′,𝑚′) such that
+(𝑞,𝑚)
+𝑒−→(𝑞′,𝑚′). The result then follows by induction on 𝑘, with
+the base case given by the unique initial configuration (𝑞0,𝑚0).
+We reason on how a transition is performed by rule Par: we
+show that every step in the premise of rule Par produces a unique
+output given a configuration (𝑞,𝑚) and an event 𝑒.
+First, given 𝑒and 𝑚= (H, J) the next historical memory is
+obtained as H ′ = UpdH(H,𝑒,𝑑∗). By definition UpdH is a function
+defined by structural recursion on 𝑑∗, so H ′ is uniquely determined.
+Consider now the transition of safety automata. Recall that 𝑞is a
+tuple where each element records the state 𝑞𝑖of a local automaton.
+For each 𝑖∈𝐼, the new control state 𝑞′
+𝑖is uniquely determined by 𝑞𝑖
+and by the evaluation of EJ𝜓𝑖KH′ (𝑒). There are two cases according
+to the state 𝑞𝑖. If 𝑞𝑖= violated: only rule S-Absorb applies, giving
+𝑞′
+𝑖= violated. Otherwise, if𝑞𝑖= ok, then exactly one of rules S-Viol
+or S-Ok applies, depending on whether EJ𝜓𝑖KH′ (𝑒) = true or not.
+These two rules are mutually exclusive and exhaustive.
+Consider now the transition of the bounded-response automata.
+For each 𝑗∈𝐽, the function𝑈((𝐼𝑗, 𝑓𝑗),𝑒) is defined as a composition
+of vi, rm, and new, each of which is a function of its inputs. Hence
+𝑈produces a unique output (𝐼′
+𝑗, 𝑓′
+𝑗). The new control state 𝑞′
+𝑗is
+then uniquely determined as follows. If 𝑞𝑗= violated, then only
+rule R-Absorb applies, giving 𝑞′
+𝑗= violated. Otherwise, if 𝑞𝑗=
+ok, then exactly one of rules R-Viol or R-Ok applies, depending
+on whether 𝑓′
+𝑗= violated or 𝑓′
+𝑗= ok. These two conditions are
+mutually exclusive and exhaustive.
+Finally, observe that the component 𝐽in 𝑚is updated according
+to J ′ = J [𝑗↦→(𝐼′
+𝑗, 𝑓′
+𝑗) | 𝑗∈𝐽], which produces a unique output.
+Therefore, every step by rule Par is deterministic and produces
+a unique configuration (𝑞′,𝑚′) from (𝑞,𝑚) and 𝑒.
+□
+We now provide a bound on the size of the monitor: we show
+that the size of the monitor is linear in the size of the formula and
+in the number of historical-predicate declarations. Note that in a
+real eBPF deployment we can only admit a finite and bounded num-
+ber of active instances for each bounded response clause, denoted
+MAX_INST. Let Π = ⟨𝑑∗𝑝,𝐴⟩be a DSL program with normal form
+NF(Π) = 𝐺
+Û
+𝑖∈𝐼
+¬𝜓𝑖∧
+Û
+𝑗∈𝐽
+ 𝑃𝑗
+1 𝐹≤Δ𝑗𝑃𝑗
+2
+
+.
+We use the following parameters throughout:
+• |𝐼|: number of safety conjuncts;
+• |𝐽|: number of bounded-response conjuncts;
+• 𝑛= |𝑑∗|: number of historical-predicate declarations in Π;
+• 𝑣𝑗= |vars(𝑃𝑗
+1)|: number of correlation variables bound by
+𝑃𝑗
+1, for each 𝑗∈𝐽;
+• 𝑤: machine word size in bits;
+• MAX_INST ∈N: the maximum number of active instances
+per bounded-response clause, a fixed deployment parame-
+ter.
+Proposition B.8 (Monitor size). Let Π be a DSL program and
+A = GenMon(NF(Π)) be its corresponding monitor. Then A re-
+quires:
+• |𝐼| + |𝐽| bits for the control state;
+• 𝑛bits for the historical memory;
+• |𝐽| bits for the violation flags;
+• at most MAX_INST · (64 +𝑣𝑗·𝑤) bits for the active instance
+set of each clause 𝑗∈𝐽.
+Its total size is:
+|𝐼| + 2|𝐽| + 𝑛+ MAX_INST ·
+∑︁
+𝑗∈𝐽
+(64 + 𝑣𝑗· 𝑤)
+bits.
+Proof. We account for each component of the monitor state.
+Control state. Each local automaton 𝐴𝑠
+𝑖and 𝐴𝑟
+𝑗uses a single bit
+to represent its current state 𝑞𝑖,𝑞𝑗∈{ok, violated}, for a total of
+|𝐼| + |𝐽| bits.
+Historical memory. A historical memory H maps each of the 𝑛past
+formulas to a single bit, requiring 𝑛bits in total.
+Violation flags. Each bounded-response clause 𝑗∈𝐽maintains a
+violation flag 𝑓𝑗∈{ok, violated}, one bit per clause, |𝐽| bits in total.
+Active instance sets. Each clause 𝑗∈𝐽maintains at most MAX_INST
+active instances in a real deployment. Each instance (𝑑, 𝜌′) consists
+of:
+• a deadline 𝑑∈N, stored as a 64-bit nanosecond timestamp;
+• a correlation environment 𝜌′ containing 𝑣𝑗values, each
+stored as a 𝑤-bit machine word, for a total of 𝑣𝑗· 𝑤bits.
+Each instance therefore requires 64 + 𝑣𝑗· 𝑤bits, and the active
+instance set of clause 𝑗requires at most MAX_INST · (64 + 𝑣𝑗· 𝑤)
+bits.
+Total. Summing all components:
+|𝐼| + |𝐽|
+|  {z  }
+control
++
+𝑛
+|{z}
+history
++
+|𝐽|
+|{z}
+flags
++ MAX_INST ·
+∑︁
+𝑗∈𝐽
+(64 + 𝑣𝑗· 𝑤)
+|                                 {z                                 }
+instances
+bits.
+The first three terms give |𝐼| + 2|𝐽| + 𝑛bits, which is 𝑂(|𝐼| + |𝐽| +
+𝑛) in the size of NF(Π) and 𝑑∗. The instance storage is linear in
+MAX_INST · |𝐽| · (64 + 𝑣max · 𝑤) where 𝑣max = max𝑗∈𝐽𝑣𝑗, which
+is 𝑂(MAX_INST · |𝐽|) for a fixed policy with bounded correlation
+variables.
+□
+B.2.5
+Proof of Correctness. We first introduce some notation and
+two auxiliary results. Given a DSL program Π, the corresponding
+monitor A = GenMon(NF(Π)), and a finite trace 𝜎𝑘, we write
+(𝑞0,𝑚0)
+𝜎𝑘
+−−→(𝑞,𝑚) to denote the run induced by the trace 𝜎𝑘, i.e.,
+a sequence of 𝑘transitions from the initial configuration (𝑞0,𝑚0)
+that consumes all events in 𝜎𝑘and reaches (𝑞,𝑚).
+To prove soundness we need the following auxiliary lemmas:
+
+
+Letterio Galletta
+Lemma B.9 (UpdH soundness). For every event 𝑒, historical mem-
+ory H, and declaration sequence 𝑑∗of a DSL program Π, if
+∀<𝜙𝐻∈Φ<(Π). H (<𝜙𝐻) = ok
+=⇒
+𝜋1(J<𝜙𝐻K(𝜎, ∅)) = ok
+for some finite trace 𝜎, then:
+UpdH(H,𝑒,𝑑∗)(<𝜙𝐻) = ok
+=⇒
+𝜋1(J<𝜙𝐻K(𝜎′, ∅)) = ok
+for any <𝜙𝐻∈Φ<(Π) and finite trace 𝜎′ that extends 𝜎with 𝑒as its
+last event.
+Proof. By induction on 𝑑∗.
+Base case (𝑑∗= 𝜖): By definition we have UpdH(H,𝑒,𝜖) = H, so
+the lemma directly follows from the hypothesis.
+Inductive step: let 𝑑∗= 𝑑∗
+0 · 𝑑where 𝑑is the last declaration. Let
+H0 = UpdH(H,𝑒,𝑑∗
+0). By the inductive hypothesis applied to 𝑑∗
+0,
+we have:
+∀<𝜙𝐻∈Φ<(Π). H0(<𝜙𝐻) = ok
+=⇒
+𝜋1(J<𝜙𝐻K(𝜎′, ∅)) = ok.
+We proceed by cases on the last declaration 𝑑.
+Case 𝑑= let 𝐻:= happened(𝑃): by definition of UpdH:
+UpdH(H,𝑒,𝑑∗) =
+(
+H0[<𝑃↦→ok]
+if J𝑃K𝑎(𝑒, ∅) = true
+H0
+otherwise.
+Suppose UpdH(H,𝑒,𝑑∗)(<𝜙𝐻) = ok for some <𝜙𝐻. For <𝜙𝐻≠
+<𝑃the value is unchanged from H0 (H0(<𝜙𝐻) = ok), so by in-
+duction hypothesis, 𝜋1(J<𝜙𝐻K(𝜎′, ∅)) = ok. For <𝜙𝐻= <𝑃we
+have two cases. If H0(<𝜙𝐻) = ok, then by induction hypothe-
+sis, 𝜋1(J<𝜙𝐻K(𝜎′, ∅)) = ok. Otherwise, H0(<𝜙𝐻) = pending and
+J𝑃K𝑎(𝑒, ∅) = true. By the semantics of predicates as formulas,
+𝜋1(J𝑃K(𝜎′, ∅)) = ok. Then, by the semantics of < we have:
+𝜋1(J<𝑃K(𝜎′, ∅)) = ok.
+Case 𝑑= let 𝐻:= happened(𝑃) when 𝐻′: by definition of UpdH:
+UpdH(H,𝑒,𝑑∗) =
+
+
+H0[<(<𝜙𝐻′ ∧𝑃) ↦→ok]
+if H0(<𝜙𝐻′) = ok ∧
+J𝑃K𝑎(𝑒, ∅) = true
+H0
+otherwise.
+Suppose UpdH(H,𝑒,𝑑∗)(<𝜙𝐻) = ok. For <𝜙𝐻≠<(<𝜙𝐻′ ∧𝑃),
+the value is unchanged from H0, so the conclusion follows from
+induction hypothesis. For <𝜙𝐻= <(<𝜙𝐻′ ∧𝑃), we have two cases.
+If its value was already ok, H0(<(<𝜙𝐻′ ∧𝑃)) = ok, the thesis fol-
+lows by induction hypothesis, 𝜋1(J<(<𝜙𝐻′ ∧𝑃)K(𝜎′, ∅)) = ok. If
+its value was not already set, i.e., H0(<(<𝜙𝐻′ ∧𝑃)) = pending and
+H0(<𝜙𝐻′) = ok and J𝑃K𝑎(𝑒, ∅) = true, we have that by induction
+hypothesis applied to <𝜙𝐻′, H0(<𝜙𝐻′) = ok implies 𝜋1(J<𝜙𝐻′K(𝜎′, ∅)) =
+ok. By the semantics of predicates as formulas, J𝑃K𝑎(𝑒, ∅) = true
+implies 𝜋1(J𝑃K(𝜎′, ∅)) = ok. By the semantics of conjunction:
+𝜋1(J<𝜙𝐻′ ∧𝑃K(𝜎′, ∅)) = ok.
+and by the semantics of <, we have:
+𝜋1(J<(<𝜙𝐻′ ∧𝑃)K(𝜎′, ∅)) = ok.
+□
+Lemma B.10 (Historical memory soundness). Let Π be a DSL
+program, and let (𝑞0,𝑚0)
+𝜎𝑘
+−−→(𝑞,𝑚) be the run of the monitor A =
+GenMon(NF(Π)) on 𝜎𝑘. For every <𝜙𝐻∈Φ<(Π):
+𝑚H(<𝜙𝐻) = ok
+=⇒
+𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok.
+Proof. By induction on the length of the trace 𝜎𝑘.
+Base case (𝑘= 0): the historical memory H of the initial memory𝑚0
+is such that H (<𝜙𝐻) = pending ≠ok by definition, so the lemma
+is vacuously satisfied.
+Inductive step: assume the lemma holds for a trace 𝜎𝑘−1, namely for
+the run (𝑞0,𝑚0)
+𝜎𝑘−1
+−−−−→(𝑞′′,𝑚′′), we have that for all <𝜙𝐻∈Φ<(Π):
+𝑚′′
+H(<𝜙𝐻) = ok
+=⇒
+𝜋1(J<𝜙𝐻K(𝜎𝑘−1, ∅)) = ok.
+Consider an extension of 𝜎𝑘−1 with a new event 𝑒𝑘, and consider the
+last transition of the run (𝑞0,𝑚0)
+𝜎𝑘
+−−→(𝑞,𝑚). By the premise of rule
+Par, 𝑚H = UpdH(𝑚′′
+H,𝑒𝑘,𝑑∗). The inductive hypothesis is exactly
+the premise of Lemma B.9 instantiated with 𝑚′′
+H and 𝜎= 𝜎𝑘−1. By
+applying Lemma B.9, taking 𝜎′ = 𝜎𝑘−1 · 𝑒𝑘= 𝜎𝑘, we conclude: for
+all <𝜙𝐻∈Φ<(Π):
+UpdH(𝑚′′
+H,𝑒𝑘,𝑑∗)(<𝜙𝐻) = ok
+=⇒
+𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok,
+which is exactly:
+𝑚H(<𝜙𝐻) = ok
+=⇒
+𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok.
+□
+Theorem 6.2 (Soundness). For every DSL program Π and finite
+trace 𝜎𝑘, if A = GenMon(NF(Π)) reaches a bad configuration after
+reading 𝜎𝑘, then JΠK(𝜎𝑘) = violated.
+Proof. By induction on the length 𝑘of the trace 𝜎𝑘.
+Base case (𝑘= 0): the initial configuration (𝑞0,𝑚0) is not bad by
+definition, so the hypothesis is vacuously satisfied.
+Inductive step: assume the theorem holds for a trace 𝜎𝑘−1, i.e., if
+the monitor A reaches a bad configuration after reading 𝜎𝑘−1 then
+JΠK(𝜎𝑘−1) = violated. We show it holds for 𝜎𝑘.
+Suppose A reaches a bad configuration after reading 𝜎𝑘. There
+are two cases:
+Case 1: A was already in a bad configuration after reading 𝜎𝑘−1.
+By the inductive hypothesis, JΠK(𝜎𝑘−1) = violated, and by Theo-
+rem 5.5, JΠK(𝜎𝑘) = violated.
+Case 2: A was not in a bad configuration after reading 𝜎𝑘−1, but
+entered a bad configuration at step 𝑘. Then at least one local au-
+tomaton transitioned to violated at step 𝑘via a non-absorbing rule.
+We proceed by cases on which automaton.
+Safety case. Some 𝐴𝑠
+𝑖transitioned to violated via S-Viol, which
+requires:
+EJ𝜓𝑖K𝑚H (𝑒𝑘) = true
+where 𝑚H is the historical memory after the update at step 𝑘in
+the premise of rule Par. By Lemma B.10 applied to the run on
+𝜎𝑘, 𝑚H(<𝜙𝐻) = ok implies 𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok for all <𝜙𝐻∈
+Φ<(Π). By applying Lemma B.5 with 𝑚H, we have:
+𝜋1(J𝜓𝑖K(𝜎𝑘, ∅)) = ok,
+hence 𝜋1(J¬𝜓𝑖K(𝜎𝑘, ∅)) = violated by the semantics of ¬. Thus,
+since NF(Π) is a conjunction under the operator𝐺, by the semantics
+of ∧and 𝐺we have:
+𝜋1(JNF(Π)K(𝜎𝑘, ∅)) = violated.
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+Bounded-response case. Some 𝐴𝑟
+𝑗transitioned to violated via R-Viol,
+which requires the update function to return the flag violated.
+Since 𝐴𝑟
+𝑗was not in a bad configuration after 𝜎𝑘−1, its flag was
+ok. A bounded-response automaton is in the violated state exactly
+when its flag is, hence, by the definition of 𝑈vi(𝐼𝑗,𝑒𝑘) holds, and
+there exists (𝑑, 𝜌′) ∈𝐼𝑗with 𝑒𝑘.𝑡> 𝑑. The instance (𝑑, 𝜌′) was
+inserted by new at some step 𝑖< 𝑘, where J𝑃𝑗
+1K𝑎(𝑒𝑖, ∅) = (true, 𝜌′)
+and 𝑑= 𝑒𝑖.𝑡+ Δ𝑗. By the semantics of predicates as formulas,
+𝜋1(J𝑃𝑗
+1K(𝜎𝑖, ∅)) = ok, which means (𝑖, 𝜌′,𝑑) ∈I(𝜎𝑘, ∅). Since
+(𝑑, 𝜌′) is still in 𝐼𝑗at step 𝑘, because vi is evaluated before rm up-
+dates the set, the instance was never removed at any step ℓ∈(𝑖,𝑘).
+By the definition of rm, there is then no ℓ∈(𝑖,𝑘) with 𝑒ℓ.𝑡≤𝑑
+and J𝑃𝑗
+2K𝑎(𝑒ℓ, 𝜌′) = true; since 𝑒𝑘.𝑡> 𝑑, no such step exists in (𝑖,𝑘]
+either, that is, ¬sat(𝑖, 𝜌′,𝑑, 𝜎𝑘). By the semantics of the operator
+𝐹≤Δ:
+𝜋1(J𝑃𝑗
+1 𝐹≤Δ𝑗𝑃𝑗
+2K(𝜎𝑘, ∅)) = violated.
+Thus, since NF(Π) is a conjunction under the operator 𝐺, by the
+semantics of ∧and 𝐺we have:
+𝜋1(JNF(Π)K(𝜎𝑘, ∅)) = violated.
+Thus, independently of how the local monitor enters the bad state,
+by Theorem B.4:
+JΠK(𝜎𝑘) = 𝜋1(JNF(Π)K(𝜎𝑘, ∅)) = violated.
+□
+To prove completeness, we need the following auxiliary lemmas:
+Lemma B.11 (UpdH completeness). For every event 𝑒, historical
+memory H, declaration sequence 𝑑∗of a DSL program Π, and finite
+trace 𝜎𝑘, if
+∀<𝜙𝐻∈Φ<(Π). 𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok
+=⇒
+H (<𝜙𝐻) = ok,
+then:
+𝜋1(J<𝜙𝐻K(𝜎′, ∅)) = ok
+=⇒
+UpdH(H,𝑒,𝑑∗)(<𝜙𝐻) = ok,
+for any <𝜙𝐻∈Φ<(Π) and 𝜎′ = 𝜎𝑘· 𝑒.
+Proof. We assume 𝜋1(J<𝜙𝐻K(𝜎′, ∅)) = ok and proceed by in-
+duction on 𝑑∗.
+Base case (𝑑∗= 𝜖): UpdH(H,𝑒,𝜖) = H, so the lemma directly holds.
+Inductive step: Let 𝑑∗= 𝑑∗
+0 · 𝑑where 𝑑is the last declaration, and
+let H0 = UpdH(H,𝑒,𝑑∗
+0). By the inductive hypothesis applied to
+𝑑∗
+0, we have:
+∀<𝜙𝐻∈Φ<(Π). 𝜋1(J<𝜙𝐻K(𝜎′, ∅)) = ok
+=⇒
+H0(<𝜙𝐻) = ok.
+We proceed by cases on 𝑑.
+Case 𝑑= let 𝐻:= happened(𝑃): by definition of UpdH:
+UpdH(H,𝑒,𝑑∗) =
+(
+H0[<𝑃↦→ok]
+if J𝑃K𝑎(𝑒, ∅) = true
+H0
+otherwise.
+Our hypothesis is 𝜋1(J<𝜙𝐻K(𝜎′, ∅)) = ok and 𝜎′ = 𝜎𝑘· 𝑒. For
+<𝜙𝐻≠<𝑃, the conclusion follows from the induction hypothe-
+sis. For <𝜙𝐻= <𝑃, by the semantics of <, ∃𝑖≤𝑘+ 1 such that
+𝜋1(J𝑃K(𝜎𝑖, ∅)) = ok. We have two cases. If 𝑖≤𝑘, by the semantics
+of < applied to 𝜎𝑘, 𝜋1(J<𝑃K(𝜎𝑘, ∅)) = ok. By the hypothesis of
+the lemma, H (<𝑃) = ok. By induction hypothesis, H0(<𝑃) = ok,
+hence UpdH(H,𝑒,𝑑∗)(<𝑃) = ok. Otherwise if 𝑖= 𝑘+ 1, then
+𝜋1(J𝑃K(𝜎′, ∅)) = ok, hence J𝑃K𝑎(𝑒, ∅) = true, and by definition of
+UpdH we have UpdH(H,𝑒,𝑑∗)(<𝑃) = ok.
+Case 𝑑= let 𝐻:= happened(𝑃) when 𝐻′: by definition of UpdH:
+UpdH(H,𝑒,𝑑∗) =
+
+
+H0[<(<𝜙𝐻′ ∧𝑃) ↦→ok]
+if H0(<𝜙𝐻′) = ok ∧
+J𝑃K𝑎(𝑒, ∅) = true
+H0
+otherwise.
+Our hypothesis is 𝜋1(J<𝜙𝐻K(𝜎𝑘· 𝑒, ∅)) = ok. For <𝜙𝐻≠<(<𝜙𝐻′ ∧
+𝑃), the conclusion follows from induction hypothesis. For <𝜙𝐻=
+<(<𝜙𝐻′ ∧𝑃), by the semantics of <, ∃𝑖≤𝑘+1 such that 𝜋1(J<𝜙𝐻′ ∧
+𝑃K(𝜎𝑖, ∅)) = ok. This could happen in two cases: If𝑖≤𝑘, then by the
+semantics of < applied to 𝜎𝑘, 𝜋1(J<(<𝜙𝐻′ ∧𝑃)K(𝜎𝑘, ∅)) = ok. By the
+hypothesis of the lemma, H (<(<𝜙𝐻′ ∧𝑃)) = ok. By induction hy-
+pothesis, H0(<(<𝜙𝐻′ ∧𝑃)) = ok, hence UpdH(H,𝑒,𝑑∗)(<(<𝜙𝐻′ ∧
+𝑃)) = ok. Otherwise if 𝑖= 𝑘+1, then 𝜋1(J<𝜙𝐻′ ∧𝑃K(𝜎𝑘·𝑒, ∅)) = ok,
+which implies both 𝜋1(J<𝜙𝐻′K(𝜎𝑘· 𝑒, ∅)) = ok and 𝜋1(J𝑃K(𝜎𝑘·
+𝑒, ∅)) = ok, meaning that J𝑃K𝑎(𝑒, ∅) = true. By induction hypothe-
+sis applied to <𝜙𝐻′, H0(<𝜙𝐻′) = ok. So, by definition of UpdH:
+UpdH(H,𝑒,𝑑∗)(<(<𝜙𝐻′ ∧𝑃)) = ok.
+□
+Lemma B.12 (Historical memory completeness). Let Π be
+a DSL program, and let (𝑞0,𝑚0)
+𝜎𝑘
+−−→(𝑞,𝑚) be the run of A =
+GenMon(NF(Π)) on 𝜎𝑘. For every <𝜙𝐻∈Φ<(Π):
+𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok
+=⇒𝑚H(<𝜙𝐻) = ok.
+Proof. By induction on the length of the trace 𝑘.
+Base case (𝑘= 0): 𝜋1(J<𝜙𝐻K(𝜎0, ∅)) = pending ≠ok since 𝜎0 is the
+empty trace. The hypothesis is vacuously satisfied.
+Inductive step: assume the lemma holds for a trace 𝜎𝑘−1 and the
+corresponding run (𝑞0,𝑚0)
+𝜎𝑘−1
+−−−−→(𝑞′′,𝑚′′), i.e., for every <𝜙𝐻∈
+Φ<(Π):
+𝜋1(J<𝜙𝐻K(𝜎𝑘−1, ∅)) = ok
+=⇒𝑚′′
+H(<𝜙𝐻) = ok.
+Consider 𝜎𝑘and the last transition of the run. By rule Par, 𝑚H =
+UpdH(𝑚′′
+H,𝑒𝑘,𝑑∗). We apply Lemma B.11 with H = 𝑚′′
+H, 𝜎𝑘−1 as
+the trace of length 𝑘−1, and 𝑒= 𝑒𝑘.
+The premise of Lemma B.11 requires:
+𝜋1(J<𝜙𝐻K(𝜎𝑘−1, ∅)) = ok
+=⇒𝑚′′
+H(<𝜙𝐻) = ok,
+which holds because it is exactly our induction hypothesis. Then,
+by applying Lemma B.11, for every <𝜙𝐻∈Φ<(Π):
+𝜋1(J<𝜙𝐻K(𝜎𝑘, ∅)) = ok
+=⇒𝑚H(<𝜙𝐻) = ok.
+□
+Theorem 6.3 (Completeness). For every DSL program Π and
+finite trace 𝜎𝑘, if JΠK(𝜎𝑘) = violated, then A = GenMon(NF(Π))
+reaches a bad configuration on some prefix 𝜎𝑘′ with 𝑘′ ≤𝑘, provided
+that (i) every event relevant to the policy is delivered to the monitor
+and (ii) at least one event is delivered after every deadline expiration.
+
+
+Letterio Galletta
+Proof. By Theorem B.4, JΠK(𝜎𝑘) = violated implies that the
+normal form formula is violated too: 𝜋1(JNF(Π)K(𝜎𝑘, ∅)) = violated.
+By the semantics of 𝐺, there exists a conjunct of NF(Π) that is
+violated. Let 𝑖∗be the index of the first violating prefix of 𝜎𝑘(well-
+defined by Proposition 5.6). We show that the run
+(𝑞0,𝑚0)
+𝜎𝑖∗
+−−→(𝑞,𝑚)
+of A on 𝜎𝑖∗reaches a bad configuration. We proceed by cases on
+which conjunct is violated.
+Safety case. We assume that a conjunct of the form ¬𝜓𝑖is violated,
+namely 𝜋1(J¬𝜓𝑖K(𝜎𝑖∗, ∅)) = violated. By the semantics of ¬ at the
+formula level, we have 𝜋1(J𝜓𝑖K(𝜎𝑖∗, ∅)) = ok.
+By applying Lemma B.12 to the run (𝑞0,𝑚0)
+𝜎𝑖∗
+−−→(𝑞,𝑚), we have
+for all <𝜙𝐻∈Φ<(Π), 𝜋1(J<𝜙𝐻K(𝜎𝑖∗, ∅)) = ok implies 𝑚H(<𝜙𝐻) =
+ok.
+By applying Lemma B.6 at step 𝑖∗, we have:
+EJ𝜓𝑖K𝑚H (𝑒𝑖∗) = true.
+The premise of rule S-Viol is satisfied and 𝐴𝑠
+𝑖transitions to the
+violated state at step 𝑖∗, hence (𝑞,𝑚) ∈bad with 𝑖∗≤𝑘.
+Bounded-response case. We assume that the violated conjunct is of
+the form 𝑃𝑗
+1𝐹≤Δ𝑗𝑃𝑗
+2. By the semantics of 𝐹≤Δ𝑗, there exists (𝑖, 𝜌𝑖,𝑑𝑖) ∈
+I(𝜎𝑖∗, ∅) with 𝑒𝑖∗.𝑡> 𝑑𝑖and ¬sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑖∗). We show that the
+run (𝑞0,𝑚0)
+𝜎𝑖∗
+−−→(𝑞,𝑚) reaches a bad configuration, i.e., that R-
+Viol fires at step 𝑖∗.
+Step 1 — instance insertion. By definition of I(𝜎𝑖∗, ∅), there exists
+𝑖< 𝑖∗such that J𝑃𝑗
+1K𝑎(𝑒𝑖, ∅) = (true, 𝜌𝑖) and 𝑑𝑖= 𝑒𝑖.𝑡+ Δ𝑗, where
+𝑒𝑖is the last event of 𝜎𝑖. Since 𝑖< 𝑖∗, the run on 𝜎𝑖∗passes through
+step 𝑖, and this is precisely the condition under which new fires: it
+inserts (𝑑𝑖, 𝜌𝑖) into 𝐼𝑗at step 𝑖.
+Step 2 — instance preservation. The instance (𝑑𝑖, 𝜌𝑖) remains in 𝐼𝑗
+at every step ℓ∈(𝑖,𝑖∗]. By definition of rm, the instance (𝑑𝑖, 𝜌𝑖) is re-
+moved at step ℓonly in two cases. When𝑒ℓ.𝑡≤𝑑𝑖and J𝑃𝑗
+2K𝑎(𝑒ℓ, 𝜌𝑖) =
+true: this is precisely the condition defining sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑖∗), con-
+tradicting the hypothesis ¬sat(𝑖, 𝜌𝑖,𝑑𝑖, 𝜎𝑖∗). When 𝑒ℓ.𝑡> 𝑑𝑖: since
+𝑖∗is the first violating prefix, 𝑒𝑖∗is the first event with 𝑒𝑖∗.𝑡> 𝑑𝑖.
+Therefore, no step ℓ∈(𝑖,𝑖∗) has 𝑒ℓ.𝑡> 𝑑𝑖, and the only step in
+(𝑖,𝑖∗] with 𝑒ℓ.𝑡> 𝑑𝑖is ℓ= 𝑖∗itself, at which R-Viol fires before rm
+can remove the instance. In both cases the instance is not removed
+before step 𝑖∗.
+Step 3 — violation detection. At step 𝑖∗, we verify that vi(𝐼𝑗,𝑒𝑖∗holds.
+By definition of vi, this requires (𝑑𝑖, 𝜌𝑖) ∈𝐼𝑗with 𝑒𝑖∗.𝑡> 𝑑𝑖. The
+instance (𝑑𝑖, 𝜌𝑖) is in 𝐼𝑗at step 𝑖∗by Step 2, and 𝑒𝑖∗.𝑡> 𝑑𝑖by
+the semantics of 𝐹≤Δ𝑗applied to 𝜎𝑖∗. Therefore vi(𝐼𝑗,𝑒𝑖∗) holds,
+𝑈returns the flag violated, and by rule R-Viol, 𝐴𝑟
+𝑗transitions to
+violated at step 𝑖∗. Hence (𝑞,𝑚) ∈bad with 𝑖∗≤𝑘.
+□
+C
+Additional Language Constructs
+This appendix details the additional language features mentioned
+in Section 8.1: four temporal operators (Appendix C.1), two reuse
+mechanisms (Appendix C.2), and the standard library (Appendix C.3).
+C.1
+Temporal Operators
+Bounded sequences and bounded safety are desugared into the base
+temporal logic of Section 5, so the soundness and completeness
+results of Section 6 apply directly. Bounded until and bounded count
+require dedicated compilation schemes, described below.
+Bounded sequences. A bounded sequence clause specifies a multi-
+step protocol in which each step must occur within a given deadline
+after the previous one:
+sequence 𝐸1 then within Δ1 𝐸2 then within Δ2 𝐸3 . . .
+The desugaring translates a sequence of 𝑛steps into 𝑛−1 indepen-
+dent bounded-response clauses. For each consecutive pair (𝐸𝑖, 𝐸𝑖+1),
+the compiler generates a synthetic let-declaration that records
+whether 𝐸𝑖has occurred and a clause when 𝐸𝑖then within Δ𝑖𝐸𝑖+1
+requiring the next step within the specified deadline. At runtime,
+each clause is handled by the standard bounded-response mecha-
+nism described in Section 7.3: it creates an entry in the response
+map when 𝐸𝑖fires and raises a violation if 𝐸𝑖+1 does not arrive
+before the deadline expires.
+Bounded until. A bounded until clause asserts that once a condi-
+tion 𝑃1 holds, a response 𝑃2 must occur within Δ:
+while 𝑃1 then within Δ 𝑃2
+Unlike bounded sequences, this construct is not desugared but
+compiled directly into a two-state extended finite-state machine
+(EFSM) maintained in a dedicated BPF map, keyed by (𝜅, clause_id).
+The machine operates as follows:
+• Idle. The initial state. When an event matching 𝑃1 arrives,
+the machine transitions to Active and records a deadline of
+𝑒.𝑡+ Δ.
+• Active. On each subsequent event: if 𝑃2 matches, the obli-
+gation is fulfilled and the machine returns to Idle; if the
+deadline has expired, a violation is raised and the machine
+resets.
+As with all bounded-response clauses, if no event arrives before the
+deadline, the timeout scanner in the runtime daemon (Section 7.4)
+detects the expiry.
+Bounded count. A bounded count clause raises a violation when
+an event 𝐸occurs 𝑁or more times within a sliding time window:
+count 𝐸≥𝑁within Δ
+Note that exists(𝐸, Δ) is syntactic sugar for count 𝐸≥1 within
+Δ. The construct compiles to a per-key counter stored in a dedicated
+BPF map, keyed by (𝜅, clause_id). Each entry holds a counter and
+a window-start timestamp. When an event matching 𝐸arrives: if
+the current time exceeds the window start by more than Δ, the
+window is reset (counter set to 1, timestamp updated); otherwise,
+the counter is incremented. A violation is raised whenever the
+counter reaches 𝑁.
+Bounded safety. A bounded safety clause raises a violation when
+a predicate 𝑃holds while a guard 𝐺has been observed in the recent
+past:
+forbid 𝑃when 𝐺within Δ
+Intuitively, the clause forbids 𝑃whenever the guard 𝐺has been
+observed within the preceding Δ time units; for example, “forbid an
+outbound connection to a destination that was already contacted
+in the last ten seconds” (beacon detection). Unlike when 𝐺then
+within Δ 𝑃of Section 5, which is a liveness obligation (a missing
+𝑃is the violation), bounded safety is a safety property: the violation
+
+
+Enforcement of In-Kernel Stateful Security Policies via eBPF
+is raised inline in the BPF hook when 𝑃fires, with no need for a
+timeout scanner. The construct is syntactic sugar for the conjunc-
+tion of a bounded count on 𝐺over the same window and a standard
+forbid 𝑃when 𝐻clause guarded by the resulting historical pred-
+icate 𝐻; the compiler implements it directly by emitting the same
+per-key counter of bounded count and checking it at the firing of 𝑃,
+avoiding the creation of an intermediate history entry.
+C.2
+Reuse Constructs
+Both constructs below are resolved entirely at desugaring time;
+therefore, the BPFence compilation pipeline (type checking, nor-
+malization, code generation) remains unchanged.
+Parameterized templates. A parameterized template is a named,
+reusable block of policy clauses with formal parameters:
+let rate_check(ev, threshold, window) = {
+forbid count ev(any) >= threshold within window
+}
+A template is instantiated at the use site via the use construct,
+which binds actual arguments to the formal parameters:
+use rate_check(connect, 100, 60s)
+The desugaring phase resolves each use by looking up the template
+definition, validating that all formal parameters are supplied, and
+substituting the actual arguments into the template body by replac-
+ing event names in predicates and duration literals as appropriate.
+The expansion is recursive: if a template body contains further use
+invocations, they are expanded in turn. Cyclic template references
+are detected at compile time and reported as an error.
+Policy inheritance. A policy can extend another policy, inheriting
+all of its clauses:
+policy base_sandbox {
+apply to pid action deny
+on violation { log }
+forbid exec("/bin/sh")
+forbid load_module(_)
+}
+policy strict_sandbox extends base_sandbox {
+apply to pid action kill
+on violation { log }
+forbid connect(_, _)
+}
+The desugaring phase resolves inheritance transitively: if policy 𝐴
+extends 𝐵and 𝐵extends 𝐶, the clauses of 𝐶and 𝐵are prepended
+to those of 𝐴in order. The child policy retains its own declared
+action (e.g., Deny, Kill); only the clause body is inherited. Circular
+inheritance chains are detected via a visited set during resolution
+and reported as a compile-time error.
+C.3
+Standard Library
+BPFence ships a standard library that provides pre-defined schema
+modules and policy templates, allowing users to write policies
+against common Linux subsystems without specifying low-level
+hook signatures.
+Schema modules. The standard library ships four schema mod-
+ules covering 14 events across file access, process lifecycle, network
+connections, and kernel operations (linux.files, linux.process,
+linux.network, and linux.kernel). Each event is mapped to a
+specific kernel hook and declares the fields extracted from the hook
+arguments. Of the 14 events, 13 attach to LSM hooks (controllable:
+enabling Deny and Kill), and one (clone, via tracepoint) is only
+observable (Alert). The full list is in the online repository.
+Policy templates. Four reusable policy templates are provided,
+each implementing a well-known security pattern:
+• The Chinese Wall template prevents an entity from ac-
+cessing resources in two competing classes (parameter-
+ized by two path patterns), implementing the Brewer–Nash
+model [7] via historical predicates.
+• The Sandboxing template restricts a set of dangerous oper-
+ations (exec, network send, mount, load_module) after a
+triggering event, parameterized by the trigger predicate.
+• The Data-loss prevention (DLP) template forbids network
+transmission to a given destination after data has been read
+from a sensitive path, using cross-event correlation.
+• The Rate limiting template raises a violation when an event
+exceeds a fixed threshold within a time window, imple-
+mented via the bounded-count operator.
+Each template is instantiated via the use construct described in
+Appendix C.2, requiring only the policy-specific parameters (e.g.,
+path patterns, trigger events) to produce a fully functional policy.
