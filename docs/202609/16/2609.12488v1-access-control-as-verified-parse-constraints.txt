@@ -1,0 +1,711 @@
+Title: Access Control as Verified Parse Constraints
+
+URL Source: https://arxiv.org/pdf/2609.12488v1
+
+Published Time: Mon, 14 Sep 2026 00:37:27 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# Access Control as Verified Parse Constraints 
+
+# Saranachon Iammongkol 
+
+iamfo470@student.otago.ac.nz University of Otago School of Computing Dunedin, New Zealand 
+
+# Zhiyi Huang 
+
+zhiyi.huang@otago.ac.nz University of Otago School of Computing Dunedin, New Zealand 
+
+# David Eyers 
+
+david.eyers@otago.ac.nz University of Otago School of Computing Dunedin, New Zealand 
+
+## Abstract 
+
+Commercial security gateways repeatedly ship implementation bugs in the code path between the network and the policy decision: hand-written enforcement logic that diverges from the policy au-thor’s intent, and ad-hoc request parsers at the network boundary that introduce memory-safety flaws of their own. In both cases the bug is in the deployed enforcement code, not in the policy. Existing approaches either leave the enforcement runtime unverified or con-nect a formal model to a hand-written engine only by differential testing [3]. Our contribution is a class result: a forward-only, backtrack-free EverParse validator is a verified recognizer for a bounded, finite-state class, and access-control decision functions with fixed-offset fields and bounded disjunction belong to it, so one machine-checked proof transfers to every policy in the class rather than being re-established per policy. Concretely, we encode a bounded policy language’s decision function into a fixed-size byte buffer and verify the enforcement code once—covering all byte values—with an SMT solver, proving the validator accepts if and only if the decision function accepts, for every policy, request, and session. Editing rule content over a fixed endpoint set then needs no new proof; adding endpoints reruns the toolchain; extending the language needs new proofs. We establish faithful enforcement of a policy, not that a policy is itself secure. The verified gate is platform-independent, requiring only Ev-erParse/Z3 and a C compiler, whose correctness we assume. We demonstrate a deployment on the seL4 microkernel, which ensures every request passes through the gate and that unverified compo-nents cannot corrupt the verified enforcement chain. 
+
+## Keywords 
+
+access control, verified parsing, EverParse, seL4, formal verification, role-based access control, scope bitfield, SMT 
+
+## 1 Introduction 
+
+Commercial security gateways have repeatedly shipped enforce-ment bugs that share a structural pattern across vendors and years. CVE-2024-0012 [16] (Palo Alto PAN-OS, unauthenticated admin-istrative access because the management web interface trusted an attacker-settable HTTP header as authentication state), CVE-2025-0108 [17] (Palo Alto PAN-OS, authentication bypass in the same interface because two reverse-proxy layers disagreed on URL path normalisation), CVE-2025-20362 [18] (Cisco Secure Firewall ASA/FTD, unauthenticated access to restricted VPN endpoints via a URL path-normalisation flaw, identified by Rapid7 as a patch bypass of CVE-2018-0296 in the same WebVPN component seven years earlier), and CVE-2019-11816 [15] (OPNsense, privilege escalation via a flawed URL comparison) were not caused by misconfigured policies. In each case the code path between the network and the policy decision—whether a wrong comparator, a trusted header, or two components disagreeing on the shape of a URL—contained an implementation bug that caused the decision to silently deviate from the intended policy, and patching one incident did not prevent the next error of the same kind in the same class of code. The recurrence is structural. Access control enforcement is al-most always hand-written imperative code that parses variable-length inputs, canonicalises fields, and applies rule logic at several interfaces. Every boundary where strings, URLs, or headers pass between components is a candidate for the enforcement mecha-nism to diverge from the policy author’s intent. Section 4.3 analyses the OPNsense access-control surface and maps every vulnerability class our approach eliminates against its actual enforcement code. We ask whether the translation from policy specification to de-ployed enforcement code can be made correct by construction, at the cost of a restricted policy language. The observation that makes this possible is a class result: a forward-only, backtrack-free EverParse validator is a verified recognizer for a bounded, finite-state class, and a useful fragment of access control—role com-parison, capability bitfields, exact-match resources—belongs to it, because its decision function is built from fixed-offset fields and bounded disjunction with no backtracking. The single correctness proof therefore transfers to every policy the fragment can express. EverParse [20], a verified parser generator, accepts exactly this shape, and compiles a 3D specification—EverParse’s specification language [24]—directly into C through a trusted toolchain, so the deployed enforcement code and the specification are not separate artefacts. The price is forward-only parsing: EverParse does not backtrack, which rules out wildcard path matching and other patterns needing speculative, variable-length interpretation at runtime—a limit of the recognizer model, not of termination. Within that constraint the language expresses primitives from NIST RBAC [6]—role com-parison, permission checking via capability bitfields, and resource matching—over a fixed number of rule slots. A single verified binary then enforces every policy the language can express over a fixed endpoint set: editing rule content is a runtime data change, while adding endpoints or extending the language reruns the toolchain. This leverage matters at scale: hand-proved verified C is expensive— seL4’s 10,000-line kernel rests on ≈480 ,000 lines of Isabelle/HOL proof [8]—whereas our 245-line 3D specification compiles to ≈4,000 lines of verified C, Z3 discharging the obligations automatically. This work is inspired by Cedar [3], which links a Lean model to a hand-written Rust engine by differential testing; we instead gener-ate the deployed C from the specification, so there is no engine to test and deny-by-default is structural (§5). 
+
+Contributions. arXiv:2609.12488v1 [cs.CR] 11 Sep 2026 Saranachon Iammongkol, Zhiyi Huang, and David Eyers 
+
+(1) Access-control enforcement as membership in a verified recognizer’s class. A bounded access-control fragment—fixed-offset fields, bounded disjunction, no backtracking—lies inside the class a forward-only Ever-Parse validator provably recognizes, so one proof covers every policy in it. Consequently (a) the representation-confusion class of bugs behind the gateway CVEs in §1 is excluded by construction, and (b) deny-by-default on absent rules is a property of the encoding, not a runtime discipline. (2) A three-tier update model, and a verified path from HTTP to decision. Because the proof is universal over the fragment, editing rule content over a fixed endpoint set needs no new proof, adding endpoints reruns the toolchain, and extending the language needs new proofs; a verified extraction layer carries requests from raw HTTP to the gate, closing the gap between the formal decision function and the deployed enforcement code. (3) A reference deployment on a verified OS that covers a real firewall. We integrate the gate on seL4 inside a component-isolated architecture and demonstrate that the resulting language covers the complete OPNsense 19.1.7 access-control list at microsecond decision latency. 
+
+## 2 Overview 
+
+The gateway CVEs in §1 share a structural shape: each is a dis-agreement about how an input is read—a header trusted when it should not have been, a URL interpreted differently by two com-ponents, a comparator matching the wrong substring. These are errors of reading, not errors of deciding. If the recurring failure is in how requests are read, the right discipline is one designed for correct reading: data format validation. Under this reframing the access-control question becomes “is this byte buffer well-formed and authorised?” The rest of this section traces a concrete request through the system to show how this reframing works in practice. Figure 1 gives the picture: a verified preprocessor bounds the unbounded HTTP request into a fixed-size metadata block, and the access-control decision is the output of a forward-only verified validator scanning this block. Suppose a small deployment protects the endpoint /api/policy ,mapped at compile time to the 32-bit path identifier 0x44444444 .The policy author writes two rules into the gate’s rule table: 
+
+• Rule slot 1: path 0x44444444 , method mask 0x03 
+
+(GET + POST ), minimum role admin (2), required scope 
+
+0x0004 (configure). 
+
+• Rule slot 2: path 0x44444444 , method mask 0x01 (GET 
+
+only), minimum role operator (1), required scope 0x0001 
+
+(read_sensors). The remaining slots (3–8) are filled with the inactive sentinel ⊥ =
+
+0xDEADDEAD ; their role will become clear shortly. When a request arrives, the verified extractor writes the session’s authenticated role, rate counter, and scope into fixed byte positions, appends the rule slots from the current in-memory policy, and appends the request’s path identifier and method byte—producing a single flat buffer whose layout is formalised in Table 4 (§3). The validator then scans this buffer forward-only: at each rule slot, it checks whether the request’s path and method bytes match the slot’s bytes at the corresponding offsets, whether the session’s role byte is at least the slot’s minimum, and whether the required scope bits are present in the session’s scope. If any slot matches, parsing succeeds and the request is accepted; otherwise it is rejected. An admin (role 0x02 , scope 0x0007 ) sending POST /api/policy 
+
+matches Rule 1: the paths are equal, POST is within the method mask, the role meets the minimum (2 ≥ 2), and the required scope bit is present—accepted. An operator (role 0x01 , scope 0x0003 )sending the same request is denied: Rule 1 fails on role (1 < 2) and Rule 2 on method (its mask allows only GET ). The same operator sending GET /api/policy is accepted by Rule 2. The binary never changed—only the bytes differ, and the same verified comparisons yield different outcomes. Suppose auditors should later read /api/policy with no scope requirement. The administrator writes a third rule into slot 3 at runtime—path 0x44444444 , method GET , minimum role operator, scope 0x0000 —changing the slot-3 bytes from the ⊥ sentinel to the rule’s values. This is a data edit, not a code change: the binary is exactly what Z3 verified, and the soundness theorem (§3.3) covers 
+
+all byte values at every offset, so the new rule holds from the moment its bytes are written. Editing rule content over the compiled endpoint set is thus already covered; adding endpoints or growing 
+
+𝐾 reruns the toolchain, and extending the language needs new proofs. The sentinel ⊥ that filled slot 3 deserves a closer look. Two reserved values sit outside the author’s identifier space (Assump-tion A1, §3.1.1): path ID zero, which the extractor rejects with HTTP 404 before the gate, and ⊥ = 0xDEADDEAD , which fills in-active slots. A slot holding ⊥ fails the path comparison against every request that reaches the gate—structurally inert—so if all 
+
+eight slots hold ⊥, every request is denied. Deny-by-default is thus a consequence of the encoding, not a runtime check a developer could forget. We target network attackers who control all HTTP request fields; soundness bounds accept/reject for every constructible request. Attacker-controlled HTTP fields cannot supply identity: role and scope enter the buffer only through the F*-verified extractor, never from the request itself. Out of scope: compromised credentials at the target privilege, toolchain bugs, and post-gate application behaviour. Nine core assumptions (toolchain, byte-order, and the byte-copy glue) are platform-independent; three more cover the seL4 isolation substrate and can be replaced by equivalent guarantees off-seL4 (Table 6). The rest of the paper formalises this picture—the pol-icy language, the encoding and its EverParse/Z3 verification, and soundness (§3); the seL4 deployment (§3.4); evaluation (§4); and related work (§5). 
+
+## 3 Verified Enforcement Mechanism 3.1 Policy Language 
+
+3.1.1 Domains. The gate operates on fixed-size security metadata produced by the F*-verified extractor (§3.4): a resource identifier, a method, a role level, a scope bitfield, and a rate counter. The resource identifier is a 32-bit integer representing a known URL path, assigned by the policy author at compile time; the extractor Access Control as Verified Parse Constraints           
+
+> GET /resource HTTP/1.1 Authorization: Bearer .. Accept: application/json ...
+> HTTP request (unbounded) verified preprocessor rules table session info role rate scope rule 𝑟 1. . . 𝑟 𝑘 path method session rules request fixed-size request metadata block (bounded) Verified Validator forward-only scan, no backtrack
+> Access Decision
+> string validation
+
+Figure 1: Gate architecture. Table 1: Policy language domains (general form). All domains are configurable at compile time. 
+
+Symbol Domain Description 
+
+P 32-bit identifiers (0 and 0xDEADDEAD 
+
+prohibited) Resource identifiers, fixed at compile time; reserved values serve as rejection and inactive-rule sentinels respectively 
+
+M {0, . . . , 0x3F } 6-bit operation bitmask; each bit is a protocol operation; a rule’s mask may combine operations 
+
+R {0, . . . , 𝑅 max } Role levels, totally ordered 
+
+N {0, . . . , 𝑁 max −1} Rate counter; enables inequality constraints, e.g. 𝑐 < 𝑁 max 
+
+Σ {0, . . . , 216 −1} Scope bitfield (16-bit); each bit is an independent capability; distinguishes permissions within the same role 
+
+maps incoming paths to identifiers by exact string comparison and rejects unknown paths with HTTP 404 before the gate is reached. Two reserved values are excluded from the author’s identifier space (Assumption A1): zero marks an unrecognised request at the extrac-tor layer and never reaches the gate; the sentinel ⊥ = 0xDEADDEAD 
+
+(INACTIVE_PATH_ID ) fills unused rule slots so inactive rules cannot match any valid request. Wherever ⊥ appears below it refers to this rule-slot sentinel, not to the extractor zero value. A 32-bit iden-tifier space accommodates real-world deployments—the OPNsense firewall ACL we evaluate in §4 defines 420 distinct paths. All domains are configurable at compile time. Table 1 summarises their general form; Table 2 lists the concrete values used in our HTTP demonstration deployment. The same model accommodates other request-response protocols (e.g. the Constrained Application Protocol (CoAP) or the MODBUS industrial fieldbus) by reassigning the method and resource domains. A request carries exactly one method bit; unknown or malformed operations map to zero and cannot match any rule. 
+
+3.1.2 Request and Session State. The gate evaluates two inputs at decision time: the request describing what is being asked, and the 
+
+session state describing who is asking. 
+
+Definition 3.1 (Request). A request is a pair 
+
+𝑞 = (𝑝 req , 𝑚 req ) ∈ P × M
+
+Table 2: Demonstration deployment configuration (HTTP). Values defined in path_ids.h and HTTP.Extract.Types.fst .
+
+Domain Configuration Paths ( P) /api/login →0x11111111 ,
+
+/api/logout →0x22222222 ,
+
+/api/status →0x33333333 ,
+
+/api/policy →0x44444444 
+
+Methods ( M) GET =0x01 , POST =0x02 ,
+
+PUT =0x04 , DELETE =0x08 ,
+
+PATCH =0x10 , HEAD =0x20 
+
+Roles ( R) ROLE_NONE =0, ROLE_OPERATOR =1, 
+
+ROLE_ADMIN =2 (𝑅 max = 2) Rate ( N) 𝑁 max = 50 Scope ( Σ) bit 0: SCOPE_READ_SENSORS ,bit 1: SCOPE_WRITE_SENSORS ,bit 2: SCOPE_CONFIGURE 
+
+(bits 3–15 reserved) 
+
+where 𝑝 req ∈ P is the requested path identifier and 𝑚 req ∈ M is the requested method .
+
+Definition 3.2 (Session state). A session state is a triple 
+
+𝑠 = (𝛼, 𝑐, 𝜎 ) ∈ R × N × Σ
+
+where: 
+
+• 𝛼 ∈ R is the authenticated role —the trust level assigned to the user at login 
+
+• 𝑐 ∈ N is the rate counter —the number of requests made by this session in the current window 
+
+• 𝜎 ∈ Σ is the authenticated scope —the capability bits granted to this session at authentication time The role is totally ordered, so rules express minimum-level checks ( 𝛼 ≥ 𝜌 𝑖 , where 𝜌 𝑖 is the minimum role required by rule 𝑟 𝑖 ,defined below). The scope bitfield provides fine-grained capability delegation within a role level: sessions at the same role may hold different capabilities. Each session carries a single active role determined at authen-tication time, with a per-session scope bitfield for capability-level differentiation that a role ordering alone does not capture. The lan-guage captures a subset of the operations found in role-based access control systems [6]: role comparison (as a total order rather than the partial order of NIST RBAC), permission checking (via scope bitfields), and resource matching. It does not model role hierarchies Saranachon Iammongkol, Zhiyi Huang, and David Eyers 
+
+(lattices), multi-role sessions, or separation of duty constraints; ex-tending to these features is discussed in §6. This two-dimensional design enables the fixed-size encoding required for universal verifi-cation (§3.2). Session state is treated as trusted input; its correctness—that the right role and scope are assigned at login—is assumed. The seL4 deployment (§3.4) demonstrates one practical approach: the au-thenticator is unverified but isolated, so a bug may assign incorrect values but cannot corrupt the policy gate. 
+
+3.1.3 Access Control Rules and Policy. An access control rule spec-ifies the conditions under which a request is permitted. 
+
+Definition 3.3 (Rule). An access control rule is a 4-tuple 
+
+𝑟 = (𝑝, 𝑚, 𝜌, 𝜎 ) ∈ P × M × R × Σ
+
+where 𝑝 is the path identifier , 𝑚 is the method mask , 𝜌 is the 
+
+minimum role , and 𝜎 is the required scope . How each field is matched against the request and session is defined in §3.1.4 (Table 3). A policy is a fixed-size tuple of rules. The fixed-size constraint is a design requirement of the verification framework: the 3D specifi-cation defines a statically known buffer structure. Variable numbers of active rules are accommodated by padding unused slots with 
+
+inactive rules whose path is set to the ⊥ sentinel (§3.1.1). 
+
+Definition 3.4 (Policy). A policy is a tuple 𝜋 = (𝑟 1, 𝑟 2, . . . , 𝑟 𝐾 ) of exactly 𝐾 rules, where 𝐾 is fixed at compile time ( 𝐾 = 8 in our implementation). A rule 𝑟 𝑖 is active if 𝑝 𝑖 ≠ ⊥, and inactive if 𝑝 𝑖 = ⊥.The F*-verified extractor guarantees 𝑝 req ≠ ⊥ for every request, so inactive rules can never match. 
+
+3.1.4 Policy Decision Function. Given a policy 𝜋 (Definition 3.4), a request 𝑞 (Definition 3.1), and a session state 𝑠 (Definition 3.2), the gate must decide whether to accept or deny the request. We write 
+
+𝑎 ⊆ 𝑏 for bitwise subset , i.e., 𝑏 & 𝑎 = 𝑎 (every bit set in 𝑎 is also set in 𝑏 ). 
+
+Definition 3.5 (Rate counter update). On each authenticated re-quest, the session counter is updated unconditionally before the policy decision: 
+
+𝑐 ′ =
+
+(
+
+𝑐 + 1 if Δ𝑡 < 𝑇 reset 
+
+1 otherwise (window expired, counter resets) (1) In the demonstration deployment, 𝑇 reset = 60 s. The rate constraint reflects standard API practice for mitigating brute-force and re-source exhaustion. 
+
+Definition 3.6 (Policy decision). After the counter update (Defi-nition 3.5), a request is accepted if and only if the rate constraint holds over the updated counter 𝑐 ′ and at least one rule matches. The per-rule match function over the request 𝑞 , session 𝑠 , and rule 
+
+𝑟 𝑖 is: 
+
+𝑓 (𝑞, 𝑠, 𝑟 𝑖 ) ≜ (𝑝 req = 𝑝 𝑖 )
+
+| {z }
+
+> path
+
+∧ ( 𝑚 req ⊆ 𝑚 𝑖 )
+
+| {z }
+
+> method
+
+∧ (𝛼 ≥ 𝜌 𝑖 )
+
+| {z }
+
+> role
+
+∧ ( 𝜎 𝑖 ⊆ 𝜎 )
+
+| {z }
+
+> scope
+
+(2) 
+
+Table 3: Policy decision structure. The rate check is univer-sal (applied once); the remaining checks are per-rule (any matching rule 𝑟 𝑖 accepts).                  
+
+> Check Request/Session Rule/Bound Rate 𝑐 <𝑁 max
+> Path 𝑝 req =𝑝 𝑖
+> Method 𝑚 req ⊆𝑚 𝑖
+> Role 𝛼 ≥𝜌 𝑖
+> Scope 𝜎 ⊆𝜎 𝑖
+
+The request is accepted when: 
+
+𝐷 accept (𝜋, 𝑞, 𝑠 ) ≜ (𝑐 ′ < 𝑁 max )
+
+| {z }
+
+> rate (universal)
+
+∧
+
+> 𝐾
+
+Ü
+
+> 𝑖 =1
+
+𝑓 (𝑞, 𝑠, 𝑟 𝑖 )
+
+| {z }
+
+> access (existential)
+
+(3) The counter is incremented on every authenticated request, re-gardless of whether the request is ultimately accepted or denied; denied requests still count toward the rate limit. The reset window 
+
+𝑇 reset (a time, 60 s here) and the count threshold 𝑁 max are inde-pendent quantities in different units, with no ordering between them. The decision function 𝐷 accept is defined independently of any particular solver or encoding. The encoding of 𝐷 accept as verified parse constraints is addressed in §3.2. Section 3.3 proves that the encoding and implementation pre-serve the decision: the verified C code accepts exactly the requests that 𝐷 accept (𝜋, 𝑞, 𝑠 ) admits. 
+
+## 3.2 Encoding and Verification 
+
+3.2.1 Definition. We define an encoding function that translates the policy decision inputs into a flat byte buffer matching the 
+
+_AccessRequest struct in the EverParse 3D specification ( Rbac-Policy.3d , 245 lines; included in the artefact). 
+
+Definition 3.7 (Encoding function). The encoding function for the AccessRequest validator packs the policy 𝜋 (Definition 3.4), request 
+
+𝑞 (Definition 3.1), and session state 𝑠 (Definition 3.2) into a single buffer: 
+
+𝐸 access (𝜋, 𝑞, 𝑠 ) −→ B75 (4) The 75-byte buffer is structured as shown in Table 4. Each of the 
+
+𝐾 = 8 rule slots occupies 8 bytes: 4 bytes for the path identifier (little-endian), 1 byte for the HTTP method, 1 byte for the minimum role, and 2 bytes for the required scope (little-endian). Unused rule slots are filled with inactive rules ( 𝑝 𝑖 = ⊥). The two trailing bytes (offsets 73–74) are phantom bytes —fields whose value is irrelevant but whose EverParse where-clause (defined in §3.2.2) anchors a logical constraint. The buffer is constructed entirely within the policy gate’s address space and is never transmitted over the network (PolicyGate is the component that hosts the gate in the seL4 deployment described in §3.4). The practical ceiling on rule count is Z3 compile-time tractability (§4.2), not any wire-format constraint. The encoding is total —every valid (𝜋, 𝑞, 𝑠 ) triple produces a buffer, so the gate never fails to decide. It is also injective —distinct Access Control as Verified Parse Constraints 
+
+Table 4: Buffer layout for 𝐸 access (75 bytes).                                  
+
+> Offset Bytes Content Description 01auth_state 𝛼 : role level 11rate_count 𝑐 : requests so far 2–3 2auth_scope 𝜎 (little-endian) 4–67 64 8 rules ×8 bytes Rules (𝑟 1, . . . , 𝑟 𝐾 )
+> 68–71 4req_path_id 𝑝 req (little-endian) 72 1req_method 𝑚 req
+> 73 1_rate_ok Phantom (rate constraint) 74 1_access_ok Phantom (access constraint)
+
+inputs produce distinct buffers, so no two requests with different policy outcomes can be confused by the validator. 
+
+3.2.2 Structural Choices: DNF for Existential, CNF for Universal. 
+
+The decision function 𝐷 accept (Definition 3.6) is encoding-agnostic: it specifies what the gate must decide, not how the decision is represented. This section explains the structural choices made in mapping 𝐷 accept to EverParse where-clause constraints, and why these structural choices are required for correct fail-safe behaviour. 
+
+EverParse where-clauses. In EverParse 3D, each struct field may carry a where-clause —a boolean constraint that must hold for the buffer to be accepted. For example, UINT8 _rate_ok { rate_count < 50 } declares a phantom byte —a field whose value is irrelevant (set to zero by convention) but whose where-clause anchors the constraint rate_count < 50 . At compile time, Z3 verifies that the generated C parser correctly enforces each where-clause; at runtime, the parser returns TRUE only if all constraints hold. The generated C code contains no conditional branches for constraint evaluation. In our encoding, bytes 73–74 are phantom bytes anchor-ing the rate and access constraints respectively (Table 4). A single phantom byte with a combined where-clause would be functionally equivalent, but separating the rate constraint (CNF) from the access constraint (DNF) keeps the two proof obligations independent and preserves the fail-safe decomposition: the two constraints have op-posite default behaviours (absence of a rate limit permits; absence of a matching rule denies). The match function 𝑓 (Equation 2) decomposes naturally into four where-clauses, and the two ⊆ conditions expand to their bit-wise AND form in the encoding: 
+
+• 𝑝 𝑖 = 𝑝 req — equality over 32-bit integers 
+
+• 𝑚 𝑖 & 𝑚 req = 𝑚 req — 𝑚 req ⊆ 𝑚 𝑖 as bitvector 
+
+• 𝛼 ≥ 𝜌 𝑖 — linear integer arithmetic 
+
+• 𝜎 & 𝜎 𝑖 = 𝜎 𝑖 — 𝜎 𝑖 ⊆ 𝜎 as bitvector 
+
+Design choices. The encoding uses DNF for existential constraints and CNF for universal constraints. This choice ensures fail-safe behaviour when policy data is incomplete. 
+
+DNF for existential constraints. An existential constraint ac-cepts if any disjunct is true. Under DNF, each rule slot corresponds to one disjunct; a slot whose path is ⊥ contributes False (Corol-lary 3.11) and is therefore inert : it cannot grant access regardless of its remaining fields. Policy updates replace individual rule slots at 
+
+Algorithm 1 Three-stage encoding pipeline. Every operation is a byte copy—no arithmetic or conditional logic. 
+
+Require: Raw HTTP request, Authenticator response, RateLimiter response 
+
+Ensure: AccessRequest buffer ∈ B75  
+
+> 1:
+
+Stage 1 — 𝐸 HTTP (F*-verified):  
+
+> 2:
+
+Raw HTTP → SecurityParamsWire (6 fields)  
+
+> 3:
+
+Stage 2 — 𝐸 IPC (F*-verified):  
+
+> 4:
+
+Authenticator + RateLimiter responses → SecurityParam-sWire (5 fields)  
+
+> 5:
+
+Stage 3 — 𝐸 access (unverified, auditable):  
+
+> 6:
+
+SecurityParamsWire → AccessRequest buffer 
+
+Table 5: EverParse 3D compilation pipeline.            
+
+> Stage Description
+> RbacPolicy.3d 245 lines, 3D specification
+> ↓EverParse compiler (3D →F*) F* modules F* type checker (verifies generated F*)
+> ↓Z3 SMT solver (discharges proof obligations)
+> ↓KreMLin extractor (F* →C)
+> RbacPolicy.c 3,966 lines, generated C
+
+runtime; a slot that has not yet been written contains ⊥ by construc-tion and defaults to the safe state—denial—without any additional logic. 
+
+CNF for universal constraints. A universal constraint requires 
+
+all conjuncts to hold. Under CNF, an absent restriction contributes True, which is safe—it does not block traffic. The rate constraint uses this form: absence of a rate limit permits traffic. 
+
+3.2.3 Implementation and Encoding Pipeline. Stage 3 is astraight-line block of unconditional byte copies implemented in PolicyGate/control_pipeline.c . Direct assignments place SecurityParamsWire fields at the AccessRequest offsets defined in Table 4; a write_rule helper emits each rule slot’s four fields (path, method, minimum role, required scope) at 8-byte offsets within the rule region; little-endian helpers ( write_u32 , write_u16 ) handle multi-byte fields. There are no conditionals, no dynamic allocation, and no pointer arithmetic beyond the fixed offsets in Table 4. Correctness is verifiable by inspection against the same table, and the complete source of Stage 3 is included in the open-science artefact; its behaviour is confirmed by 46 production tests (§4.4). A second encoding function (PolicyBlob, 70 bytes) handles up-dates made at runtime to the policy itself; new requests are blocked until the update completes (PolicyGate is single-threaded). The full update flow and its verification status are described in §3.4. 
+
+3.2.4 Verified Parse Function. 
+
+The EverParse Toolchain. EverParse 3D is a verified parser gener-ator [20]. Table 5 shows the toolchain pipeline. Saranachon Iammongkol, Zhiyi Huang, and David Eyers 
+
+At each stage, the tool either succeeds (producing output for the next stage) or fails with an error. If the pipeline completes without error, the generated C code is proven correct with respect to the 3D specification (§3.2). 
+
+What Z3 Proves. The F* type checker translates the 3D speci-fication into verification conditions—logical formulas that must hold for the generated code to be correct. These conditions are dis-charged by the Z3 SMT (Satisfiability Modulo Theories) solver [4]: no execution of the generated code can violate the specification. The proof obligations discharged by Z3 can be stated as fol-lows. Let 𝑉 access denote the generated C function RbacPolicy-CheckAccessRequest() . Let 𝐶 access denote the set of constraints in the _AccessRequest struct of the 3D specification. Theorem 3.8 (EverParse correctness, from [20]). For all byte buffers 𝑏 ∈ B∗ and lengths ℓ ∈ N:
+
+𝑉 access (𝑏, ℓ ) = True ⇐⇒ |𝑏 | ≥ ℓ ∧
+
+fields of 𝑏 [0..ℓ ) satisfy 𝐶 access 
+
+(5) 
+
+Moreover, 𝑉 access :
+
+(1) Is memory-safe : accesses only bytes within 𝑏 [0..ℓ ).
+
+(2) Has no integer overflow : all arithmetic is within bounds. 
+
+(3) Terminates : the parser makes progress on every field. 
+
+These properties are proven by the F* type system and Z3 to-gether: the type system enforces memory safety and termination through dependent types; Z3 discharges the arithmetic and logical constraints. The critical observation is the universal quantification : the correctness theorem holds for all byte buffers 𝑏 . Z3 does not prove correctness for specific policy values or specific requests. It proves correctness for the validator mechanism across all possible inputs. 
+
+Expanding 𝐶 access . The constraints 𝐶 access , extracted from the 3D specification, are a formula over byte values at fixed offsets. Each per-rule predicate Match 𝑖 (𝑏 ) is a 4-way conjunction over byte comparisons at fixed offsets, where u32le (𝑏, 𝑘 ) and u16le (𝑏, 𝑘 )
+
+denote little-endian multi-byte reads: Match 𝑖 (𝑏 ) ≜ 𝑃 𝑖 (𝑏 ) ∧ 𝑀 𝑖 (𝑏 ) ∧ 𝑅 𝑖 (𝑏 ) ∧ 𝑆 𝑖 (𝑏 ) (6) The full constraint is: 
+
+𝐶 access (𝑏 ) ≜ (𝑏 [1] < 𝑁 max )
+
+| {z }
+
+> rate ok
+
+∧ 
+
+> 𝐾 −1
+
+Ü
+
+> 𝑖 =0
+
+Match 𝑖 (𝑏 )
+
+| {z }
+
+> at least one rule matches
+
+(7) Match 𝑖 (𝑏 ) is the byte-level analogue of the match function 
+
+𝑓 (𝑞, 𝑠, 𝑟 𝑖 ), and 𝐶 access is the byte-level analogue of 𝐷 accept (𝜋, 𝑞, 𝑠 ).
+
+## 3.3 Soundness 
+
+3.3.1 Statement. The main result connects the policy decision function 𝐷 accept (Definition 3.6) to the verified parse function 𝑉 access 
+
+(§3.2.4) via the encoding 𝐸 access (Definition 3.7). Theorem 3.9 (Encoding soundness and completeness). For all policies 𝜋 , requests 𝑞 , and session states 𝑠 :
+
+𝑉 access 
+
+ 𝐸 access (𝜋, 𝑞, 𝑠 ) = True ⇐⇒ 𝐷 accept (𝜋, 𝑞, 𝑠 ) (8) The left-to-right direction (soundness) ensures no false accep-tance: the system never grants access it should not. The right-to-left direction (completeness) ensures no false rejection: the system never denies access it should not. 
+
+3.3.2 Proof. The proof proceeds by showing that the constraints 
+
+𝐶 access , when applied to the buffer 𝐸 access (𝜋, 𝑞, 𝑠 ), reduce exactly to the formula defining 𝐷 accept .Let 𝑏 = 𝐸 access (𝜋, 𝑞, 𝑠 ). By Definition 3.7 (Table 4), each buffer position maps to a policy language variable: 𝑏 [0] = 𝛼 , 𝑏 [1] = 𝑐 ,u16le (𝑏, 2) = 𝜎 , and so on for the rule and request fields. Substitut-ing into 𝐶 access (𝑏 ):
+
+Rate constraint: 
+
+𝑏 [1] < 𝑁 max ⇐⇒ 𝑐 ′ < 𝑁 max (9) 
+
+Access constraint (for each disjunct 𝑖 = 0, . . . , 𝐾 − 1): the four conjuncts in Match 𝑖 (𝑏 ) (Equation 6) reduce as follows, with the rule-level index shifted as 𝑘 = 𝑖 + 1 to match Definition 3.6: u32le (𝑏, 4+8𝑖 ) = u32le (𝑏, 68 ) ⇐⇒ 𝑝 𝑘 = 𝑝 req 
+
+𝑏 [8+8𝑖 ] & 𝑏 [72 ] = 𝑏 [72 ] ⇐⇒ 𝑚 𝑘 & 𝑚 req = 𝑚 req 
+
+𝑏 [0] ≥ 𝑏 [9+8𝑖 ] ⇐⇒ 𝛼 ≥ 𝜌 𝑘 
+
+u16le (𝑏, 2) & u16le (𝑏, 10 +8𝑖 ) ⇐⇒ 𝜎 & 𝜎 𝑘 = 𝜎 𝑘 
+
+Together these are exactly 𝑓 (𝑞, 𝑠, 𝑟 𝑘 ) (Definition 3.6). Substituting and collecting over all 𝐾 rule slots gives 
+
+Ô𝐾 −1 
+
+> 𝑖 =0
+
+Match 𝑖 (𝑏 ) = Ô𝐾 𝑘 =1 𝑓 (𝑞, 𝑠, 𝑟 𝑘 ).
+
+Full substitution into 𝐶 access (Equation 7): 
+
+𝐶 access (𝑏 ) = (𝑐 ′ < 𝑁 max ) ∧ 
+
+> 𝐾
+
+Ü
+
+> 𝑘 =1
+
+𝑓 (𝑞, 𝑠, 𝑟 𝑘 ) (10) This is identical to 𝐷 accept (𝜋, 𝑞, 𝑠 ) (Definition 3.6). □
+
+3.3.3 Verification Chain. The complete argument chains two in-dependent proofs to conclude that the generated C code accepts exactly what the formal model accepts: (1) EverParse/Z3 (machine-checked): the generated C cor-rectly implements the 3D constraints for all byte buffers. 
+
+𝑉 access (𝑏 ) = True ⇐⇒ 𝐶 access (𝑏 )
+
+(2) Paper proof (§3.3, above): substituting the encoding into the constraints recovers the formal decision function. 
+
+𝐶 access (𝑏 ) ⇐⇒ 𝐷 accept (𝜋, 𝑞, 𝑠 )
+
+Composing (1) and (2): 
+
+𝑉 access 
+
+ 𝐸 access (𝜋, 𝑞, 𝑠 ) = True ⇐⇒ 𝐷 accept (𝜋, 𝑞, 𝑠 ) (11) The hard part—C code correctness—is machine-checked by Z3. The paper proof reduces to substituting Definition 3.7 into 𝐶 access and verifying it recovers Definition 3.6. The same result holds for Policy-Blob (policy updates, §3.4) with the same substitution structure—a mechanical step over the fixed encoding, mechanisable in princi-ple though discharged on paper here (as is Corollary 3.11). This argument depends on the trust assumptions in Table 6. 
+
+3.3.4 Consequences. Access Control as Verified Parse Constraints 
+
+Table 6: Trust assumptions underlying the soundness argument. A1–A6 are platform-independent (required for Theorem 3.9 on any platform that runs the generated C code); A7–A9 apply to the seL4 deployment (§3.4) and bound the end-to-end guarantee—that requests cannot bypass the gate and unverified components cannot corrupt the verified enforcement chain—but do not affect the core soundness result. 
+
+ID Scope Assumption Mitigation / Status A1 Core Identifier separation: the sentinel 0xDEADDEAD is not a valid path identifier Enforced by F* extractor postcondition. A2 Core Fixed-offset byte-copy glue implementing 𝐸 access 
+
+(Definition 3.7). Input delivery via seL4 dataports and memcpy is trusted per A7–A9. Auditable against Table 4; confined by seL4 isolation. Formal verification is outside scope (§5). A3 Core EverParse TCB: EverParse compiler, F* type checker, and Z3 are trusted Inherited from EverParse project [20]; Z3 [4] and EverParse are mature, peer-reviewed, and production-deployed [24]. A4 Core C compiler correctness: generated C must be com-piled correctly Standard assumption shared by all verification approaches except Com-pCert [11] or binary-level verification [9]. A5 Core Endianness: little-endian byte order assumed for uint32/uint16 fields Matches x86 target and EverParse default. A6 Core Scope bit independence: bitwise AND correctly mod-els capability subset only when scope bits are se-mantically independent Dependent capabilities require explicit implication constraints. A7 Deployment seL4 specification correctness: Isabelle/HOL proof shows C refines abstract spec; does not guarantee spec captures intended property Inherent limitation of all specification-based verification. A8 Deployment Hardware correctness: seL4 isolation assumes cor-rect MMU, TLB, cache coherence, and interrupt con-troller Hardware vulnerabilities (e.g., Spectre/Meltdown class) can violate prop-erties the kernel proof assumes. A9 Deployment seL4 verification boundary: deployed configuration includes unverified bootstrapping code, device dri-vers, and platform code The version deployed here is not the fully verified seL4 configuration. 
+
+Separation of Mechanism and Policy. 
+
+Corollary 3.10 (Verify once, enforce all). The generated C code 𝑉 access is compiled from the 3D specification once and verified once by Z3. At runtime, different policies 𝜋, 𝜋 ′, 𝜋 ′′ produce different byte buffers via 𝐸 access , but all are correctly enforced by the same 
+
+𝑉 access .
+
+Proof. Theorem 3.9 is universally quantified over 𝜋 . □
+
+This is the core practical contribution, in three tiers. Traditional verified access control re-verifies whenever the policy changes; we verify the mechanism once. Rule-content changes over a fixed endpoint set are runtime data; adding endpoints or growing 𝐾 re-runs the toolchain (§4.3) with no new hand proof; extending the policy language requires new proofs. 
+
+Deny by Default as a Structural Property. 
+
+Corollary 3.11 (Structural deny by default). If all rules in 
+
+𝜋 are inactive ( 𝑝 𝑖 = ⊥ for all 𝑖 ), then for all 𝑞, 𝑠 :
+
+∀ 𝑞, 𝑠 : 𝑉 access 
+
+ 𝐸 access (𝜋, 𝑞, 𝑠 ) = False (12) Proof. By Definition 3.6, 
+
+𝐷 accept (𝜋, 𝑞, 𝑠 ) = (𝑐 ′ < 𝑁 max ) ∧ Ô𝐾 𝑖 =1 𝑓 (𝑞, 𝑠, 𝑟 𝑖 ).
+
+When every rule is inactive, each 𝑓 (𝑞, 𝑠, 𝑟 𝑖 ) fails on the path conjunct because 𝑝 𝑖 = ⊥ cannot equal any valid 𝑝 req (§3.1.1). The disjunction is therefore False, so ¬𝐷 accept (𝜋, 𝑞, 𝑠 ) for all 𝑞, 𝑠 . By Theorem 3.9 (contrapositive), 𝑉 access returns False. □
+
+This is not a runtime check that can be forgotten but a logical consequence of the DNF structure and ⊥ padding: no code path in the generated validator can grant access when all rules are dead. 
+
+Isolation-Protected Encoding (seL4 Deployment). Theorem 3.9 holds on any platform. On seL4, isolation adds a further guarantee: Corollary 3.12 (Isolation-protected encoding). Under seL4 isolation, the only ways to influence 𝑏 = 𝐸 access (𝜋, 𝑞, 𝑠 ) are via one of the following paths: 
+
+(1) Authenticate and change (𝛼, 𝜎 ): the Authenticator (unveri-fied, isolated) produces a session state 𝑠 (Definition 3.2) from the supplied credentials 
+
+(2) Upload a new policy and change 𝜋 : via the policy-update path, which requires 𝛼 ≥ ADMIN and is enforced by the Poli-cyBlob validator (§3.2) 
+
+(3) Send a request and change (𝑝 req , 𝑚 req ): via the F*-verified extractor (the request being evaluated, not trusted data) 
+
+(4) Send requests and increment 𝑐 : rate counter, bounded by 
+
+𝑁 max 
+
+Paths 2–4 are mediated by verified validators or bounded coun-ters; Path 1 depends on the unverified Authenticator, but seL4 isolation prevents corruption of PolicyGate’s state. The encoding and proof are platform-independent; end-to-end buffer integrity Saranachon Iammongkol, Zhiyi Huang, and David Eyers   
+
+> Domain 0 Domain 1
+> E1000 Driver TLS Proxy lwIP Proxy F* Extractor
+> (PEP + router)
+> Authenticator
+> (IdP)
+> RateLimiter
+> (counter)
+> PolicyGate
+> (PDP + policy store)
+> Protected App
+> raw frames raw frames raw HTTP metadata + body AppReq / AppResp RPC RPC Verified Unverified Passive
+
+Figure 2: Eight-component CAmkES deployment on seL4. Domains 0 and 1 are seL4 scheduling domains; the ingress chain (E1000, TLS Proxy, lwIP—lightweight IP) is unverified, confined by seL4, and terminates TLS before the F*-verified Extractor. PEP/PDP/IdP: policy enforcement/decision point, identity provider. 
+
+relies on the host’s isolation, which seL4 provides under Assump-tions A7–A9 (Table 6). 
+
+## 3.4 Platform Independence and Reference Deployment 
+
+Theorem 3.9 holds on any platform that runs the generated C code. Deploying the validator in production requires two architectural guarantees outside the scope of the theorem: every request must reach the gate, and no unverified component may corrupt the buffer the gate reads. We demonstrate both using an eight-component CAmkES (Component Architecture for microkernel-based Embed-ded Systems) architecture on seL4 [9, 13]; a non-seL4 host (e.g., Linux with a reverse-proxy frontend and seccomp/Landlock sand-boxing) replaces A7–A9 with its own trust base while A1–A6 are unchanged. We have not measured a non-seL4 deployment. Figure 2 shows the reference deployment: thick borders mark verified components (isolated by seL4), dashed borders mark pas-sive unverified RPC components, and all connections are bidirec-tional ring buffers. The F* Extractor parses raw HTTP, queries the Authenticator and RateLimiter via RPC, and populates the 11 Secu-rityParamsWire fields. PolicyGate hosts the EverParse validators and an in-memory policy store: it makes no RPC calls, constructs the AccessRequest buffer from the verified metadata, and handles policy updates via a second validator (PolicyBlob). The F* Extractor (8 modules, 1,264 lines, zero admit /assume ) is verified by F* [23]/Z3 and compiled to C by KreMLin [19] for mem-ory safety, functional correctness, and termination (throughout, 
+
+extraction denotes this F*-level HTTP-to-buffer transform, distinct from the KreMLin Low*-to-C step). HTTP extraction (7 modules) produces 6 fields—path identifier, method, bounded token, and bounded body—with proofs against the HTTP grammar fragment; IPC extraction (1 module) produces the remaining 5 from Authenti-cator and RateLimiter responses, with role clamped ≤ 2 and subject identity length clamped ≤ 32. All 11 SecurityParamsWire fields (Ta-ble 7) have verified provenance. The EverParse 3D specification (§3.2) generates two validators from the same file: AccessRequest proves the policy decision (Theorem 3.9), and PolicyBlob validates runtime policy updates (admin role, rate limit, rule count). Raw HTTP bytes are confined to the extractor’s address space and de-stroyed after extraction. The Authenticator is unverified C calling HACL*-verified [26] primitives; a bug could emit wrong (𝛼, 𝜎 )—an authentication bug separate from enforcement correctness. seL4 isolation prevents corruption of PolicyGate’s state (Corollary 3.12); F*-verifying the Authenticator is future work. The RateLimiter is a passive counter enforced as a parse constraint ( 𝑐 ′ < 𝑁 max ); with PolicyGate these components form a verified enforcement chain between the un-trusted network and the application. Runtime policy updates are atomic: PolicyGate is single-threaded, so the PolicyBlob validator, rule-slot deserialisation, and struct-swap commit execute in one critical section while incoming requests wait on the gate’s mailbox. 
+
+3.4.1 Verified Field Provenance. Table 7 shows the 11 byte-range entries the extractor produces per HTTP request. No unverified code writes to this structure: 6 entries come from the F*-verified HTTP extractor, 5 from the F*-verified IPC extractor. 𝛼 and 𝜎 ar-rive only from IPC.Extract, structurally excluding bugs that trust HTTP headers as authentication state (e.g. CVE-2024-0012 [16]); 
+
+path_id is derived by byte-for-byte equality of the raw request-target against a fixed table in the 3D spec, with no canonicalisation in the trusted chain, so non-matching requests deny (Corollary 3.11) and canonicaliser bugs (CVE-2025-0108, CVE-2025-20362) are struc-turally excluded by having no canonicaliser to confuse: distinct byte strings are distinct identifiers, the agreement those CVEs lacked. The cost is that a deployment needing both spellings of a resource must enumerate both, as firmware updates. The full 3D specification (RbacPolicy.3d , 245 lines) is included in the artifact. The 5 starred fields are remapped into the AccessRequest buffer (Table 4) by the encoding glue code (§3.2). The remaining 6 fields (subject identity, token, and body) are forwarded to the application component and are not part of the policy decision. 
+
+## 4 Evaluation 4.1 Expressiveness and Verifiability Limits 
+
+The policy language (Definition 3.4) expresses a bounded fragment of role-based access control with capability-based scope: 
+
+• Fixed 𝐾 rule slots ( 𝐾 = 8 in implementation) 
+
+• Three role levels with total order 
+
+• Single role per session (no multi-role activation) 
+
+• 16-bit scope bitfield (2 16 possible capability sets) Access Control as Verified Parse Constraints 
+
+Table 7: Security parameters extracted per request (11 entries; length and payload counted separately). Of these, 5 (marked 
+
+★) are remapped into the AccessRequest buffer (Table 4); the remaining 6 are forwarded to the application.                                                      
+
+> Off Size Field Producer Verified bound 01rate_count ★IPC.Extract byte copy 1–4 4path_id ★HTTP.Extract sentinel match 51method ★HTTP.Extract ∈ { 0x00 , . . . , 0x20 }
+> 61role ★IPC.Extract ≤27–8 2scope ★IPC.Extract byte copy 91sub_id_len IPC.Extract ≤32 10–41 32 subject_id IPC.Extract bounded copy 42 1token_len HTTP.Extract ≤128 43–170 128 token HTTP.Extract bounded copy 171–174 4body_len HTTP.Extract ≤1361 (MTU) 175+ var body HTTP.Extract bounded copy
+
+Table 8: Monolithic verification scaling (Z3 v4.13.3, Intel Core Ultra 7 155H, 24 GiB container).                         
+
+> 𝐾 Z3 Time (s) Gen. C (lines) Peak RSS (MiB) Status 410 850 1,010 Verified 819 1,414 1,341 Verified 16 76 2,542 7,162 Verified 24 252 3,670 21,705 Verified 32 ≈525 —24,532 OOM (SIGKILL)
+
+• Exact-match on path; bitmask subset-match on method (no wildcards) 
+
+• Global rate limit (single counter, single threshold) Path matching uses exact 32-bit identifiers; wildcard patterns (e.g. api/module/* ) are outside the current language. Exact-match identifiers structurally exclude the representation-confusion class of vulnerability that motivated this work (§1). Wildcards fall outside the recognizer’s class: matching them needs variable-length, back-tracking recognition that EverParse’s forward-only model cannot express. Termination is not the obstacle—F* supports well-founded recursion, which the extractor uses. §4.3 validates the boundary against the OPNsense 19.1.7 access-control surface. The contribution is the verification methodology, not expres-siveness; the encoding generalises to more rules, more role levels, and further universal constraints (e.g. body-size and content-type checks). 
+
+Verifiability limit. The practical limit on 𝐾 for monolithic veri-fication is not runtime performance—the validator executes in 𝑂 (𝐾 )
+
+time (Table 10)—but compile-time memory consumption during Z3 proof discharge. Table 8 shows the empirical scaling. The scaling measurements use stand-alone AccessRequest-only 3D specs gen-erated at each 𝐾 value by the scaling_experiment/ harness in the artefact; they are distinct from the production 3D spec of the gate described in §3.2, which bundles the AccessRequest validator with the policy-update validator and consequently generates more C code at the same 𝐾 .The 𝐾 =8 → 𝐾 =16 transition exhibits a 5 .3× memory increase for 2 × the rule count (Table 8), indicating a phase transition in Z3’s DPLL(T) proof search. This is a structural property of the mono-lithic formula that manifests as memory exhaustion—not a time limit. Partitioned verification avoids this entirely: each partition is an independent 8-rule formula verified in ≈16 .5 s using ≈1.2 GB (Table 9). 
+
+## 4.2 Compositional Verification via Partitioning 
+
+The monolithic verifiability limit motivates a compositional ap-proach. Since the access formula is a disjunction, it can be parti-tioned into independent sub-disjunctions, each verified separately. The deployed gate is monolithic—all eight rules in one verified check, no combiner—so this partitioned scheme is a scaling experi-ment, not the deployed configuration; its OR-combiner is unverified 
+
+glue whose only failure mode is false denial, never false permit (§4.4). The scheme generates 𝑛 EverParse 3D specifications of 𝐾 rules each (DNF), plus one CNF specification for the rate limit. Each sub-specification is verified once as a standalone artefact, composed by glue logic. 
+
+Definition 4.1 (Partitioned validators). Let 𝜋 = (𝑟 1, . . . , 𝑟 𝑛𝐾 ) be a policy of 𝑛𝐾 rules, split into 𝑛 partitions of 𝐾 rules each: partition 𝑗 
+
+consists of rules ( 𝑗 − 1)𝐾 + 1 through 𝑗𝐾 , for 𝑗 = 1, . . . , 𝑛 . Writing 
+
+𝜋 𝑗 for the 𝑗 -th partition, the per-partition match function is 
+
+𝜙 𝑗 (𝜋 𝑗 , 𝑞, 𝑠 ) ≜
+
+> 𝐾
+
+Ü
+
+> 𝑖 =1
+
+𝑓 (𝑞, 𝑠, 𝑟 ( 𝑗 −1)𝐾 +𝑖 ), (13) where 𝑓 is the per-rule match function of Definition 3.6. The rate limit is enforced separately by a 2-byte CNF specification whose where-clause is 𝑐 ′ < 𝑁 max . The partitioned decision function com-bines the two: 
+
+𝐷 part (𝜋, 𝑞, 𝑠 ) ≜ (𝑐 ′ < 𝑁 max ) ∧ 
+
+> 𝑛
+
+Ü
+
+> 𝑗 =1
+
+𝜙 𝑗 (𝜋 𝑗 , 𝑞, 𝑠 ). (14) At runtime, each 𝜙 𝑗 is implemented by an EverParse-generated validator 𝑉 𝑗 over a 73-byte AccessRequest-only DNF spec ( 𝛼 , 𝜎 , the rules of 𝜋 𝑗 , 𝑝 req , 𝑚 req , phantom), distinct from 𝑉 access of Theorem 3.9. Lemma 4.2 (Partition eqivalence). For every policy 𝜋 of 𝑛𝐾 
+
+rules, every request 𝑞 , and every session state 𝑠 ,
+
+𝐷 part (𝜋, 𝑞, 𝑠 ) = 𝐷 accept (𝜋, 𝑞, 𝑠 ).
+
+Proof. Unfolding 𝜙 𝑗 in 𝐷 part and reindexing ( 𝑘 = ( 𝑗 − 1)𝐾 + 𝑖 ): 
+
+𝐷 part (𝜋, 𝑞, 𝑠 ) = (𝑐 ′ < 𝑁 max ) ∧ 
+
+> 𝑛
+
+Ü
+
+> 𝑗 =1
+> 𝐾
+
+Ü
+
+> 𝑖 =1
+
+𝑓 (𝑞, 𝑠, 𝑟 ( 𝑗 −1)𝐾 +𝑖 )
+
+= (𝑐 ′ < 𝑁 max ) ∧ 
+
+> 𝑛𝐾
+
+Ü
+
+> 𝑘 =1
+
+𝑓 (𝑞, 𝑠, 𝑟 𝑘 ) = 𝐷 accept (𝜋, 𝑞, 𝑠 ).
+
+Disjunction is associative and commutative, and the last step is Definition 3.6 on the full 𝑛𝐾 -rule policy. □
+
+Runtime overhead. Buffer construction (pure memcpy ) domi-nates the per-call cost. Measured worst-case scales linearly in 𝑛 (Ta-ble 10, Part-𝑛 rows): Part-64 (the OPNsense-covering configuration) decides in 992 ns, within 11% of the linear prediction. Short-circuit Saranachon Iammongkol, Zhiyi Huang, and David Eyers 
+
+Table 9: Partitioned vs. monolithic verification scaling.                                             
+
+> Config 𝑛 𝐾 Total rules Per-part. (s) Total Z3 (s) Mono-8 18819 19 Mono-16 116 16 76 76 Mono-24 124 24 252 252 Mono-32 132 32 OOM ( >24 GiB) Part-4 4832 16.4 66 Part-16 16 8128 16.8 269 Part-64 †64 8512 15.6 999 Part-256 256 82,048 15.3 3,920
+> †Part-64 covers the full OPNsense 19.1.7 ACL: 420 concrete paths fit in 512 rule slots with 92 unused slots filled by the inactive sentinel.
+
+Table 10: Validator WCET (1 M iterations, warm cache, -O2 ,Intel Core Ultra 7 155H).                                                                      
+
+> Total Buf Worst Best Config 𝑛 𝐾 rules (bytes) (ns/call) (ns/call) Mono-4 14443 12 8Mono-8 18875 17 14 Mono-16 116 16 139 26 23 Mono-24 124 24 203 37 33 Part-4 4832 294 61 15 Part-16 16 8128 1,170 261 16 Part-64 64 8512 4,674 992 15 Part-256 256 82,048 18,690 3,944 15
+> Part-𝑛 rows measure 𝑛 sequential Partition 𝐾 =8calls (73 bytes each) plus the 2-byte rate constraint (𝑐 ′<𝑁 max ); Buf column reports total bytes scanned per worst-case decision ( 73 𝑛 +2). Dry-run measurements on host; canonical container measurements forthcoming.
+
+evaluation keeps best-case constant at ∼15 ns when the matching rule is in the first partition. 
+
+Trust analysis. The partitioned glue introduces no trust be-yond A2: per-partition buffer construction uses the same fixed-offset byte copies as the monolithic encoding (Observation 1). The verified code scales linearly (1,332 lines per partition) while the unverified glue stays constant-size, and equivalence was confirmed experimentally: Part-2 and Mono-16 give identical decisions across all 14 test inputs (Batch D, Group A). 
+
+## 4.3 Expressiveness: OPNsense Access Control Coverage 
+
+We validate the expressiveness boundary against OPNsense 19.1.7 [15], the real-world firewall affected by CVE-2019-11816. 
+
+4.3.1 Coverage. OPNsense 19.1.7 defines 201 URL patterns across 11 ACL.xml files, including wildcards (e.g. api/firewall/* ). Ex-panding wildcards against the controller tree yields 420 unique concrete paths. Our language covers all 420 as exact-match path identifiers. Part-64 (512 rule slots) Z3-verifies this configuration in ∼16 .6 min (Table 9)—a compile-time verifiability result; end-to-end deployment uses an 8-rule subset. The CVE-2019-11816 attack surface—login, user management, group management, firmware 
+
+Table 11: Test inventory. All tests and harnesses are included in the artifact.                 
+
+> Category Description Tests Methodology everparse_dnf_poc/ batches 211 Production pipeline_test.c (C1–C8) 46 F* Extractor verified/ (6 harnesses) 119 RateLimiter test_rate_limiter.c 8Integration QEMU end-to-end (Docker) 7
+> Total 391
+
+update, system reboot, and status endpoints—is a subset of 7 paths at 𝐾 =7, requiring two role levels. 
+
+4.3.2 Wildcard Exclusion. Our language does not support wild-card patterns. EverParse requires fixed-size, bounded struct entries; while wildcards could in principle be mapped to a single path iden-tifier at the F* extractor level, verifying that mapping is impractical. Adding new endpoints therefore requires re-running EverParse, aligned with commercial firmware-update practice. 
+
+4.3.3 Relevance to CVE-2019-11816. CVE-2019-11816 involved two enforcement bugs while the XML ACL policy was cor-rect. The first, in isPageAccessible , used strpos to test whether a privilege string appeared anywhere in the URL, so appending ?api/core/menu bypassed the ACL and reached user management—enforcement logic independent of wild-cards, and exactly the class our gate eliminates (Theorem 3.9). The second, in urlMatch , turned wildcards into regexes via 
+
+str_replace(’*’,’.*’) , enabling traversal through the .* :specific to wildcard expansion, outside our language. 
+
+## 4.4 Empirical Validation 
+
+4.4.1 Test Summary. The formal argument is supported by 391 passing tests across five categories (Table 11). The tests confirm that trust assumptions not covered by the proof hold in practice, and exercise the full pipeline including unverified components. 
+
+4.4.2 Experimental Confirmation of Formal Claims. Table 12 maps each formal claim to a concrete experiment and its result. The headline confirmations are Theorem 3.9 (7/7 QEMU end-to-end) and Lemma 4.2 (Part-2 vs Mono-16, 14/14 match); the remaining rows exercise individual primitives of the encoding. 
+
+4.4.3 Performance. Runtime. The generated validator executes in 
+
+∼150 ns/call at -O0 ; at -O2 , worst-case latency is 17 ns for 𝐾 =
+
+8 (Table 10). The validator’s control flow is structurally input-independent: the worst-case path (all 𝐾 disjuncts evaluated) is statically determined by 𝐾 alone. 
+
+Comparison with general-purpose engines. The execution times of our scheme are broadly in line with those of other openly available access control systems, noting that the access control mod-els are different. The Cedar benchmark [3, §5.2] (EC2 m5.4xlarge) reports median latencies of ∼4–11 𝜇 s for Cedar, 76–676 𝜇 s for Rego (the Open Policy Agent, OPA), and 89–746 𝜇 s for OpenFGA (Open Fine-Grained Authorization) on entity-graph authorization (5–50 entities with transitive relationships); our validator measures 17 ns Access Control as Verified Parse Constraints 
+
+Table 12: Experimental confirmation of formal claims.                                 
+
+> Claim Experiment Result DNF deny-default (Cor. 3.11) C4: all-⊥policy ADMIN denied Verify once, enforce all (Cor. 3.10) Expt. 3: same binary, different data Different decisions CNF overrides DNF C8: rule match but rate exceeded Denied (HTTP 429) 4-way conjunction C7: all 4conditions tested 8/8 correct Scope subset C7: operator has 0x03, rule needs 0x04 Denied (correct) Role hierarchy ( 𝛼 ≥
+> 𝜌 )C1: OPER <ADMIN Correct Field provenance (11 fields) IPC.Extract: 13 tests covering role, scope, subject, rate 13/13 pass Full pipeline (Thm 3.9) QEMU end-to-end 7/7 pass Linear compile scal-ing Batch D: 𝑛 =1,2,4,8,16 at 𝐾 =8
+> ∼16 .5 s/part. Partition equiv. (Lem. 4.2) Part-2 vs Mono-16 14/14 match Deny-default (parti-tioned) All-⊥across 𝑛 parti-tions Deny confirmed
+
+at 𝐾 =8 and 992 ns at Part-64 (512 rules) on flat rule decisions. Both numbers place decision latency well below typical network I/O. 
+
+Compile-time verification. EverParse 3D-to-C compilation takes ∼19 s at 𝐾 =8. The monolithic formula scales super-linearly in 𝐾 (Table 8: OOM at 𝐾 =32); partitioning recovers linearity—each 
+
+𝐾 = 8 partition verifies in ∼16 .5 s independent of 𝑛 , so Part-256 finishes in ∼65 min (Table 9). F* extraction verification adds ∼10 .5 s. All are one-time costs. 
+
+## 5 Discussion and Related Work 
+
+Theorem 3.9 proves that the deployed C gate agrees with the mathe-matical decision function for every policy, request, and session state; it does not verify that the policy is sensible, bound integrity past the gate, or defend against side channels. The restricted language is deliberate: richer features such as wildcard paths or quantified constraints would either break EverParse’s forward-only parser model or make Z3 [4] discharge intractable. Assumption A2 in Ta-ble 6 flags the one hand-written component in the core chain that is not verified: a wrong-offset bug in its fixed-offset byte-copy glue would silently corrupt the buffer Theorem 3.9 certifies. Unlike the variable-length parsers and comparators where gateway CVEs live (§1), this glue is straight-line, input-independent, auditable against Table 4, and confined by seL4 isolation. The seL4 dataports and 
+
+memcpy that deliver its inputs are trusted per A7–A9, not verified here. F*-verifying Stage 3 against the 𝐸 access specification is possible but was not undertaken: the project targeted seL4 from the outset, so seL4’s isolation already enforces the component boundary. A deployment outside seL4 would require either an F*-verified glue or an equivalent platform guarantee. 
+
+## 5.1 Verified Parsing 
+
+EverParse [20] generates verified zero-copy parsers from binary message formats; EverParse 3D [24] extends it with a dependent-field DSL and refinement types. All prior uses validate externally-defined data formats : protocol messages (miTLS [1]), file formats, attested boot (DICE* [25]), and certificates (ASN1* [14], the first formal proof of DER canonicity). PulseParse [21] uses separation logic for non-malleable recursive formats (CBOR, CDDL, COSE). Its copy-writer combinators could in principle eliminate A2, but re-quire authoring specifications directly in Pulse with manual proof obligations—re-introducing the verification burden that our 3D-based approach is designed to eliminate from the policy-author’s workflow. DICE* and our work both push on EverParse’s envelope but from opposite sides: Tao et al. extend LowParse with backward serialisers so ASN.1 DER’s variable-length TLV can be written length-after-value, a change that stays inside LowParse’s binary-grammar model; we keep EverParse unchanged and place a verified F* preprocessor (§3.4) in front of it, because HTTP is a text pro-tocol outside any binary-grammar extension. In every case the 3D or CDDL schema defines data structure , and authorisation—if present—is left to downstream code. We instead use the format specification to encode the security policy itself: a message that parses successfully is, by construction, an authorised request. 
+
+## 5.2 Access Control Languages and Policy Verification 
+
+Prior work verifies either specific policy instances or unverified enforcement engines. Hughes and Bultan [7] translate XACML (eXtensible Access Control Markup Language) policies to Boolean formulas for SAT-based containment checks; Slaymaker et al. [22] formalise the RBAC-to-XACML translation in Z notation; Masi et al. [12] give a formal semantics for XACML with an unverified Java engine. All three verify properties of instances or translations ;the policy decision point that eventually runs the rule is trusted software. XACML [5] and OPA [2] provide expressive languages but trust the enforcement runtime; our approach eliminates the in-terpreter and replaces it with machine-generated, machine-checked C. 
+
+Cedar. Cedar [3] pursues the same goal of verified access-control enforcement and is the closest prior work. It verifies policy seman-tics against a Lean model and connects that model to a hand-written Rust engine by differential random testing. Neither approach elimi-nates trust; both relocate it. The difference is structural: because we generate the enforcement code from the specification rather than testing an engine against it, the specification-to-code corre-spondence is discharged by proof, not sampled by tests, and deny-by-default follows from the encoding (Corollary 3.11) rather than being an engine behaviour that testing must confirm. The tradeoff is real: Cedar’s richer language admits greater expressiveness with a general-purpose engine; our narrower fragment buys a provable correspondence at the cost of the expressiveness limits in §4. Saranachon Iammongkol, Zhiyi Huang, and David Eyers 
+
+## 5.3 Verified Isolation and Composition 
+
+seL4 [9] provides the first complete formal verification of a general-purpose OS microkernel; Murray et al. [13] extended seL4 with in-formation flow enforcement. We use seL4 as the isolation substrate (§3.4). CAmkES [10] provides architectural isolation : components interact only through declared interfaces, but the ADL describes system topology, not content-level access control. Our parsers fill that gap. 
+
+## 6 Conclusion 
+
+We have shown that access control enforcement can be reduced to verified data format validation. Theorem 3.9 establishes that the generated validator accepts a request iff the policy decision function accepts it, for every policy and every request. A single verified binary enforces every policy expressible in the language; policy updates are changes to runtime bytes the proof already covers. The nine trust assumptions are explicit in Table 6: A1–A6 bound the theorem and A7–A9 bound the seL4 deployment. The approach is supported by a production test suite, included in the artifact (Table 11). 
+
+Future work. The encoding methodology generalises beyond the bounded language presented here. Near-term extensions include parameterised constraints for wildcard path matching, additional universal CNF clauses (body size, content type), and richer role-based features such as partial-order role hierarchies, multi-role sessions, and separation of duty constraints, moving toward full NIST RBAC [6] coverage. Longer-term, any request-response pro-tocol with fixed-offset security-relevant fields is amenable to the same verify-once-enforce-all approach. 
+
+## References 
+
+[1] Karthikeyan Bhargavan, Cédric Fournet, and Markulf Kohlweiss. 2016. miTLS: Verifying Protocol Implementations against Real-World Attacks. IEEE Security & Privacy 14, 6 (2016), 18–25. doi:10.1109/MSP.2016.114 [2] Cloud Native Computing Foundation. 2021. Open Policy Agent. [3] Joseph W. Cutler, Craig Disselkoen, Aaron Eline, Shaobo He, Kyle Headley, Michael Hicks, Kesha Hietala, Eleftherios Ioannidis, John Kastner, Anwar Mamat, Darin McAdams, Matt McCutchen, Neha Rungta, Emina Torlak, and Andrew M. Wells. 2024. Cedar: A New Language for Expressive, Fast, Safe, and Analyzable Authorization. Proc. ACM Program. Lang. 8, OOPSLA1, Article 118 (April 2024). doi:10.1145/3649835 [4] Leonardo de Moura and Nikolaj Bjørner. 2008. Z3: An Efficient SMT Solver. In 
+
+Tools and Algorithms for the Construction and Analysis of Systems (TACAS 2008) (Lecture Notes in Computer Science, Vol. 4963) . Springer, 337–340. doi:10.1007/978-3-540-78800-3_24 [5] David Ferraiolo, Ramaswamy Chandramouli, Rick Kuhn, and Vincent Hu. 2016. Extensible Access Control Markup Language (XACML) and next Generation Access Control (NGAC). In Proceedings of the 2016 ACM International Workshop on Attribute Based Access Control (Abac ’16) . Association for Computing Machinery, New York, NY, USA, 13–24. doi:10.1145/2875491.2875496 [6] David F. Ferraiolo, Ravi Sandhu, Serban Gavrila, D. Richard Kuhn, and Ra-maswamy Chandramouli. 2001. Proposed NIST Standard for Role-Based Access Control. ACM Trans. Inf. Syst. Secur. 4, 3 (Aug. 2001), 224–274. doi:10.1145/ 501978.501980 [7] Graham Hughes and Tevfik Bultan. 2008. Automated Verification of Access Control Policies Using a SAT Solver. International Journal on Software Tools for Technology Transfer 10, 6 (2008), 503–520. doi:10.1007/s10009-008-0087-9 [8] Gerwin Klein, June Andronick, Kevin Elphinstone, Toby Murray, Thomas Sewell, Rafal Kolanski, and Gernot Heiser. 2014. Comprehensive Formal Verification of an OS Microkernel. ACM Trans. Comput. Syst. 32, 1, Article 2 (Feb. 2014). doi:10.1145/2560537 [9] Gerwin Klein, Kevin Elphinstone, Gernot Heiser, June Andronick, David Cock, Philip Derrin, Dhammika Elkaduwe, Kai Engelhardt, Rafal Kolanski, Michael Norrish, Thomas Sewell, Harvey Tuch, and Simon Winwood. 2009. seL4: Formal Verification of an OS Kernel. In Proceedings of the ACM SIGOPS 22nd Symposium on Operating Systems Principles (SOSP ’09) . Association for Computing Machinery, Big Sky, Montana, USA, 207–220. doi:10.1145/1629575.1629596 [10] Ihor Kuz, Yan Liu, Ian Gorton, and Gernot Heiser. 2007. CAmkES: A Component Model for Secure Microkernel-Based Embedded Systems. Journal of Systems and Software 80, 5 (2007), 687–699. doi:10.1016/j.jss.2006.08.039 [11] Xavier Leroy. 2006. Formal Certification of a Compiler Back-End, or: Program-ming a Compiler with a Proof Assistant. In Proceedings of the 33rd ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL ’06) . ACM, 42–54. doi:10.1145/1111037.1111042 [12] Andrea Masi, Rosario Pugliese, and Francesco Tiezzi. 2012. Formalisation and Implementation of the XACML Access Control Mechanism. In Engineering Secure Software and Systems (ESSoS 2012) (Lecture Notes in Computer Science, Vol. 7159) .Springer, 60–74. doi:10.1007/978-3-642-28166-2_7 [13] T. Murray, D. Matichuk, M. Brassil, P. Gammie, T. Bourke, S. Seefried, C. Lewis, X. Gao, and G. Klein. 2013. seL4: From General Purpose to a Proof of Information Flow Enforcement. In 2013 IEEE Symposium on Security and Privacy . 415–429. doi:10.1109/SP.2013.35 [14] Haobin Ni, Antoine Delignat-Lavaud, Cédric Fournet, Tahina Ramananandro, and Nikhil Swamy. 2023. ASN1*: Provably Correct Non-Malleable Parsing for ASN.1 DER. In Proceedings of the 12th ACM SIGPLAN International Conference on Certified Programs and Proofs (CPP ’23) . ACM. doi:10.1145/3573105.3575688 [15] NIST National Vulnerability Database. 2019. CVE-2019-11816: Incorrect Access Control Vulnerability in Opnsense and pfSense WebUI. [16] NIST National Vulnerability Database. 2024. CVE-2024-0012: PAN-OS Authenti-cation Bypass in the Management Web Interface via Attacker-Controlled X-pan-AuthCheck Header. [17] NIST National Vulnerability Database. 2025. CVE-2025-0108: PAN-OS Authenti-cation Bypass in the Management Web Interface via Nginx/Apache Path Confu-sion. [18] NIST National Vulnerability Database. 2025. CVE-2025-20362: Authorization Bypass Vulnerability in the VPN Web Server of Cisco Secure Firewall ASA and FTD Software. [19] Jonathan Protzenko, Jean-Karim Zinzindohoué, Aseem Rastogi, Tahina Ra-mananandro, Peng Wang, Santiago Zanella-Béguelin, Antoine Delignat-Lavaud, Cătălin Hriţcu, Karthikeyan Bhargavan, Cédric Fournet, and Nikhil Swamy. 2017. Verified Low-Level Programming Embedded in F*. Proceedings of the ACM on Programming Languages 1, ICFP, Article 17 (2017), 28 pages. doi:10.1145/3110261 [20] Tahina Ramananandro, Antoine Delignat-Lavaud, Cedric Fournet, Nikhil Swamy, Tej Chajed, Nadim Kobeissi, and Jonathan Protzenko. 2019. EverParse: Verified Secure Zero-Copy Parsers for Authenticated Message Formats. In 28th USENIX Security Symposium (USENIX Security 19) . USENIX Association, Santa Clara, CA, 1465–1482. [21] Tahina Ramananandro, Gabriel Ebner, Guido Martínez, and Nikhil Swamy. 2025. Secure Parsing and Serializing with Separation Logic Applied to CBOR, CDDL, and COSE. In Proceedings of the 2025 ACM SIGSAC Conference on Computer and Communications Security (Ccs ’25) . Association for Computing Machinery, New York, NY, USA, 2744–2758. doi:10.1145/3719027.3765120 [22] Mark Slaymaker, David Power, and Andrew Simpson. 2010. Formalising and Validating RBAC-to-XACML Translation Using Lightweight Formal Methods. In 
+
+Abstract State Machines, Alloy, B and Z (ABZ 2010) (Lecture Notes in Computer Science, Vol. 5977) . Springer, 54–67. doi:10.1007/978-3-642-11811-1_26 [23] Nikhil Swamy, Cătălin Hriţcu, Chantal Keller, Aseem Rastogi, Antoine Delignat-Lavaud, Simon Forest, Karthikeyan Bhargavan, Cédric Fournet, Pierre-Yves Strub, Markulf Kohlweiss, Jean-Karim Zinzindohoue, and Santiago Zanella-Béguelin. 2016. Dependent Types and Multi-Monadic Effects in F*. In Proceedings of the 43rd Annual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (Popl ’16) . Association for Computing Machinery, New York, NY, USA, 256–270. doi:10.1145/2837614.2837655 [24] Nikhil Swamy, Tahina Ramananandro, Aseem Rastogi, Irina Spiridonova, Haobin Ni, Dmitry Malloy, Juan Vazquez, Michael Tang, Omar Cardona, and Arti Gupta. 2022. Hardening Attack Surfaces with Formally Proven Binary Format Parsers. In 
+
+Proceedings of the 43rd ACM SIGPLAN International Conference on Programming Language Design and Implementation (PLDI ’22) . ACM. doi:10.1145/3519939. 3523708 [25] Zhe Tao, Aseem Rastogi, Naman Gupta, Kapil Vaswani, and Aditya V. Thakur. 2021. DICE*: A Formally Verified Implementation of DICE Measured Boot. In Proceedings of the 30th USENIX Security Symposium (USENIX Security ’21) .USENIX Association. [26] Jean-Karim Zinzindohoué, Karthikeyan Bhargavan, Jonathan Protzenko, and Benjamin Beurdouche. 2017. HACL*: A Verified Modern Cryptographic Library. In Proceedings of the 2017 ACM SIGSAC Conference on Computer and Communi-cations Security (Ccs ’17) . Association for Computing Machinery, New York, NY, USA, 1789–1806. doi:10.1145/3133956.3134043 Access Control as Verified Parse Constraints 
+
+## A Open Science 
+
+The artifact accompanying this paper includes: the EverParse 3D specification ( RbacPolicy.3d , 245 lines), the F* extractor modules (8 modules, 1,264 lines), the generated verified C code, the CAmkES system configuration, the full test suite (391 tests across 5 categories as described in Table 11), build scripts, and QEMU integration scripts for end-to-end testing. The artifact is available at: https://github.com/spanwich/http-gateway-artifact The artifact supports reproducing all results in §4, including Ta-bles 8–12 and the QEMU end-to-end tests. The repository contains a 
+
+Dockerfile and run-tests.sh script that build the seL4/CAmkES image, launch QEMU, and execute all 7 integration tests automati-cally. seL4 and EverParse are open-source dependencies available from their upstream repositories: https://github.com/seL4 and https:// github.com/project-everest/everparse. 
+
+## B Ethical Considerations 
+
+All vulnerability analysis in this paper uses exclusively publicly available CVE disclosures from the NIST National Vulnerability Database (CVE-2024-0012, CVE-2025-0108, CVE-2025-20362, CVE-2019-11816). No reverse engineering, exploitation, or vulnerabil-ity discovery was performed. The work is entirely defensive: the contribution is a verified enforcement mechanism, not an attack technique. The OPNsense analysis (§4.3) uses the publicly avail-able ACL.xml files from the open-source OPNsense 19.1.7 release (BSD-2-Clause). 
+
+## C Generative AI Usage 
+
+This paper was prepared with the assistance of Claude (Anthropic). The tool was used in four capacities: (1) as an interactive research tool for exploring and refining the encoding methodology and proof structure; (2) for assistance in drafting and revising paper text, which the authors reviewed, restructured, and validated against the formal artefacts; (3) for editorial improvements to grammar and clarity; and (4) for assistance in developing F* modules, the 3D specification, test harnesses, the CAmkES ADL system configu-ration, and the e1000 network driver. The CAmkES ADL defines the 8-component isolation topology that seL4 enforces (§3.4); its correctness is Trust Assumption A9. The e1000 driver is unverified application code confined by that isolation and is not part of the verified trust chain. All AI-assisted code was validated by the same toolchain that constitutes the paper’s contribution: the F* type checker and Z3 SMT solver independently verify the generated code for memory safety, functional correctness, and termination. The EverParse com-piler rejects any 3D specification that fails Z3 proof discharge. The 391-test suite (§4.4) confirms behavioural correctness of the full pipeline. No formal claim in this paper rests on unvalidated AI-generated content; every technical claim is either machine-checked (Theorem 3.9) or confirmed by reproducible experiments (Table 12). All authors accept full responsibility for the accuracy, originality, and integrity of this work.
