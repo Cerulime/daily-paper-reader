@@ -48,7 +48,7 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-18</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-19</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
     <strong class="dpr-home-dashboard-count">共 3 篇</strong>
@@ -58,7 +58,7 @@
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>1</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-18 21:45:13 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-19 21:23:45 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日3篇推荐出炉：2篇8分精读聚焦恶意软件检测与可验证隐私训练，1篇6分速读关注区块链IoT逻辑漏洞。</p>
-<p>最值得看的是用API序列建模做高效可解释静态恶意软件检测，以及在旧GPU上实现TEE认证的差分隐私训练。</p>
-<p>普通读者可先读这两篇精读，若关心区块链与物联网安全再翻速读篇。</p>
+<p>今日精读两篇8分漏洞检测论文，覆盖TVM字节码污点分析与汇编代码语义检测。最值得关注TasmScan的续接感知污点分析与Savelist抽象、SEMA-GUARD的语义+图结合方案。普通读者可先读这两篇精读，再速读6分的智能体渗透测试攻击图自动化构建一文了解神经符号方向。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -83,7 +81,7 @@
     <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Delphi Scanner: efficient and interpretable static malware detection via API sequence modeling">Delphi Scanner: efficient and interpretable static malware detection via API sequence modeling</span></li><li><span class="dpr-home-dashboard-paper-title" title="Towards TEE-Certified DP: Verifiable Differentially Private Training on Legacy GPUs">Towards TEE-Certified DP: Verifiable Differentially Private Training on Legacy GPUs</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="TasmScan: Continuation-Aware Taint Analysis for TVM Bytecode with Savelist Abstraction">TasmScan: Continuation-Aware Taint Analysis for TVM Bytecode with Savelist Abstraction</span></li><li><span class="dpr-home-dashboard-paper-title" title="SEMA-GUARD: Semantic and Graph-Based Vulnerability Detection in Assembly Code">SEMA-GUARD: Semantic and Graph-Based Vulnerability Detection in Assembly Code</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
@@ -96,7 +94,7 @@
     <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Detecting Logic Vulnerabilities Across the Contract and Device Layers of Blockchain-Enabled IoT With Multi-Agent Heterogeneous Graph Attention">Detecting Logic Vulnerabilities Across the Contract and Device Layers of Blockchain-Enabled IoT With Multi-Agent Heterogeneous Graph Attention</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Automating Attack Graph Construction for Agentic Pentesting. Towards Neuro-Symbolic Vulnerability Hunting">Automating Attack Graph Construction for Agentic Pentesting. Towards Neuro-Symbolic Vulnerability Hunting</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
