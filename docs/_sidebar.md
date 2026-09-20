@@ -1,6 +1,9 @@
 * <a class="dpr-sidebar-root-link" href="#/">首页</a>
 * <a class="dpr-sidebar-root-link dpr-sidebar-noactive-link" href="javascript:void(0)" data-dpr-hash="#/tutorial/README">使用教程</a>
 * Daily Papers
+  * 2026-09-20 <!--dpr-date:20260920-->
+    * 速读区
+      * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202609/20/2609.18706v1-echo-learning-based-matching-decompilation-using-trusted-back-translation" data-sidebar-item="{&quot;title&quot;: &quot;Echo: Learning-based Matching Decompilation using Trusted Back Translation&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2609.18706v1-echo-learning-based-matching-decompilation-using-trusted-back-translation&quot;, &quot;score&quot;: &quot;6.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;sys-security&quot;}], &quot;evidence&quot;: &quot;面向二进制程序的匹配式反编译与静态分析&quot;}">Echo: Learning-based Matching Decompilation using Trusted Back Translation</a>
   * 2026-09-19 <!--dpr-date:20260919-->
     * 精读区
       * <a class="dpr-sidebar-item-link dpr-sidebar-item-structured" href="#/202609/19/2609.16987v1-tasmscan-continuation-aware-taint-analysis-for-tvm-bytecode-with-savelist-abstraction" data-sidebar-item="{&quot;title&quot;: &quot;TasmScan: Continuation-Aware Taint Analysis for TVM Bytecode with Savelist Abstraction&quot;, &quot;link&quot;: &quot;https://arxiv.org/abs/2609.16987v1-tasmscan-continuation-aware-taint-analysis-for-tvm-bytecode-with-savelist-abstraction&quot;, &quot;score&quot;: &quot;8.0&quot;, &quot;tags&quot;: [{&quot;kind&quot;: &quot;query&quot;, &quot;label&quot;: &quot;sys-security&quot;}], &quot;evidence&quot;: &quot;面向安全的字节码级静态污点分析，无需源代码&quot;}">TasmScan: Continuation-Aware Taint Analysis for TVM Bytecode with Savelist Abstraction</a>
