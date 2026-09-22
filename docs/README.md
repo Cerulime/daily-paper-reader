@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-21</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-22</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 6 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>6</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-21 23:00:48 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-22 21:47:48 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日速读 6 篇、精读挂零，全部精力放在溯源入侵检测、C/C++ 开源复用谱系与多智能体输出安全三条线上。</p>
-<p>最值得看的是同拿 6.0 的两篇：《Not All Relations Are Equal》用关系均衡+校准的图学习提升溯源入侵检测，《GANADI》靠关键函数聚类还原 C/C++ 复用谱系以加固供应链。</p>
-<p>普通读者建议先翻这两篇的摘要与方法示意图，抓住&quot;图结构如何服务安全分析&quot;这条主线，再决定是否深挖细节。</p>
+<p>今日精选5篇安全论文，精读2篇速读3篇，聚焦嵌入式与内核攻防。最值得看的是两篇8分精读：POZZER用功耗侧信道引导黑盒嵌入式系统模糊测试，SyzHarness则借LLM合成模糊测试桩来复现内核补丁缺陷。普通读者可先读这两篇精读，再顺带扫一眼LLM引导JavaScript引擎模糊测试的速读方向。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -80,12 +78,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">0 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="POZZER: A Power Side Channel-guided Fuzzer for Black-Box Embedded Systems">POZZER: A Power Side Channel-guided Fuzzer for Black-Box Embedded Systems</span></li><li><span class="dpr-home-dashboard-paper-title" title="SyzHarness: Patch-Based Kernel Bug Reproduction with LLM-Synthesized Fuzzing Harnesses">SyzHarness: Patch-Based Kernel Bug Reproduction with LLM-Synthesized Fuzzing Harnesses</span></li></ul>
   </div>
-
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -93,12 +91,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">6 篇</strong>
+    <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Not All Relations Are Equal: Relation-Balanced and Calibrated Graph Learning for Provenance-Based Intrusion Detection">Not All Relations Are Equal: Relation-Balanced and Calibrated Graph Learning for Provenance-Based Intrusion Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="GANADI: Uncovering C/C++ OSS Reuse Genealogies via Pivotal Function-Based Clustering to Enhance Supply Chain Security">GANADI: Uncovering C/C++ OSS Reuse Genealogies via Pivotal Function-Based Clustering to Enhance Supply Chain Security</span></li><li><span class="dpr-home-dashboard-paper-title" title="MAGS: Multi-agent Auto-formalization Guarantees Safety for Agentic Outputs">MAGS: Multi-agent Auto-formalization Guarantees Safety for Agentic Outputs</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="When the Agent Becomes the Kernel: A Systematization of Security on the Path to AI-Native Operating Systems">When the Agent Becomes the Kernel: A Systematization of Security on the Path to AI-Native Operating Systems</span></li><li><span class="dpr-home-dashboard-paper-title" title="State-Aware Fuzzing of JavaScript Engines with LLM-Guided Instrumentation">State-Aware Fuzzing of JavaScript Engines with LLM-Guided Instrumentation</span></li><li><span class="dpr-home-dashboard-paper-title" title="Assessing Runtime Electromagnetic Detection of CPU Hardware Trojans Targeting Kernel Memory">Assessing Runtime Electromagnetic Detection of CPU Hardware Trojans Targeting Kernel Memory</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
 </div>
 
