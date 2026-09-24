@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-23</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-24</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 7 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 2 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>6</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-23 22:07:46 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-24 22:08:06 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,10 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共生成 7 篇推荐（精读 1 篇，速读 6 篇）</p>
-<p>精读：《Evaluating Coding Agents on Kernel Exploit Generation》（8.0/10）</p>
-<p>速读：《CASHEWS: Source Preprocessor for LLM-based Malicious Package Detection》（6.0/10）, 《DEFEAT: Stitching Fragmented File I/O Contexts for Early Ransomware Detection》（6.0/10）, 《SelfOp: An Optimization Algorithm for Self-Improving Security Agents》（6.0/10）</p>
-<p>这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。</p>
+<p>今日速读两篇 AI 安全方向论文，均获 6.0 分，聚焦 AI 开发工具的风险评估与自动化安全测试的判定可靠性。值得关注的是：AI 开发工具需要专门的安全评估框架，而自动化安全测试中&quot;确定性规则&quot;与&quot;AI 判定&quot;各有利弊，AI 判定结果可能被伪造。建议普通读者在采用 AI 安全工具时，优先选择规则明确、可验证的方案，对纯 AI 判定保持审慎。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -81,12 +78,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">1 篇</strong>
+    <strong class="dpr-home-dashboard-count">0 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Evaluating Coding Agents on Kernel Exploit Generation">Evaluating Coding Agents on Kernel Exploit Generation</span></li></ul>
+<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
+
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -94,12 +91,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">6 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CASHEWS: Source Preprocessor for LLM-based Malicious Package Detection">CASHEWS: Source Preprocessor for LLM-based Malicious Package Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="DEFEAT: Stitching Fragmented File I/O Contexts for Early Ransomware Detection">DEFEAT: Stitching Fragmented File I/O Contexts for Early Ransomware Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="SelfOp: An Optimization Algorithm for Self-Improving Security Agents">SelfOp: An Optimization Algorithm for Self-Improving Security Agents</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="A Security Risk Assessment Framework for AI-Powered Development Tools">A Security Risk Assessment Framework for AI-Powered Development Tools</span></li><li><span class="dpr-home-dashboard-paper-title" title="Forgeable Confirmation in Automated Computer Security Testing: Deterministic Rules versus AI Judges">Forgeable Confirmation in Automated Computer Security Testing: Deterministic Rules versus AI Judges</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>6</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 </div>
 
