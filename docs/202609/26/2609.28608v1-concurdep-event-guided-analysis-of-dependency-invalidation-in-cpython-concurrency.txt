@@ -1,0 +1,956 @@
+Title: CONCURDEP: Event-Guided Analysis of Dependency Invalidation in CPython Concurrency
+
+URL Source: https://arxiv.org/pdf/2609.28608v1
+
+Published Time: Fri, 25 Sep 2026 00:06:56 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# CONCUR DEP : Event-Guided Analysis of Dependency Invalidation in CPython Concurrency 
+
+Baihong Chen 
+
+Utah State University 
+
+Hadley Westover 
+
+Utah State University 
+
+Wen Li 
+
+Utah State University 
+
+Abstract —Removing CPython’s Global Interpreter Lock (GIL) exposes native code to concurrency absent from ordinary C types. Mutation or re-entry can revoke a borrowed object, stor-age pointer, traversal state, or lease between acquisition and use while its owner remains alive, causing native memory errors and runtime-state corruption. Race analyses track conflicting accesses. Python/C lifecycle analyses track individual object states. These reporting units leave implicit owner–subject– storage relations disconnected from later uses under parallel and re-entrant events. We present CONCUR DEP , a source-level static analysis of dependency invalidation . Its key insight is to represent the runtime property a native use requires and ask which target-matched event can revoke it within the dependency’s live region. C ONCUR DEP recovers runtime-semantic dependen-cies, connects them to events through an event-aware native concurrency dependency graph, and applies property-specific state and protection transfers through a shared engine and six mechanism plugins. C ONCUR DEP correctly classifies all 180 matched semantic-conformance cases and analyzes each of three production CPython releases with five-run medians of 22.13–27.66 seconds and 670–784 MiB peak resident memory. Source auditing confirms 1,094 of 4,273 unique production fingerprints (25.60% confirmation yield). Removing derived relation recovery loses 25–44 represented roots per release; removing cross-entry events loses 73–94. The study identifies 144 distinct bugs across free-threaded and conventional-GIL builds, including 95 previously unreported in public sources. These results show that explicit dependency, event, and prop-erty semantics expose consequential runtime failures across API boundaries and execution modes at release scale. 
+
+Index Terms —Concurrency, Program Analysis, CPython, Memory Safety, Free Threading 
+
+## 1. Introduction 
+
+CPython is replacing implicit synchronization with ex-plicit concurrency. Python Enhancement Proposal (PEP) 703 introduced a build with an optional Global Interpreter Lock (GIL), allowing Python threads to execute in parallel [1]. The transition required biased reference counting, deferred reclamation, per-object locking, and critical-section appli-cation programming interfaces (APIs) [1]. Extensions and runtime paths that relied on the GIL to protect object or global state now synchronize that state explicitly [2]; failures can corrupt interpreter state, violate native memory safety, or stop the process. The difficult failures extend beyond unguarded loads and stores. Native CPython code acquires relationships on which it later relies: a list owns a borrowed element, a bytearray backs a raw pointer, a dictionary table supports traversal, or a memoryview maintains a buffer lease. Mutation, reference drops, resource release, finalization, or Python re-entry can revoke these relationships between acquisition and use while the owner remains alive. The problem is to determine which runtime event can invalidate which native dependency before which use. Existing techniques supply parts of this reasoning. Dy-namic race and memory-error detectors expose executed conflicts and manifested faults [3], [4]; static race analyses relate shared accesses to aliasing and synchronization [5], [6]. Python/C lifecycle analyses track reference counts and object-state transitions [7], [8], while interference-aware typestate combines transitions with locksets [9]. CPython adds implicit owner–subject–storage contracts and parallel or re-entrant entries. The analysis connects these contracts to later uses and distinguishes ownership, leases, synchro-nization, and revalidation. Such failures can span fields or allocations, beyond one conflicting access or one object’s lifetime transition. This gap creates three design-independent challenges. 
+
+C1. dependency recovery reconstructs implicit runtime rela-tions and use-time obligations from C operations, macros, and API contracts. C2. event connection determines whether an invalidating event can occur within the dependency’s live region, target its runtime state, and overlap through a parallel or re-entrant context. C3. property-specific validation tracks the distinct properties an event changes and the guarantees of locks, ownership, leases, and point checks. CONCUR DEP rests on one reasoning shape: an opera-tion establishes an owner–subject dependency D, an event 
+
+E may revoke a required property within D’s live re-gion, and a later use consumes that property. To address C1, C ONCUR DEP normalizes native operations and recov-ers explicit owner–subject–storage dependencies. Its event-aware native concurrency dependency graph (NCDG) ad-dresses C2 through interval, target, and overlap relations. A shared runtime-state engine addresses C3 by applying target-arXiv:2609.28608v1 [cs.CR] 23 Sep 2026 matched effects and property-specific protection; six mech-anism plugins define use-time obligations. A declarative line-delimited JSON (JSONL) catalog supplies versioned CPython API and type semantics. We evaluate controlled and production behavior. CONCUR DEP correctly classifies all 180 matched Con-currBench cases; cumulative exposure, target/live-region, and state/protection ablations each remove controls while retaining all positives. Across five runs per CPython re-lease, whole-program analysis takes 22.13–27.66 seconds at 670–784 MiB median peak resident memory. Auditing every unique frozen fingerprint on CPython 3.13–3.15 con-firms 1,094 of 4,273 and attributes 139 free-threaded root causes to those reports. Investigation found two detector gaps; the released configuration recovers all 141 qualified free-threaded roots in the study corpus. The cross-mode inventory contains 144 root causes, including 125 whose strongest evidence is native failure. A public-history audit finds independent prior coverage for 49 roots and no earlier public report of the same native root for 95. On production inputs, one-capability-at-a-time ablations show that derived relation recovery retains 25–44 additional represented roots per release and cross-entry event connection retains 73–94. A witness-bound audit changes neither semantic warnings nor represented roots; it changes only alternative profile completeness. SVF-MTA/SlicedMTA completes with zero race pairs, Goblint reaches the 24-hour budget, RacerF and Deagle reject required features, and O2 is unavailable. This paper makes three contributions : 
+
+> •
+
+We formulate native concurrency failures as property-specific invalidation of recovered owner–subject–storage dependencies, unifying parallel and re-entrant execution without reducing it to same-address conflicts.  
+
+> •
+
+We develop an event-aware NCDG and runtime-state analysis linking dependencies to interprocedural events by live region, target identity, and execution context, and validating use-time obligations under property-specific protection.  
+
+> •
+
+We implement C ONCUR DEP and provide its analyzer, semantic catalogs, ConcurrBench, production reports, and auditable root-evidence ledger for three CPython re-leases. Evaluation establishes controlled semantic confor-mance, release-scale cost, and 144 qualified production root causes across the studied runtime configurations. 
+
+## 2. Background and Motivation 
+
+2.1. Background 
+
+Conventional CPython serializes most Python and C-API execution with the Global Interpreter Lock (GIL), but callbacks, finalizers, signals, blocking operations, and explicit GIL release still permit re-entry or overlap [10]. Free-threaded builds allow parallel Python threads, rely-ing instead on thread-safe reference counting, per-object locks, critical sections, and delayed reclamation [1]. These mechanisms protect particular operations and properties, not arbitrary multi-operation invariants. Native code often relies on runtime relationships absent from C types. We model a relationship as a dependency : an acquisition connects an owner to a subject, and later uses require stable properties— object lifetime, owner–subject membership, storage address, representation, traversal state, buffer leases, or callback-sensitive state. This unit records why a native use is valid, not just the address it accesses. 
+
+2.2. Motivating Example 
+
+Consider two threads in a free-threaded CPython process sharing a memoryview backed by a mutable 
+
+bytearray . Thread A calls memoryview.tobytes() ,while Thread B releases the same view and resizes the bytearray. The native copy relies on valid access to the back-ing storage until completion. Listing 1 simplifies the native copy and the concurrent Python operations. Here, self and 
+
+view denote the same memoryview, and backing is its bytearray exporter.                   
+
+> Listing 1. View release before anative backing-buffer use in
+> memoryview.tobytes()
+> /* Thread A: memoryview.tobytes() */ src = VIEW_ADDR(self); // a: get descriptor CHECK_RELEASED(self); // check current state out = new_bytes(src->len); copy_from_view(out, src); // u: read backing /* Thread B: simplified Python operations */ view.release(); // e: release same view backing.resize_and_refill(); // backing may move
+
+VIEW_ADDR(self) obtains a pointer to the view’s private Py_buffer descriptor (a) [11]. The later copy (u), represented by copy_from_view , uses 
+
+PyBuffer_ToContiguous and relies on the view’s ex-isting buffer export—its lease on the backing storage [12]. If Thread B calls release() (e) after the release check, it can drop the managed buffer’s export [13]. A subsequent resize may then replace or reclaim storage whose address the copy still uses. 
+
+Limitations and challenges. The example illustrates three analysis difficulties. First, the type of src describes a buffer descriptor but does not express the copy’s dependence on the view’s active export ( C1 ). Recovering that dependence requires following the relationship among the view, its de-scriptor, and the exporter through macros, fields, and API contracts. Second, release changes the view’s export state in another API implementation, whereas the copy reads the exporter’s data allocation ( C2 ). A conflict on the released flag alone does not explain this connection. The analysis determines whether release can affect the same view after the check and before the copy finishes; a release of an unrelated view or one ordered after the copy does not explain this failure. Third, object lifetime, a successful state check, and an active export provide different guarantees (C3 ). Keeping self alive preserves the view object, while 
+
+CHECK_RELEASED observes only its current state. Neither prevents later release. Other memoryview paths record tem-porary exports in self->exports around native buffer uses. Acquiring such an export atomically with the release check and retaining it through the copy prevents this revo-cation. The protected property is backing-address validity, not immutable contents [14]. 
+
+Motivating our approach. The example motivates connect-ing what a native operation requires to the events that can invalidate it. C ONCUR DEP recovers the copy’s dependence on the view’s export, connects it to a possible release of that same view during the copy, and checks whether the relevant storage remains protected. These tasks motivate dependency recovery, event connection, and property-specific validation, respectively. 
+
+2.3. Threat Model 
+
+We distinguish three classes of triggering behavior. An ordinary-API trigger shares mutable objects and in-vokes public Python operations concurrently. A callback-dependent trigger additionally controls a documented Python callback, finalizer, descriptor, or codec. A native-harness trigger uses a conforming C-API test callable to ex-ercise GIL-release or lifetime interactions within CPython’s extension model. We target violations of CPython’s na-tive memory safety and documented API behavior. C-API objects follow their contracts; exporters that violate the buffer protocol are outside scope [12]. Static reports identify potential invalidations, while source audit and dynamic or causal qualification establish concrete triggers and observed consequences. The motivating example uses ordinary public APIs; Section 5.3 presents its qualification evidence. 
+
+## 3. Design 
+
+Given native CPython source, a compilation database, and a runtime API catalog, C ONCUR DEP identifies native uses whose required state a concurrent or re-entrant event may invalidate. Reports retain the acquisition, later use, owner–subject relation, possible invalidating event, protec-tion evidence, and violated stability property for auditing. Figure 1 shows three analysis components. Runtime-Semantic Dependency Recovery (D1) turns C operations and API contracts into explicit dependencies and live re-gions. The Event-Aware Native Concurrency Dependency Graph (NCDG, D2) connects dependencies to interproce-dural events through interval, target identity, and overlap context. Runtime-State-Aware Dependency Validation (D3) propagates target-matched effects and property-specific pro-tection through live regions. Six mechanism plugins select family-specific obligations while sharing this reasoning. In the figure, P and C are the native program and catalog; 
+
+D, G, and M are recovered dependencies, the NCDG, and candidates. The data flow can be summarized as 
+
+(P, C ) R
+
+−→ (F, D, Π, CG, S ) G
+
+−→ G VP
+
+−−→ M, 
+
+Here P is the native program, C is the semantic catalog, and 
+
+F is the normalized function representation. D is the de-pendency set. Π, CG , and S are the shared points-to result, call graph, and summary fixed point. G is the event-aware NCDG, P is the plugin set, and M is the candidate set. For the running example, the first boundary carries Dview . The second links it to release event e through interval, target, and overlap witnesses. The third reports that the required lease may be false at use u.
+
+3.1. Problem Formulation 
+
+A native dependency is 
+
+D = ⟨f, a, U, o, s, r, h, w, I, K, P ⟩, (1) where f is a function, a is an acquisition, and U contains later uses. o and s are the owner and subject, and r is their relation. h and w record the dependency family and acquisition ownership. I is the live region from acquisition to the relevant uses, K is the stability contract, and P
+
+records protection. For example, a list-item borrow relates the list owner to an unowned item subject. Its lifetime obligation requires the item to remain live; a distinct relation obligation applies when the later use relies on the item still occupying that owner role. A concurrency event is 
+
+E = ⟨fe, p, t, c, X ⟩, (2) where fe is the event’s enclosing function, p is its program point, t is the event target, c is its execution context, and 
+
+X contains its possible invalidation effects. Effects include removing a relation, destroying a subject, resizing storage, rebuilding a representation, releasing a lease, closing aresource, and re-entering code that may mutate state. For a risk class R with required contract KR,CONCUR DEP reports ⟨D, E, R ⟩ only when 
+
+Between (E, I ) ∧ MayTarget (E, D )
+
+∧ MayOverlap (E, D )
+
+∧ ∃ k ∈ KR, u ∈ U : ¬Protected (D, E, k )
+
+∧ ReachInvalid (E, u, k ).
+
+(3) Here ReachInvalid (E, u, k ) holds when the modeled effect of E makes property k possibly invalid and propagation carries that state to a consumption at u, without a kill, applicable discharge, or stabilizing reacquisition. Section 3.4 defines the placement of local events and external-entry al-ternatives. The same k indexes protection, invalidation, and use: an event effect is suppressed only when the recognized guard preserves that property over the complete dependency interval. The first three terms are independently derived may facts. Their conjunction forms an abstract dependency-invalidation witness . Source audit and dynamic or causal qualification then check whether one concrete execution realizes the target, context, and failure. CONCUR DEP emits only state-violation candidates sat-isfying Equation 3, retaining dependency, exposure, target, interval, state, and protection evidence for inspection. The controlled ablation in Section 5.1 selectively disables these INPUTS               
+
+> source + semantic catalog
+> Runtime-Semantic Dependency Recovery
+> •normalize native operations
+> •recover dependencies and contracts
+> Event-Aware Native Concurrency Dependency Graph
+> •reuse calls and lift event effects
+> •match interval, target, and overlap
+> Runtime-State-Aware Dependency Validation
+> •propagate state and protec-tion
+> •evaluate plugins and retain witnesses
+> AUDIT REPORT
+> witness
+> a→e→u
+> violated property + missing protection
+> P+CDGM
+
+Figure 1. C ONCUR DEP workflow. Arrows name inputs and intermediate artifacts. 
+
+checks to measure their contribution. User-visible reports still follow Equation 3. 
+
+Scope of the reporting criterion. Equation 3 defines the reporting rule. Coverage depends on the compilation database, semantic catalog, call graph, points-to result, event model, and protection abstraction. Ordinary transfers and events compose across control-flow graph (CFG) points, but acquisition-time external-entry summaries are single-event alternatives, without closure over multiple events at that point. Missing catalog facts, incompatible may facts, unmodeled event sequences, conditional builds, inline as-sembly, and external code can cause missed or infeasible reports. A report-free result means that the supplied model produced no candidate. 
+
+3.2. Runtime-Semantic Dependency Recovery 
+
+Given native source P and a semantic catalog C, this stage recovers each acquisition’s owner, subject, relation, stability contract, later uses, and live region. It first normal-izes runtime operations and computes shared interprocedural facts, then constructs dependencies with the source evidence needed by subsequent event connection and validation. 
+
+3.2.1. Runtime-Semantic Normalization. Normalization translates C syntax into runtime-semantic operations while preserving control flow, value identity, and source locations. Its goal is to give macros, helpers, and API calls a consistent interpretation that dependency recovery and event connec-tion can share. 
+
+Procedure. Algorithm 1 normalizes each function and ap-plies catalog semantics (lines 3–5), then computes the shared interprocedural facts (lines 6–7). The frontend maps relevant Clang abstract syntax tree (AST) and CFG nodes to object and interior-storage acqui-sition, traversal, leases, uses, promotion, reference drops, ownership transfer, mutation, and resource release. It also captures protection entry and exit, Python re-entry, unknown calls, GIL changes, and thread creation and join. Values retain runtime-oriented kinds such as object, storage, buffer, iterator, callback, version, and guard. The versioned catalog supplies acquisitions, ownership, owner–subject relations, required stability, callbacks, effects, argument roles, and protection. Rules describe reusable semantics, such as a borrowed list-element return, independently of source-site labels. Explicit API semantics override generic type and source-pattern rules; compatible effects are unioned, while contradictory ownership declarations fail validation.                                                                                    
+
+> Algorithm 1: Recover Native Dependencies
+> Input: P: native program and CFGs; C: semantic catalog
+> Output: F: normalized functions; D: native dependencies; Π, CG, S :shared interprocedural facts
+> 1F← ∅ ;D ← ∅
+> 2foreach function f∈Pdo
+> 3Ff←normalizeSource (f)
+> 4Ff←applyCatalogSemantics (Ff, C )
+> 5F←F∪ { Ff}
+> 6Π←pointsToAnalysis (F);
+> CG ←resolveCallGraph (F, Π)
+> 7S←propagateSummaries (F, CG, Π)
+> 8foreach function Ff∈Fdo
+> 9foreach semantic acquisition a∈Ffdo
+> 10 U←reachableUses (a.subject, F f,Π, CG, S )
+> 11 U← { u∈U|pathWithoutRedefinition( a, u )}
+> 12 if U=∅then
+> 13 continue
+> 14 I←liveRegion (a, U, F f)
+> 15 (o, s, r, h, w, K, P a)←deriveContract (a, C )
+> 16 D ← D ∪ {⟨ Ff.id, a, U, o, s, r, h, w, I, K, P a⟩}
+> 17 return (F, D,Π, CG, S )
+
+We construct the catalog in four passes. First, CPython declarations, C-API documentation, and refcounts.dat 
+
+supply ownership facts for new, borrowed, and stolen ref-erences [15]. Second, we inspect macros and source-local helpers exercised by the compilation database for inte-rior addresses, output-pointer aliases, container relations, and mutation effects. Third, Argument Clinic metadata and lock, critical-section, buffer-export, GIL, and callback prim-itives supply protection and exposure facts. Finally, release diffs identify changed boundary operations [16]. Validation checks the schema, ownership consistency, duplicates, and named-rule occurrences. Coverage audits separately count exercised named rules and acquisitions in the qualified root corpus. Unmodeled helpers and representation conventions remain outside scope until normalization or catalog rules describe them. After catalog application, C ONCUR DEP computes the points-to result Π, resolved call graph CG , and summary fixed point S. Recovery uses them to follow aliases and calls; NCDG construction reuses them to connect dependen-cies to events. Figure 1 therefore separates semantic respon-sibilities while the implementation shares their prerequisite analyses. 
+
+Rationale. C types and expanded macros expose struc-ture but not ownership: neither PyObject* nor expanded 
+
+PyList_GET_ITEM identifies a result as borrowed from a particular list [2]. Normalization preserves the program’s control and data identities, while the catalog supplies the missing runtime contracts. This separation gives all plugins consistent semantics and makes release changes explicit rather than duplicating API-name rules across detectors. 
+
+3.2.2. Dependency and Live-Region Construction. De-pendency construction connects each acquisition to the uses that consume its subject or derived aliases. It produces ex-plicit contracts and acquisition-to-use regions, so subsequent stages can determine which events may invalidate a property before it is consumed. 
+
+Procedure. Algorithm 1 finds direct and summary-derived uses through Π, CG , and S, retaining paths without subject redefinition (lines 10–11). Acquisitions without later uses are omitted. The live region I records blocks and instruction ranges on the remaining paths (line 14). Subject assignment, fresh acquisition, stable copying, owned-reference promo-tion, or modeled release can end the corresponding path after that operation’s own uses. Actual–formal bindings and summaries carry uses and kills across calls; loop reacquisi-tion starts a new dependency. Acquisition semantics supply the owner o, subject s,relation r, family h, ownership w, configured contract K,and protection Pa (line 15). These fields, the acquisi-tion, uses, and live region form the dependency (line 16). Mechanism plugins select their required properties, while normalized use roles specify consumption before or after attached interference. For borrowed objects, the evaluated plugin conservatively requires both L IVE , meaning subject lifetime, and R EL , meaning that the acquisition’s owner– subject relation still holds. A separately pinned object can be removed safely before a lifetime-only use under a snapshot contract, although this default may emit a relation candidate for source audit. A use that assumes the saved subject still denotes the owner’s selected entry requires both properties. 
+
+Rationale. Alias and summary information connects acqui-sitions to uses beyond their original variables and functions. CFG-derived live regions distinguish branch-specific uses, killed dependencies, and fresh loop acquisitions that lexical intervals would merge. Keeping lifetime, relation, and stor-age obligations separate prevents owner liveness from being mistaken for protection of every dependent property. 
+
+Running example—recovered dependency. For List-ing 1, normalization and catalog application identify 
+
+VIEW_ADDR(self) at a as obtaining a pointer to 
+
+self.view , the memoryview’s private Py_buffer de-scriptor [11]. Points-to and field-path recovery retain the chain from self through its managed buffer to the exporter. The later PyBuffer_ToContiguous call at u consumes the descriptor and reads self.view.buf , requiring an open view, an active lease, and a stable backing address. Recovery instantiates Section 3.1’s dependency schema as 
+
+Dview :
+
+(f, a, U ) = ( memoryview_tobytes , a, {u}),
+
+(o, s, r ) = ( self , self.view , BackingView ),
+
+(h, w, I ) = ( ViewLease , borrowed , I a⇝u),
+
+(K, P ) = ( Kview , ∅),
+
+where Kview = {ViewOpen , LeaseActive , AddressStable }.The active call keeps self alive but does not preserve these                                                           
+
+> Algorithm 2: Construct the Event-Aware NCDG
+> Input: F, D,Π, CG, S : output and shared facts from Algorithm 1
+> Output: G: event-aware NCDG
+> 1Gcf g ←buildInterCFG (F, CG )
+> 2X←liftEvents (F, S )
+> 3J←indexByCanonicalTarget (X, S )
+> 4G← ⟨ Gcf g ,D, X, S ⟩
+> 5foreach dependency D∈ D do
+> 6foreach event E∈J[targets( D)] do
+> 7if mayExecuteBetween( E, D, G cf g )then
+> 8G←G∪ { (D, E, MAY EXECUTE BETWEEN )}
+> 9if mayTarget( E, D, Π, S )then
+> 10 G←G∪ { (D, E, MAY TARGET )}
+> 11 if mayOverlap( E, D, G cf g , S )then
+> 12 G←G∪ { (D, E, MAY OVERLAP )}
+> 13 return G
+
+view properties. CHECK_RELEASED establishes ViewOpen 
+
+only at the check, not throughout the copy. The protec-tion set is empty because tobytes neither increments 
+
+self->exports nor holds another lease across the acquisition-to-use interval. The next stage connects Dview 
+
+to events that may affect the same view. 
+
+3.3. Event-Aware Native Concurrency Dependency Graph 
+
+Given normalized functions, recovered dependencies, and shared interprocedural facts, this stage builds an event-aware NCDG. It identifies events that may execute within a dependency’s live region, affect a compatible owner or subject, and overlap through parallel execution or re-entry. All mechanism plugins share the resulting graph. 
+
+3.3.1. Event and Context Construction. The graph com-bines normalized program points, call and return edges, dependencies, events, canonical targets, and summaries. Events retain their effects and execution contexts so that dependency matching can connect native uses to local and interprocedural invalidations. 
+
+Procedure. Algorithm 2 reuses the points-to result Π, re-solved call graph CG , and summary fixed point S from Algorithm 1. It constructs the interprocedural CFG, lifts events, and indexes them by canonical target (lines 1–3), then initializes the graph (line 4). The interprocedural CFG preserves call, return, and intraprocedural reachability. Summaries record effects on formal arguments and canonical fields, escaping arguments, and exposure contexts; their propagated bindings associate formal targets with actual objects or fields. Unknown callees conservatively expose pointer-like arguments and carry cat-aloged effects. Events include mutation, reference drops, ownership transfer, resource release, callback and Python re-entry, finalization, blocking and foreign calls, lock oper-ations, thread creation and join, and GIL transitions. Con-texts distinguish the native continuation, Python threads, callbacks, foreign threads, finalizers, and garbage collection. The target index groups events by canonical objects or field paths for subsequent dependency matching. 
+
+Rationale. A dependency and its invalidation may occur in different functions. Summary bindings connect callee public entry A      
+
+> tobytes
+> a: A CQUIRE VIEW
+> src = VIEW_ADDR(self)
+> point fact
+> CHECK_RELEASED (self)
+> u: U SE BACKING
+> PyBuffer_ToContiguous
+> Dview live region Ia⇝u
+> public entry B
+> release
+> e: R ELEASE VIEW
+> effect: L EASE ACTIVE ←false
+> backing export may be released canonical target
+> self.view →managed buffer
+> →exporter storage MAY OVERLAP
+> free-threaded entries MAY EXECUTE BETWEEN
+> may occur in Ia⇝u
+> MAY TARGET
+> owner/subject path
+> Figure 2. The running example’s NCDG fragment. Solid arrows show native control flow or summarized call flow; dashed arrows show NCDG relations. The graph connects the release effect to the backing-buffer use through the dependency’s live region and canonical runtime target.
+
+effects to caller objects, while the interprocedural CFG preserves the paths needed to relate those effects to later uses. Canonical-target indexing limits matching to compati-ble event buckets rather than an all-to-all dependency–event product. 
+
+3.3.2. Dependency–Event Connection. For each indexed dependency–event pair, the builder independently records MAY EXECUTE BETWEEN , M AY TARGET , and M AY OVER -
+
+> LAP
+
+. The next stage considers the event eligible for state validation only when all three relations hold. 
+
+Procedure. MAY EXECUTE BETWEEN (line 8) follows acquisition-to-use reachability. An intraprocedural event re-quires an acquisition–event–use CFG path without a depen-dency kill. An external-entry summary is eligible for an acquisition-time alternative only after the target may have escaped to that entry. M AY TARGET (line 10) holds when values match directly, their points-to sets intersect, actual– formal bindings match, or canonical field paths share a root and compatible suffix. This connects an event to the dependency’s runtime target rather than merely to a nearby source operation. M AY OVERLAP (line 12) uses public-entry exposure, thread creation and join, callback and finalizer contexts, blocking calls, and GIL state. Free-threaded public entries may overlap unless established ordering or a join ex-cludes them. Cataloged callbacks, finalizers, foreign threads, signals, and GIL-release contexts can also establish overlap within the live region. Conventional-GIL mode requires these explicit exposure contexts rather than arbitrary public-entry overlap. Protection constrains eligible event effects. A lock or critical section suppresses an effect only when its guard is established as compatible, every path from acquisition through the affected uses retains protection, and the invali-dating operation follows the same synchronization protocol. Guard–target may-aliasing alone is insufficient. Strong ref-erences, buffer exports, private phases, version checks, and lifecycle rules suppress only effects on the properties they preserve; an unprotected contract-relevant effect remains eligible for transfer. CPython may suspend an outer critical section when entering another or detaching thread state [17]. The prototype recognizes lexical entry and exit regions and explicit callback, blocking, and GIL-release events, but not the complete suspension and resumption stack. Unmodeled suspension can therefore overstate protection and cause false negatives. 
+
+Rationale. Invalidation can cross memory locations: dic-tionary removal may reclaim an object later incremented elsewhere, and view release may revoke storage later copied. The NCDG connects these semantic effects to dependencies without requiring a shared accessed address. Separate inter-val, target, and overlap relations distinguish when an event may occur, what it may affect, and which execution context permits interference. All six plugins reuse this call, alias, and concurrency evidence. These relations remain conservative may facts; their conjunction establishes eligibility, not a concrete violation. 
+
+Running example—NCDG fragment. Figure 2 shows the graph for Dview . The upper path is the native CFG slice of memoryview.tobytes ; the lower summarizes the peer public release entry. Event e carries the effect 
+
+LeaseActive ← false and may drop the backing export associated with self.view . The graph records three con-nections: e may occur in Ia⇝u, its canonical target matches the view’s backing relation, and the two public entries may overlap in free-threaded execution. The PoC’s later resize exercises a backing-storage change enabled by lease loss; release itself revokes the lease required at u. If any of the three relations is absent, e is not eligible for validation of Dview . A release ordered after u fails M AY EXECUTE -BETWEEN ; one with a disjoint target fails M AY TARGET ;and ordinary conventional-GIL entries fail M AY OVERLAP 
+
+without explicit re-entry or GIL release. The resulting graph supplies the dependency and its eligible release event to the state-validation stage. 
+
+3.4. Runtime-State-Aware Dependency Validation 
+
+Given the NCDG and mechanism contracts, this stage checks whether an eligible event invalidates a property required by a later use. It produces an abstract witness linking the dependency, the unprotected event effect, and the use that observes invalid state. A shared core handles state propagation and protection; six plugins select contracts and classify the resulting violations. 
+
+3.4.1. Property-Specific State Propagation. The core an-alyzes each dependency over its live CFG region. It tracks Algorithm 3: Detect Dependency Invalidation 
+
+Input: G: event-aware NCDG; P: mechanism plugins 
+
+Output: M : state-violation candidates  
+
+> 1
+
+M ← ∅  
+
+> 2
+
+foreach dependency D ∈ G. D do  
+
+> 3
+
+PD ← applicablePlugins (D, P) 
+
+> 4
+
+if PD = ∅ then  
+
+> 5
+
+continue  
+
+> 6
+
+KD ← S 
+
+> p∈PD
+
+p. requiredStability( D) 
+
+> 7
+
+A[·] ← ⊥ ; σa ← postAcquisitionState (D) 
+
+> 8
+
+(σa, T ) ← externalAlternatives (D, σ a, K D ) 
+
+> 9
+
+A[D.a ] ← σa 
+
+> 10
+
+W ← { D.a }; VD ← ∅  
+
+> 11
+
+while W̸ = ∅ do  
+
+> 12
+
+q ← pop( W ); σ ← A[q] 
+
+> 13
+
+Kin ← requiredOnInput (D, q ) 
+
+> 14
+
+if Kin ̸ = ∅ then  
+
+> 15
+
+Vin ← violations (σ, K in ) 
+
+> 16
+
+foreach k ∈ Vin do  
+
+> 17
+
+VD ← VD ∪ { (q, k )} 
+
+> 18
+
+σ0 ← localPostTransfer (D, q, σ ) 
+
+> 19
+
+S ← { σ0} 
+
+> 20
+
+foreach E ∈ eligibleEvents (D, q ) do  
+
+> 21
+
+X ← unprotectedEffects (D, E, σ 0, K D ) 
+
+> 22
+
+if X = ∅ then  
+
+> 23
+
+continue  
+
+> 24
+
+σE ← transfer (σ0, E, X );
+
+∆E ← violations (σE , K D ) \
+
+violations (σ0, K D ) 
+
+> 25
+
+T ← recordTransition (T, E, ∆E , σ 0, σ E ) 
+
+> 26
+
+S ← S ∪ { σE } 
+
+> 27
+
+foreach σ′ ∈ S do  
+
+> 28
+
+if postUse (D, q ) then  
+
+> 29
+
+V ← violations (σ′, K D ) 
+
+> 30
+
+foreach k ∈ V do  
+
+> 31
+
+VD ← VD ∪ { (q, k )} 
+
+> 32
+
+if q keeps the current instance of D live then  
+
+> 33
+
+foreach successor q′ in D.I do  
+
+> 34
+
+ˆσ ← joinState (A[q′], σ ′) 
+
+> 35
+
+if ˆσ̸ = A[q′] then  
+
+> 36
+
+A[q′] ← ˆσ; W ← W ∪ { q′} 
+
+> 37
+
+foreach plugin p ∈ PD do  
+
+> 38
+
+Kp ← p. requiredStability( D) 
+
+> 39
+
+Vp ← { k | (q, k ) ∈ VD ∧ k ∈ Kp} 
+
+> 40
+
+Tp ← restrict( T, V p) 
+
+> 41
+
+d ← evaluate (p, D, T p) 
+
+> 42
+
+if d. emit then  
+
+> 43
+
+M ← M ∪ { buildCandidate (D, p, T p, d )} 
+
+> 44
+
+return M
+
+the properties required by applicable plugins, applies local operations and event effects, and records violations that reach a use. 
+
+Procedure. Algorithm 3 selects applicable plugins and unions their required properties (lines 3–6). It then runs one forward worklist for that dependency. Here, A stores analysis information at program points, W is the work-list, T stores event transitions, and VD stores properties found invalid at uses. CFG entries contain only the ab-stract state σ. The product state records relation validity, owner and subject lifetime, reference ownership and count, storage address and content, representation validity, lease and resource state, version, privacy, lock depth, and GIL state. Validity uses {Unknown , Valid , MayInvalid , Invalid };lifetime uses {Unknown , Live , MayDead , Dead }; and refer-ence count uses {Unknown , 0, 1, Many , Nonzero , MayZero }.Ownership is unknown, borrowed, owned, pinned, unowned, released, or dead. Privacy, owner-held, and GIL-release facts are Boolean. Lock depth records the nonnegative depth guaranteed on every incoming path. Entry increments it, exit decrements it, and joins take the minimum. The counter has no fixed cap; a loop backedge cannot increase the stored guaranteed depth. Joins preserve agreement and widen con-flicting validity, lifetime, reference-count, and ownership values to may or unknown states. The worklist repeats until joined states stop changing. Table 1 summarizes the transfers. Each operation changes only the properties it affects. 
+
+Table 1. P RINCIPAL ABSTRACT -STATE TRANSFERS . O THER STATE PROPERTIES REMAIN UNCHANGED .                        
+
+> Normalized operation State update Ordering or kill rule Dependency acquisition Required properties valid in the post-state Starts a new instance; the acqui-sition is not applied twice Ownership promotion Lifetime/refcount ←
+> live/nonzero Checks the incoming borrow first; discharges only its borrowed-object obligation Redefinition or reac-quisition Old instance killed Later uses belong to the new ac-quisition Lock/GIL enter or leave Lock depth or GIL state updated Local transfer precedes attached events Interval guard No repair of invalid state Suppresses covered effects over the full dependency interval Relation removal/drop Relation may invalidate; unowned subject may die Ownership protects lifetime, not the relation Resize/rebuild Address, representation, and version may invali-date An active lease may protect only the address Release/close/re-entry Lease, resource, or call-back state may invalidate Applies effect-specific protection first
+
+Initialization installs the post-acquisition state at D.a 
+
+(line 7). Processing that acquisition is a no-op; loop reacqui-sition starts a new instance. externalAlternatives joins the no-event state with one alternative for each eligible external-entry event (line 8). Each alternative represents the event occurring after acquisition and before a later use. The engine propagates its invalidation through the live region, subject to property-specific discharges and interval protection. It forms no two-event external sequence at this point. Local events remain at their actual CFG operations and compose across distinct points; effects within one event also compose. At other program points, the state precedes the normalized operation. requiredOnInput identifies properties consumed before attached interference (lines 13–17). The core checks them before localPostTransfer changes ownership, updates lock or GIL state, or kills the instance (line 18). Promotion therefore checks the borrowed input before setting lifetime and reference count to live and nonzero. It discharges the borrowed-object lifetime and relation obligations; separate storage, lease, traversal, and callback dependencies remain. Attached events follow the local transfer. A second check occurs only when postUse marks consumption after inter-ference (line 29). A completed use has only an input check. A callback-capable operation has a post-use check when its native continuation consumes the retained dependency after callback return; it may have both checks. An event after final consumption does not produce a violation at that completed use. An event is eligible only when all three NCDG relations hold. unprotectedEffects removes an effect only when recognized protection preserves every property it could violate (line 21). Ownership and pinning protect lifetime; immutability protects structure and storage. Locks and critical sections require full-interval coverage of the relevant target. The model also recognizes stable copies, active exports, private construction, lifecycle exclusion, ver-sion guards, and no-reentry regions. Version and no-reentry checks act as interval guards rather than point transfers that repair invalid state. Remaining effects update their state dimensions (line 24). The core records an event when it first makes a required property possibly invalid (line 25). A violation is collected only when that state reaches an input or post-interference use. Redefinition ends the current dependency and clears its state, so fresh acquisitions start independently. The CFG worklist stores only σ. A join widens abstract state and does not select or merge witnesses. The separate ledger 
+
+T stores event transitions and their invalidated properties. After propagation, the engine keeps ledger entries whose properties are invalid at a use and occur in the plugin con-tract. This pairing is conservative across may paths. Reports retain the contributing event records for source review. By default, the engine retains the first 16 external-entry witnesses per violated property in deterministic traversal order. Further external events still affect state but are not stored as witnesses. Local witnesses are deduplicated by event ID without a fixed bound. Section 5.3 evaluates the configurable external bound. 
+
+Rationale. Different guarantees preserve different proper-ties. A strong reference keeps an object alive but does not preserve an interior pointer across resize. A buffer export stabilizes its address without freezing its contents or protect-ing an unrelated traversal [14]. Separate state dimensions retain these distinctions. Checking inputs before promotion preserves the original obligation; checking post-interference uses captures dependencies retained across callbacks. Joins and instance kills keep the analysis aligned with control flow and acquisition lifetime. 
+
+3.4.2. Mechanism-Specific Reporting. Plugins turn core-produced violations into mechanism-specific candidates. They select dependencies and required properties, then as-sign a review priority and explanation using the shared path, target, overlap, protection, and state evidence. 
+
+Procedure. A plugin is 
+
+pi = ⟨id i, Q i, K i, A i, L i⟩,
+
+where id i names the mechanism, Qi(D, G ) selects depen-dencies, Ki(D) returns required properties, Ai(D, Θ, G )
+
+decides whether the transitions justify a report, and Li
+
+assigns priority and rationale. Let ΘD contain the transitions reaching uses of D, with their target, overlap, protection, state, and witness evidence. After propagation, Algorithm 3 restricts these transitions to each plugin’s contract, evaluates them, and builds accepted candidates (lines 40–43):                   
+
+> Θi(D) = {θ∈ΘD|θ.k ∈Ki(D)},
+> MATCH i(D, ΘD)≡Qi(D, G )∧Ai(D, Θi(D), G ),m=Build (D, id i,Θi(D), L i(D, Θi(D))) .
+
+The C++ methods kind , applicable , and 
+
+requiredStability implement id i, Qi, and Ki.The evaluate method combines Ai and Li. Table 2 summarizes the six plugins. 
+
+Table 2. I NVALIDATION -MECHANISM CONTRACTS . A LL PLUGINS USE THE CORE ’S PATH , TARGET , OVERLAP , PROTECTION , AND STATE EVIDENCE .                                    
+
+> Mechanism plugin Qi: dependency and effect Ki: required property Borrowed-object lifetime Unowned subject; removal, re-placement, or reference drop may destroy or detach it Conservative default: sub-ject remains live and its ac-quisition relation holds until promotion or final use Storage generation Raw or interior pointer; resize, reallocation, rebuild, close, or free may revoke storage Address and representation remain valid through the last dereference Container traversal Size, index, cursor, entry, or iter-ator; structural mutation may in-validate its bounds, position, or relation Container structure and traversal state remain coherent through the step View/lease lifetime Exporter-or resource-backed view; release, close, detach, or unleased resize may revoke backing Lease remains active, re-source open, and address valid through use Callback re-entry State retained across a callback-capable operation; callbacks, fi-nalizers, or foreign code may re-place or clear it Pre-call relation or version holds after return, or a full-interval guard covers the continuation Reference-drop lifetime Object or field retained across a drop; drop-to-zero and destructor re-entry may reclaim dependent state Subject remains live through the last access
+
+The view/lease plugin provides one instance of this inter-face. LeaseLike (D) holds when D is a lease relation or ad-mits a release or resource-close effect. OpenIfRequired (D)
+
+adds the openness property required by that dependency:                            
+
+> QV(D, G )≡LeaseLike (D)∧D.U ̸=∅,KV(D) = {LeaseActive ,AddressStable }∪OpenIfRequired (D),AV(D, Θ, G )≡ ∃ θ∈Θ.Overlap (θ)∧MayContext (θ)
+> ∧TargetMatch (θ)∧θ. ∆̸=∅ ∧ θ.V ̸=∅.
+
+Here, θ. ∆ and θ.V contain the changed and violated properties. The other predicates retain the core’s overlap, context, and target evidence. An accepted view/lease can-didate receives the highest review priority and names the release, close, detach, or unleased resize that may revoke the backing before use. Each candidate records acquisition, use, and event lo-cations; owner and subject hypotheses; relation and live-region precision; exposure and protection evidence; changed and violated properties; and a transition trace. These fields preserve Equation 3’s reasoning for source audit and PoC design. Mechanism labels describe the detected invalidation. Confirmed roots receive separate primary Common Weak-ness Enumeration (CWE) labels for security impact; several manifestations may share one root. Rationale. Propagating the union of plugin contracts once gives every family the same target and path evidence. Plu-gins specialize the selected properties and report decisions without repeating propagation. New families over existing properties reuse the core and NCDG; new state dimensions or effects require extensions to the lattice and transfer func-tions. Monotone transfers preserve the shared path analysis, while witness retention controls the evidence stored with reports. 
+
+Running example—state transition and plugin result. For 
+
+Dview , initialization records an open view, active lease, and valid backing address. The NCDG supplies release event 
+
+e with all three required relations. The active call keeps 
+
+self alive, but CHECK_RELEASED adds no interval lease and no temporary export covers a ⇝ u. The core therefore applies e’s lease-revocation effect, records e as a witness, and propagates the possibly inactive lease to the backing read at u. The view/lease plugin selects Kview , accepts the lease violation, and emits a candidate with the witness 
+
+a Dview 
+
+−−−−→ e ∆Kview 
+
+−−−−−→ u. 
+
+An atomic check-and-pin that holds a temporary export through the copy would protect the lease. The core would suppress the covered release effect, distinguishing that inter-val guarantee from a point check or a reference that keeps only self alive. 
+
+## 4. Implementation 
+
+CONCUR DEP is a 10.2K-line C++17 prototype, exclud-ing tests and benchmarks. CMake 3.20 builds two libraries and a command-line driver. The LLVM/Clang 14 frontend exports normalized code; the analysis library implements points-to analysis, call graphs, interprocedural summaries, NCDG construction, runtime-state checking, plugins, and report serialization. 
+
+Clang frontend. Clang Tooling loads 
+
+compile_commands.json and parses selected translation units with their original flags [18]. The lifter visits declarations, expressions, macro expansions, and CFG blocks [19]. It assigns compact numeric identifiers to functions, blocks, instructions, and values, preserves spelling and expansion locations, and identifies address-taken functions for indirect-call resolution. 
+
+Analysis engines and memory management. Andersen-style inclusion analysis is the default [20]; a flow-sensitive implementation shares its program-point query interface. Direct and resolved indirect calls form the call graph. Delta worklists propagate effect, escape, and exposure summaries to convergence. The implementation interns canonical sym-bols and target sets and indexes external events by target. The interprocedural CFG takes ownership of normalized functions, allowing the driver to release the frontend copy before NCDG construction. Temporary points-to results and summaries are freed after the graph copies the facts needed for state checking. 
+
+Runtime-state engine and plugins. The product-lattice core implements Algorithm 3 with a block worklist and stores states only within the current dependency’s live region. CFG joins carry abstract state; a separate dependency-level ledger stores event transitions. External-entry witness retention has a configurable bound, while local provenance is dedupli-cated without a fixed bound. Six plugins implement kind ,
+
+applicable , requiredStability , and evaluate .They select ledger records by property and apply the con-tracts in Table 2 using shared event and protection evidence. 
+
+Semantic catalogs. The frontend loads versioned JSONL records for API summaries, macro semantics, callbacks, ef-fects, types, targets, and protection. Free-threaded exposure is the default. Conventional-GIL mode requires explicit re-entry, finalization, foreign-thread, blocking, or GIL-release evidence. 
+
+Driver and reports. The driver accepts a compilation database, optional translation-unit subset, catalog, points-to mode, CPython commit, and diagnostic switches. These switches control relation recovery, event connection, pro-tection policy, and the external-witness bound. Versioned JSON reports contain normalized functions, dependencies, events, graph relations, candidates, source evidence, and configuration metadata. Dependency tags distinguish direct catalog instantiations, catalog-derived wrapper relations, and source-inferred relations. Diagnostics record witness reten-tion and protection decisions; the serialized graph preserves event IDs omitted from bounded reports. A Linux profiler samples resident memory through /proc/self/statm 
+
+and records phase and end-to-end time. 
+
+## 5. Evaluation 
+
+We test whether C ONCUR DEP distinguishes violating events from close semantic controls, scales to a large pro-duction runtime, and exposes consequential failures con-firmable by executable tests: 
+
+RQ1: Effectiveness. What precision/recall does CONCUR DEP achieve on ConcurrBench relative to controlled evidence configurations? 
+
+RQ2: Efficiency. What end-to-end and component time/memory does whole-program CPython analysis require, compared with a flow-sensitive points-to baseline? 
+
+RQ3: Real bugs. What findings does C ONCUR DEP con-firm in production CPython, what evidence establishes their consequences, and how do they vary across releases and runtime configurations? Which external baselines accept and complete their stated production inputs? 
+
+Counting units. A candidate instance is an emitted en-try; Section 4’s stable fingerprint collapses duplicates. A 
+
+confirmed manifestation is a fingerprint whose dependen-cy/event survives source audit and dynamic or causal quali-fication. A bug root is a deduplicated native cause, possibly spanning multiple manifestations; different stacks sharing a cause count once. Confirmation yield divides confirmed manifestations by unique emitted fingerprints. Since remain-ing reports are not all classified as refuted or unresolved, this production ratio is not precision. 
+
+Targets and environment. We analyze every transla-tion unit in the free-threaded (FT) compilation databases for CPython 3.13.15 ( 4061bc4 ), 3.14.7 ( 823f032 ), and 3.15.0rc2 ( 435c9e5 ) [16]. Version 3.13 introduced exper-imental free threading [21]; 3.14 is our first officially sup-ported baseline [22]. Static runs use a 20-core Intel Core Ul-tra 7 265K, 62 GiB memory, Ubuntu 24.04.3, Clang 14, and Andersen. All static compilation databases are free-threaded. Dynamic qualification distinguishes --disable-gil 
+
+builds with PYTHON_GIL=0 , the same build with com-patibility GIL enabled by PYTHON_GIL=1 , and separately compiled conventional-GIL builds [23]. Compatibility runs are controls or labeled corroboration, not conventional-build evidence. Tests use debug allocators/assertions, Address-Sanitizer (ASan) where available [4], and semantic oracles where documented invariants exist. The databases contain 284, 303, and 309 distinct C translation units, including each interpreter’s generated 
+
+Modules/config.c . C ONCUR DEP lifts 14,191–15,518 functions, recovers 5,674–6,240 dependencies, and catalogs 92,369–104,282 events. Catalogs contain 338, 339, and 397 JSONL facts, including 294, 295, and 353 named API rules. Before analysis, schema validation rejects unknown enums, inconsistent ownership/effects, duplicate API names, and malformed roles. Catalogs follow Section 3.2’s four-pass procedure. Validation makes inputs auditable; ConcurrBench supplies the explicit labeled semantic-conformance oracle. We audit rule utilization and qualified-root ac-quisition coverage separately. Post-audit catalogs ex-ercise 294/295, 293/296, and 351/354 named rules; unused rules cover configuration-dependent source re-tained across releases. Auditing 141 confirmed FT roots found two missing acquisitions: byte-array storage re-turned through an internal helper’s output parameter and an inherited field with incompatible base/derived target paths. Adding a format_obj output rela-tion and canonicalizing PyOSErrorObject.args to 
+
+PyBaseExceptionObject.args produces both candi-dates, reaching 141/141 qualified-root acquisition coverage. Scored yield retains frozen catalogs; ConcurrBench remains the recall experiment. Released-catalog whole-program runs emit 1,564, 1,473, and 1,514 instances versus 1,563, 1,472, and 1,512 frozen instances. The one, one, and two additions map to these two omitted roots. 
+
+5.1. RQ1: Effectiveness on ConcurrBench 
+
+Result. The full configuration classifies all 90 positive/neg-ative pairs correctly. All positives survive the cumulative configurations; exposure removes 23 controls, target/live-region checks remove 20, state/protection removes 44, and local recovery rejects three cases with no live dependency. 
+
+Method. ConcurrBench comprises 180 C programs in 90 positive/negative pairs, 15 per plugin. Each pair pre-serves control/data flow but changes one decisive prop-erty: same/disjoint target, mutation before/after final use, borrowed/owned access, partial/full protection, or stale use/reacquisition. Machine-readable manifests fix expected dependency, event, target, overlap, protection, state, and           
+
+> Table 3. C ONCURR BENCH SEMANTIC CONFORMANCE AND CUMULATIVE EVIDENCE ABLATIONS . E ACH PLUGIN ROW CONTAINS 15
+> POSITIVE AND 15 MATCHED NEGATIVE CASES . A BLATION ROWS COVER THE COMPLETE 180-CASE BENCHMARK AND CUMULATIVELY ADD EVIDENCE . TP, FP, FN, AND TN DENOTE TRUE POSITIVES ,FALSE POSITIVES ,FALSE NEGATIVES ,AND TRUE NEGATIVES .
+
+Configuration/scope TP FP FN TN Precision Recall 
+
+Full CONCUR DEP configuration, by mechanism plugin 
+
+Borrowed-object lifetime 15 0 0 15 100% 100% Storage generation 15 0 0 15 100% 100% Container traversal 15 0 0 15 100% 100% View/lease lifetime 15 0 0 15 100% 100% Callback re-entry 15 0 0 15 100% 100% Reference-drop lifetime 15 0 0 15 100% 100% 
+
+Same-front-end evidence ablations, full benchmark 
+
+Dependency recovery only 90 87 0 3 50.85% 100% 
+
++ exposure check 90 64 0 26 58.44% 100% 
+
++ target and live-region checks 90 44 0 46 67.16% 100% 
+
++ state and protection checks 90 0 0 90 100% 100% 
+
+label; they were frozen before source-generator and scoring-script implementation. 
+
+Controlled ablations. Table 3 compares the full config-uration by plugin with three cumulative same-front-end ablations. Fixed inputs, frontend, dependency graph, and oracle isolate exposure, target/interval, and state/protection evidence admitted before reporting. Matched controls test target identity, temporal overlap, stable ownership, interval validation, and full-interval pro-tection. They reject reports based on nearby mutation alone. ConcurrBench isolates these reasoning dimensions; RQ3 measures production CPython behavior. Five regression tests exercise Algorithm 3’s ordering. External alternatives survive acquisition processing and reach later uses. Invalidation before promotion reports at promotion; later invalidation is suppressed for the dis-charged borrow. Critical sections suppress covered relation mutation while retaining unrelated lifetime drops. Loop reacquisition starts a fresh instance. Paired consumption cases suppress post-final-use events and report post-event continuation uses. ConcurrBench’s denominator remains 180 cases. Developed with the analyzer’s semantic vocabulary, ConcurrBench establishes conformance to intended distinc-tions, not general recall on unseen native code. 
+
+Answer to RQ1. CONCUR DEP correctly classifies all 180 cases. Relative to dependency-only reporting, full state-aware analysis raises precision from 50.85% to 100% while retaining 100% recall. On this analyzer-developed benchmark, the six-family results support the contract distinctions, and the cumulative reductions support event filtering and property-specific validation. 5.2. RQ2: Efficiency on CPython 
+
+Result. Andersen analysis has a 22.13–27.66-second median and 670–784 MiB median peak RSS across the three re-leases. The engine/plugins take 1.39–2.45 seconds; the 3.14 flow-sensitive run reaches the 48 GiB limit without a report. 
+
+Method. We run five complete analyses per release on the setup machine, sequentially with rotating target order. Table 4 gives medians for frontend, interprocedural/NCDG, and engine/plugin phases. We measure wall time and each phase’s peak resident set size (RSS) increase; end-to-end RSS is the process’s absolute peak. The flow-sensitive base-line uses identical CPython 3.14 input and options except points-to mode, with a 24-hour budget, 48 GiB cgroup limit, and no swap. Because the out-of-memory kill prevented profiler flushing, its RSS is kernel-reported anonymous RSS at termination. 
+
+End-to-end and component cost. Andersen runs [20] have ranges of 22.00–22.89, 26.81–28.03, and 27.37–28.22 sec-onds for 3.13, 3.14, and 3.15, with identical candidate counts across repetitions. Frontend time dominates, followed by in-terprocedural analysis/NCDG construction. Engine/plugins take 1.39–2.45 seconds and add under 0.24 MiB to the RSS high-water mark. Incremental phase memory identifies when RSS grows, not all memory owned by that phase. 
+
+Baseline comparison. The flow-sensitive run hits its 48 GiB cgroup limit and is killed after 413.16 seconds without a report; the kernel records 47.90 GiB anonymous RSS. Andersen completes the same 3.14 input in 27.00 seconds (median) at 770.7 MiB peak RSS. This comparison supports Andersen as the scalable default for this environment. Ac-curacy remains unmeasured. Analyzing CPython 3.15’s 15,518 lifted functions and 510,614 normalized native instructions in a 27.66-second median supports repeated release-scale offline use. 
+
+Answer to RQ2. Every release has an end-to-end median below 28 seconds and 0.8 GiB median peak RSS; en-gine/plugins take at most 2.45 seconds. The flow-sensitive baseline exhausts 48 GiB without a report. This supports Andersen as the scalable default on these release-scale inputs. The incomplete run leaves accuracy unmeasured. 
+
+5.3. RQ3: Real-Bug Detection and Confirmation 
+
+Results overview. Frozen reports contain 1,094 confirmed fingerprints (25.60% yield), representing 139 qualified FT roots. The 144-root cross-mode inventory has strongest ev-idence of 125 native failures, 17 semantic or invariant vio-lations, and two scheduling observations backed by source-established invalidation intervals. Tables 7 and 8 separate detector attribution, root–version coverage, and root-level strongest evidence. 
+
+Method. We analyze every compilation-database translation unit and review deduplicated state-violation fingerprints. Source audit checks seven facts: real acquisition and use; valid dependency; reachable event; relevant may-target with a concrete match established for confirmed roots; required state transition; no covering ownership, phase, or synchro-nization rule; and later use observing invalidity. Confirma-tion requires this chain and dynamic or equivalent causal root evidence. 
+
+Confirmation and PoC development. Each PoC follows its candidate’s required transition. Where possible, tests share only the implicated owner, perform invalidation in one thread or callback, and force retained use in another opera-tion. Oracles check documented invariants where available; otherwise output supports scheduling only, with causality grounded in native lifetime, sanitizer, or source evidence. We inspect native stacks and use compatible ASan builds [4]. Parallel tests have same-version GIL or serialized controls; re-entry bugs are expected to reproduce in both modes. A clean stress run covers one schedule. Source audit then checks the candidate, and later tests focus on the exact transition. Section 4’s script proposes inheritance only for un-changed source intervals, exact candidate semantics, and status-preserving normalized event profiles. A reviewer sep-arately approves the same causal native root and checks con-ditional compilation and surrounding protection; changed acquisitions, protection, or ambiguous matches require fresh audit. PoCs are replayed on target releases where possible. The dataset retains roots, affected source, manifestations, evidence, and runnable PoCs. Investigation-discovered ac-quisitions absent from frozen candidates are initial detector gaps, excluded from frozen yield and used only for retro-spective catalog closure, leaving scored runs unchanged. 
+
+Focused qualification completion. For seven packages lacking current raw traces, 40 retained FT, GIL-control, and retry runs yield 17 assertion/ASan aborts and 23 clean exits. OrderedDict and writer-stats add no fresh failure; packages retain prior positives and exact causal source in-tervals. Appendix C provides per-package counts, protocol, and intermittent SQLite results; commands and file records remain in the artifact. These runs supplement the corpus ledger, not define its 144-root denominator. 
+
+Production capability ablation. We freeze the analyzer, released catalogs, source snapshots, compilation databases, Andersen settings, and root matchers, then rerun Full and three one-capability variants. Direct relations retain only ex-act named-catalog instantiations; local events exclude cross-entry connections; coarse protection suppresses an event only when one guard covers all of its retained effects. Conformance tests verify that each switch changes only its stated capability. Three workers, one per release, run configurations sequentially. The all-profile match measures evidence completeness: it requires every retained confirm-ing profile. The representation match measures detection: the same exact acquisition/use fingerprint and property set retains at least one complete, audited causal profile. Both metrics use semantic witnesses instead of same-function warnings. Full recovers 1,904/2,043/2,134 direct catalog de-pendencies, 253/295/328 catalog-derived wrapper rela-tions, and 3,517/3,723/3,778 source-inferred relations on Table 4. A NALYSIS TIME AND MEMORY BY COMPONENT . P HASE CELLS REPORT SECONDS / INCREASE IN PEAK RESIDENT SET SIZE (RSS), IN MIB;     
+
+> END -TO -END CELLS REPORT SECONDS /ABSOLUTE PEAK RSS (M IB). “K ILLED ”MEANS THAT NO CANDIDATE REPORT WAS PRODUCED .
+
+Target Points-to Frontend Interproc. + NCDG Engine Total Outcome 3.13 Andersen 13.57/305.25 7.17/306.56 1.39/0.15 22.13/670.1 Complete 3.14 Andersen 15.33/354.64 9.35/357.91 2.45/0.23 27.00/770.7 Complete 3.15 Andersen 16.64/354.39 9.12/370.22 1.90/0.17 27.66/783.7 Complete 3.14 Flow-sensitive – – – 413.16/49,054.3 Memory limit; no report       
+
+> Table 5. O NE -CAPABILITY -AT -A-TIME PRODUCTION ABLATIONS . E ACH CELL GIVES DEPENDENCIES /FINGERPRINTS /ALL -PROFILE MATCHES /
+> REPRESENTED ROOTS (D/F/A/R).
+
+Configuration CPython 3.13 D/F/A/R CPython 3.14 D/F/A/R CPython 3.15 D/F/A/R Full 5,674/1,546/115/115 6,061/1,459/105/105 6,240/1,502/90/92 Direct relations only 1,904/685/71/71 2,043/671/80/80 2,134/756/54/56 Local events only 5,674/293/24/27 6,061/288/8/11 6,240/353/18/19 Coarse protection 5,674/1,548/115/115 6,061/1,459/105/105 6,240/1,502/90/92 
+
+3.13/3.14/3.15. Direct-only mode contains direct facts and loses 44, 25, and 36 represented roots. Local-only mode keeps the Full dependency population but loses 88, 94, and 73 represented roots. Bound-64 checks recover none of these losses, distinguishing capability removal from prove-nance truncation. Every ablation root also appears in Full. Across variants, runs take 23.13–29.43 seconds and 669.4– 784.9 MiB peak RSS under the same measurement proce-dure. Full represents 115/121, 102/113, and 92/95 roots in the release-specific FT inventory. The remaining ledger records identify twelve cases without a historical fingerprint index and five 3.14 roots without an exact Full semantic report. Three other 3.14 matches concern roots outside that release’s FT inventory and are outside the 102/113 count. The complete semantic-difference ledger contains 6,371 records. Exact joins to retained positive evidence support 1,586; the fixed-seed sample is drawn from the other 4,785. Case-level audit reconstructs the dependency, event chain, properties, and source intervals for all 182 sampled records. Sixty are representation-only profile changes. Two coarse-only warnings are refuted by their enclosing dictionary critical sections. The other 120 remain unresolved with a causal blocker: target identity (40), API obligation (37), protection interval (1), or insufficient causal evidence (42). Configuration was hidden, but the packet exposed difference reason and side; we record that blinding limitation. 
+
+Bounded-witness diagnostic. The default limit of 16 discards unique external-entry dependency/property/event provenance in Full, so we rerun affected configurations at 64. Local-event provenance is deduplicated but unbounded. CFG joins carry state alone; the dependency-level transition ledger retains provenance. Raising the bound leaves semantic warning sets unchanged. It expands retained event references from 13,534/12,208/13,811 to 30,027/28,323/30,510 and supplies the alternative profiles needed                 
+
+> Table 6. F ULL -CONFIGURATION WITNESS -BOUND DIAGNOSTIC .“A FFECTED ”COUNTS DEPENDENCY /PROPERTY DIAGNOSTIC ENTRIES ;
+> ∆PROFILES COUNTS FINGERPRINTS WHOSE RETAINED EVENT SET CHANGES .
+> Release Rejects 16 →64 Affected 16 →64 ∆profiles A/R 16 →64 3.13 77,585 →54,919 876 →325 509 115/115 →115/115 3.14 73,056 →50,853 851 →327 472 105/105 →105/105 3.15 244,549 →220,068 818 →319 540 90/92 →92/92
+
+for two additional 3.15 all-profile matches: 
+
+unicode-fromid-array-growth-race and 
+
+unicode-interned-size-unlocked-iteration .Every discarded event identifier remains in the serialized NCDG. Root matching credits report witnesses; serialized graph presence supports audit. Represented-root sets stay unchanged. Retained local provenance reaches 208/221/227 events per dependency/property. The 64-bound Full reruns take 21.80–27.74 seconds and 672.9–782.4 MiB. Thus, the larger provenance bound keeps semantic reports and material cost stable in this batch. 
+
+Protection-policy diagnostic. Full and coarse protection make different internal decisions only on 3.13: 22 partial-protection dependency/event pairs concentrated in two de-pendencies. Both produce coarse-only warnings. Source audit refutes both because dict_dict_merge holds a two-dictionary critical section and reverse iteration holds the dictionary critical section across the complete use. The policies never diverge on 3.14/3.15. Focused mixed-effect controls pass, and the instrumented Full rerun reproduces every original Full fingerprint. 
+
+Real vulnerable/repaired pair. We test an existing repair under a fixed semantic model. CPython 3.13’s one-argument 
+
+str.maketrans traverses a caller-owned dictionary with 
+
+PyDict_Next , consuming borrowed keys/values without the critical section required under possible concurrent mu-tation [2]. L3 emits two acquisition candidates; isolated key/value-mutation PoCs fail on pinned 3.13 FT ASan, while same-binary GIL controls remain clean. Version 3.14 wraps traversal in Py_BEGIN_CRITICAL_SECTION(x) 
+
+and both FT controls are clean. A full 3.14 run with the unchanged 3.13 catalog emits no maketrans candidate. This result is consistent with added interval protection under a fixed catalog. Other source changes remain possible factors in the cross-release comparison. 
+
+Detector attribution and evidence provenance. Table 7 separates frozen output from the study inventory: 139 of 141 qualified FT roots occur in frozen reports. The two setup acquisition gaps belong to the inventory and are outside that detector run. Released runs recover both and cover 141/141 qualified roots. Confirmation yield remains tied to the frozen runs. A retrospective join of per-version inventories, evidence packages, and explicit inheritance creates a 418-row root– version–runtime ledger. Rows identify positive observations, artifact paths, source audits, applicable inheritance sources, and runtime build/settings. A checked script reproducibly parses authoritative tables, rejects denominator mismatches, and never treats file presence or clean execution as positive evidence. The 125 native-failure roots retain crashes, sanitizer errors, failed native assertions, or invalid native ac-cesses. Audit of the other 17 distinguishes one docu-mented public guarantee, four internal implementation in-variants, and twelve adopted correctness expectations. The 
+
+object.__getstate__ case uses the absence of alegal old-or-new result under its controlled input as an adopted correctness expectation, separate from a public guarantee. For memoryview.tobytes and noncontigu-ous memoryview.hex , mixed contents establish only overlap; qualification combines that observation with au-dited lease revocation. The evidence audit checks all 144 roots and 418 root–version–runtime rows. It finds retained observation and causal material for every root; all 418 rows have normalized technical status and all 144 roots pass the category audit. Five formerly missing rows used the equivalent classification field, while the structseq package already retained direct failure evidence. A separate grouping audit resolves six apparent multi-package merges as FT/conventional-GIL packages with the same root and resolves every merge/split decision. FT inheritance com-prises 97 entries to 3.13, 90 to 3.15, and 142 version-local or 3.14-baseline audits. Maintainer acknowledgment/fixes remain separate from technical qualification. 
+
+Prior public status. We search CPython issues and pull requests through September 6, 2026, before the study’s ag-gregate report. Search keys include native identifiers, source paths, symptoms, and free-threading terms. A match covers the same native cause or a specific matching item and fix in an umbrella report. Broad tracking issues do not count by themselves. Study-authored records are excluded. The audit maps 49 of 144 roots to 36 independent prior records. For the other 95, we find no earlier public report of the same native root. We call these 95 previously unreported under this audit. The artifact ledger records every root, record, and exclusion. This result covers public CPython history, not private reports or sources outside the audit. 
+
+Frozen confirmation yield. Table 9 reports emit-ted/confirmed fingerprints by mechanism; the union deduplicates cross-release fingerprints. Overall yield is 1,094/4,273 (25.60%); per-release yields are 31.07% for 3.13 (480/1,545), 22.22% for 3.14 (324/1,458), and 22.13% for 3.15 (332/1,500). RQ1 provides oracle-backed precision; production 25.60% is dependency–event confirmation yield. The re-maining 3,179 fingerprints lack normalized refuted/unre-solved labels. Source review encountered private construc-tion, shutdown-only paths, immutable exact types, may-alias merging, and unreachable generic events among non-confirmed reports. Borrowed-object lifetime contributes 529 confirmed manifestations, reference-drop 227, and storage generation 178. Traversal’s highest yield (62.50%) comprises only ten confirmations from 16 candidates. Storage generation’s lowest (13.27%) includes private, unpublished storage un-reachable by generic resize events. Plugins therefore require distinct stability contracts despite sharing an engine. 
+
+Bug roots and security impact. The inventory contains 141 FT roots (provenance in Table 7) and 144 across FT/conventional-GIL builds, spanning 61 logical compo-nents and 75 C files: containers, memoryview, pickle, codecs, import, garbage collection, compilation, SQLite, XML, SSL, and ctypes . Appendix D summarizes com-ponent coverage; Appendix E traces security consequences. Reproductions cause native crashes, sanitizer-detected use-after-free/wild writes, container/compiler corruption, and impossible results. Fifty-four of 144 roots have pri-mary CWE-416 labels [24]; others primarily expose shared-resource races [25], time-of-check-to-time-of-use (TOC-TOU) failures [26], and resource-lifetime violations [27]. Five roots concern CPython 3.15’s new remote-debugging component supporting sampling profilers [28]. 
+
+Representative bug details. The running-example PoC uses a view over a 512-MiB bytearray: one thread calls 
+
+tobytes ; another releases the view, clears the exporter, and refills it with different bytes. The FT copy con-tains 4,096 original and 536,866,816 replacement bytes; the conventional-GIL control completes five clean rounds. Mixed contents show that copying overlaps release/resize. They provide no atomic-snapshot guarantee. Causal lifetime evidence is the audited sequence: release drops the man-aged export, resize succeeds only afterward, and tobytes 
+
+continues through its pre-release descriptor. Output supplies scheduling evidence; the audited lease sequence supplies the causal lifetime evidence. In bytearray.__init__ , locking the resize but not the later destination write lets another resize revoke its pointer. Compiler metadata dictionaries are sized and tra-versed independently, so mutation corrupts generated code. In OrderedDict , comparison callbacks rebuild cached keys despite a critical section; audit identifies stale cached-table use. Focused FT and compatibility-GIL reruns are clean, but a separate retained PoC triggers ASan use-after-Table 7. A UTHORITATIVE DETECTOR AND ROOT ACCOUNTING . R ELEASED CANDIDATE COUNTS ARE UNIQUE WITHIN CP YTHON 3.13/3.14/3.15; 
+
+> QUALIFIED -ROOT COVERAGE DOES NOT ESTIMATE COMPLETENESS BEYOND THE STUDY CORPUS .
+
+Configuration or provenance Candidate scope Confirmation metric FT-root attribution Frozen scored reports 4,273 unique across releases 1,094 confirmed (25.60% yield) 139/141 qualified roots repre-sented Investigation-discovered gaps 2 missing acquisitions excluded from scored yield 2 roots Released configuration 1,546 / 1,459 / 1,502 not re-adjudicated 141/141 qualified-root coverage  
+
+> Table 8. A UDITABLE EVIDENCE INVENTORY . S TRONGEST -EVIDENCE CLASSES ARE EXCLUSIVE AT ROOT LEVEL ;COVERAGE COUNTS USE ROOT –VERSION ROWS .
+
+Ledger entry or evidence class Count Unit 
+
+Root–version coverage 
+
+FT build, GIL disabled 329 root–version rows Conventional-GIL build 89 root–version rows Explicit equivalence inheritance 242 rows in both modes 
+
+Strongest retained evidence per root 
+
+Native failure 125 unique roots Semantic/invariant violation 17 unique roots Scheduling observation + source proof 2 unique roots Unique study inventory 144 cross-mode roots 
+
+free on all three conventional builds. Clean reruns are neither new manifestations nor refutations. 
+
+Release and runtime-mode behavior. Table 11 shows FT roots declining from 121 in 3.13 to 113 in baseline 3.14 [22] and 95 in 3.15. The latter comprises 90 inherited and five new remote-debugging roots. This is consistent with audited increases in object locking, owned-reference APIs, and atomic protocols; source changes also remove exposure and merge manifestations. All 34 GIL roots have positive observations on sepa-rately compiled conventional-GIL builds; four also repro-duce with the FT binary’s compatibility GIL. The other compatibility runs serve as controls and are excluded from that count. GIL-aware PoCs target same-thread comparison, descriptor, or I/O callbacks, finalizers/signals, and native blocking operations releasing the GIL. Static candidates come from FT compilation databases; each GIL package audits its conditional source path and qualifies a separately compiled interpreter. The 141 FT and 34 GIL sets yield 144 roots: 110 FT-only, 31 shared, and three GIL-only. 
+
+External baseline applicability. Table 12 covers the same pinned releases. Goblint accepts 281/284, 297/303, and 301/309 units but times out at 24 hours [5]. RacerF [29] accepts 271/284, 275/303, and 277/309 before Frama-C rejects conflicting pthread_sigmask declarations. Adeclaration-only 3.13 header repair progresses to incompat-ible syscall declarations, still FE. Deagle [30] reaches GOTO generation for PyThread_start_new_thread 
+
+but rejects Include/object.h ’s thread-pointer assem-bly. Replacing it would change thread identity, so the pilot remains FE. SVF MTA [31], [32], [33] completes full bitcode inputs (284/284, 303/303, 309/309 units) with zero SlicedMTA race pairs. The same installation detects a pthread write/write positive control; a diagnostic 3.13 run recognizes 
+
+pthread_create and constructs worker-thread nodes. These are zero-result runs under SVF’s model. They provide no race-freedom claim. The tools also use different reporting units: SVF reports access pairs, while C ONCUR DEP reports dependency-state violations. Goblint measures scalability, RacerF/Deagle applicability, and O2 [34] remains UA with-out a licensed executable. 
+
+Answer to RQ3. Frozen reports confirm 1,094/4,273 fingerprints (25.60% yield), representing 139 FT roots. Released catalogs repair two gaps and cover all 141 qualified FT roots. The 144-root cross-mode inventory includes 125 native failures; all 34 GIL roots have conventional-build evidence. Direct-only relation recov-ery loses 25–44 represented roots per release, and local-only events lose 73–94; coarse protection loses none. A larger external-witness bound changes no semantic warning or represented root, but completes two additional 3.15 all-profile matches. The external matrix measures tool applicability. 
+
+## 6. Discussion 
+
+1 Why Dependency Invalidation Helps. Race reports identify concurrent accesses lacking happens-before order; CONCUR DEP identifies state a later native use assumes and the event revoking it. This explains failures across fields or allocations: dictionary deletion versus later increment of its former value, bytearray resize versus a previously returned pointer, or view closure versus a later lease-dependent copy. Dependency failure need not involve same-address instruc-tions. The abstraction unifies parallel and re-entrant failures: in Appendix E’s TextIOWrapper.tell , a decoder call-back releases a borrowed snapshot on the same thread despite the GIL. Both schedules ask whether an event within the dependency interval invalidates its contract. This case exercises different information from the view lease. Dependency recovery links borrowed next_input to 
+
+self->snapshot . The NCDG follows the decoder sum-mary to re-entrant seek , which clears that exact snapshot. Validation recognizes that the object critical section excludes a peer thread while allowing the same-thread callback. Per-object liveness or a same-address race alone would lose Table 9. C ANDIDATE /TRUE -POSITIVE (C/TP) FINGERPRINTS BY INVALIDATION -MECHANISM PLUGIN . A TP IS A CONFIRMED MANIFESTATION ; THE UNION DEDUPLICATES FINGERPRINTS SHARED ACROSS RELEASES .
+
+Mechanism plugin 3.13 C/TP 3.14 C/TP 3.15 C/TP Union C/TP Union yield Borrowed-object lifetime 576/224 556/164 547/160 1,632/529 32.41% Storage generation 502/76 482/50 497/61 1,341/178 13.27% Container traversal 5/3 5/3 6/4 16/10 62.50% View/lease lifetime 58/14 61/14 102/14 210/42 20.00% Callback re-entry 132/52 110/29 111/31 343/108 31.49% Reference-drop lifetime 272/111 244/64 237/62 731/227 31.05% 
+
+Fingerprint total 1,545/480 1,458/324 1,500/332 4,273/1,094 25.60%  
+
+> Table 10. T RIGGER ASSUMPTIONS AND DIRECTLY OBSERVED EVIDENCE FOR REPRESENTATIVE ROOTS . N ATIVE -HARNESS EVIDENCE VALIDATES A RUNTIME INTERVAL WITHIN CP YTHON ’S EXTENSION MODEL .
+
+Root Required control Contract under test Direct observation 
+
+memoryview.tobytes Concurrent public Python calls Active native copy keeps its backing lease Release/resize overlaps a success-ful mixed-content copy; source au-dit establishes lease loss Shared pyexpat parser Shared parser; recursive handler for GIL mode CPython serializes or rejects a sec-ond entry before reusing one Expat parser ASan heap-guard overwrite in FT; null error-state crash under re-entry Borrowed module __dir__ Public replacement in FT; conforming GIL-release test callable in GIL mode Borrowed callable remains live until dispatch ASan use-after-free in native call dispatch Re-entrant 
+
+TextIOWrapper.tell 
+
+User-defined codec callback Borrowed snapshot bytes remain live across decoder calls Outer call consumes allocator-reuse bytes introduced after re-entry  
+
+> Table 11. C ONFIRMED ROOT COUNTS BY CP YTHON BUILD AND RUNTIME SETTING .
+
+Version Free-threaded Conventional GIL 3.13 121 30 3.14 113 28 3.15 95 31 Unique across releases 141 34 
+
+this owner relation and re-entry chain. The abstraction may extend to native reference, view, handle, or iterator APIs; this evaluation covers CPython. 
+
+2 Confirmation Yield and Specification Cost. At 25.60% yield, production reports need source review. Non-confirmed reports often lack owner facts: pre-publication privacy, unex-posed compiler construction, teardown exclusion, or differ-ent generic-container instances. More precise escape, phase, and relational heap abstractions could remove them. Catalogs make runtime knowledge auditable and plu-gins independent of CPython names, but omissions can cause false negatives, and release changes need mainte-nance. The frozen catalogs contain 338–397 facts. Setup construction/coverage audits define validated inputs; post-audit catalogs recover both known omissions. Unknown idioms remain outside measured scope. Source-equivalent inheritance reduces re-review; extraction from C annotations and generated Clinic metadata is promising future work. The production capability ablation separates supplied and inferred facts. Direct catalog rules account for 1,904– 2,134 dependencies; wrapper derivation and source infer-ence add 3,770–4,106 and retain 25–44 further represented roots. Cross-entry event connection retains 73–94 repre-sented roots relative to local-only analysis. Coarse protection keeps the represented-root set. Its only internal divergence is 22 decisions over two 3.13 dependencies; both coarse-only warnings are source-refuted because object critical sections cover their uses. One root investigation may resolve several fingerprints. Without prospective review-time or refuted/unresolved la-bels, we report audit units and yield, not person-hours or counted false-positive causes. 
+
+3 Limitations. Design limitations. CONCUR DEP ’s context-insensitive points-to analysis can merge unrelated heap objects; target abstraction can merge shared types/field paths. CFG/in-terprocedural reachability approximates branch feasibility, retaining potential cross-entry invalidations at the cost of false positives. Missing contracts, acquisition patterns, or state dimensions cause false negatives. Plugins are modular within existing state vocabulary; new properties or effects need core lattice and transfer extensions. Reports identify possible invalidations, leaving schedule synthesis and ex-ploitability downstream. The memory model covers cata-loged atomics, locks, lifetimes, and exposure; unmodeled fences, lock-free reclamation, signals, or re-entrant critical sections may escape it. Single external-event alternatives and exclusion of owned/pinned borrows from re-entry are Table 12. E XTERNAL BASELINE OUTCOMES AT EACH TOOL ’S STATED INPUT SCOPE . C DENOTES A COMPLETED NATIVE RESULT , TO A 24-HOUR TIMEOUT , FE A FRONTEND OR UNSUPPORTED -FEATURE FAILURE , AND UA AN UNAVAILABLE LICENSED EXECUTABLE . A C ONCUR DEP C CELL GIVES RAW /UNIQUE CANDIDATES ; AN SVF C CELL GIVES RACE PAIRS . TO, FE, AND UA HAVE NO DETECTION COUNT .
+
+Tool Input scope CPython 3.13 CPython 3.14 CPython 3.15 CONCUR DEP Complete compilation database C: 1,564/1,546 C: 1,473/1,459 C: 1,514/1,502 Goblint 2.8.0 Whole-program accepted input TO TO TO RacerF 2.2.1 Whole-program accepted input FE FE FE SVF-MTA/SlicedMTA Complete LLVM bitcode set C: 0 pairs C: 0 pairs C: 0 pairs Deagle 4.1.0 Thread-entry applicability pilot FE FE FE O2 1.1.3 Licensed executable UA UA UA 
+
+further false-negative boundaries. The latter comes from the selector. Storage analysis can report resize despite owner liveness. The re-entry selector removes relation-changing callbacks on owned borrowed-object dependencies before checking relation state. Promotion checks and discharges only the borrowed-object obligation; separate storage/lease dependencies remain. Even small release changes require inheritance review. 
+
+Implementation limitations. Clang 14 analyzes the three trees’ Linux FT compilation-database units. Inline assem-bly, excluded platform modules, unmodeled libraries, and uncataloged extensions remain opaque. Catalogs and Con-currBench were co-developed; third-party extensions and other runtimes remain future evaluation. The five new 3.15 remote-debugging roots are not held-out recall evidence because catalog chronology was not prospectively frozen. Catalog construction, root deduplication, and final audit are manual. The optional profiler uses Linux /proc ; the analyzer is otherwise platform-independent at that interface. PoCs are developed separately; the prototype synthesizes neither schedules, tests, nor patches. Conventional-GIL rea-soning requires cataloged callback, finalizer, signal, foreign-thread, and GIL-release mechanisms. 
+
+4 Validation and Threats to Validity. Ground truth. ConcurrBench tests implementation fidelity; CPython adds real-world diversity but relies on manual labels/root grouping. Validation uses target-specific negative controls, same-object tests, native stacks, and root dedupli-cation. Clean stress leaves source-valid risks open; crashes sharing a root count once. Independent source passes cover a subset. Without full-dataset reviewer agreement, group-ing, primary-CWE labels, and inheritance remain judgment-sensitive. The retrospective evidence audit checks every root record. All 418 rows have a normalized technical status, and all 144 roots pass the evidence-category audit. The semantic audit further separates public guarantees, internal invariants, and study-adopted correctness expectations. 
+
+Catalog completeness. Released 141/141 coverage in Ta-ble 7 measures the qualified FT root corpus. ConcurrBench supplies the recall denominator. Unrecognized idioms can still cause misses. 
+
+Version and platform scope. The three Linux/x86-64 snap-shots span experimental 3.13 FT [21], supported baseline 3.14 [22], and release-candidate 3.15. Compilers, allocators, architectures, and later source changes affect manifestation. Equivalent-source inheritance broadens longitudinal cover-age, but future versions still need testing. Scheduling, al-locator behavior, assertions, and sanitizer availability also affect PoCs; clean execution supports only that run. 
+
+Comparative scope. Cumulative ConcurrBench ablations measure exposure, target/interval, and state/protection con-tributions. Production capability ablations report both all-profile retention and one-complete-witness root represen-tation. Among a fixed sample from 4,785 previously un-matched differences, 60 are representation-only, two are refuted, and 120 retain explicit causal blockers. The sample records dispositions without estimating precision. The ex-ternal matrix measures acceptance and completion of stated inputs. An accuracy comparison between SVF access pairs and C ONCUR DEP dependency-state violations requires a shared oracle. Dynamic race and memory tools support qualification through different reporting units. 
+
+5 Security Impact and Ethics. 
+
+The inventory’s concrete security failures include native crashes, use-after-free/wild writes, traversal invalidation, and corrupted runtime data through public Python/C-API paths. They threaten availability and memory integrity; use-after-free can enable crashes, corruption, and code execution [24]. Reproduction establishes technical impact, while practical exploitability depends on API exposure, allocator behavior, privileges, and the embedding application. High/Critical labels prioritize mechanism-family review, not deployment severity. Each root receives one primary CWE label. The 54 CWE-416 roots count primary labels; other roots can also include use-after-free manifestations. Experiments use local CPython builds and synthetic inputs, without third-party services, user data, or unsolicited scanning. Artifacts separate evidence, versions, and modes. The study filed an aggregate CPython report on September 16, 2026, covering the then-current 142-root inventory. It is study disclosure, so the prior-public audit excludes it. As of September 22, the disclosure ledger attributes no maintainer acknowledgment, CVE, or fix to that report. The two later catalog-gap roots remain for follow-up. Earlier independent issues and patches provide technical context, not study-disclosure outcomes. 
+
+## 7. Related Work 
+
+1 Dynamic Race and Memory-Error Detection. Dy-namic race detectors infer missing synchronization from executions. ThreadSanitizer combines happens-before, lock-sets, and annotations for large C/C++ systems [3]; Ad-dressSanitizer instruments accesses and poisons freed/out-of-bounds regions to identify manifested errors [4]. Both complement C ONCUR DEP : sanitizers qualify findings, while static reasoning connects runtime acquisitions, invalidating events, and later uses. Dynamic tools need triggering input-s/schedules; C ONCUR DEP trades that requirement for false positives. 
+
+2 Static Data-Race Analysis. Static race analyses com-bine aliasing, locksets, escape reasoning, and summaries. Locksmith correlates C locks, shared locations, and ac-cesses [6]; Goblint uses thread-modular abstract interpreta-tion with lock/access reasoning [5]. Chord applies context sensitivity and staged Java pruning [35]; RacerD uses scalable, low-cost compositional summaries [36]. O2 unifies thread/event entry contexts through origins [34]. Goblint and RacerD represent thread-modular and compositional approaches. C ONCUR DEP also uses points-to facts, target matching, and summaries but checks acquisition-to-use de-pendencies whose validity events change, spanning locations and runtime ownership or buffer-lease relations. Clang Thread Safety Analysis checks annotated locking disciplines ( GUARDED_BY , REQUIRES , EXCLUDES ) [37], complementing C ONCUR DEP ’s recovery from unannotated implementation code. 
+
+3 Python/C Lifecycle and Interference-Aware Type-state. CPyChecker checks extension-function reference counts path-sensitively using modeled borrows/stolen ref-erences [38]. Pungi transforms Python/C interface code into affine programs for interprocedural reference-count check-ing [7]. PyRefcon symbolically tracks lifecycle/refcount transitions through Python/C APIs and pointers in its PyOb-ject State Transition Model [8]. Pungi and PyRefcon directly address native object lifetime, closer to C ONCUR DEP than generic race detection, but primarily track individual Py-Object states/counts. C ONCUR DEP recovers owner–subject– storage relations and parallel/re-entrant revocation of con-tainment, address, traversal, or lease obligations. This rela-tional, cross-entry scope covers live owners with changed subjects or backing relations. Typestate encodes legal sequences in state-sensitive types [39]; ownership types constrain aliasing/shared ac-cess [40]. Typestate-guided concurrency combines tran-sitions and inferred locksets for shared-variable interfer-ence [9]. C ONCUR DEP shares this state-change principle, specializing in recovery of implicit CPython relations from native operations/catalogs, matching cross-entry events, and applying property-specific ownership, lease, revalidation, and protection. It checks existing unannotated code under Section 6’s catalog and may-analysis limits. JATO enforces atomicity of Java native methods invoked through the Java Native Interface (JNI) [41]. C ONCUR DEP 
+
+instead checks property-specific relational invalidation by peer-entry and callback events inside acquisition-to-use in-tervals. 
+
+4 Testing Language Runtimes. Runtime fuzzers ex-pose interpreter/cross-language failures using high-level pro-grams and native interactions. PyRTFuzz combines Python/-native fuzzing [42]; UAFL guides fuzzing toward use-after-free with static typestate sequences [43]. Fuzzing produces concrete failures along the semantic setups and schedules it explores. CONCUR DEP reports source-derived depen-dency/event chains for downstream dynamic confirmation. Schedule-aware test generation is a natural extension. 
+
+## 8. Conclusion 
+
+Free threading exposes native safety’s dependence on ownership, storage, traversal, lease, version, and callback-sensitive relations absent from C types. C ONCUR DEP treats each as a dependency whose required properties a target-matched event may revoke before use. Recovery, event-aware NCDG links to parallel and re-entrant events, and property-specific state/protection validation implement this insight. All 180 controlled cases are classified correctly; each selected release completes below 28 seconds and 0.8 GiB peak RSS in five-run medians. Frozen reports rep-resent 139 FT roots; two repaired catalog gaps yield all 141 qualified FT roots in the study corpus. The study qualifies 144 roots across FT/conventional-GIL builds, including 125 with native-failure evidence. A public-history audit finds no earlier report of the same native root for 95 of them. Produc-tion ablations show that derived relation recovery and cross-entry event connection retain represented-root evidence that restricted variants lose; witness-bound reruns preserve the semantic warning set. These results establish dependency invalidation as a practical unit for failures crossing refer-ences, representations, callbacks, and execution modes. 
+
+## References                                          
+
+> [1] S. Gross, “PEP 703—making the global interpreter lock optional in CPython,” Python Enhancement Proposals, 2023, accessed September 2026. [Online]. Available: https://peps.python.org/pep-0703/ [2] Python Software Foundation, “C API extension support for free threading,” Python 3.14 Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/howto/free-threading-extensions.html [3] K. Serebryany and T. Iskhodzhanov, “ThreadSanitizer: Data race detection in practice,” in Proceedings of the Workshop on Binary Instrumentation and Applications ,2009, pp. 62–71. [Online]. Available: https://research.google.com/pubs/archive/35604.pdf [4] K. Serebryany, D. Bruening, A. Potapenko, and D. Vyukov, “AddressSanitizer: A fast address sanity checker,” in 2012 USENIX Annual Technical Conference .USENIX Association, 2012, pp. 309–318. [Online]. Available: https://www.usenix.org/conference/ atc12/technical-sessions/presentation/serebryany [5] V. Vojdani, K. Apinis, V. R˜ otov, H. Seidl, V. Vene, and R. Vogler, “Static race detection for device drivers: The Goblint approach,” in Proceedings of the 31st IEEE/ACM International Conference on Automated Software Engineering .ACM, 2016, pp. 391–402. [6] P. Pratikakis, J. S. Foster, and M. Hicks, “Locksmith: Context-sensitive correlation analysis for race detection,” in Proceedings of the ACM SIGPLAN Conference on Programming Language Design and Implementation .ACM, 2006, pp. 320–331. [7] S. Li and G. Tan, “Finding reference-counting errors in Python/C programs with affine analysis,” in European Conference on Object-Oriented Programming .Springer, 2014, pp. 80–104.
+
+[8] X. Ma, J. Yan, H. Zhang, J. Yan, and J. Zhang, “Detecting memory errors in Python native code by tracking object lifecycle with refer-ence count,” in IEEE/ACM International Conference on Automated Software Engineering . IEEE, 2023, pp. 1429–1440. [9] Y. Yang, A. Gringauze, D. Wu, and H. K. Rohde, “Detecting data race and atomicity violation via typestate-guided static analysis,” Microsoft Research, Tech. Rep. MSR-TR-2008-108, 2008. [Online]. Available: https://www.microsoft.com/en-us/research/publication/detecting-data-race-and-atomicity-violation-via-typestate-guided-static-analysis/ [10] Python Software Foundation, “Thread states and the global interpreter lock,” Python 3.14 Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/c-api/threads.html [11] Python Software Foundation, “MemoryView objects,” Python 3.14 C API Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/c-api/memoryview.html [12] Python Software Foundation, “Buffer protocol,” Python 3.14 C API Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/c-api/buffer.html [13] Python Software Foundation, “memoryview.release(),” Python 3.14 Library Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/library/stdtypes. html#memoryview.release [14] Python Software Foundation, “Thread safety guarantees,” Python 3.14 Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/builtins/threadsafety.html [15] Python Software Foundation, “Reference count details,” Python 3.14 C API Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/c-api/intro.html# reference-count-details [16] Python Software Foundation, “CPython source code,” GitHub Repository, 2026, accessed September 2026. [Online]. Available: https://github.com/python/cpython [17] Python Software Foundation, “Synchronization primitives: Python critical section API,” Python 3.14 Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/c-api/init.html#python-critical-section-api [18] LLVM Project, “JSON compilation database format spec-ification,” Clang Documentation, 2026, accessed Septem-ber 2026. [Online]. Available: https://clang.llvm.org/docs/ JSONCompilationDatabase.html [19] LLVM Project, “Clang: A C language family frontend for LLVM,” LLVM Documentation, 2026, accessed September 2026. [Online]. Available: https://clang.llvm.org/ [20] L. O. Andersen, “Program analysis and specialization for the C pro-gramming language,” Ph.D. dissertation, University of Copenhagen, 1994. [21] Python Software Foundation, “Python experimental support for free threading,” Python 3.13 Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.13/howto/free-threading-python.html [22] T. Wouters, M. Page, and S. Gross, “PEP 779—criteria for supported status for free-threaded Python,” Python Enhancement Proposals, 2025, accessed September 2026. [Online]. Available: https://peps.python.org/pep-0779/ [23] Python Software Foundation, “Python support for free threading,” Python 3.14 Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/howto/free-threading-python.html [24] MITRE, “CWE-416: Use after free,” Common Weakness Enumeration, 2026, accessed September 2026. [Online]. Available: https://cwe.mitre.org/data/definitions/416.html [25] MITRE, “CWE-362: Concurrent execution using shared resource with improper synchronization (race condition),” Common Weakness Enumeration, 2026, accessed September 2026. [Online]. Available: https://cwe.mitre.org/data/definitions/362.html [26] MITRE, “CWE-367: Time-of-check time-of-use (TOCTOU) race condition,” Common Weakness Enumeration, 2026, accessed September 2026. [Online]. Available: https://cwe.mitre.org/data/ definitions/367.html [27] MITRE, “CWE-664: Improper control of a resource through its lifetime,” Common Weakness Enumeration, 2026, accessed September 2026. [Online]. Available: https://cwe.mitre.org/data/ definitions/664.html [28] Python Software Foundation, “What’s new in python 3.15,” Python 3.15 Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.15/whatsnew/3.15.html [29] T. Dac´ ık and T. Vojnar, “RacerF: Lightweight static data race detec-tion for C code,” in 39th European Conference on Object-Oriented Programming , ser. LIPIcs, vol. 333. Schloss Dagstuhl–Leibniz-Zentrum f¨ ur Informatik, 2025, pp. 37:1–37:29. [30] F. He, Z. Sun, and H. Fan, “Deagle: An SMT-based verifier for multi-threaded programs,” in Tools and Algorithms for the Construction and Analysis of Systems , ser. Lecture Notes in Computer Science, vol. 13244. Springer, 2022, pp. 424–428. [31] Y. Sui and J. Xue, “SVF: Interprocedural static value-flow analysis in LLVM,” in Proceedings of the 25th International Conference on Compiler Construction . ACM, 2016, pp. 265–266. [32] Y. Sui, P. Di, and J. Xue, “Sparse flow-sensitive pointer analysis for multithreaded programs,” in Proceedings of the 2016 International Symposium on Code Generation and Optimization , 2016, pp. 160– 170. [33] SVF Project, “SlicedMTA class reference,” SVF Documentation, 2026, accessed September 2026. [Online]. Available: https://svf-tools.github.io/SVF-doxygen/html/classSVF 1 1SlicedMTA.html [34] B. Liu, P. Liu, Y. Li, C.-C. Tsai, D. da Silva, and J. Huang, “When threads meet events: Efficient and precise static race detection with origins,” in Proceedings of the 42nd ACM SIGPLAN International Conference on Programming Language Design and Implementation .ACM, 2021, pp. 725–739. [35] M. Naik, A. Aiken, and J. Whaley, “Effective static race detection for Java,” in Proceedings of the ACM SIGPLAN Conference on Programming Language Design and Implementation . ACM, 2006, pp. 308–319. [36] S. Blackshear, N. Gorogiannis, P. W. O’Hearn, and I. Sergey, “Rac-erD: Compositional static race detection,” Proceedings of the ACM on Programming Languages , vol. 2, no. OOPSLA, pp. 144:1–144:28, 2018. [37] LLVM Project, “Thread safety analysis,” Clang Documentation, 2026, accessed September 2026. [Online]. Available: https://clang. llvm.org/docs/ThreadSafetyAnalysis.html [38] D. Malcolm, “A static analysis tool for CPython extension code,” GCC Python Plugin Documentation, version 0.16, 2017, accessed September 2026. [Online]. Available: https://gcc-python-plugin.readthedocs.io/en/latest/cpychecker.html [39] R. E. Strom and S. Yemini, “Typestate: A programming language concept for enhancing software reliability,” IEEE Transactions on Software Engineering , vol. SE-12, no. 1, pp. 157–171, 1986. [40] D. G. Clarke, J. M. Potter, and J. Noble, “Ownership types for flexible alias protection,” in Proceedings of the ACM SIGPLAN Conference on Object-Oriented Programming, Systems, Languages, and Applica-tions . ACM, 1998, pp. 48–64. [41] S. Li, Y. D. Liu, and G. Tan, “JATO: Native code atomicity for Java,” in Programming Languages and Systems: 10th Asian Symposium , ser. Lecture Notes in Computer Science, vol. 7705. Springer, 2012, pp. 2–17. [42] W. Li, H. Yang, X. Luo, L. Cheng, and H. Cai, “Pyrtfuzz: Detecting bugs in python runtimes via two-level collaborative fuzzing,” in                          
+
+> Proceedings of the 2023 ACM SIGSAC Conference on Computer and Communications Security , 2023, pp. 1645–1659. [43] H. Wang, X. Xie, Y. Li, C. Wen, Y. Li, Y. Liu, S. Qin, H. Chen, and Y. Sui, “Typestate-guided fuzzer for discovering use-after-free vulnerabilities,” in Proceedings of the ACM/IEEE 42nd International Conference on Software Engineering .ACM, 2020, pp. 999–1010. [44] Expat Project, “Expat XML parser: C API,” Expat Documentation, 2026, accessed September 2026. [Online]. Available: https://libexpat. github.io/doc/api/latest/ [45] Python Software Foundation, “Dictionary objects,” Python 3.14 C API Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/c-api/dict.html [46] Python Software Foundation, “Parsing arguments and building values,” Python 3.14 CAPI Documentation, 2026, accessed September 2026. [Online]. Available: https://docs.python.org/3.14/c-api/arg.html
+
+## Appendix A. Plugin Specifications 
+
+Section 3.4 defines the common plugin interface and gives the view/lease plugin in full. This appendix specifies the other five plugins. For a transition set Θ, all five use the same acceptance predicate 
+
+Qual (Θ) ≡ ∃ θ ∈ Θ. θ.o ∧ θ.f ∧ θ.t ∧ θ. ∆̸ = ∅ ∧ θ.V ̸ = ∅,
+
+where o, f , and t denote temporal overlap, an eligible may-execute context, and may-target matching. The core computes these facts; a plugin selects only its applicable dependencies and required stability properties. We abbrevi-ate the properties from Table 2 as A DDR , R EPR , S TRUCT ,ITER , L EASE , O PEN , C ALLBACK , R EL , and L IVE .
+
+1 Storage-generation invalidation. For an interior ad-dress, the address and its representation remain valid until the last dereference: 
+
+QS (D, G ) ≡ D.h = InteriorStorage ,KS (D) = {Addr , Repr },AS (D, Θ, G ) ≡ Qual (Θ S ).
+
+The plugin assigns high review priority and reports the resize, reallocation, rebuild, close, or free that can revoke the address. 
+
+2 Container-traversal invalidation. For a size, index, cursor, or entry produced while traversing a container, 
+
+QT (D, G ) ≡ D.h = ContainerTraversal ,KT (D) = {Struct , Iter },AT (D, Θ, G ) ≡ Qual (Θ T ).
+
+The high-priority rationale identifies the structural mutation that can make the saved bound, position, or entry relation stale. 
+
+3 Borrowed-object lifetime invalidation. Let OB contain unowned and unpinned acquisition states. The evaluated implementation conservatively requires both lifetime and relation stability until promotion or final use: 
+
+OB = {borrowed , unowned , unknown },QB (D, G ) ≡ D.h = BorrowedObject ∧ D.w ∈ O B
+
+∧ D.U ̸ = ∅,KB (D) = {Live , Rel },AB (D, Θ, G ) ≡ Qual (Θ B ).
+
+The rationale identifies the removal, replacement, or refer-ence drop that may invalidate subject lifetime or the acqui-sition relation. Here, R EL means that the relation recorded at acquisition still holds. A report based only on R EL enters contract audit. A separately pinned subject under a snapshot-permitting contract requires L IVE , while membership may change. A use that assumes the saved subject still occupies the owner’s selected role requires both properties. This con-servative default contributes false positives when recovery cannot distinguish those use contracts. 
+
+4 Callback re-entry invalidation. Let 
+
+ReentryEvidence (D, G ) denote a linked Python callback, native callback, or event whose effect permits re-entry and mutation. Owned or pinned borrowed-object subjects are excluded. Let B = BorrowedObject :
+
+OR = {Owned , Pinned },QR(D, G ) ≡ ReentryEvidence (D, G )
+
+∧ ¬ (D.h = B ∧ D.w ∈ O R),KR(D) = {Callback , Rel },AR(D, Θ, G ) ≡ Qual (Θ R).
+
+The high-priority report names the callback that can replace or clear retained state before native execution resumes. This selector reflects the evaluated implementation: it excludes an owned or pinned borrowed-object dependency from the re-entry plugin. Ownership protects lifetime but may leave the owner–subject relation unprotected. Relation-changing re-entry for that excluded combination is a known false-negative boundary. 
+
+5 Reference-drop lifetime invalidation. Let 
+
+FinalizationEvidence (D, G ) hold for a may-finalize effect, finalization exposure, reference drop, or ownership transfer. Then 
+
+QF (D, G ) ≡ FinalizationEvidence (D, G ),KF (D) = {Live },AF (D, Θ, G ) ≡ Qual (Θ F ).
+
+This plugin receives the highest review priority because a drop-to-zero transition can execute destructors and reclaim the exact subject before its final use. The core supplies reachability and alias evidence to ev-ery predicate. New plugins therefore inherit the same target, overlap, and protection requirements as existing families. 
+
+## Appendix B. NCDG Scale 
+
+Table 13 reports the graph objects serialized by each whole-program run. Event relations connect events to targets and contexts; dependency–event links retain the candidate pairs considered by the state engine after target indexing. These counts complement the time and memory results in Table 4. 
+
+Table 13. S CALE OF THE EVENT -AWARE NCDG FOR EACH CP YTHON RELEASE .                                
+
+> Nodes and semantic objects
+> Version Functions Contexts Dependencies Events 3.13 14,191 20,329 5,674 92,369 3.14 15,356 21,594 6,061 104,282 3.15 15,518 21,880 6,240 102,305
+> Graph relations and protection regions
+> Version Call edges Event rels. Dep.–event links Protection 3.13 58,277 446,789 217,021 417 3.14 64,573 503,981 528,380 784 3.15 64,187 507,840 351,017 809
+
+## Appendix C. Focused Qualification Runs 
+
+We built the three pinned revisions with GCC 13, debug assertions, AddressSanitizer, and free threading. A three-worker harness retained each command, interpreter and PoC identifier, exit signal, standard output, and standard error. Table 14 reports the 30 primary jobs and ten focused retries. The SQLite and writer-stats rows include the primary run plus five isolated free-threaded retries. 
+
+Table 14. F OCUSED DYNAMIC QUALIFICATION . FT AND GIL CELLS REPORT ABORTING /RETAINED RUNS .                                    
+
+> Root or mode group FT GIL Outcome
+> partial keyword repr 1/1 0/1 ASan crash during call-back use Import traceback chain 1/1 0/1 Debug invariant viola-tion
+> OrderedDict cached keys 0/1 0/1 No fresh failure SQLite blob registry 4/6 0/1 Intermittent free-threaded reproduction Writer stats/close 0/6 0/1 No fresh failure Writer internal state (seven modes) 7/7 1/7 GIL abort is
+> finalize_close
+> Writer input lists (three modes) 3/3 0/3 All free-threaded modes reproduce
+> Total 16/25 1/15 17/40 abort
+
+A clean stress run covers only the exercised sched-ule. SQLite illustrates the converse: its primary run exits cleanly, whereas four of five isolated retries abort. The 
+
+OrderedDict package retains conventional-GIL ASan failures from all three pinned releases even though this focused rerun is clean; writer-stats retains a prior free-threaded SIGSEGV description while all six current free-threaded executions are clean. 
+
+## Appendix D. Aggregate Component-Coverage Summary 
+
+Table 15 summarizes all 61 logical components that contain a confirmed root. Each version has separate free-threaded (FT) and conventional-GIL counts. The 
+
+Unique roots column deduplicates findings across all re-leases and both modes. We consolidate the library-level 
+
+collections entry and its OrderedDict implemen-tation into one logical component. 
+
+Table 15. R OOT AND COMPONENT COVERAGE BY SUBSYSTEM .VERSION CELLS REPORT FT/ CONVENTIONAL -GIL ROOTS .                    
+
+> Category Components 3.13 3.14 3.15 Unique Library/extension 29 61/22 62/19 49/22 78 Built-in/core 17 36/3 29/4 26/4 39 Runtime/compiler 15 24/5 22/5 20/5 27
+> Total 61 121/30 113/28 95/31 144
+
+## Appendix E. Confirmed Bug Case Studies 
+
+The following cases use the same structure: the vulner-able source operation, the invalidating event, the witness retained by C ONCUR DEP , the confirming PoC, and the security consequence. Together they cover the four primary CWE classes used in the released bug dataset. 
+
+1 CWE-362: shared pyexpat parser [25].                         
+
+> Root: pyexpat-shared-parser-native-state-race
+> Component: Modules/pyexpat.c and Expat Affected: CPython 3.13–3.15, FT and GIL
+> Observed impact: native heap corruption and process abort
+> Unserialized parse entry:
+> 910 while (slen >MAX_CHUNK_SIZE) {
+> 911 rc =XML_Parse(self->itself, s, MAX_CHUNK_SIZE, 0);
+> 912 ...
+> 913 }
+> 914 rc =XML_Parse(self->itself, s, (int )slen, isfinal);
+
+Trigger. Expat permits one active entry through each 
+
+XML_Parser ; its API specifically forbids calling parsing functions on the active parser from one of its handlers [44]. The Python-facing parser owns that single native handle. Its wrapper contract serializes a second Parse() call or rejects it before entering Expat. The free-threaded module instead allows two public calls to enter Expat with the same handle. Both mutate DTD tables, tag buffers, entity lists, and parser position. One call can therefore reallocate or free state retained by the other. C ONCUR DEP links the shared parser dependency to a may-target second parse entry with an overlap context. Source audit verifies that both calls use the same parser and finds no parser-level critical section preserving the native state. 
+
+Validation and security impact. A barrier releases two 
+
+Parse() calls on one parser. The 3.14 free-threaded ASan build immediately overwrites the trailing guard of a 1 MiB Expat allocation and aborts. A separate conventional-GIL PoC recursively calls Parse() from a handler; the nested call corrupts the outer error state and passes a null error string into strlen . The root also reproduces on 3.15. Un-trusted XML supplied to a service that shares or recursively enters a parser can thus cause native corruption and denial of service in either runtime mode. 2 CWE-367: stale inline-dictionary check [26].                     
+
+> Root: object-getstate-inline-dict-empty-transition
+> Component: Objects/dictobject.c Affected: CPython 3.13–3.15 FT
+> Observed impact: impossible empty serialization state
+> Check and later slot scan:
+> 7657 if (FT_ATOMIC_LOAD_UINT8(values->valid)) {
+> 7658 PyDictKeysObject *keys = CACHED_KEYS(tp);
+> 7659 PyObject **slots = values->values;
+> 7660 for (...) {
+> 7661 if (FT_ATOMIC_LOAD_PTR_RELAXED(slots[i]) != NULL)
+> 7662 return 0;
+> 7663 }
+> 7664 return 1;
+> 7665 }
+
+Trigger. The reader checks values->valid only once. A peer then assigns a new obj.__dict__ , publish-ing a nonempty dictionary while invalidating and clearing the old inline slots. The reader scans those cleared slots and returns “empty” without rechecking the representation. CONCUR DEP records the validity check, slot-dependent use, representation-changing store, and absent revalidation as one state-transition witness. 
+
+Validation and security impact. The PoC keeps both the old and replacement dictionaries nonempty, so 
+
+object.__getstate__() returning None has no legal linearization point. It does so after 3,182 reads on 3.15 FT; the same binary with the GIL completes 50,000 rounds. Se-rialization, checkpointing, or policy code may silently omit security-relevant object state instead of raising an exception. 
+
+3 CWE-416: borrowed module __dir__ [24].            
+
+> Root: module-dir-borrow-promotion
+> Component: Objects/moduleobject.c Affected: CPython 3.13–3.15, FT and GIL
+> Observed impact: use-after-free in native call dispatch
+> Borrow followed by callback use:
+> 1193 PyObject *dirfunc =
+> 1194 PyDict_GetItemWithError(dict, &_Py_ID(__dir__));
+> 1195 if (dirfunc) {
+> 1196 result = _PyObject_CallNoArgs(dirfunc);
+> 1197 }
+
+Trigger. Owning the module dictionary leaves a removed object’s lifetime unprotected. 
+
+PyDict_GetItemWithError returns a borrowed callable, and a peer can replace module.__dir__ after lookup but before the call; the C API documents both the borrowed result and its need for external synchronization under concurrent mutation [45]. The old callable may reach zero references, while the reader dispatches through its freed object and type. C ONCUR DEP identifies the borrowed ownership, exact dictionary replacement, drop-to-zero transition, and final call use. 
+
+Validation and security impact. Eight dir(module) 
+
+workers race one replacement thread. The 3.14 free-threaded ASan build crashes in under one second from 
+
+_PyObject_CallNoArgs . For the conventional-GIL build, a minimal C callable releases the GIL inside 
+
+tp_call ; a peer deletes the exact dictionary entry, and ASan reports the same use-after-free when the call resumes. A native lifetime error in generic module introspection creates a process-crash primitive and may permit stronger memory corruption under favorable allocator reuse. 
+
+4 CWE-664: reentrant TextIOWrapper.tell [27].                  
+
+> Root: textiowrapper-tell-reentrant-snapshot-uaf
+> Component: Modules/_io/textio.c Affected: CPython 3.13–3.15, FT and GIL
+> Observed impact: reclaimed snapshot bytes consumed as live input
+> Borrow retained across decoder callbacks:
+> 2795 PyArg_ParseTuple(self->snapshot, "iO", &flags, & next_input);
+> 2796 ...
+> 2797 input =PyBytes_AS_STRING(next_input);
+> 2798 _textiowrapper_decoder_setstate(self, &cookie);
+> 2799 DECODER_DECODE(input, skip_bytes, chars_decoded);
+
+Trigger. next_input is borrowed from 
+
+self->snapshot across user-defined decoder methods; the argument-parsing API specifies borrowed output references [46]. A decoder callback re-enters seek(0) ,clearing the snapshot and releasing the bytes. The outer 
+
+tell() continues through raw pointers into reclaimed storage. The object critical section blocks peer threads but not this same-thread callback, so the dependency remains unprotected. 
+
+Validation and security impact. The PoC uses re-entrant 
+
+seek to refill the freed size class with Z. FT and GIL runs then consume Z through bulk and single-byte paths, allowing a malicious codec to corrupt stream position or crash the process.
