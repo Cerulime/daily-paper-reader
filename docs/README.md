@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-26</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-27</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 2 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-26 22:21:27 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-27 21:51:23 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日日报速读2篇、精读0篇，两篇均6.0分，主题分别落在LLC压缩缓存隐蔽信道与CPython并发依赖失效分析。</p>
-<p>最值得关注的是《Exploiting Decompression Latency...》中的解压延迟隐蔽信道思路，以及《CONCURDEP...》用事件引导分析CPython并发依赖失效。</p>
-<p>普通读者可先看这两篇的摘要与结论，重点判断其对系统安全与Python并发调试的实用价值，再决定是否深读全文。</p>
+<p>2026-09-27日报：完成5篇速读、0篇精读，焦点落在智能体安全与硬件攻击。</p>
+<p>最值得看的是两篇7.0分方向——内核级证据用于智能体安全，以及内核级抢占与遏制 rogue agentic execution。</p>
+<p>普通读者可优先浏览这两篇7分文章，建立“内核层防护智能体失控”的基本认知。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -93,12 +93,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">2 篇</strong>
+    <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Exploiting Decompression Latency for Covert Channels in Inter-Line-Compressed LLCs">Exploiting Decompression Latency for Covert Channels in Inter-Line-Compressed LLCs</span></li><li><span class="dpr-home-dashboard-paper-title" title="CONCURDEP: Event-Guided Analysis of Dependency Invalidation in CPython Concurrency">CONCURDEP: Event-Guided Analysis of Dependency Invalidation in CPython Concurrency</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="On the Effectiveness of Kernel-Level Evidence for Agent Security">On the Effectiveness of Kernel-Level Evidence for Agent Security</span></li><li><span class="dpr-home-dashboard-paper-title" title="Hard Stop: Kernel-Level Preemption and Containment for Rogue Agentic Execution">Hard Stop: Kernel-Level Preemption and Containment for Rogue Agentic Execution</span></li><li><span class="dpr-home-dashboard-paper-title" title="Exploiting Software-level Abstractions To Support Practical Hardware Trojan Attacks">Exploiting Software-level Abstractions To Support Practical Hardware Trojan Attacks</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>
 </div>
 

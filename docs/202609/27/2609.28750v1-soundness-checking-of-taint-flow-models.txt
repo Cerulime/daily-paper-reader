@@ -1,0 +1,906 @@
+Title: Soundness Checking of Taint Flow Models
+
+URL Source: https://arxiv.org/pdf/2609.28750v1
+
+Published Time: Fri, 25 Sep 2026 00:15:01 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# Soundness Checking of Taint Flow Models 
+
+SAMARTH KISHOR, Amazon Web Services, USA 
+
+VICTOR NICOLET, Amazon Web Services, USA 
+
+JOEY DODDS, Amazon Web Services, USA Existing state-of-the-art static taint flow analyses for imperative programming languages can scale to large applications by using precise user-provided taint flow models of library methods. However, manually and precisely modeling a method’s taint flows is tedious and potentially unsound. Furthermore, automatically modeling the method via an inter-procedural taint analysis can be inefficient. To solve this problem, we propose a guess-and-check approach: (1) an LLM agent that generates a precise taint flow model of a method and (2) a symbolic algorithm to check the soundness of the model. The algorithm deduces which taint flows 
+
+must not occur in the method for the LLM’s taint flow model to be sound, and uses lightweight static analyses (e.g., type system and pointer analysis) to prove these must-not-flows. When these analyses are insufficient, the algorithm deduces maximally-general callee models and recursively verifies their soundness, avoiding a full inter-procedural taint analysis in most cases. Since a more precise model requires fewer must-not-flows to be verified, the precision of the LLM’s model directly determines the efficiency of our approach. We evaluate our approach on 97 LLM-generated taint flow models for methods in 6 large Go codebases and prove the models sound for 93% of the methods they cover. The proven-sound LLM-generated models are also precise, resulting in no new false-positives when proving taint flow properties. 
+
+1 INTRODUCTION 
+
+Reasoning about data flows in programs is useful for preventing security vulnerabilities such as logging secrets [10, 11] and for improving a developer’s understanding of a program [31, 36]. Static analyses such as taint analysis compute an over-approximation of these flows to prove security properties such as “untrusted data from a call to method getSecrets (the source) never flows to an argument of printf (the sink)”. To prove such properties, which we call taint flow properties, a static taint analysis must be sound by over-approximating all the data flows from getSecrets() in the entire program. A sound taint analysis is only useful when it is precise enough to prove all the taint flow properties with few-to-no false positives, i.e., taint flows that cannot occur in practice; and scalable, i.e., completes in a reasonable amount of time for large programs. In order to be useful, a taint analysis must scale to such real-world applications. Even a simple “hello world” application in Java can transitively depend on 3,000 classes [33]. Precise whole-program taint analyses require hours and tens of gigabytes of memory to analyze large applications, even with sophisticated caching strategies [20]. To attempt to scale to large applications, compositional taint analyses use taint flow models of methods [7]. A taint flow model of a method summarizes how tainted data flows from its inputs (e.g., parameters) to its outputs (e.g., return values) in all 
+
+calling contexts [4]. This enables the analysis to compute a method’s model once and reuse it across different call sites. Field-sensitive models summarize how taint flows from individual input object fields to output object fields, which can improve precision. A model is sound if-and-only-if it over-approximates the taint flows in the method and its transitive callees for all calling contexts. Previous work [4, 28], which we call the constructive approach, use an inter-procedural composi-tional taint analysis to soundly and precisely model taint flows in methods. Methods can manipulate objects, requiring the taint analysis to be field-sensitive by analyzing taint flows between indi-vidual object fields. Some taint analyses are configurable to allow a user to sacrifice precision for performance; e.g., by disabling or limiting field-sensitivity [5]. However, configuring an analysis is a manual operation and requires knowledge about the specific analysis and the application, which  
+
+> Authors’ addresses: Samarth Kishor, Amazon Web Services, USA, samarkis@amazon.com; Victor Nicolet, Amazon Web Services, USA, victornl@amazon.com; Joey Dodds, Amazon Web Services, USA, jldodds@amazon.com. arXiv:2609.28750v1 [cs.SE] 23 Sep 2026 2Samarth Kishor, Victor Nicolet, and Joey Dodds
+
+the user may not have. Furthermore, the resulting models may not be precise enough to avoid false-positives in real-world taint flow properties. 
+
+This work. Our insight is that instead of computing a sound and precise taint flow model via the constructive approach, we can instead use an external source such as a Large Language Model (LLM) to guess a precise model which we then verify is sound. This addresses the efficiency and precision tradeoff: the method’s taint flow model controls the level of precision that the analysis needs in order to verify soundness, not the method’s implementation. For example, consider an implementation of a method in Go for parsing and logging encoded data: func parse(log *Logger, data [] byte )error . The type [] byte is a slice (heap-allocated mutable array) of bytes. The method parse and its transitive callees can contain thousands of statements that manipulate the input data in complex ways. However, its sound and maximally-precise taint flow model is simple: taint flows from the input data to the logger. A flow-, field-, and context-sensitive taint analysis for Go such as Argot [6] can take minutes to compute this model, even though the model does not require field-sensitivity. However, an LLM can guess this model in seconds, and proving that the model is sound does not even require a taint analysis; a field-insensitive pointer analysis is sufficient. If the memory pointed to by log is never written to the memory pointed to by data inside of parse , then we can conclude that data from log can never flow to data . Also, if the returned error value is a static constant, then data can never flow to it. Our model generation approach equips an LLM with a set of analysis tools and tasks it with producing a candidate taint flow model for a method. Simply guessing the worst-case taint flow (all method inputs flow to all outputs) would likely lead to false-positives, so we equip the LLM with tools such as access to the method’s documentation and source code to improve its precision. LLMs can produce unsound candidate models. To solve this problem, we use a novel soundness checking algorithm to verify that the LLM’s model over-approximates the possible taint flows within a method 𝑚 ; i.e, for all possible inputs and outputs of 𝑚 there is no flow from an input to an output in 𝑚 or any of its transitive callees that is not in the model. Our modeling format has restrictions which we discuss in Section 5.1. The algorithm first computes the difference between the set of all possible flows between inputs and outputs of 𝑚 and the model to deduce the taint flows that must not occur in 𝑚 for its model to be sound. Then for each input-output flow that must not exist, called a “must-not-flow”, it uses a series of efficient static analyses to try and prove that the must-not-flow holds (i.e., that the output can never be tainted by the input) during the execution of 𝑚 . Our static analyses use the language’s type system and a pointer analysis. When static analyses cannot directly prove that all the must-not-flows hold, and 𝑚 calls other methods (callees), the algorithm computes the intra-procedural taint flows in 𝑚 using a standard taint analysis. Akin to maximal specification synthesis [1], it then deduces which maximally-
+
+imprecise models the callees of 𝑚 need for the unproven must-not-flows and computed intra-procedural flows in 𝑚 to hold. The algorithm then recursively checks each deduced callee model. Although it needs to perform a limited taint analysis in this case, we empirically show that the deduced callee models are imprecise enough that, in most cases, our static analyses can prove their soundness. Therefore, in the general case, our soundness checking algorithm does not need to intra-procedurally analyze every function that is transitively called from 𝑚 , which the constructive modeling approach would need to do. The algorithm concludes that the LLM’s model is sound iff there are no unproven must-not-flows in any callees. This proof is relative to assumptions; in particular, the absence of unsafe memory operations and reflection. It also is relative to the application being analyzed, which motivates the need for Soundness Checking of Taint Flow Models 3
+
+efficiency, as all models will need to be re-checked sound each time the application changes. We discuss these assumptions in Section 5 and our approach’s limitations in Section 5.5. We instantiate our approach for the Go programming language and evaluate it across three impor-tant dimensions of taint analysis: soundness, efficiency, and precision. We analyze 6 Go repositories with 16 taint flow properties, automatically generating 97 models. Applying our approach by generating the models, checking their soundness, and running the taint analysis, enabled us to prove 9 taint flow properties for which the baseline taint analysis (i.e., the analysis without models) timed out. We show that our LLM-generated models lead to no additional false-positives compared to the baseline taint analysis. 
+
+Contributions. We make the following contributions: 
+
+• We present an LLM agent to generate taint flow models. 
+
+• We present a novel approach to prove the soundness of a given taint flow model. 
+
+• We evaluate our approach on 97 taint flow models, empirically demonstrating our approach’s efficiency. 
+
+2 RUNNING EXAMPLE 
+
+We consider a method ProcessReq implemented in Go which processes an HTTP request by parsing and asynchronously logging it. We provide the code for this method in Figure 1. ProcessReq takes as input a pointer to an HTTP request and a logger. It returns an error value (which is a pointer-like value in Go) if parsing the request fails. The returned error is nil (similar to null ) if parsing and logging succeed. The callee logReq creates a new lightweight thread (called a “goroutine”) via the  
+
+> go
+
+statement which eventually calls the (*Logger).Write method (a method called Write on the  
+
+> *Logger
+
+object) which logs its string parameter.                           
+
+> 1func ProcessReq(log *Logger , req *http.Request) error {
+> 2body := parseReq(req)
+> 3if len(body) == 0 {
+> 4return errors.New("failed to parse req")
+> 5}
+> 6logReq(log, body, req)
+> 7return nil
+> 8}
+> 910 func parseReq(req *http.Request) string {
+> 11 // complex parsing implementation...
+> 12 }
+> 13 func logReq(log *Logger , body string ,
+> 14 req *http.Request) {
+> 15 go log.Write(req.Host + body)
+> 16 }
+
+Fig. 1. Running example: an application with complex request parsing. 
+
+This method uses features of Go which are difficult for a sound and precise taint analysis to analyze efficiently. The implementation of  
+
+> parseReq
+
+is complex and can take a long time to analyze. Furthermore, a flow-sensitive taint analysis cannot soundly summarize logReq without reasoning about concurrency. This makes ProcessReq a good candidate for our approach. Instead of inefficiently constructing 
+
+a possibly-unsound but precise taint flow model for ProcessReq via a flow-sensitive inter-procedural taint analy-sis, we use an LLM agent to automat-ically generate a precise candidate model for the method, and then use our soundness checking algorithm to efficiently verify that the model is sound. In theory, the user could configure the constructive approach to use a flow-insensitive taint analysis instead. However, that would require knowing ahead-of-time that the resulting model is precise enough. Our LLM agent generates 4 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+a candidate taint flow model that is precise, yet our algorithm can use imprecise flow-insensitive analyses, which are sound in the presence of concurrency, to prove that the candidate model is sound. We ask our LLM agent to generate a candidate taint flow model for ProcessReq . It responds with the model: data from the HTTP request req may taint the logger log , written as {req ⇝log }.The candidate model now needs to be proven sound; to do so, we run our soundness verification algorithm. The algorithm first deduces which taint flows must not hold in ProcessReq for the model to be sound. Then, it applies lightweight static analyses to prove that these must-not-flows hold. If there are still some unproven must-not-flows, the algorithm deduces which models of the callees of ProcessReq (parseReq , errors.New , and logReq ) satisfy the soundness of the LLM’s generated model, and then recursively checks the soundness of each of these deduced callee models. The most-general taint flow summary (we use “model” and “summary” interchangeably) states that taint from all method inputs flows to all method outputs. It must include all possible inputs and outputs to a method in all calling contexts to over-approximate the possible summarized taint flows in a method. In Go, pointer-like parameters can be inputs as well as outputs to a method, so we include them in the outputs of the most-general summary. The difference between the most-general summary and the candidate model {req ⇝log } is: {req ̸⇝ret, log ̸ ⇝req, log ̸ ⇝ret }, where ret is the return value. These are the taint flows that cannot occur in ProcessReq , or any of its transitive callees, for the candidate model to be sound. If there are no must-not-flows, then the candidate model is the most-general summary, which is sound by construction. Our algorithm is parameterized on a set of analyses that soundly prove that these must-not-flows hold. Each analysis takes as input set of must-not-flows and returns the must-not-flows it could not prove hold. Our instantiation of the algorithm for Go uses light-weight static analyses that analyze types and aliases. Crucially, these analyses are more efficient than the taint analysis of the constructive approach. Our simplest analysis is the types analysis. In Go, non-pointer-like parameters are passed by-value on the stack. Even if a non-pointer-like parameter is modified inside of the method, the corresponding argument in the caller remains untouched; no data could possibly flow to it from any of the method’s inputs. If a must-not-flow’s output (e.g., req in log ̸ ⇝ req ) is a non-pointer-like parameter, then the must-not-flow holds according to the types analysis; i.e., data never flows from  
+
+> log
+
+to req in the method. The types analysis cannot prove any of these must-not-flows because the only output in the unproven must-not-flow set {req ̸⇝ret, log ̸ ⇝req, log ̸ ⇝ret } is req , which has a pointer type *http.Request . Therefore, the set of unproven must-not-flows is unchanged. The next analysis is the immutability analysis, which uses a pointer analysis to prove that no data can ever flow to a pointer-like parameter output whose underlying memory is never modified (immutable) in the method. We require a pointer analysis instead of simply scanning for assignment statements because the taint analysis tracks taint flows through aliases as well as values. Due to imprecision in the pointer analysis, the immutability analysis incorrectly concludes that some statement in one of the transitive callees of parseReq modifies the underlying memory of req , so we cannot eliminate any must-not-flows to req . Return values are a special case: they are always passed to the caller. However, if a return value is a constant value, then no data can flow to it. The immutability analysis proves that ret is always a constant value: nil or an error string constant. 1
+
+Thus, the set of unproven must-not-flows is now {log ̸⇝req }.            
+
+> 1Our approach does not consider implicit taint flows, so even though the return value depends on the condition len(body )== 0, our soundness verification algorithm concludes that no tainted data can flow to the return value. Soundness Checking of Taint Flow Models 5log *Logger, req *http.Request ret logReq(log, body, req) parseReq(req) func ProcessReq(log *Logger, req *http.Request) error {
+> Fig. 2. Taint flow graph representation of ProcessReq . The long arrow is the flow in the LLM’s candidate taint flow model. Small square boxes below parameters or above arguments of call statements (inside the shaded rounded boxes) denote method inputs. Black boxes below arguments and dots below call statements (return values) denote method outputs. Black lines outside of the call statements are the computed intra-procedural taint flows. Solid lines inside of the call statements are the unknown input-output flows for each respective deduced callee model. The dotted line is a callee model flow which would violate the soundness of the candidate model.
+
+Next, the read analysis checks that no data can ever flow to an input that is never read (unread) in the method. Since the logReq method accesses req to call a method on it, the read analysis cannot prove the remaining must-not-flow. We have no other static analyses to prove that the rest of the unproven must-not-flows hold. Thus, we must compute all the possible intra-procedural flows from each input of ProcessReq 
+
+to its outputs, and deduce which callee taint flows satisfy these intra-procedural flows and the unproven must-not-flows, for the candidate model to be sound. The algorithm taints every input to ProcessReq (i.e., log and req ) and runs the intra -procedural taint analysis on only ProcessReq ,not any of its callees. This is in contrast to the constructive approach which must analyze taint flows in every callee. Figure 2 represents the intra- and inter-procedural taint flows in ProcessReq as a graph. The taint analysis computes the intra-procedural flows (black lines in Figure 2) soundly and efficiently because ProcessReq does not perform much computation itself. The intra-procedural analysis does not analyze any callees—it leaves “call nodes” representing calls to callees (gray boxes in Figure 2). It proceeds by assuming every output to the call is tainted, which is necessary to ensure soundness. We now know the intra-procedural taint flows within ProcessReq . However, the taint flow graph is still incomplete because we are missing edges that connect the inputs and outputs of each call node. We want to avoid performing a potentially expensive taint flow analysis on each callee, so instead our goal is to deduce possible models . Furthermore, we want to maximize the number of flows in the deduced callee models which in-turn minimizes the number of must-not-flows that the static analyses will need to prove in each callee. These deduced callee model flows are the blue lines inside of the call statements in Figure 2. Our approach does not deduce a model for errors.New 
+
+because it is unreachable from the inputs to ProcessReq .The deduced callee models must not violate the soundness of the LLM’s candidate model. For example, if logReq actually taints req with log (dotted red line in Figure 2), perhaps by storing 6 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+Name Description 
+
+V Variables 
+
+F Field identifiers 
+
+S Statements 
+
+M Methods 
+
+L Memory locations Name Description 
+
+O def 
+
+= L ∪ { null } Object values 
+
+E def 
+
+= V → O Environment 
+
+H def 
+
+= L × F → O Heap 
+
+Σ def 
+
+= E × H Program states 
+
+> Fig. 3. Our programming language’s domain.
+
+some previously-logged data inside of the request’s byte buffer, then there would be a flow from the logReq call’s input argument log to the call’s output argument req to the output value req of 
+
+> ProcessReq
+
+. This extra flow from call output req to ProcessReq output req would make the LLM’s candidate model unsound. Therefore, we add the constraint that the deduced callee models must satisfy the unproven must-not-flows and the known intra-procedural flows that we just computed. Our algorithm deduces the following maximally-imprecise callee models: (1) parseReq : {req ⇝ret }
+
+(2) logReq : {body ⇝log, req ⇝log, log ⇝body }
+
+The deduced summary for parseReq is the most-general summary {req ⇝ret } which is sound by construction. This is convenient because while the implementation of parseReq may be too complex for a precise taint analysis to summarize efficiently, simply using the sound most-general summary lets us avoid performing an expensive taint flow computation without losing any precision .The algorithm moves on to proving that the deduced model for logReq is sound. The most-general summary for logReq is {log ⇝body, log ⇝req, body ⇝log, body ⇝req, req ⇝log, req ⇝body }.This gives us {log ̸⇝req, body ̸⇝req, req ̸⇝body } as the set of unproven must-not-flows. The types analysis proves that req ̸ ⇝ body holds because body is a non-pointer-like parameter (string). This leaves us with the set {log ̸⇝req, body ̸⇝req }. The algorithm then performs the immutability analysis, which proves that the memory which req refers to is never modified by logReq or any of its transitive callees. This is sound even though logReq spawns a goroutine if the immutability analysis uses a flow-insensitive pointer analysis, which does not consider the order that statements are executed. Our approach assumes that the programs we analyze are free from data races. Under this data-race-freedom assumption, we conclude that logReq does not modify req , leaving us with no more unproven must-not-flows. The algorithm finally concludes that the LLM-inferred model of ProcessReq , {req ⇝log }, is sound, without performing an inefficient taint analysis on any of its callees. 
+
+3 TAINT SEMANTICS 
+
+In this section, we define the semantics of taint flows for a simple imperative programming language. The language we use is similar to the one in Andromeda [34] and FlowDroid [14]. It supports manipulating heap-allocated objects and calling methods. We instrument the semantics of our language to track taint flows. Finally, since our approach deals with the soundness of taint flow models, we use the instrumented semantics to formalize the definition of a sound taint flow model. 
+
+3.1 Programming Language 
+
+Figure 3 shows the programming language’s domain. A program state 𝜎 def 
+
+= ⟨𝐸, 𝐻 ⟩ ∈ Σ maintains the state of the environment and heap. The environment 𝐸 ∈ E maps program variables in V to null-able object values in O. The heap 𝐻 ∈ H maps memory locations in L with field identifiers in F to object values. Soundness Checking of Taint Flow Models 7
+
+Meaning Description 
+
+J𝑥 ≔ new K𝜎 = 𝜎 [𝑥 ↦ → ℓ ∈ L. ℓ is fresh ] allocation 
+
+J𝑥 ≔ 𝑦 K𝜎 = 𝜎 [𝐸 (𝑥 ) ↦ → 𝐸 (𝑦 )] assignment 
+
+J𝑥 ≔ ∗𝑦.𝑓 K𝜎 = 𝜎 [𝐸 (𝑥 ) ↦ → 𝐻 (⟨ 𝐸 (𝑦 ), 𝑓 ⟩)] load 
+
+J∗𝑥 .𝑓 ≔ 𝑦 K𝜎 = 𝜎 [𝐻 (⟨ 𝐸 (𝑥 ), 𝑓 ⟩) ↦ → 𝐸 (𝑦 )] store 
+
+> Fig. 4. Semantics for basic statements.
+
+The evaluation function J·K : S×Σ →
+
+Σ evaluates a statement 𝑠 ∈ S from a state 𝜎 ∈ Σ, producing state 𝜎 ′.We present the language’s basic state-ments in S with their corresponding concrete semantics in Figure 4. We use ℘ to denote the power-set. 
+
+3.1.1 Method calls. Our language supports method calls. The statement 
+
+↓𝑚 (𝑎 ) calls a callee method 𝑚 with arguments 𝑎 0, 𝑎 1, . . . , 𝑎 𝑛 ∈ 𝑎 . The callee returns to the caller via the statement 𝑥 ≔ ↑𝑚 (𝑎 ) with the return values 𝑥 0, 𝑥 1, . . . , 𝑥 𝑛 ∈ 𝑥 . For brevity, we omit 𝑥 when it is implied from the context. We write 𝑚 (𝑎 ) to refer to the method call execution. The call statement ↓𝑚 (𝑎 ) establishes the initial callee state by creating a fresh environment containing only the parameters bound to their corresponding argument values: 
+
+J↓𝑚 (𝑎 )K𝜎 = ⟨⟨ 𝑝 1 ↦ → 𝐸 (𝑎 1), . . . , 𝑝 𝑛 ↦ → 𝐸 (𝑎 𝑛 )⟩ , 𝐻 ⟩
+
+where 𝑝 𝑖 is the parameter corresponding to argument 𝑎 𝑖 ∈ 𝑎 , and 𝐸 is the environment from 𝜎 . The callee shares the heap 𝐻 with the caller. Thus, any modifications to caller-accessible heap-allocated variables in the callee are observable in the caller after the callee returns. 
+
+3.1.2 Program traces. A program trace 𝜏 def 
+
+= [𝑠 0, 𝑠 1, . . . , 𝑠 𝑛 ] is an ordered sequence of program statements, where 𝑠 𝑖 ∈ S. The set of all possible traces of a given program is T. There exists a prefix relation ⪯ on traces such that for traces 𝜏 0, 𝜏 1 ∈ T, we have 𝜏 0 ⪯ 𝜏 1 iff 𝜏 0 is a prefix of 𝜏 1. The prefix relation allows us to reason about subsequences of program traces. Given an initial state 𝜎 , we inductively define the evaluation of a trace eval : T × Σ → Σ∗ as: eval (𝜏, 𝜎 ) def 
+
+=
+
+(
+
+[𝜎 ] if 𝜏 = [] [𝜎 ] · eval ([ 𝑠 1, . . . , 𝑠 𝑛 ], J𝑠 0K𝜎 ) if 𝜏 = [𝑠 0, 𝑠 1, . . . , 𝑠 𝑛 ]
+
+3.2 Taint Flows 
+
+We instrument the concrete semantics to track taint flows between access paths . An access path, borrowed from Andromeda [34], is a symbolic representation of a heap location. The set of all access paths is Π def 
+
+= V × F∗. We write an access path 𝑥 .𝑓 0.𝑓 1.... .𝑓 𝑘 where 𝑥 ∈ V is a local variable and 𝑓 0, 𝑓 1, . . . , 𝑓 𝑘 is a finite sequence of field identifiers where 𝑓 𝑖 ∈ F. Access paths are bounded to a predetermined length 𝑘 , which lets us soundly analyze recursive objects such as linked lists. We write 𝑥 .𝑓 for the access path referring to field 𝑓 of variable 𝑥 .The taint flow domain T def 
+
+= ℘(Π ×Π) is a set of taint flows between access paths. An instrumented concrete state is a triple 𝜎 def 
+
+= ⟨𝐸, 𝐻,𝑇 ⟩, where 𝑇 ∈ T tracks taint flows. We write 𝑎 ⇝ 𝑏 if ⟨𝑎, 𝑏 ⟩ ∈ 𝜎 𝑇 
+
+when data from access path 𝑎 flows to 𝑏 in state 𝜎 . The flow 𝑎 ⇝∗ 𝑏 means data from access path 𝑎 
+
+transitively flows to 𝑏 .We extend the concrete semantics J·K : S × Σ → Σ to propagate taint flows. Section 3.2 shows the instrumented semantics for basic statements, where · ⇝ 𝜋 means ∃𝜋 ′.⟨𝜋 ′, 𝜋 ⟩ ∈ 𝑇 . To resolve aliasing between access paths, we require a sound pointer analysis P ⊆ ℘(Π). Since our approach does not rely on a specific pointer analysis, we do not describe the implementation of P. Let pts (𝜋 ) ⊆ ℘(Π) denote the points-to set of access path 𝜋 , representing all abstract locations that 𝜋 
+
+may point to. Let P ( 𝜋 ) def 
+
+= 𝜋 ∪ { 𝜋 ′ | pts (𝜋 ) ∩ pts (𝜋 ′) ≠ ∅} include all access paths that may alias 8 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+Taint update Description 
+
+J𝑥 ≔ new K𝜎 =𝑇 𝜎 𝑇 allocation 
+
+J𝑥 ≔ 𝑦 K𝜎 =𝑇 𝜎 𝑇 ∪ { 𝑦.𝜀 ⇝ 𝑥 .𝜀 | · ⇝ 𝑦.𝜀 ∈ 𝜎 𝑇 } assignment 
+
+J𝑥 ≔ ∗𝑦.𝑓 K𝜎 =𝑇 𝜎 𝑇 ∪ { 𝑦.𝑓 ⇝ 𝑥 .𝜀 | · ⇝ 𝑦.𝑓 ∈ 𝜎 𝑇 } load 
+
+J∗𝑥 .𝑓 ≔ 𝑦 K𝜎 =𝑇 𝜎 𝑇 
+
+Ð𝑎 ∈ P ( 𝑥 .𝑓 ) {𝑦.𝜀 ⇝ 𝑎 | · ⇝ 𝑦.𝜀 ∈ 𝜎 𝑇 } store 
+
+> Fig. 5. Instrumented taint semantics for basic statements
+
+𝜋 , including itself. The store statement ∗𝑥 .𝑓 ≔ 𝑦 uses the pointer analysis to taint all access paths that may alias 𝑥 .𝑓 (including 𝑥 .𝑓 itself) with 𝑦.𝜀 (we use 𝜀 to signify the empty field). For method calls, taint flows from parameters to arguments. Given a method call statement 
+
+↓𝑚 (𝑎 ) and state 𝜎 :
+
+J↓𝑚 (𝑎 )K𝜎 𝑇 = {𝑎 𝑖 ⇝ 𝑝 𝑖 | · ⇝ 𝑎 𝑖 ∈ 𝜎 𝑇 }
+
+The arguments are the input set to the call: In 𝑚 (𝑎 )
+
+> def
+
+= {𝑎 0, . . . , 𝑎 𝑛 }.When the callee returns via 𝑥 ≔ ↑𝑚 (𝑎 ) from final callee state 𝜎 , taint flows back to the caller state 𝜎 ′:
+
+J𝑥 ≔ ↑𝑚 (𝑎 )K𝜎 𝑇 = 𝜎 ′ 
+
+> 𝑇
+
+∪
+
+(
+
+{𝑟 𝑖 ⇝ 𝑥 𝑖 | · ⇝ 𝑟 𝑖 ∈ 𝜎 𝑇 }{𝑝 𝑖 ⇝ 𝑎 𝑖 | · ⇝ 𝑝 𝑖 ∈ 𝜎 𝑇 }
+
+where 𝑟 𝑖 are the return values from the callee and 𝑥 𝑖 ∈ 𝑥 are the variables receiving them in the caller. Since all objects in our language are allocated on the heap, taint also flows from the parameters in the callee back to the arguments in the caller. These return values are the output set from the call: Out 𝑚 (𝑎 )
+
+> def
+
+= {𝑥 0, . . . , 𝑥 𝑛 , 𝑎 0, . . . , 𝑎 𝑛 }.
+
+3.3 Taint Flow Model 
+
+Our approach verifies the soundness of a given taint flow model. We first define a taint flow model in terms of our language and then define the soundness condition for a model. Our taint flow model representation is inspired by StubDroid [4] where the model Φ𝑚 : Π × Π of a method 𝑚 is the set of access path tuples representing caller-visible flows from call inputs in In 𝑚 (𝑎 ) to outputs in Out 𝑚 (𝑎 ) for all possible method calls. We use “model” and “summary” interchangeably; usually, a model is given and checked against the implementation, whereas a summary is constructed from the implementation. A program trace may contain multiple distinct calls to a method 𝑚 , each of which may add new taint flows to the caller’s state. We first define a call segment prefix of the trace, which is a trace prefix ending with the statements corresponding to the execution of a call to 𝑚 . We then define a taint summary for a single method call in terms of evaluating the call segment prefix, and finally generalize the definition for all possible method calls in the program. 
+
+Definition 3.1. Given a program trace 𝜏 and initial state 𝜎 0, we define the following: 
+
+• The call segment prefix is the prefix of trace 𝜏 ending with the return statement ↑𝑚 (𝑎 )
+
+corresponding to the call statement ↓𝑚 (𝑎 ):
+
+𝜏 ↓𝑚 (𝑎 )
+
+> def
+
+= 𝜏 ′ [↓ 𝑚 (𝑎 )] 𝑆 ↓𝑚 (𝑎 ) [↑ 𝑚 (𝑎 )] ⪯ 𝜏 
+
+• The call segment 𝑆 ↓𝑚 (𝑎 ) includes all the statements in 𝑚 (and its transitive callees) in 𝜏 
+
+between the call statement ↓𝑚 (𝑎 ) and the return statement ↑𝑚 (𝑎 ).
+
+• The call state is the state in the caller before evaluating the statement ↓𝑚 (𝑎 ): last (eval (𝜏 ′, 𝜎 0)) .
+
+• The evaluation of a method call is the sequence of states resulting from evaluating the call segment prefix: eval (𝜏 ↓𝑚 (𝑎 ) , 𝜎 0).Soundness Checking of Taint Flow Models 9
+
+A flow 𝑖.𝑓 ⇝ 𝑜.𝑓 ′ between arbitrary access paths rooted at variables 𝑖 and 𝑜 is caller-visible if 𝑖 and 
+
+𝑜 are in scope in the caller after the callee returns (i.e., 𝑖 ∈ 𝜎 𝐸 and 𝑜 ∈ 𝜎 𝐸 ) where 𝜎 = eval (𝜏 ↓𝑚 (𝑎 ) , 𝜎 0).The summarized taint flows of a method call are the transitive caller-visible flows added by the callee. Given a trace 𝜏 with initial program state 𝜎 0, call prefix 𝜏 ↓𝑚 (𝑎 ) ⪯ 𝜏 , call evaluation 𝜎 =
+
+eval (𝜏 ↓𝑚 (𝑎 ) , 𝜎 0) (see Definition 3.1), and call state 𝜎 ↓𝑚 (𝑎 ) ∈ 𝜎 , the summarized taint flows for a method call ↓𝑚 (𝑎 ) is: 
+
+Ψ𝜏 ↓𝑚 (𝑎 )
+
+> def
+
+= {𝑖.𝑓 ⇝∗ 𝑜.𝑓 ′ ∈ last (𝜎 ) | 𝑖 ∈ In 𝑚 (𝑎 ) , 𝑜 ∈ Out 𝑚 (𝑎 ) } \ 𝜎 ↓𝑚 (𝑎 )𝑇 
+
+The context-independent taint flow model Ψ𝑚 aggregates summarized flows across all calls to method 𝑚 in all program traces: 
+
+Ψ𝑚 
+
+> def
+
+=
+
+Ø 
+
+> ↓𝑚 (𝑎 ) ∈ call-sites (𝑚 )
+
+Ø   
+
+> 𝜏 ∈T|𝜏 ↓𝑚 (𝑎 )⪯𝜏
+
+Ψ𝜏 ↓𝑚 (𝑎 )
+
+A taint flow model Φ𝑚 is sound if it over-approximates the summarized taint flows of any call to method 𝑚 in the program: 
+
+Φ𝑚 ⊇ Ψ𝑚 
+
+4 SYNTHESIZING AND CHECKING TAINT FLOW MODELS 
+
+Our approach generates taint flow models using LLMs and then checks the soundness of those models using a set of light-weight analyses. The soundness checking step may become as expensive as the full taint analysis. However, in most cases (see Section 6), our approach, including the time it takes for the LLM to generate the model, is far more efficient than the constructive approach. 
+
+4.1 LLM-based Model Synthesis 
+
+Automatically generating models is necessary to leverage taint analysis tools on real programs. Manually writing taint flow models requires time, effort, and an understanding of the program being analyzed, the semantics of the language and the tool being used for taint analysis that a programmer may not have. We believe that symbolic techniques are not a suitable tool to generate high-level taint flow models for the methods that are interesting to summarize. In our evaluation (Section 6), we show that the naive approach of constructing summaries by computing all flows within a method using taint analysis does not scale. A generic program synthesis approach enumerating possible models would also likely not work well, because the scale of the problem is dictated by the precision required for a taint analysis, which we assume the LLM can choose well based on context. For example, when taking into account field sensitivity, the number of possible models may grow too large for a simple method transforming a configuration file to a string, but the LLM would naturally not pick field sensitivity for a string transformation function, whose flow is likely a single edge from argument to output. Since the requirement for a specific level of precision for a model is rather loose, it is difficult to predict with symbolic methods. We propose to generate summaries using LLMs: they are usually good at understanding the high-level semantics of code, which includes understanding how data flows within a program. We build an LLM agent for writing taint flow models with a prompt and a set of program analysis tools .Our prompt consists of a description of our taint flow model format, specific instructions to help with over-approximation (e.g., “Account for all execution paths (branches, loops, error cases)”), and finally instructions on which program analysis tools should be used to generate a model. The tools that are available to the agent allow it to inspect the source code of the method, display its SSA form, access type information for specific variables and print aliasing information from a 10 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+whole-program pointer analysis. The most important tool is the implementation of our soundness checking algorithm: the agent is able to check that the taint flow model it generated is sound, and fix it if necessary. However, since the agent is free to choose which tools to use, it may not always check models, or it may ignore the result of the soundness checking tool. Therefore, we always automatically check the soundness of the agent-generated model once it finishes. In Appendix A, we provide the full prompt and list all the tools the agent can use. 
+
+4.2 Incremental Soundness Checking Algorithm 
+
+Our main contribution is the idea that a taint flow model can be checked sound instead of computed. We propose an algorithm that uses lightweight static analyses to prove that a given taint flow summary is a sound over-approximation of the inter-procedural taint flows within the method. At a high-level, the algorithm tries to prove that the taint flows that are not contained in the model 
+
+Φ𝑚 do not hold in the method 𝑚 and all its transitive callees. 
+
+Algorithm 1: Core soundness checking algorithm 
+
+Input: taint flow model Φ𝑚 
+
+Output: sound if Φ𝑚 is sound, unsound otherwise  
+
+> 1
+
+function CheckSoundness( Φ𝑚 ): 
+
+> 2
+
+Φ¬ 
+
+> 𝑚
+
+← Φ⊤ 
+
+> 𝑚
+
+\ Φ𝑚 ; 
+
+> 3
+
+foreach analysis A do  
+
+> 4
+
+foreach 𝑎 ̸ ⇝ 𝑏 ∈ Φ¬ 
+
+> 𝑚
+
+do  
+
+> 5
+
+if 𝑚 |=A 𝑎 ̸ ⇝ 𝑏 then  
+
+> 6
+
+Φ¬ 
+
+> 𝑚
+
+← Φ¬ 
+
+> 𝑚
+
+\ { 𝑎 ̸ ⇝ 𝑏 }; 
+
+> 7
+
+end  
+
+> 8
+
+end  
+
+> 9
+
+end  
+
+> 10
+
+if Φ¬ 
+
+> 𝑚
+
+= ∅ then return sound ; 
+
+> 11
+
+Φ𝑐 ← DeduceCalleeSummaries( Φ¬ 
+
+> 𝑚
+
+); 
+
+> 12
+
+if Φ𝑐 = ∅ then return unsound ; 
+
+> 13
+
+foreach callee summary Φ𝑐 ∈ Φ𝑐 do  
+
+> 14
+
+if CheckSoundness( Φ𝑐 ) = unsound then return unsound ; 
+
+> 15
+
+end  
+
+> 16
+
+return sound ;
+
+4.2.1 Algorithm overview. Algorithm 1 presents the core of our soundness checking algorithm. It requires a candidate taint flow model Φ𝑚 . It first computes the set of must-not-flows Φ¬ 
+
+> 𝑚
+
+, taint flows that cannot occur in 𝑚 for Φ𝑚 to be sound, by removing all flows in Φ𝑚 from the most-general summary Φ⊤ 
+
+> 𝑚
+
+. Then it uses a set of lightweight static analyses to prove each must-not-flow 𝑎 ̸ ⇝ 𝑏 
+
+holds: 𝑚 |=A 𝑎 ̸ ⇝ 𝑏 indicates that analysis A can prove that 𝑎 never flows to 𝑏 in 𝑚 . If a must-not-flow holds, it is removed from Φ¬ 
+
+> 𝑚
+
+. If there are any unproven must-not-flows remaining, it applies the intra-procedural taint analysis to 𝑚 , deduces candidate models for the callees that are necessary for Φ¬ 
+
+> 𝑚
+
+to hold, and then recursively checks their soundness. The intra-procedural taint analysis yields the taint flow edges between the inputs and outputs of 𝑚 and the inputs and outputs of the callees of 𝑚 , but not inside the callees. Given this information, we explain in Section 4.4 how we can deduce what the summary of each callee should be in order for the summary Φ¬ 
+
+> 𝑚
+
+for 𝑚 to be Soundness Checking of Taint Flow Models 11 
+
+sound. The key aspects of our approach are (1) the simplicity of the lightweight static analyses which are at most linear in the size of the program and (2) the ability to deduce the necessary summaries for the callees with DeduceCalleeSummaries given intra-procedural taint flows in 𝑚 .
+
+4.2.2 Most-general Summary. The first step consists in determining the set of flows that are absent from the candidate summary relative to a most-general summary Φ⊤ 
+
+> 𝑚
+
+, the top-level summary in the lattice of all possible summaries for 𝑚 . Formally, the most-general summary Φ⊤ 
+
+> 𝑚
+
+⊆ Π × Π is the set of all access path marks from the method’s inputs to its outputs for all possible calling contexts: 
+
+Φ⊤
+
+> 𝑚
+> def
+
+=
+
+Ø  
+
+> (𝑖,𝑜 ) ∈ In 𝑚 ×Out 𝑚
+
+{𝑖.𝑓 ⇝ 𝑜.𝑓 ′ | ( 𝑖.𝑓 , 𝑜.𝑓 ′) ∈ 𝜋 𝑖 × 𝜋 𝑜 }
+
+where 𝜋 𝑖 is the set of all access paths rooted at input variable 𝑖 and 𝜋 𝑜 contains all access paths rooted at output variable 𝑜 , up to a constant length 𝑘 .Theorem 4.1 (Soundness). The most general summary is sound; i.e., Ψ𝑚 ⊆ Φ⊤ 
+
+> 𝑚
+
+.
+
+Proof sketch. The most-general summary is sound by construction as it contains all possible input-output access path flows in 𝑚 for any calling context. □
+
+4.2.3 Must-not-flows. The must-not-flows Φ¬ 
+
+> 𝑚
+
+for the summary is a set containing the flows which 
+
+must not occur in the concrete summary Ψ𝑚 for candidate model Φ𝑚 to be sound: 
+
+Φ¬
+
+> 𝑚
+> def
+
+= Φ⊤ 
+
+> 𝑚
+
+\ Φ𝑚 
+
+A must-not-flow 𝑎 ̸ ⇝ 𝑏 ∈ Φ¬ 
+
+> 𝑚
+
+holds in method 𝑚 , written 𝑚 |= 𝑎 ̸ ⇝ 𝑏 , iff 𝑎 ⇝ 𝑏 ∉ Ψ𝑚 .Theorem 4.2 (Soundness). If 𝑚 |= 𝑎 ̸ ⇝ 𝑏 for all 𝑎 ̸ ⇝ 𝑏 ∈ Φ¬ 
+
+> 𝑚
+
+, then Φ𝑚 is sound. 
+
+Proof sketch. Assume 𝑚 |= 𝑎 ̸ ⇝ 𝑏 for all 𝑎 ̸ ⇝ 𝑏 ∈ Φ¬ 
+
+> 𝑚
+
+, so Ψ𝑚 ∩ Φ¬ 
+
+> 𝑚
+
+= ∅. By Theorem 4.1, 
+
+Ψ𝑚 ⊆ Φ⊤ 
+
+> 𝑚
+
+. Since Φ¬
+
+> 𝑚
+> def
+
+= Φ⊤ 
+
+> 𝑚
+
+\ Φ𝑚 , we have Ψ𝑚 ⊆ Φ⊤ 
+
+> 𝑚
+
+⊆ Φ𝑚 ∪ Φ¬ 
+
+> 𝑚
+
+, allowing us to conclude that 
+
+Ψ𝑚 ⊆ Φ𝑚 . Therefore, Φ𝑚 is sound. □
+
+4.3 Lightweight Analyses 
+
+Each static analysis procedure A in Algorithm 1 takes as input a must-not-flow 𝑎 ̸ ⇝ 𝑏 and returns true iff 𝑚 |= 𝑎 ̸ ⇝ 𝑏 . We instantiate our approach with a types, immutability and read analyses, driven by the following observations: (1) if data from an input is never accessed (i.e., the input is unread) during the execution of the method, then taint can never flow from this input; and (2) if data from an output is never modified (i.e., the output is immutable) during the execution of the method, then taint can never flow to this output. We describe static analyses that check these intuitions. 
+
+4.3.1 Types analysis. Consider a simple type system where for any method call statement 𝑚 (𝑎 ),every argument variable 𝑎 ∈ V has a type of “non-pointer-like” if its value is unchanged after the method returns (i.e., 𝑎 would be allocated on the stack if our language had a stack), or “pointer-like” otherwise. Formally, an argument 𝑎 is “non-pointer-like” if and only if: 
+
+J↓𝑚 (𝑎 )K𝜎 𝐻 (⟨ 𝐸 (𝑎 ), []⟩) = J↑𝑚 (𝑎 )K𝜎 𝐻 (⟨ 𝐸 (𝑎 ), []⟩) 
+
+Recall that in our language, a parameter can also be an output of a method. If a variable 𝑝 is a non-pointer-like parameter of a method 𝑚 , then its corresponding argument at any call to 𝑚 is unchanged after 𝑚 returns. Let the types analysis predicate IsImmutableType( 𝑝.𝑓 ) be true iff 𝑝.𝑓 
+
+is an access path rooted at non-pointer-like parameter variable 𝑝 .Theorem 4.3 (Soundness). If IsImmutableType( 𝑝.𝑓 ) is true, then ∀𝜋 . 𝑚 |= 𝜋 ̸ ⇝ 𝑝.𝑓 .12 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+Proof sketch. Since output variable 𝑝 is not allocated on the heap, for any input access path 
+
+𝜋 , taint flow 𝜋 ⇝ 𝑝.𝜀 remains local to 𝑚 and doesn’t affect heap locations accessible to the caller. Therefore, ∀𝜋 . 𝜋 ⇝ 𝜋 .𝜀 ∉ Ψ𝑚 , giving us ∀𝜋 . 𝑚 |= 𝜋 ̸ ⇝ 𝑝.𝑓 . □
+
+4.3.2 Immutability analysis. Given a must-not-flow 𝑎 ̸ ⇝ 𝑏 , the immutability analysis predicate IsImmutablePtr( 𝑏 ) is true iff (1) 𝑏 and all of its aliases are never written to in 𝑚 or any of its transitive callees; and (2) 𝑏 is not a return value. Condition (2) is necessary because return values are always outputs of a method. Formally, for every memory write statement of the form ∗𝑥 .𝑓 ≔ 𝑦 
+
+in 𝑚 and its transitive callees, IsImmutablePtr (𝑏 ) ⇐⇒ (P ( 𝑥 .𝑓 ) ∩ P ( 𝑏 ) = ∅) ∧ 𝑏 is not returned Theorem 4.4 (Soundness). If IsImmutablePtr( 𝑏 ) is true, then ∀𝑎. 𝑚 |= 𝑎 ̸ ⇝ 𝑏 .
+
+Proof sketch. If 𝑏 is immutable, then (1) for every store statement ∗𝑥 .𝑓 ≔ 𝑦 in 𝑚 and its transitive callees, we have P ( 𝑥 .𝑓 ) ∩ P ( 𝑏 ) = ∅, and (2) 𝑏 is never returned to the caller. For condition (1), for the taint flow equation for the store statement to add a flow 𝑎 ⇝ 𝑏 ∈ Ψ𝑚 , we need 𝑏 ∈ P ( 𝑥 .𝑓 ). This requires P ( 𝑏 ) ∩ P ( 𝑥 .𝑓 ) ≠ ∅, which contradicts the immutability predicate. For condition (2), for the taint flow equation for the return statement to add the flow, we need 𝑏 to be a return value, which contradicts the immutability predicate. Therefore, ∀𝑖. 𝑎 ⇝ 𝑏 ∉ Ψ𝑚 , giving us ∀𝑎. 𝑚 |= 𝑎 ̸ ⇝ 𝑏 . □
+
+4.3.3 Read analysis. The read analysis is essentially the inverse of the immutability analysis. Given a must-not-flow input access path 𝑎 , the read analysis predicate IsUnread( 𝑎 ) is true iff 𝑎 and all of its aliases are never read from in 𝑚 or any of its transitive callees. Formally, for every memory load statement of the form 𝑥 ≔ ∗𝑦.𝑓 in 𝑚 and its transitive callees, IsUnread (𝑎 ) ⇐⇒ P ( 𝑦.𝑓 ) ∩ P ( 𝑎 ) = ∅
+
+Theorem 4.5 (Soundness). If IsUnread( 𝑎 ) is true, then ∀𝑏. 𝑚 |= 𝑎 ̸ ⇝ 𝑏 .
+
+Proof sketch. If 𝑎 is unread, then for every load statement 𝑥 ≔ ∗𝑦.𝑓 in 𝑚 and its transitive callees, we have P ( 𝑦.𝑓 ) ∩ P ( 𝑎 ) = ∅. For the taint flow equation for the load statement to add a flow 𝑎 ⇝ 𝑦.𝑓 ∈ Ψ𝑚 , we need 𝑎 ∈ P ( 𝑦.𝑓 ). This requires P ( 𝑎 ) ∩ P ( 𝑦.𝑓 ) ≠ ∅, which contradicts the unread condition. Therefore, ∀𝑏. 𝑎 ⇝ 𝑏 ∉ Ψ𝑚 , giving us ∀𝑏. 𝑚 |= 𝑎 ̸ ⇝ 𝑏 . □
+
+4.4 Deducing Callee Summaries 
+
+We still have remaining must-not-flows that we need to prove hold in 𝑚 , the method under analysis, but we do not want to discharge them using the only static analysis method we have left: an 
+
+inter -procedural taint analysis, as this would be as inefficient as the constructive approach. Reps et al. [24] demonstrate that inter-procedural taint analysis is a graph reachability problem. We use this intuition to express our maximally-general but sound taint flow summary for 𝑚 as an inter-procedural taint flow graph. To avoid performing an inter-procedural taint analysis, we instead compute the intra -procedural taint flows in 𝑚 and then deduce the summarized taint flows of each callee of 𝑚 such that the unproven must-not-flows hold. This gives us an incomplete inter-procedural taint flow graph 𝐺 = (𝑉 , 𝐸 ) for 𝑚 , as it only contains intra-procedural edges. The graph has implied inter-procedural edges from call sites to callee inputs/outputs, but is missing intra-procedural edges from callee inputs to outputs. To complete this graph, we translate it into a Max-SAT problem to deduce the least precise (maximally-general) intra-procedural edges for the callees of 𝑚 that satisfy the unproven must-not-flows in Φ¬ 
+
+> 𝑚
+
+.We now describe the implementation of DeduceCalleeSummaries in Algorithm 1 in more detail. We require a sound field-sensitive intra-procedural static taint analysis T which over-approximates Soundness Checking of Taint Flow Models 13 
+
+the concrete taint flows in a program. We initialize T for 𝑚 by tainting every input access path in In 𝑚 . Since In 𝑚 ⊆ V but our taint flow functions (see Section 3.2) operate on access paths, we must enumerate all the access paths for each input up to a maximum length 𝑘 , where 𝑘 is determined by the longest access path in the candidate model Φ𝑚 . If 𝑘 = 0 then the taint analysis can be field-insensitive as the model only has field-insensitive flows. The intra-procedural taint analysis proceeds as described by the flow functions in Section 3.2, with key modifications to avoid analyzing intra-procedural flows in the callees. When a taint flow reaches a call statement, instead of descending into the callee, the analysis adds inter-procedural taint flows for each tainted call site input (argument) to the corresponding callee input (parameter). It then assumes the most-general summary for the callee, where all tainted callee inputs flow to all callee outputs. If a callee output is tainted, it adds inter-procedural taint flows from the callee output to the corresponding call site output. This special handling of callees is important because otherwise, must-not-flows along callee outputs would be vacuously satisfied, which is unsound. The taint analysis stops when it has computed all possible intra-procedural taint flows from inputs in In 𝑚 to outputs in Out 𝑚 .The graph vertices in 𝑉 represent access paths at a calling context which include: (1) Inputs and outputs of 𝑚 .(2) Inputs and outputs of each call site in 𝑚 (e.g., arguments and return values, respectively). (3) Inputs and outputs of each callee. Since 𝑚 can call the same callee 𝑐 multiple times with different inputs, resulting in different calling contexts , we differentiate callee vertices from different call statements 𝑠 and 𝑠 ′ by appending the statement to the callee node. E.g., for a callee parameter 𝑝 from call site 𝑠 = ↓𝑐 (𝑎 ), we have node 𝑝.𝜀 @𝑠 , which is distinct from 
+
+𝑝.𝜀 @𝑠 ′ representing the same parameter at call site 𝑠 ′ = ↓𝑐 (𝑎 ′).Adding the most-general flows for each callee allows the intra -procedural taint analysis to compute all possible taint flows from inputs of 𝑚 to its outputs, without analyzing the callees. This is all the information we need to connect all the vertices in 𝐺 with edges: every known edge comes from the intra-procedural taint analysis and every unknown edge is one of the most-general callee flows. We compute 𝐺 as a least fixpoint, giving us the set of vertices reachable from the input access paths. The initial set of vertices are the enumerated input access paths of 𝑚 with an empty calling context. We then repeatedly pick a vertex whose outgoing edges have not yet been computed and add them, along with any newly reachable vertices, until every reachable vertex is in 𝐺 . The outgoing edges include: (1) Known intra-procedural edges of 𝑚 : edges between nodes in 𝑚 from the intra-procedural taint analysis. This also includes edges reachable from call site output nodes. (2) Known inter-procedural edges of 𝑚 : edges from call site input nodes to their corresponding callee input nodes, and edges from callee output nodes to their corresponding call site output nodes. These edges are known because if taint flows to a call site input in 𝑚 , it must 
+
+flow to the corresponding callee input, and likewise for outputs. (3) Unknown intra-procedural edges of a callee: edges from callee input nodes to callee output nodes. These edges form the callee summary to be deduced. The computation terminates even if 𝑚 is recursive because 𝑉 is a finite set: access paths are bounded and a vertex’s calling context is only the immediate call site, so |𝑉 | is bounded by the number of call sites in 𝑚 rather than the recursion depth. Once we have our complete inter-procedural graph 𝐺 , we must deduce taint flow summaries for the callees that satisfy the unproven must-not-flows from the lightweight static analyses. Recall that Algorithm 1 recursively proves the soundness of each deduced callee summary. We want to deduce 14 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+Variables: 𝑢 ⇝ 𝑣 for each edge (𝑢, 𝑣 ) ∈ 𝐸 
+
+reach (𝑢, 𝑣 ) for each 𝑢 ∈ 𝑉 (𝜋 In 𝑚 ) and each 𝑣 ∈ 𝑉 reachable from 𝑢 in 𝐺 
+
+Hard: Ó(𝑢,𝑣 ) ∈ 𝐸 \soft (𝐸 ) 𝑢 ⇝ 𝑣 (known edges) 
+
+Ó𝑢 0 ∈𝑉 (𝜋 In 𝑚 ) reach (𝑢 0, 𝑢 0) (base case) 
+
+Ó𝑢 0 ∈𝑉 (𝜋 In 𝑚 )(𝑢,𝑣 ) ∈ 𝐸 
+
+reach (𝑢 0, 𝑢 ) ∧ 𝑢 ⇝ 𝑣 =⇒ reach (𝑢 0, 𝑣 ) (inductive step) 
+
+Ó 𝑎 ̸ ⇝𝑏 ∈Φ¬     
+
+> 𝑚
+> 𝑢 ∈𝑉 (𝑎 ), 𝑣 ∈𝑉 (𝑏 )
+
+¬reach (𝑢, 𝑣 ) (must-not-flows) 
+
+Soft: Ó(𝑢,𝑣 ) ∈ soft (𝐸 ) 𝑢 ⇝ 𝑣 (maximize callee edges)             
+
+> Fig. 6. MaxSAT formulation for deducing callee summaries. 𝐺 =(𝑉 , 𝐸 )is the inter-procedural taint flow graph; each vertex pairs an access path with a calling context. 𝑉 (𝑎 )denotes the vertices with an empty calling context whose access path overlaps 𝑎 , extended pointwise to sets of access paths, so 𝑉 (𝜋 In 𝑚 )are the input access path vertices.
+
+the least precise callee summaries (most taint flow edges) to minimize the number of must-not-flow edges we need to prove hold in the callees. We do this by encoding the reachable vertices of 𝐺 and the must-not-flows as a Max-SAT problem. Given a set of hard and soft constraints as logical formulas, a Max-SAT solver maximizes the number of soft constraints that can be true while satisfying the hard constraints. Our Max-SAT domain has two kinds of Boolean variables: a variable 𝑢 ⇝ 𝑣 for each edge (𝑢, 𝑣 ) ∈ 𝐸 , which holds iff taint may flow from 𝑢 to 𝑣 in one step; and a variable reach (𝑢 0, 𝑣 ) for each input access path vertex 𝑢 0 and each vertex 𝑣 reachable from it in 𝐺 , which holds iff taint may flow from 𝑢 0 to 𝑣 along a chain of edges. We assert every known edge of 𝐺 as a hard constraint. A must-not-flow forbids taint from an input to transitively reach an output. Blocking a must-not-flow therefore requires asserting the absence of a path along 𝐺 rather than of an edge. We thus encode the reachability relation on vertices reach (· , ·) inductively: every input access path vertex reaches itself, and if 𝑢 0 reaches 𝑢 and the edge 𝑢 ⇝ 𝑣 holds, then 𝑢 0 reaches 𝑣 . Our formulation directly enforces context-independence of callee summaries: it names each unknown edge by its callee and its endpoints’ access paths rather than by the call site that observed it, so all of its call sites share a single variable. Finally, we maximize the unknown callee edges via soft constraints. Maximizing unknown edges yields the least precise summaries because more taint flow edges mean fewer restrictions, reducing the static analysis burden for proving must-not-flows in callees. We provide our Max-SAT formulation in Figure 6. An unsatisfiable model is not necessarily an error—e.g., it can occur when Φ¬ 
+
+> 𝑚
+
+contradicts the intra-procedural analysis results alone. In such cases, the algorithm returns the empty set, indicating that no valid callee summaries exist that satisfy the soundness requirements. There may be multiple Max-SAT solutions which satisfy the model, as the soft constraints have the same weight. For example, there may be two maximal deduced summaries for a callee 𝑐 that have the same number of taint flows. For each solution, the algorithm converts the satisfying assignments of the edge variables to summary edges for each callee and returns them. We then 
+
+recursively check the soundness of a deduced summary for each callee (if there are multiple, we pick one), concluding that Φ𝑚 is sound iff the summaries for all callees of 𝑚 are sound. We add an extra case to Algorithm 1 to ensure termination when checking the soundness of recursive methods. If it is unable to prove the must-not-flows using the static analyses for a callee whose summary it deduced before, we conservatively consider the method’s model to be unsound. Soundness Checking of Taint Flow Models 15 
+
+Theorem 4.6 (Soundness). If we deduce callee summaries Φ𝑐 and all the deduced callee summaries are sound, then Φ𝑚 is sound. 
+
+Proof sketch. Assume each deduced callee summary Φ𝑐 ∈ Φ𝑐 is sound; i.e., Φ𝑐 ⊇ Ψ𝑐 . We show 
+
+𝑚 |= 𝑎 ̸ ⇝ 𝑏 for all 𝑎 ̸ ⇝ 𝑏 ∈ Φ¬ 
+
+> 𝑚
+
+, which by Theorem 4.2 implies Φ𝑚 is sound. The intra-procedural taint analysis assumes the most-general summary Φ⊤ 
+
+> 𝑐
+
+for each callee 𝑐 . By Theorem 4.1, Φ⊤ 
+
+> 𝑐
+
+⊇ Ψ𝑐 . Since the intra-procedural analysis is sound and Φ⊤ 
+
+> 𝑐
+
+over-approximates all callee flows, any concrete summarized flow in Ψ𝑚 consists of (1) intra-procedural edges in 𝑚 , which are over-approximated by the T , and (2) callee input-to-output edges, which are contained in Φ⊤ 
+
+> 𝑐
+
+.The flow thus begins at an input access path vertex and consists of edges that the construction of 
+
+𝐺 adds. Since 𝐺 is the least graph closed under those edges, induction on the length of the flow shows that every vertex it visits belongs to 𝑉 and that consecutive vertices are joined by an edge in 
+
+𝐸 : every concrete summarized flow in Ψ𝑚 has a corresponding path in 𝐺 .Suppose for contradiction that 𝑎 ⇝ 𝑏 ∈ Ψ𝑚 for some 𝑎 ̸ ⇝ 𝑏 ∈ Φ¬ 
+
+> 𝑚
+
+. Then there is a witnessing path in 𝐺 from some 𝑢 ∈ 𝑉 (𝑎 ) to some 𝑣 ∈ 𝑉 (𝑏 ). Consider a satisfying model that the solver returns. Every edge along the witnessing path is true in the model: the known edges because they are asserted as hard constraints; and the unknown edges because the concrete flow’s step through each callee is a flow in Ψ𝑐 ⊆ Φ𝑐 , and Φ𝑐 consists of exactly the callee flows whose edges the model assigns true. Applying the reachability implication once per edge along the path, by induction on its length, forces reach (𝑢, 𝑣 ) to be true. However, the witnessing path shows that 𝑣 is reachable from 𝑢 in 𝐺 , so the Max-SAT encoding contains the hard must-not-flow constraint ¬reach (𝑢, 𝑣 ),which the model returned from the solver satisfies—a contradiction. Therefore, no such concrete summarized flow in Ψ𝑚 can exist. Therefore 𝑚 |= 𝑎 ̸ ⇝ 𝑏 for all 𝑎 ̸ ⇝ 𝑏 ∈ Φ¬ 
+
+> 𝑚
+
+, and Φ𝑚 is sound by Theorem 4.2. □
+
+4.5 Efficiency 
+
+Algorithm 1 requires a candidate taint model Φ𝑚 , a pointer analysis P, and a call graph. We assume that the compiler provides the program’s intermediate representation and that the LLM generates 
+
+Φ𝑚 . We discuss our empirical results for LLM model generation time in Section 6. Let |𝑚 | denote the number of statements in method 𝑚 and 𝐶 ∗ the set of transitive callees of 𝑚 reachable from the call graph. Let 𝑇 P denote the time to compute pointer analysis results P. For simplicity, we assume that once P is computed, may-alias queries take constant time. If we use an on-demand pointer analysis for P, the time to compute each may-alias query for every statement in 𝑚 is also 𝑇 P .We use Ω to state the asymptotic lower bounds for our approach to better compare its efficiency with the constructive approach. For completeness we also provide the 𝑂 asymptotic higher bounds, using Θ when 𝑂 (·) = Ω(·) .The lightweight static analyses in lines 3–9 of Algorithm 1 run in terms of |𝑚 | and |𝐶 ∗ |:
+
+• The most-general summary computation and types analysis run in constant time with respect to |𝑚 | as they only need to analyze the parameters of 𝑚 , not its statements. 
+
+• The immutability and read analyses run in Θ(| 𝑚 | + Í𝑐 ∈𝐶 ∗ |𝑐 |) time, analyzing all statements in 𝑚 and its transitive callees for each unproven must-not-flow. The callee summary deduction (lines 11–15) depends on the choice of taint analysis, which uses the pointer analysis P. Let 𝑇 intra (𝑚 ) be the time for the intra-procedural taint analysis of method 𝑚 ,and let 𝐺 𝑚 = (𝑉 𝑚 , 𝐸 𝑚 ) be the taint flow graph built from its result, with 𝐼 𝑚 ⊆ 𝑉 𝑚 the input access path vertices. Constructing 𝐺 𝑚 expands each vertex exactly once, so it takes Θ(| 𝑉 𝑚 | + | 𝐸 𝑚 |) time, assuming each outgoing edge is computed in constant time. The Max-SAT problem is NP-complete in general and its run time scales with the size of its domain and the number of clauses it must solve for [18]. The number of clauses is dominated by 16 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+the reachability constraints, which contribute one clause per input access path vertex and edge reachable from it, giving 𝑂 (| 𝐼 𝑚 | · | 𝐸 𝑚 |) . The known-edge and soft constraints contribute 𝑂 (| 𝐸 𝑚 |) .The must-not-flow constraints are no more numerous than the reachability constraints: each blocks a pair whose target is reachable from an input access path vertex, and every such target is reached by an edge already counted above. This also dominates the cost of constructing 𝐺 𝑚 , so we omit the construction term below. Enumerating the co-optimal models requires a further solver call per model, which we bound by a constant. Since the algorithm is recursive, it runs at most 1 + | 𝐶 ∗ | times. The total worst-case complexity of our soundness checking algorithm is: 
+
+𝑂 𝑇 P +∑︁  
+
+> 𝑐 ∈𝐶 ∗
+
+(| 𝑐 | + 𝑇 intra (𝑐 ) + Max-SAT (| 𝐼 𝑐 | · | 𝐸 𝑐 |)) 
+
+!
+
+The key efficiency advantage over the constructive approach is that our algorithm does not need to analyze every transitive callee in the best case: it only recurses into callees whose deduced summaries have unproven must-not-flows. Therefore, we argue that the Ω complexity comparison is more useful. Our approach pays an additional Max-SAT cost but only for the subset of callees that reach the callee summary deduction step. We show empirically that this, along with the low number of Max-SAT constraints, leads to significant speedups over the constructive approach in practice (Section 6). In the best case, our approach has complexity: 
+
+Ω (𝑇 P + | 𝑚 | + 𝑇 intra (𝑚 ) + Max-SAT (| 𝐼 𝑚 | · | 𝐸 𝑚 |)) 
+
+For comparison, the constructive approach (classical inter-procedural taint analysis) has worst 
+
+and best-case complexity: 
+
+Θ 𝑇 P +∑︁  
+
+> 𝑐 ∈𝐶 ∗
+
+𝑇 intra (𝑐 )
+
+!
+
+as it must run the intra-procedural taint analysis on every transitive callee to compute the summary of 𝑚 .
+
+5 INSTANTIATION FOR GO 
+
+We instantiate our approach for the Go programming language. As an imperative programming language that has pointers and methods, Go resembles the simple language we defined in Section 3.1. However, as a general-purpose modern programming language, it is too complex to fully specify here. While we provide taint flow equations for all statements in our simple language, Go has language features that a sound taint analysis cannot analyze efficiently and precisely. These features include, but are not limited to, unsafe pointer manipulation, reflection, and concurrency. To our knowledge, no static taint analysis exists for Go that models these features. We instantiate our approach’s taint analysis with the Argot [6] (Automated Reasoning Go Tools) static analysis. 
+
+5.1 Taint Flow Model 
+
+Go has global variables and closures which complicates taint flow summaries. Parameters are passed by-value, but values in Go can be pointers. We extend the method input set In 𝑚 to include all global variables in the package containing 𝑚 and all free variables if 𝑚 is a closure. The output set Out 𝑚 includes all variables in In 𝑚 along with the return values. Functions in Go can also be higher-order. Methods and functions are equivalent in Go: a method is a function with its object receiver as the first parameter. We define a higher-order function as any function that has an input or output access path which resolves to a function. Since our taint model format does not support higher-order functions, we can only prove the soundness of taint models Soundness Checking of Taint Flow Models 17 
+
+for single-order functions. For example, consider a closure g := func (){ *y = *x } that when executed, will produce a taint flow from bound variable x to y. This closure can be passed directly as an argument to a function f, or passed indirectly inside of an object (we use object and the more common struct interchangeably) o := struct {h func ()}{h: g} that contains the closure. We now cannot model the taint flows inside func f(g func ()){ ... } because if f ever executes g,then there will be a taint flow that is not contained in the explicit inputs or outputs of f.Our checkable taint model format does not encode flows to or from global variables or bound/free variables, as these constructs do not appear in the type signature of a Go function. Therefore, our soundness checking algorithm will declare a model to be unsound if the function being modeled is higher-order or has any of these unsupported inputs and outputs. Argot’s taint analysis fully supports analyzing these features; it is only a limitation of our model format. We can check the soundness of any callee summary that is a closure if its inputs and outputs are fully resolved (i.e., its free variables are bound to either an input of 𝑚 or a value allocated in the scope of 𝑚 ). However, if 𝑚 or any of its callees reads from or writes to a global variable, we conservatively consider the model to be unsound. Go supports dynamic dispatch via interfaces. An interface is a set of methods which an object can implement. If an input or output of a taint model has an interface type, it must be field-insensitive, because its fields may depend on the concrete type the program instantiates the interface with at run-time. Argot supports user-provided taint models for interfaces as well as individual functions. Our approach checks that a model is sound for an interface method by checking that it is sound for every concrete implementation. Since interface models must be independent of their implementations, we do not support field-sensitive inputs or outputs. For example, the fmt.Stringer interface specifies a single method func (T)String() string ; every type T that has a func (T)String() string method implements the fmt.Stringer interface. To check the soundness of a given model for the fmt. Stringer interface String method, we check the soundness of the model for every String method of each object that implements the interface in the application. As a result, our soundness checking approach is only sound with respect to the application. In summary, we support checking the soundness of the following model types: (1) Function: parameter inputs to parameter and return value outputs (2) Method: object receiver (field-sensitive) and parameter inputs to object receiver (field-sensitive), parameter, and return value outputs (3) Interface method: object receiver (field-insensitive) and parameter inputs to object receiver (field-insensitive), parameter, and return value outputs Our models also do not support method inputs and outputs that come from outside the application, such as standard input (e.g., via fmt.Scanf ). We partially mitigate this limitation by considering a model to be unsound if any of its callees are sources. 
+
+5.2 Most-General Summary 
+
+The most-general summary is unsound in the presence of unsafe pointer manipulations. Consider for example a method with a parameter x of type int32 . If this method obtains the raw pointer address of x, adds an arbitrary offset to the address, and then dereferences the value of the offset pointer, the method’s environment now contains a reference to potentially any object in the program. This new access path may not be in the input set In 𝑚 , making the most-general summary unsound. The input set cannot represent this new access path. We assume that the method’s execution is data-race-free such that heap reads and writes are linearizable, as defined in the Go memory model [15]. If there is a data race, an instruction may 18 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+read from memory via an access path not in In 𝑚 or write to memory via an access path not in Out 𝑚 , making the most-general summary unsound. We could discharge this assumption by using a dedicated data race analysis; however, to our knowledge, none yet exist for Go that can scale to large programs. Theorem 5.1. If the program is data-race-free and 𝑚 does not unsafely manipulate memory, then 
+
+Φ⊤ 
+
+> 𝑚
+
+is sound. 
+
+Proof sketch. We assume that the only other statements in 𝑚 that can violate the soundness of Φ⊤ 
+
+> 𝑚
+
+are reflection and concurrency operations. No operation in the Go reflection API can add new access paths to In 𝑚 . Therefore, Φ⊤ 
+
+> 𝑚
+
+is sound for all uses of the reflection API. Suppose for contradiction that for any statement 𝑠 in 𝑚 , any other statement 𝑠 ′ in the program can execute before, at the same time as, or after 𝑠 . Due to the scoping rules of Go, 𝑠 ′ cannot add a taint flow from any access path referenced in 𝑠 that is not in In 𝑚 . Therefore, Φ⊤ 
+
+> 𝑚
+
+is sound in the presence of concurrency. □
+
+Theorem 5.2. Under the assumptions of analysis A, if 𝑚 |=A 𝑎 ̸ ⇝ 𝑏 for all 𝑎 ̸ ⇝ 𝑏 ∈ Φ¬ 
+
+> 𝑚
+
+, then Φ𝑚 
+
+is sound. 
+
+5.3 Lightweight Static Analyses 
+
+5.3.1 Types analysis. In Go, free variables, global variables, return values, and pointer-like param-eters are accessible to the caller of a function. We consider a parameter object to be pointer-like if it or any of its elements/fields have a pointer-like type. We consider slices, maps, channels, interfaces (including the empty interface type interface {} or any ), and pointers to be pointer-like types. Go is statically typed; therefore, every object in a Go program has a type which is either pointer-like or non-pointer-like according to our definition. Let IsImmutableType( 𝑝.𝑓 ) be true iff 𝑝 
+
+is a non-pointer-like parameter in Out 𝑚 .Theorem 5.3 (Soundness). Assuming the program is data-race-free and 𝑚 does not unsafely manipulate memory, if IsImmutableType( 𝑝.𝑓 ) is true, then ∀𝜋 . 𝑚 |= 𝜋 ̸ ⇝ 𝑝.𝑓 .
+
+Proof sketch. The Go type system is sound under our assumptions. Therefore, if IsImmutable-Type( 𝑝.𝑓 ) is true, then output variable 𝑝 must not be allocated on the heap. The rest of the proof follows from the proof of Theorem 4.3. □
+
+5.3.2 Immutability and read analyses. We use Go’s first-party pointer analysis [16]: a flow-insensitive, context-insensitive, field-sensitive, and object-sensitive implementation of Andersen’s analysis [3]. Object sensitivity [23, 30] uses an object’s allocation site as the context, resulting in increased precision. Our immutability and read analyses for Go are unsound in the presence of reflection because our pointer analysis cannot soundly model the full reflection API for Go. A flow-insensitive pointer analysis is sound in the presence of concurrency [12]. If we use a flow-sensitive pointer analysis, gaining more precision, the immutability and read analyses would be unsound in the presence of concurrency. Go has constant values, which our language in Section 3.1 does not. Therefore, we can make our immutable analysis more precise for the return value special case. We extend the immutability analysis predicate IsImmutablePtr from Section 4.3.2 to treat constant return values as immutable. Theorem 5.4 (Soundness). Assuming the program is data-race-free, 𝑚 does not unsafely manipu-late memory or use reflection, and IsImmutablePtr( 𝑏 ) is true, then ∀𝑎. 𝑚 |= 𝑎 ̸ ⇝ 𝑏 .Soundness Checking of Taint Flow Models 19 
+
+Proof sketch. If our assumptions hold, then pointer analysis P is sound. The proof follows from the proof of Theorem 4.4. □
+
+Theorem 5.5 (Soundness). Assuming the program is data-race-free, 𝑚 does not unsafely manipu-late memory or use reflection, and IsUnread( 𝑎 ) is true, then ∀𝑏. 𝑚 |= 𝑎 ̸ ⇝ 𝑏 .
+
+Proof sketch. If our assumptions hold, then pointer analysis P is sound. The proof follows from the proof of Theorem 4.5. □
+
+The benefit of our approach is that a flow-insensitive pointer analysis can be precise enough to prove the soundness of a given taint flow model. If not, we could extend our approach to automatically use a flow-sensitive implementation when needed. Whereas for the constructive approach, the taint analysis user would need to manually decide which pointer analysis to use to compute a precise model. 
+
+5.4 Deducing Callee Summaries 
+
+5.4.1 Taint analysis. Argot’s taint analysis is flow-sensitive, context-sensitive, and field-sensitive. The taint analysis uses the same pointer analysis as our immutability and read analyses to resolve aliases. It is sound under some key assumptions; namely that unsafe pointer manipulation, reflection, and concurrency do not affect taint flows. While it does not check these assumptions, it does report when these features are used in a method it is analyzing. We could use a thread escape analysis to ensure that all reads and writes within the method operate on access paths that are local to the current thread, which would make the taint analysis sound in the presence of concurrency. The taint analysis does not yet soundly compute taint flows in the presence of some Go-specific control flow constructs such as panic /recover statements (which are similar to exceptions) and unbounded defer statements (which execute before the method returns). Our approach could automatically use a flow-insensitive analysis to be sound in these cases, at the expense of precision. The taint analysis inherits all of the soundness limitations of the Go type system and pointer analysis: unsafe memory manipulations, data races, and reflection.                     
+
+> 1func nestedClosures(x, y * int ) * int {
+> 2bv := *y
+> 3outer := func (z * int ) * int {
+> 4inner := func () * int {
+> 5return z
+> 6}
+> 7res := *inner() + bv
+> 8return &res
+> 9}
+> 10 return outer(x)
+> 11 }
+> Fig. 7. Closure summarization
+
+5.4.2 Callee models. While our approach does not support checking the soundness of meth-ods with free variables, it does handle check-ing the soundness of methods that call clo-sures. Consider Figure 7, which defines a func-tion nestedClosures that contains two clo-sures: outer and inner . Given a model {x⇝ 
+
+> return ,y⇝return }
+
+, our approach deduces the following callee summaries: outer: {z⇝   
+
+> bv, z⇝return ,bv ⇝return }
+
+and inner: {z
+
+> ⇝return }
+
+. In outer , bv is a free variable which is bound to the corresponding variable in 
+
+> nestedClosures
+
+; and in inner , z is a free vari-able which is bound to parameter z of outer .
+
+5.5 Limitations 
+
+Our approach can only check the soundness of taint flow models for methods that meet the restrictions we describe in Section 5.1. Due to dynamic dispatch, which is pervasive in Go programs, our soundness proofs are relative to the application. 20 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+Our soundness proof sketches are relative to our interpretation of the Go programming language specification [17]. To the best of our knowledge, Go does not have formal semantics. Go may have additional semantics that we do not consider which could compromise the correctness of our soundness checking algorithm. If we misinterpret the semantics of Go, our soundness checking algorithm may incorrectly claim that an unsound model is sound. We assume that all instructions in the execution of a modeled method are free of data races and that the program’s call graph is sound. We also assume that there are no free variables in any input or output of the methods we model. These are the only assumptions that we do not validate in the instantiation of our approach. Modeling and analyzing implicit [26] taint flows to prove non-interference properties (e.g., the absence of control-flow-based taint flows) is out of scope for our approach. 
+
+6 EVALUATION 
+
+Taint analyses analyze real-world programs for violations of certain properties specified as data flow reachability problems. For example, one such property is data from a user input (source) must never reach a log (sink) . We evaluate the soundness, precision, and efficiency of our approach with respect to a baseline traditional inter-procedural taint analysis. In particular, given a taint flow property for a program, we analyze the property using the baseline taint analysis, which computes taint flows on-demand by only computing the intra-procedural taint flows of methods that are reachable from a source. Afterwards, we identify interesting methods; i.e., methods that were expensive to intra-procedurally analyze, made the analysis unsound (e.g., reflection), or caused an explosion in the size of the search space (e.g., calling an interface method with hundreds of implementations). Each interesting method participates in taint flow propagation for a given property. Our approach uses an LLM agent to generate taint flow models for each interesting method in the program and checks its soundness. We then run the same inter-procedural taint analysis as the baseline, but at call sites to interesting methods, instead of intra-procedurally analyzing the callee, we use our checked-sound model of the callee to propagate taint flow. In a practical setting, taint analysis users must re-run the analysis after each change to the program to ensure that the program maintains the specified properties. For the baseline taint analysis, this means re-computing the intra-procedural taint flows of each method reachable from a source. However, when applying our approach, a user only needs to use the LLM to generate the taint flow models once , but must check the soundness of each LLM-generated model after every program change. Our evaluation answers the following research questions: 
+
+RQ1 How precise is the soundness checker? I.e., how often does it classify a most-precise sound taint flow model as unsound? 
+
+RQ2 How efficient is the soundness checker, compared to the constructive approach? 
+
+RQ3 How useful are the light-weight analyses we instantiate the soundness checker with? 
+
+RQ4 How sound and precise are the taint flow models that the LLM agent generates? 
+
+RQ5 Does using the checked-sound LLM-generated models make the taint analysis tractable for properties where it would otherwise time out? To answer these questions, we collect a set of applications and libraries written in Go. For each of those, listed in Table 1, we define taint flow properties depending on the application’s purpose. For example, a CLI tool should check that data that is direct user input is never used for executing code without being sanitized first. Naturally, since we are not the authors of the code we analyze, we may define problems that are unrealistic; in particular, the flows reported are not indicative of actual security issues. However, they can still serve as a means to evaluate the precision of our Soundness Checking of Taint Flow Models 21     
+
+> Table 1. Go repositories used to benchmark the model generation and checking for use in taint analysis.
+> Properties indicates the number of taint properties (e.g., user input flowing to logs) being analyzed. Sources
+> indicates the number of sources of tainted data in the code and Flows indicates the number of flows where tainted data flows to a sink.
+
+Repository Description Properties Sources Flows sample CLI for encryption and file storage 1 6 6amazon-ssm-agent Agent to manage AWS EC2 instances 2 419 1badger Key-value database in Go 1 36 28 govatar Avatar generation library 5 105 18 ofxgo Library for parsing and querying OFX 2 125 5prometheus Monitoring system for the cloud 5 93 2model generation. When designing the taint analysis scenarios, we manually verify the results to distinguish between false positives and real taint flows. We only keep the scenarios where the analysis returns zero to a few actual flows, where we observe no false positives, and where the analysis performs deep call-graph explorations (i.e., the data flows are non-trivial). This ensures that when we perform the same taint analysis using the generated models, we can immediately flag new false positives (or false negatives). Since each modeled method participates in taint flow, we can quantify the variation in precision compared to the baseline. We instantiate the baseline taint analysis with the Argot [6] static analysis tool. The baseline taint analysis requires a pointer analysis to resolve aliases, which Argot includes as well. In particular, the baseline taint analysis implemented in Argot first performs a whole-program context-insensitive pointer analysis before running the taint analysis. The instantiation of our approach’s soundness checking algorithm uses the same pointer analysis and taint analysis as the baseline; i.e., it is built on top of Argot. In total, we collect 97 interesting methods to model. Recall that we support modeling interface methods, which means that checking a model sound may involve analyzing many top-level methods, all the implementations of the interface. This results in checking the soundness of taint flow models for 2535 total methods. 
+
+Evaluation-specific assumptions. The Go standard library uses features that the analyses of our soundness checking algorithm cannot soundly reason about, such as reflection and unsafe memory manipulation. To avoid false-positive unsound results in our evaluation due to these features, we use Argot’s predefined taint flow models for standard library functions. We assume that these models are sound. However, the coverage of those models is not complete, and our analysis flags very explicitly usages of unsound features when it encounters them. 
+
+Experimental setup. We run all of our experiments on a machine with 4 vCPUs running Fedora 36 and with 64 GB of RAM. Argot [6] uses some multi-threading during initialization, but all our analyses are single-threaded. Our agent is implemented using the Strands Agents [2] framework and uses Claude Sonnet 4.5 for the LLM. For each repository, we start from a configuration file specifying the taint analysis properties to prove, and a list of interesting methods (collected as described above) whose taint flows need to be modeled. We give our LLM agent as input the list of interesting methods and instructions on how to load the program to be analyzed. The agent is then tasked with generating a sound and precise taint flow model for each interesting method listed. While the agent has access to the soundness checker, it may decide not to use it. Therefore, we run the checker as a separate step after the agent has generated a model for every interesting method in the list. Three steps remain to complete the 22 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+evaluation: (i) running the constructive analysis to attempt to build another version of the models, (ii) running the taint analysis with the agent-generated models, and (iii) running the taint analysis without any generated models.                             
+
+> Table 2. Model soundness checking success rate for the taint models generated by our agent. Each row lists the total number of top-level methods checked against the agent-generated mod-els, and the ratio of sound/soundy/unsound outcomes for those checks.
+> Repository Total Sound “Soundy” Unsound sample 551 99.9% 0.1% 0% amazon-ssm-agent 1952 91% 2% 6% badger 11 36% 64% 0% govatar 6100% 0% 0% ofxgo 333% 66% 0% prometheus 12 100% 0% 0%
+
+RQ4: Soundness of the generated models. Table 2 presents the result of checking the soundness of the agent-generated models. The three possi-ble outcomes are sound , unsound or 
+
+soundy . The taint flow model is sound 
+
+when the checker can prove that all the must-not-flows do not occur, and the analyses used for this proof do not encounter any language feature that threatens the soundness of the result. When the analyses can prove all the must-not-flows, but the method uses a feature that threatens the sound-ness result (see Section 5), we list the outcome as soundy [21]. An unsound 
+
+outcome means that our approach was not able to prove all of the must-not-flows; in this case, we have a form of counterexample to the model in the must-not-flow that may exist, although it may be a false positive. During our evaluation, we encountered only 118 methods (5%) for which the agent generated an 
+
+unsound model. This may sound surprising given our agent has access to the soundness checking tool, and thus should always check its results. But the fact that this happened only for the repository with largest number of function to check hints at the cause; the agent gave up on making some of the models sound because of the size of the task. In this particular occurrence, it was for an interface method summary with a large number of implementations. A possible fix would be to have the agent only consider a few summaries at a time. There was a smaller proportion of soundy outcomes (2%), although the ratio of soundy to sound is more concerning for some of the repositories (ofxgo and badger). In those two cases, we manually checked that the models were sound. Our approach could not show the summary was unsound, but found unsound language features (e.g., reflection and unsafe) in the call graph rooted at the method whose taint flow model was “soundy”. We observed that the agent was particularly careful when the checking tool reported such unsound features and often justified its decision of still generating the “soundy” model despite the warnings. 
+
+RQ3: Usefulness of soundness checking sub-analyses. Since we instantiate our soundness checking approach with specific static analyses, we evaluate whether each analysis is useful by recording the number of times our soundness checking approach was useful in deciding the soundness of a model; Table 3 presents our results. Each analysis was used at least once. In particular, our approach’s ability to deduce callee summaries and recursively check their soundness was cru-cial in checking the soundness of the LLM-generated models for the amazon-ssm-agent repos-itory. The LLM agent ended up generating the most-general summary for over 2,000 methods across all the applications we evaluated. However, this does not imply that the analysis can be replaced by simply using most-general summaries. The agent generated those summaries only Soundness Checking of Taint Flow Models 23                                    
+
+> Table 4. Running time of taint analysis without any models (baseline), taint analysis with LLM-generated sound/soundy models, model generation using the LLM agent, soundness checking step, and sound model generation via the constructive approach. All times are in seconds. TO indicates time-out after 30 min.
+> Repository Baseline With Summaries Summarization Check Constructive sample 26.03 26.02 521.85 9.93 TO amazon-ssm-agent TO 130.35 424.01 43.17 TO badger 47.04 26.27 355.95 15.7 57.06 †
+> govatar 57.05 54.29 253.15 2.17 2.75 †
+> ofxgo TO 9.27 244.16 7.23 66.54 †
+> prometheus TO 69.81 743.78 141.02 184.14 †
+
+where appropriate; had it used most-general summaries too frequently, we would expect addi-tional false positives in the taint analysis, which we did not observe in our evaluation of RQ4.                                        
+
+> Table 3. Model soundness checking analyses used when checking the models generated by the agent. Each analysis (most gen eral,
+> typ e, immut ability, read , and rec ursive) is counted once per method being analyzed when it contributes to the outcome of the check.
+> Repository gen. typ. immut. read rec.
+> sample 547 0500amazon-ssm-agent 1800 12 48 0118 badger 62400govatar 51200ofxgo 10210prometheus 45700
+
+RQ4: Precision of Model Genera-tion. When generating a taint flow model, an LLM could simply choose the most-general summary. Our ap-proach prompts the LLM agent to generate a model of sufficient preci-sion for a generic taint analysis to suc-ceed without too many false positives. Crucially, our approach does not en-sure the most precise taint flow mod-els; we evaluate whether the LLM-generated taint flow models are pre-cise enough to not result in false pos-itives in real-world taint analysis sce-narios. We observe that for all our benchmarks, no additional false positives are returned by the taint analyzer when using the LLM-generated taint flow models compared to without them. In order to obtain the baseline of false positives for the taint analysis examples where the analysis times out without summaries, we ran the analysis with carefully hand-written models for some of the methods that take a significant amount of time to analyze. 
+
+RQ5: Efficiency of Checking and Taint Analysis. For a fair comparison, Table 4 reports the running time of all the components of our evaluation. Generating the models with an LLM agent should likely run only once, but a user should check the soundness of those models before each run of the taint analysis, as our approach can only check that the models are sound with respect to a given program. The efficiency questions are then: (i) is running the soundness checker and the taint analyzer using the LLM-generated taint flow models faster than running the taint analyzer alone without any models? (ii) is running the LLM-based summarization and the soundness checker faster than constructing the models using the taint analysis? To answer (i), we note that the baseline taint analysis times out after 30 minutes for 3 out of 6 applications; yet with the LLM-generated models that we prove sound, the slowest taint analysis run with the soundness check takes less than 3 minutes. The only case where the combination of 24 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+the soundness check and taint analysis with summaries takes longer than the baseline is for the sample repository, where both take less than 1 min. Running the soundness checking step alone is efficient: the slowest is for prometheus, which took slightly over 2.5 minutes. In conclusion, it is reasonable to check the soundness of the LLM-generated models alongside the taint analysis or each time the program changes. To answer (ii), we note that the constructive approach times out for both the sample and amazon-ssm-agent programs because they contain methods with complex intra-procedural taint flows, causing a state space explosion. For the remaining programs, the methods we model have simpler taint flows, so the constructive approach completes quickly; however, it still only produces sound summaries for less than 10% of the methods. We allow partial generation by timing out on individual summaries. Our soundness checker requires solving a Max-SAT problem to deduce callee summaries. How-ever, even with field-sensitive taint flow models, we did not observe any scalability issues for this component of our approach because intra-procedural flows have a limited size. This may become an issue if we evaluate methods with hundreds of inputs and outputs, but such methods are rare in real-world codebases. For example, checking the soundness of a taint flow model for the client.NewRequest method in the amazon-ssm-agent codebase resulted in 956 total Max-SAT constraints, which the solver solved in 165 microseconds, resulting in a deduced callee model with 297 field-sensitive flows. Therefore, while our approach is theoretically NP-Complete in the worst case, we observed no scalability issues in the soundness checker in our evaluation. 
+
+7 RELATED WORK 
+
+Compositional analysis. The foundational work by Sharir and Pnueli [29] proposes the functional approach to data flow analysis, enabling a composable context-sensitive inter-procedural analysis by summarizing the effects of methods. Summary-based functional approaches such as IFDS [24], IDE [27], and WPDS [25] enable compositional inter-procedural dataflow analysis. 
+
+User-defined taint flow models. Some analysis tools support user-defined taint flow models for methods that cannot be efficiently analyzed. Java taint analyses such as TAJ [35], Andromeda [34], FlowDroid [5], and CompTaint [7], and the Go taint analysis Argot [6], use user-provided models for complex library methods. However, these approaches place the burden of correctness on the user—they do not verify that the provided models are sound. Our work addresses this limitation by providing a technique to verify the soundness of these user-provided models. 
+
+Synthesizing taint flow models. Approaches that synthesize taint flow models without performing a static taint analysis do not check or enforce the soundness of the models. Taser [32] uses a dynamic taint analysis to extract taint flow models of JavaScript methods, but dynamic taint analysis is unsound. Zhai et al. [37] use syntax guided synthesis to extract taint summaries from Java library method documentation but they do not analyze source code and have no soundness guarantees. STaint [19] prompts an LLM to infer taint flow models of database operations in PHP applications based on the function’s source code, the taint analysis state at the call site, and the schema. Our approach uses an LLM agent equipped with tools to increase the precision of the taint flow models it synthesizes. We also check the soundness of the synthesized models. Some approaches compute sound models with respect to a known program but have significant limitations. StubDroid [4] (Java) and ModAlyzer [28] (C/C ++ ) compute complete and reusable taint models via an inter-procedural taint analysis and support higher-order methods, but also inherit the scalability limitations of taint analyses. Approaches that infer taint models via abduction [38] or solving a context-free language reacha-bility problem [8] are similar to our callee summary deduction approach by synthesizing sound Soundness Checking of Taint Flow Models 25 
+
+summaries with respect to known flows. However, these approaches assume that the method implementations are unavailable, thus needing a human oracle to check soundness, whereas our approach checks the soundness of the deduced callee summaries. Flowistry [9] soundly infers explicit and implicit information flow (which includes implicit taint flows) within Rust functions using their type signatures. The Rust type system encodes ownership and mutability restrictions for references, which is necessary for Flowistry. Our work applies to languages other than Rust by verifying arbitrary taint flow models using type and may-alias information which requires access to the program’s source code. However, our approach is limited to only explicit taint flows. 
+
+Light-weight static analyses. There is an established body of work exploring the relationship between mutability and data flow, starting from the program dependence graph [13]. FlowDroid [14] avoids tainting callee parameters that have an immutable type in Java (e.g., String ) but does not perform an immutability analysis to handle parameters that have a mutable type but are never modified in the callee. Flowistry [9] uses Rust’s type system, which encodes the mutability of a function’s outputs in its type signature, to increase the precision of its flow analysis. FlowCFL [22] combines context-free language (CFL) reachability with reference immutability 
+
+to increase the precision of inter-procedural data flow analyses. Our immutability analysis uses similar ideas but we do not perform CFL reachability to construct taint flow summaries as they are calling-context-insensitive. Our immutability analysis is most similar to the side-effect analysis of Milanova et al. [23]. 
+
+8 CONCLUSION 
+
+We present an approach that allows taint analysis users to analyze their applications more efficiently with the help of LLMs, without compromising soundness or precision. While we use an LLM agent to synthesize precise taint flow models, it would be interesting to investigate more efficient symbolic or machine learning techniques, or apply our soundness checking algorithm to verify existing approaches [19, 32, 37]. Our soundness checking algorithm may be extended with other analyses, and, in parallel, our existing analyses may be extended to better make use of the precision requirement expressed through the generated models. We only instantiate our approach for Go and future work could apply it to other languages such as Java. We hope that our work leads to more research on using specification synthesis to scale static analysis while maintaining a high bar for soundness. 26 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+REFERENCES 
+
+[1] Aws Albarghouthi, Isil Dillig, and Arie Gurfinkel. 2016. Maximal Specification Synthesis. In Proceedings of the 43rd Annual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL ’16) . Association for Computing Machinery, New York, NY, USA, 789–801. doi:10.1145/2837614.2837628 [2] Amazon Web Services. 2026. Strands Agents. https://strandsagents.com/ [3] L. O. Andersen. 1994. Program Analysis and Specialization for the C Programming Language . Ph. D. Dissertation. University of Copenhagen, DIKU. [4] Steven Arzt and Eric Bodden. 2016. StubDroid: Automatic Inference of Precise Data-Flow Summaries for the Android Framework. In Proceedings of the 38th International Conference on Software Engineering . ACM, Austin Texas, 725–735. doi:10.1145/2884781.2884816 [5] Steven Arzt, Siegfried Rasthofer, Christian Fritz, Eric Bodden, Alexandre Bartel, Jacques Klein, Yves Le Traon, Damien Octeau, and Patrick McDaniel. 2014. FlowDroid: Precise Context, Flow, Field, Object-Sensitive and Lifecycle-Aware Taint Analysis for Android Apps. In Proceedings of the 35th ACM SIGPLAN Conference on Programming Language Design and Implementation . ACM, Edinburgh United Kingdom, 259–269. doi:10.1145/2594291.2594299 [6] AWS Labs. 2026. Argot. https://github.com/awslabs/ar-go-tools [7] Subarno Banerjee, Siwei Cui, Michael Emmi, Antonio Filieri, Liana Hadarean, Peixuan Li, Linghui Luo, Goran Piskachev, Nicolás Rosner, Aritra Sengupta, Omer Tripp, and Jingbo Wang. 2023. Compositional Taint Analysis for Enforcing Security Policies at Scale. In Proceedings of the 31st ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering (ESEC/FSE 2023) . Association for Computing Machinery, New York, NY, USA, 1985–1996. doi:10.1145/3611643.3613889 [8] Osbert Bastani, Saswat Anand, and Alex Aiken. 2015. Specification Inference Using Context-Free Language Reachability. In Proceedings of the 42nd Annual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL ’15) . Association for Computing Machinery, New York, NY, USA, 553–566. doi:10.1145/2676726.2676977 [9] Will Crichton, Marco Patrignani, Maneesh Agrawala, and Pat Hanrahan. 2022. Modular Information Flow through Ownership. In Proceedings of the 43rd ACM SIGPLAN International Conference on Programming Language Design and Implementation (PLDI 2022) . Association for Computing Machinery, New York, NY, USA, 1–14. doi:10.1145/3519939. 3523445 [10] CVE. 2023. CVE-2023-6746. https://www.cve.org/CVERecord?id=CVE-2023-6746 [11] CVE. 2024. CVE-2024-47083. https://www.cve.org/CVERecord?id=CVE-2024-47083 [12] Arnab De, Deepak D’Souza, and Rupesh Nasre. 2011. Dataflow Analysis for Datarace-Free Programs. In Programming Languages and Systems , Gilles Barthe (Ed.). Springer, Berlin, Heidelberg, 196–215. doi:10.1007/978-3-642-19718-5_11 [13] Jeanne Ferrante, Karl J. Ottenstein, and Joe D. Warren. 1987. The Program Dependence Graph and Its Use in Optimization. ACM Trans. Program. Lang. Syst. 9, 3 (July 1987), 319–349. doi:10.1145/24039.24041 [14] Christian Fritz, Steven Arzt, Siegfried Rasthofer, Eric Bodden, Alexandre BARTEL, Jacques KLEIN, Yves LE TRAON, Damien Octeau, and Patrick McDaniel. 2013. Highly Precise Taint Analysis for Android Applications . Technical Report. EC SPRIDE. [15] Go developers. 2022. The Go Memory Model. https://go.dev/ref/mem [16] Go developers. 2025. pointer package. https://pkg.go.dev/golang.org/x/tools/go/pointer [17] Go developers. 2026. The Go Programming Language Specification. https://go.dev/ref/spec [18] M. E. Halaby. 2016. On the Computational Complexity of MaxSAT. Electron. Colloquium Comput. Complex. (2016). [19] Yuchen Ji, Hongchen Cao, and Jingzhu He. 2025. STaint: Detecting Second-Order Vulnerabilities in PHP Applications with LLM-Assisted Bi-Directional Static Taint Analysis. In 2025 40th IEEE/ACM International Conference on Automated Software Engineering (ASE) . IEEE, Seoul, Korea (South), 3943–3947. doi:10.1109/ASE63991.2025.00347 [20] Haofeng Li, Haining Meng, Hengjie Zheng, Liqing Cao, Jie Lu, Lian Li, and Lin Gao. 2021. Scaling Up the IFDS Algorithm with Efficient Disk-Assisted Computing. In 2021 IEEE/ACM International Symposium on Code Generation and Optimization (CGO) . IEEE, Seoul, Korea (South), 236–247. doi:10.1109/CGO51591.2021.9370311 [21] Benjamin Livshits, Manu Sridharan, Yannis Smaragdakis, Ondřej Lhoták, J. Nelson Amaral, Bor-Yuh Evan Chang, Samuel Z. Guyer, Uday P. Khedker, Anders Møller, and Dimitrios Vardoulakis. 2015. In Defense of Soundiness: A Manifesto. Commun. ACM 58, 2 (Jan. 2015), 44–46. doi:10.1145/2644805 [22] Ana Milanova. 2020. FlowCFL: Generalized Type-Based Reachability Analysis: Graph Reduction and Equivalence of CFL-based and Type-Based Reachability. Proceedings of the ACM on Programming Languages 4, OOPSLA (Nov. 2020), 1–29. doi:10.1145/3428246 [23] Ana Milanova, Atanas Rountev, and Barbara G. Ryder. 2002. Parameterized Object Sensitivity for Points-to and Side-Effect Analyses for Java. In Proceedings of the 2002 ACM SIGSOFT International Symposium on Software Testing and Analysis (ISSTA ’02) . Association for Computing Machinery, New York, NY, USA, 1–11. doi:10.1145/566172.566174 [24] Thomas Reps, Susan Horwitz, and Mooly Sagiv. 1995. Precise Interprocedural Dataflow Analysis via Graph Reachability. In Proceedings of the 22nd ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages - POPL ’95 .Soundness Checking of Taint Flow Models 27 
+
+ACM Press, San Francisco, California, United States, 49–61. doi:10.1145/199448.199462 [25] Thomas Reps, Stefan Schwoon, Somesh Jha, and David Melski. 2005. Weighted Pushdown Systems and Their Application to Interprocedural Dataflow Analysis. Science of Computer Programming 58 (Oct. 2005), 206–263. doi:10. 1016/j.scico.2005.02.009 [26] A. Sabelfeld and A.C. Myers. 2003. Language-Based Information-Flow Security. IEEE Journal on Selected Areas in Communications 21, 1 (Jan. 2003), 5–19. doi:10.1109/JSAC.2002.806121 [27] Mooly Sagiv, Thomas Reps, and Susan Horwitz. 1995. Precise Interprocedural Dataflow Analysis with Applications to Constant Propagation. In TAPSOFT ’95: Theory and Practice of Software Development , Peter D. Mosses, Mogens Nielsen, and Michael I. Schwartzbach (Eds.). Springer, Berlin, Heidelberg, 651–665. doi:10.1007/3-540-59293-8_226 [28] Philipp Dominik Schubert, Ben Hermann, and Eric Bodden. 2021. Lossless, Persisted Summarization of Static Callgraph, Points-To and Data-Flow Analysis. In 35th European Conference on Object-Oriented Programming (ECOOP 2021) (Leibniz International Proceedings in Informatics (LIPIcs), Vol. 194) , Anders Møller and Manu Sridharan (Eds.). Schloss Dagstuhl – Leibniz-Zentrum für Informatik, Dagstuhl, Germany, 2:1–2:31. doi:10.4230/LIPIcs.ECOOP.2021.2 [29] Micha Sharir and Amir Pnueli. 1978. Two Approaches to Interprocedural Data Flow Analysis . New York Univ. Comput. Sci. Dept., New York, NY. [30] Yannis Smaragdakis, Martin Bravenboer, and Ondrej Lhoták. 2011. Pick Your Contexts Well: Understanding Object-Sensitivity. In Proceedings of the 38th Annual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (Popl ’11) . Association for Computing Machinery, New York, NY, USA, 17–30. doi:10.1145/1926385.1926390 [31] Manu Sridharan, Stephen J. Fink, and Rastislav Bodik. 2007. Thin Slicing. In Proceedings of the 28th ACM SIGPLAN Conference on Programming Language Design and Implementation . ACM, San Diego California USA, 112–122. doi:10. 1145/1250734.1250748 [32] Cristian-Alexandru Staicu, Martin Toldam Torp, Max Schäfer, Anders Møller, and Michael Pradel. 2020. Extracting Taint Specifications for JavaScript Libraries. In Proceedings of the ACM/IEEE 42nd International Conference on Software Engineering (ICSE ’20) . Association for Computing Machinery, New York, NY, USA, 198–209. doi:10.1145/3377811. 3380390 [33] John Toman and Dan Grossman. 2017. Taming the Static Analysis Beast. LIPIcs, Volume 71, SNAPL 2017 71 (2017), 18:1–18:14. doi:10.4230/LIPICS.SNAPL.2017.18 [34] Omer Tripp, Marco Pistoia, Patrick Cousot, Radhia Cousot, and Salvatore Guarnieri. 2013. Andromeda: Accurate and Scalable Security Analysis of Web Applications. In Fundamental Approaches to Software Engineering , Vittorio Cortellessa and Dániel Varró (Eds.). Springer, Berlin, Heidelberg, 210–225. doi:10.1007/978-3-642-37057-1_15 [35] Omer Tripp, Marco Pistoia, Stephen J. Fink, Manu Sridharan, and Omri Weisman. 2009. TAJ: Effective Taint Analysis of Web Applications. SIGPLAN Not. 44, 6 (June 2009), 87–97. doi:10.1145/1543135.1542486 [36] Mark Weiser. 1981. Program Slicing. In Proceedings of the 5th International Conference on Software Engineering (ICSE ’81) . IEEE Press, San Diego, California, USA, 439–449. [37] Juan Zhai, Yu Shi, Minxue Pan, Guian Zhou, Yongxiang Liu, Chunrong Fang, Shiqing Ma, Lin Tan, and Xiangyu Zhang. 2020. C2S: Translating Natural Language Comments to Formal Program Specifications. In Proceedings of the 28th ACM Joint Meeting on European Software Engineering Conference and Symposium on the Foundations of Software Engineering (ESEC/FSE 2020) . Association for Computing Machinery, New York, NY, USA, 25–37. doi:10.1145/3368089.3409716 [38] Haiyan Zhu, Thomas Dillig, and Isil Dillig. 2013. Automated Inference of Library Specifications for Source-Sink Property Verification. In Programming Languages and Systems , Chung-chieh Shan (Ed.). Springer International Publishing, Cham, 290–306. doi:10.1007/978-3-319-03542-0_21 28 Samarth Kishor, Victor Nicolet, and Joey Dodds 
+
+A DATAFLOW MODEL SYNTHESIS AGENT A.1 Prompt 
+
+We omit details of the prompt that are only relevant to the instantiation of our approach. The prompt. You are tasked with generating dataflow summaries for Go functions to be used with the Argot taint analysis tool. A dataflow summary describes how data flows through a function -which inputs affect which outputs. 
+
+A.1.1 Complex Data Flows. For flows through struct fields, arrays, or maps, use parentheses and suffixes: 
+
+• (!arg 0).field - Flow through struct field 
+
+• (!ret 0)[*] - Flow through array/slice/map elements 
+
+• (!arg <x>).field1[*].field2 - Nested field and element access 
+
+• For maps, [*] represents flow to both keys and values (no distinction possible). 
+
+A.1.2 Task Instructions. 
+
+(1) **Analyze the function**: Understand what the function does and how data moves through it (2) **Identify flows**: Determine which inputs affect which outputs (3) **Be conservative**: Include all possible data flows to ensure soundness (4) **Consider all paths**: Account for all execution paths (branches, loops, error cases) (5) **Handle mutations**: If arguments are modified, include flows back to them 
+
+A.1.3 Important Notes. 
+
+• **Soundness**: Your summary must be conservative - include all possible flows 
+
+• **Validation**: You can use argot_dataflow_check for summaries written in configu-ration files 
+
+• **Error handling**: Consider flows through error return values in Go’s (result, error )
+
+pattern 
+
+• **Mutations**: If the function modifies input arguments, include flows back to them 
+
+• **All execution paths**: Consider branches, loops, and error conditions 
+
+A.1.4 Example Request. “Generate a dataflow summary for function thisFunctionIsCalled in file path/to/sample.go in package main .” “Generate dataflow summaries for all the function suggested by the taint tool running with the configuration argot-config.yaml ”“Generate only the YAML dataflow summary for the provided function. Do not include explana-tions unless the flow is complex and needs clarification.”
