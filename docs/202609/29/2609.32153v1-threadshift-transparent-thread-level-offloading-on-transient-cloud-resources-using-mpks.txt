@@ -1,0 +1,675 @@
+Title: ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs
+
+URL Source: https://arxiv.org/pdf/2609.32153v1
+
+Published Time: Tue, 29 Sep 2026 00:31:23 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs 
+
+Antoine Murat 
+
+> EPFL, Switzerland
+
+Clément Burgelin 
+
+> EPFL, Switzerland
+
+Rachid Guerraoui 
+
+> EPFL, Switzerland
+
+## Abstract 
+
+Transient cloud resources offer significant cost savings, but their unpredictability makes them hard to use for applica-tions that cannot be safely restarted after reclamation. Ex-isting approaches require application changes or rely on coarse-grained checkpointing, whose cost limits its benefits. We present ThreadShift , a system that transparently of-floads compute-intensive threads of unmodified Linux appli-cations to cheap transient resources while preserving correct-ness under reclamation. By operating at thread granularity, ThreadShift enables fast, fine-grained checkpointing and of-floads only the threads that benefit from transient execution. The main challenge is to checkpoint individual threads despite cross-thread dependencies. ThreadShift does so by efficiently tracking memory dependencies, identifying per-thread memory writes, and maintaining coherence across ma-chines. Three novel uses of Memory Protection Keys (MPKs) make these mechanisms efficient, enabling fast incremental checkpoints without pausing the entire application. We implement ThreadShift on x86-64 Linux and evaluate it on workloads including machine-learning inference, cryp-tographic tasks, and in-memory data processing. ThreadShift offloads threads in as little as 164 μs, performs checkpoint-ing up to three orders of magnitude faster than CRIU, and reduces deployment cost by up to 56% on commodity clouds. 
+
+## 1 Introduction 
+
+Transient cloud resources offer significant cost savings by exposing temporarily idle capacity at a discount (e.g., spot VMs [29, 54, 73]). However, these resources can be reclaimed at any time, making them difficult to use for applications that cannot be safely restarted after reclamation. In such ap-plications, execution may already have produced externally visible effects (e.g., sent requests), and restarting would lead to duplicated or inconsistent outcomes. Even distributed ap-plications designed to tolerate failures can struggle with the higher frequency and correlation of such reclamations [6]. A natural approach to tolerate reclamations is checkpoint-ing, i.e., periodically saving application state so execution can resume after interruption [25]. In practice, however, most applications lack built-in checkpointing and must rely on general-purpose systems such as CRIU [80]. These systems operate at coarse granularity (e.g., processes or containers), incurring high overhead and often pausing the entire appli-cation. As a result, applications that require frequent check-points cannot effectively benefit from transient resources. This paper asks: can unmodified applications leverage tran-sient resources without costly coarse-grained checkpointing? 
+
+We present ThreadShift , a system that transparently of-floads compute-intensive threads of unmodified Linux ap-plications to transient resources with low overhead while preserving correctness under reclamation. Here, correctness means that clients cannot distinguish execution on unreli-able from reliable resources. The key idea is to execute only the parts of the application that can safely benefit from cheap reclaimable resources on transient machines, while keeping the rest on a weak, inexpensive stable machine that also maintains checkpoints and handles external effects. ThreadShift operates at thread granularity. This is critical: it enables fast, fine-grained checkpointing, avoids blocking the entire application, and allows threads to run on stable or transient resources based on behavior. As a result, compute-heavy threads can be offloaded aggressively, while IO-bound or latency-sensitive threads can remain on stable machines. Making this design practical is challenging. Threads in a process share memory and interact in subtle ways, so checkpointing one thread in isolation is unsafe: its state may depend on memory modified by others. Efficiently cap-turing consistent checkpoints therefore requires tracking inter-thread dependencies, identifying per-thread memory modifications, and maintaining a coherent view of memory across machines. Naively implementing these mechanisms would incur high overhead due to costly instrumentation, frequent page protection, and global synchronization. ThreadShift addresses these challenges using three novel applications of Memory Protection Keys (MPKs). Rather than using MPKs for security, ThreadShift uses per-thread permis-sions to cheaply detect cross-thread dependencies on first access, track memory modifications without freezing the full application, and avoid costly per-page protection changes. This allows ThreadShift to capture thread-level checkpoints and maintain memory coherence with low overhead. We implement ThreadShift on x86-64 Linux and evaluate it on a range of workloads, including machine-learning infer-ence, cryptographic tasks, and in-memory data processing. Our results show that ThreadShift can offload threads in as little as 164 μs, perform checkpointing up to three orders of magnitude faster than CRIU, and reduce deployment cost by up to 56% on commodity clouds. In summary, our contributions are the following: 
+
+• ThreadShift, a system that offloads threads of unmod-ified Linux applications to transient resources while preserving correctness under reclamation.  
+
+> 1arXiv:2609.32153v1 [cs.DC] 26 Sep 2026 Preprint, arXiv, 2026 Antoine Murat, Clément Burgelin, and Rachid Guerraoui
+
+Figure 1. Application checkpoints composed of individual thread checkpoints must capture all dependencies. Check-point 𝑐 is invalid: it includes Thread 2 after receiving a mes-sage from Thread 3, but Thread 3 before sending it; restoring Thread 3 would result in the message being sent twice. 
+
+• An MPK-based mechanism for tracking inter-thread memory dependencies with low overhead. 
+
+• An MPK-based mechanism for efficiently identifying per-thread memory modifications. 
+
+• An MPK-based mechanism for reducing the overhead of software memory coherence. 
+
+• An open-source prototype of ThreadShift, available at https://github.com/AntoineMurat/threadshift. 
+
+• A thorough evaluation of ThreadShift demonstrating substantial reductions in checkpointing overhead and deployment cost across diverse workloads. 
+
+## 2 Background 
+
+After some background on checkpointing (§2.1), thread mi-gration (§2.2), and Memory Protection Keys (MPKs) (§2.3), we present our system model (§2.4) and target applications (§2.5). 
+
+2.1 Application Checkpointing 
+
+Deploying applications on transient resources has led to numerous proposals [9, 12, 42, 74, 75, 78, 84, 91, 95]. Many of these rely on Checkpoint/Restore (CR) schemes [25], which periodically save application state so execution can resume after a reclamation. ThreadShift follows this approach. Some applications use checkpoints primarily to save work after failures [9, 78, 84], while others require stronger guar-antees (e.g., avoiding contradictory replies) and therefore need timely checkpoints (e.g., before sending messages) to preserve external consistency [22, 90, 103]. 1 ThreadShift tar-gets the latter setting and checkpoints applications upon each event that affects their external state. Application-agnostic CR mechanisms typically operate at coarse granularity, such as processes [80] or VMs [22, 90]. ThreadShift instead operates at a finer thread granularity. This is challenging because thread-level checkpointing must track memory modifications and capture inter-thread depen-dencies. As illustrated in Figure 1, application checkpoints must include consistent views of interacting threads; other-wise, restoring them can duplicate or suppress effects [14]. 
+
+> 1Critical events can also be logged for replay to avoid timely checkpoints, but capturing all non-deterministic events is challenging in practice [50, 103].
+
+Figure 2. Example of MPKs. Thread 1 can read groups 0 and 1 but write to none due to its thread-local rights. Thread 2 can read groups 0 and 2 and write to group 2. Thread 3 can read group 0 but not write to it as the page is read-only. 
+
+2.2 Thread Migration 
+
+Offloading a thread requires migrating its (1) CPU context (i.e., registers), (2) memory, and (3) kernel objects accessed via syscalls (e.g., files). CPU context is private, but memory and kernel objects are shared with other threads, requiring careful coherence control to maintain consistency across machines. ThreadShift avoids synchronizing kernel objects by reloading threads before they execute syscalls [60], so syscalls always run on the stable machine. Memory must still be kept consistent across machines, which ThreadShift handles using a page-level coherence protocol (Section 4). 
+
+2.3 Memory Protection Keys 
+
+Memory Protection Keys (MPKs) are a hardware feature that allows applications to control memory access on a per-thread basis, beyond traditional page protections. MPKs partition memory into page groups, whose access rights can be inde-pendently controlled by each thread (Figure 2). Access permissions are governed by a per-core register called PKRU , which can be updated from userspace. These updates are fast and do not trigger TLB invalidations. When a thread accesses a page, hardware checks both traditional permissions and MPKs; if either disallows the access, a fault is raised which can be handled in userspace. ThreadShift leverages MPKs to track inter-thread depen-dencies, identify per-thread memory modifications, and con-trol memory access during distributed execution (Section 4). 
+
+2.4 System Model 
+
+ThreadShift allows unmodified applications to run on tran-sient resources without increasing their unreliability beyond that of an on-demand deployment. The system assumes that the stable component does not fail; making this component fault-tolerant is orthogonal to our work. Transient resources may be reclaimed at any time, with or without prior notification. ThreadShift does not rely on  
+
+> 2ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs Preprint, arXiv, 2026
+
+Figure 3. Running example. The thread 𝑇 1 executes locally until it enters a compute-heavy section and is offloaded to the transient machine. It then executes remotely while fetching pages on demand. Before performing an externalizing syscall, it checkpoints its modified state and reloads on the stable machine, where execution resumes and the syscall completes. such notifications for correctness: it treats reclamations as failures and recovers execution from checkpoints. When available, notifications are used opportunistically to migrate threads back to the stable machine, but ThreadShift does not assume sufficient notice, as notifications may be best-effort [29, 54] and may not leave enough time to complete state migration [5, 78]. If migration does not finish in time, ThreadShift simply recovers from the latest checkpoint. More generally, ThreadShift makes no synchrony assumptions and treats unresponsive transient resources as failed. Finally, ThreadShift assumes low-cost data transfers inside a data center, as is common on commodity cloud platforms. 
+
+2.5 Target Applications 
+
+ThreadShift targets applications that cannot be restarted upon reclamation without violating correctness (e.g., by sending duplicate responses or dropping requests), and that contain compute-intensive sections. ThreadShift provides benefits even when such sections last less than a millisecond. This includes workloads such as machine-learning inference (e.g., image classification and speech-to-text [27, 36, 63]), scientific and financial computations (e.g., simulations and option pricing [19, 41, 83]), and cryptographic applications (e.g., distributed ledgers and verifiable services [2, 10, 79, 94]). ThreadShift can also batch requests to aggregate short compute-intensive tasks into larger ones, increasing the amount of work that can be offloaded and amortizing migra-tion and checkpointing overheads (Section 3.3). In contrast, it is not well suited for IO-intensive applications or workloads that rely heavily on specialized hardware (e.g., ML training). ThreadShift is relevant to both single-node applications that cannot tolerate reclamations and distributed applica-tions that are vulnerable to frequent or correlated failures [6]. 
+
+## 3 ThreadShift in a Nutshell 
+
+This section gives a top-down view of ThreadShift. We first walk through a simple execution example that illustrates its main principles and challenges (§3.1). We then summarize the architecture that realizes this execution model (§3.2) and describe how ThreadShift accelerates common code patterns through para-offloading (§3.3). We defer the detailed coher-ence protocol and MPK-based mechanisms to Section 4. 
+
+3.1 Running Example and Principles 
+
+Consider a multi-threaded server with two worker threads, 
+
+𝑇 1 and 𝑇 2, that handle client requests end to end: each thread receives a request, enters a compute-intensive processing phase, and then sends a reply. The compute-intensive phase is the part that ThreadShift offloads. Most of the time, 𝑇 1
+
+and 𝑇 2 process requests independently, but they occasionally interact through shared memory. For example, if 𝑇 2 becomes idle, it may steal work from 𝑇 1’s queue. Such interactions create cross-thread dependencies that must be accounted for. The server also includes a third thread, 𝑇 𝐶 , responsible for control-plane tasks such as applying configuration updates. Because 𝑇 𝐶 is not compute-intensive and not on the request-processing fast path, it remains on the stable machine. 
+
+Offloading. When 𝑇 1 enters its processing phase, Thread-Shift offloads it to a transient machine (Figure 3). Concretely, the stable machine snapshots 𝑇 1’s execution context, i.e., its thread-private registers, and sends them to a worker. This is analogous to a context switch, except that the saved context is reloaded on another machine rather than on another core. Execution then resumes remotely. At first, the worker may miss pages that 𝑇 1 needs, such as its stack, code, or input data. As 𝑇 1 touches them, the worker fetches them on demand. While running remotely, 𝑇 1 reads memory, performs compute-intensive work, and writes its output. 
+
+Externalization. Suppose now that 𝑇 1 is ready to reply to the client. The reply is about to become externally visible, so ThreadShift must ensure that the state leading to that reply is recoverable. The worker therefore checkpoints 𝑇 1’s execution context together with the memory it modified, sends this checkpoint to the stable machine, and requests a reload. The stable machine applies the memory updates and resume execution locally by installing 𝑇 1’s latest execution context. The send syscall then executes on the stable machine. This design is deliberate: ThreadShift offloads compute, but externalization occurs on the stable machine to ensure correctness despite reclamations. More generally, all system calls execute there, so kernel-managed state (e.g., sockets) remains local and need not be synchronized across machines. The same execution pattern applies to 𝑇 2. In the common case, 𝑇 1 and 𝑇 2 handle different requests and can therefore be offloaded and checkpointed independently. This keeps  
+
+> 3Preprint, arXiv, 2026 Antoine Murat, Clément Burgelin, and Rachid Guerraoui
+
+checkpointing local to the thread that is about to externalize its result, rather than forcing unrelated work to be check-pointed, as in conventional process-wide checkpointing. 
+
+Dependencies. Now consider a less independent execu-tion. Suppose that 𝑇 2 runs out of local work and steals a request from 𝑇 1’s queue. At that point, 𝑇 2 has read memory written by 𝑇 1, so the two threads are no longer independent. If ThreadShift later checkpoints 𝑇 2, checkpointing 𝑇 2 alone would be unsafe: its state now depends on 𝑇 1. ThreadShift must therefore detect this interaction and checkpoint both threads consistently before exposing their results. 
+
+Reclamation. Finally, suppose that the transient machine hosting 𝑇 1 and 𝑇 2 is about to be reclaimed. If the warning arrives early enough, ThreadShift starts migrating the af-fected threads back to the stable machine. In our example, however, the warning is not sufficient to checkpoint both dependent threads in time. In that case, ThreadShift treats the reclamation as a failure and resumes execution on the stable machine from the latest checkpoints that were already safely stored there. This may cause some recomputation, but it preserves correctness, e.g., it never duplicates replies. 
+
+Challenges. The difficulty is not just to handle these cases correctly, but to do so cheaply enough that offloading re-mains worthwhile. In the example above, ThreadShift must detect when threads become dependent through shared mem-ory. It must also identify which memory each checkpointed thread modified so that checkpointing remains fast. Finally, all machines must maintain a coherent view of memory. Naively implementing these mechanisms would make thread-level offloading too expensive: tracking dependencies with instrumentation or page protections would incur high overhead, identifying modified memory could require paus-ing unrelated threads, and enforcing coherence could trigger many costly page-protection updates. Section 4 addresses these challenges with three MPK-based mechanisms that make dependency tracking, dirty tracking, and coherence enforcement efficient enough for fine-grained offloading. 
+
+3.2 Architecture 
+
+Figure 4 summarizes ThreadShift’s architecture. An unmodi-fied application runs on a stable machine with a lightweight 
+
+manager injected at startup. Compute-intensive threads are offloaded to workers on transient machines. The stable ma-chine handles checkpoints, externalization, and memory co-herence, while workers execute offloaded computation. 
+
+Stable machine. The application’s main process runs on the stable machine. At startup, ThreadShift injects a manager into this process via LD_PRELOAD [68], allowing it to control execution flow and memory access. The manager identifies offload points, sends thread contexts to workers, stores check-points, and coordinates memory coherence across machines. 
+
+Figure 4. Overview of ThreadShift’s architecture. The ap-plication runs on a stable machine (top) with an injected manager that stores thread contexts and coherence meta-data. Threads are offloaded to workers on transient machines (bottom) and return upon checkpointing, while memory is kept coherent. Kernel state remains on the stable machine. When a thread enters a compute-heavy section, the man-ager snapshots its CPU registers, keeps a local copy as a checkpoint, and sends the context to a worker. When a worker later returns an incremental checkpoint, the manager applies the reported memory updates and refreshes the saved execution context. If a worker requests a reload or becomes unavailable, the manager resumes the corresponding thread from the latest checkpoint on the stable machine. 
+
+Transient machines. Transient machines run workers, which are ordinary Linux processes with threads prepared to host offloads. When a worker receives an offload request, it installs the incoming execution context into one of its idle threads and resumes execution there. Workers execute offloaded computation and synchronize memory with the stable machine, but they do not externalize results. When an offloaded thread reaches a system call, the worker pauses it, checkpoints its updated context and modi-fied memory, and requests that execution continue on the stable machine. If the checkpoint depends on other threads, the worker atomically checkpoints them as well. A worker may host multiple threads, and workers may span multiple transient machines. Collocating offloads re-duces memory-coherence traffic, while distributing them might reduce cost and limits the impact of reclamations. 
+
+Why memory is the hard part. Within this architecture, registers are easy to move around and kernel-managed state remains local because all system calls execute on the stable machine. Memory is harder: it is shared across threads, ac-cessed from multiple machines, and must remain recoverable under worker loss. ThreadShift therefore requires a tailored protocol that ensures not only coherence, but also that mem-ory updates become visible only when they are backed by a safe checkpoint. Section 4 describes this protocol and the MPK-based mechanisms that make it efficient.  
+
+> 4ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs Preprint, arXiv, 2026
+
+3.3 Para-Offloading 
+
+ThreadShift works with unmodified applications, but some common code patterns offload poorly. Para-offloading is an optional optimization layer that replaces selected library behavior with semantically equivalent, ThreadShift-friendly behavior. Importantly, it requires no changes to user code. 
+
+Network IO. In the running example, worker threads fol-low a recv →process →send pattern. Directly offloading short requests is inefficient because every request triggers an of-fload and every reply forces a return to the stable machine. To amortize this overhead, ThreadShift intercepts socket APIs so that incoming streams can be forwarded directly to work-ers, while outgoing data is buffered there. When a worker checkpoints, it reports both the number of consumed input bytes and the buffered replies. The manager then advances its view of the input stream and flushes the buffered output. This batches short requests into larger offloads, increasing throughput at the cost of a modest increase in latency. 
+
+Memory allocation. Frequent memory allocation can hurt offloading because allocators may invoke syscalls and introduce unnecessary inter-thread synchronization due to false sharing. ThreadShift therefore replaces them with more offload-friendly allocators, typically trading a modest in-crease in memory use for more efficient offloading. 
+
+Synchronization. More generally, synchronization hurts offloading when it relies on syscalls, as these trigger reloads on the stable machine. ThreadShift therefore replaces stan-dard synchronization primitives (e.g., from libc) with spe-cially handled variants that avoid such syscalls, reducing coordination overhead while preserving semantics. 
+
+## 4 ThreadShift’s Memory Coherence 
+
+This section explains how ThreadShift keeps memory co-herent across machines while ensuring that recovery from reclamation remains safe. We first present ThreadShift’s co-herence protocol at a high level (§4.1), and then describe the three MPK-based mechanisms that make it efficient: depen-dency tracking (§4.2), per-thread dirty tracking (§4.3), and deferred protection (§4.4). 
+
+4.1 Protocol Overview 
+
+ThreadShift’s Memory Coherence Protocol (TMCP) tracks which machine may read or write each page via a directory maintained by ThreadShift’s manager on the stable machine. TMCP resembles MESI at a high level, but is tailored to thread offloading and abrupt worker loss. TMCP operates at page granularity, matching x86 permissions [18], but reduces transfer volume by comparing page chunks via hashes [90]. TMCP enforces two invariants. First, if a machine can write a page, no other machine may access it concurrently, and any readable copy reflects its latest value. Second, a worker’s write becomes visible to other machines only after the threads that (transitively) produced it have been check-pointed, along with the memory they modified. Together, these invariants ensure coherence and recovery. Recoverability matters because ThreadShift must survive worker loss. If a worker exposed writes before checkpointing the threads that produced them, a failure could make visible state revert to an earlier version upon recovery, leading to an inconsistent execution. TMCP prevents this by exposing worker writes only after they are backed by stable state. TMCP runs on both the stable machine and workers, which maintain different state machines as their roles differ. 
+
+4.1.1 Worker-side states. Table 1 summarizes worker-side states. The Shared , Exclusive , and Invalid states behave much like their MESI counterparts. The key difference is the meaning of Modified : a page in this state holds uncheck-pointed writes that are not yet safe to expose. Initially, worker pages are Invalid . Reading such a page sends a Share request to the manager and upgrades it to 
+
+> Shared
+
+, while writing sends a Borrow request and upgrades it to Modified . Writing a Shared page likewise issues a Borrow 
+
+request, and writing an Exclusive page makes it Modified .Symmetrically, clean pages are downgraded upon Unshare 
+
+and Unborrow requests to Invalid and Shared , respectively.  
+
+> Modified
+
+pages require extra care: before they can be down-graded or remain writable as Exclusive , the modifications they contain must first be made recoverable. To do so, the worker atomically builds a checkpoint that covers the page: it records the page’s changes, snapshots every thread that wrote to it since it entered Modified , and recursively includes any threads on which those writers depend, together with the other Modified pages they changed. Once this checkpoint is sent to the manager, all included pages become safe: pages the worker keeps writable move to Exclusive , while others are downgraded as requested. Tracking dependencies is thus essential: without it, Thread-Shift would need to conservatively checkpoint all offloads and modified data whenever a Modified page is downgraded. Section 4.2 explains how to do so efficiently using MPKs. 
+
+Table 1. Page states at a worker. State Rights Meaning Modified RWX Uncheckpointed writable copy. Exclusive RWX Checkpointed writable copy. Shared R-X Read-only copy. Invalid — No readable copy. 
+
+Table 2. Page states at the stable machine. State Rights Meaning Exclusive RWX No worker has a readable copy. Shared R-X 1+ workers have a read-only copy. Invalid — A worker has a writable copy.  
+
+> 5Preprint, arXiv, 2026 Antoine Murat, Clément Burgelin, and Rachid Guerraoui
+
+Figure 5. MPK-based dependency tracking. (1) Pages start in a shared group ( G0 ) readable by all threads. (2) A write moves a page to a dedicated group ( G1 or G2 ) that grants write access only to its writer. (3) A later cross-thread read faults, revealing a dependency and extending permissions. (4) When 𝑇 2 is checkpointed, the thread 𝑇 1 it depends on is also checkpointed; permissions and page states are reset, but groups are kept. 
+
+4.1.2 Stable-machine states. The manager mediates all permission changes, serving both local accesses and worker requests while ensuring write exclusivity and fresh reads. The stable machine does not track dirty pages, so it has fewer states (Table 2). Pages begin in Exclusive . Sharing a page with a worker downgrades it to Shared , while granting write access to a worker downgrades it to Invalid .Pages are upgraded on demand. Reading an Invalid page issues an Unborrow request to its current writer and upgrades the stable copy to Shared , while writing a Shared or Invalid 
+
+page issues Unshare requests and upgrades the stable copy to 
+
+> Exclusive
+
+. To serve worker requests, the manager performs the same upgrades before transferring permissions. If a worker disappears while a page it holds is Invalid , the stable machine upgrades its copy to Exclusive and resumes execution from the latest checkpointed contexts. This is safe: the stable copy already reflects all checkpointed updates, while any newer writes on the worker were never exposed. 
+
+Optimistic Execution and Syscalls. Ordinary userspace instructions are executed optimistically: if they fault due to insufficient permissions, ThreadShift upgrades permissions and retries them. Syscalls are different: if the kernel faults while accessing a user buffer with incompatible permissions, the program may be left in an undefined state, and retrying the syscall would violate semantics. ThreadShift therefore ensures that syscalls executed on the stable machine never fault on their user buffers. Before entering the kernel, ThreadShift locks the corresponding pages in states compatible with the syscall for the entire duration of that syscall. Any incompatible worker request is delayed until the syscall returns. The same principle applies to long-lived kernel registrations: buffers remain locked until a matching deregistration call releases them. To avoid dead-lock, worker requests that wait too long are aborted and the offloads at their source are reloaded on the stable machine. 
+
+4.2 Dependency Tracking with MPKs 
+
+Efficient checkpointing requires identifying which threads have interacted, so that only dependent threads are check-pointed together. Dependencies arise through shared mem-ory: if a thread reads data produced by another, then check-pointing the reader also requires checkpointing the writer. A straightforward way to detect such interactions is to instrument all memory accesses or use standard page protec-tions. Both are too expensive: instrumentation slows every access, while page protections apply process-wide and would fault even when a thread rereads its own data. ThreadShift instead uses MPKs to obtain per-thread per-missions over memory. The key idea is to make the common case free: a thread should access its own working set without overhead, and only the first cross-thread access should fault. Intuitively, pages written by a thread are placed in groups that only it may access. When another thread later touches such a page, the fault reveals a dependency; ThreadShift records it and extends permissions via a PKRU update (§2.3), allowing later accesses to that group without further faults. If multiple threads write the same page or group, they are conservatively treated as mutually dependent. Since depen-dencies are tracked per offload interval, a thread loses access to all pages upon offload or checkpoint; later accesses rebuild its permissions and reveal dependencies for the new interval. Changing a page’s MPK group is expensive, so Thread-Shift cannot afford to move pages between groups on every trapped access or checkpoint. Instead, it uses mostly sta-ble groups that capture common access patterns (i.e., past readers and writers). This improves efficiency, but a page’s current group no longer precisely reflects recent accessors: treating all associated threads as dependent would be very conservative. ThreadShift therefore also tracks the groups a page has belonged to since its last checkpoint and combines that list with the permissions actually granted to threads, thereby recovering dependencies less conservatively without frequent group changes. Algorithm 1 shows this logic.  
+
+> 6ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs Preprint, arXiv, 2026
+
+Algorithm 1. Conservative dependency tracking on faults                                        
+
+> 1upon fault(thread t, page p, access rw):
+> 2curr_group =maybe_update_group(p, t, rw)
+> 3grant_access(t, curr_group, rw) // PKRU update
+> 4G=groups_since_last_checkpoint(p)
+> 5R, W={}, {}
+> 6for gin G:
+> 7R∪=threads_with_read_access(g)
+> 8W∪=threads_with_write_access(g)
+> 9record_dependencies(R, W)
+> 10 resume_execution(t)
+
+In the work-stealing scenario of Section 3.1, when 𝑇 2 first accesses a queue previously written by 𝑇 1, the access faults, revealing a dependency. ThreadShift records this dependency and extends 𝑇 2’s permissions so it can access the queue. Sub-sequent queue accesses incur no further cost, as permissions and dependencies have already been established. Eventually, checkpointing 𝑇 2 also checkpoints 𝑇 1, as shown in Figure 5. 
+
+4.3 Per-Thread Dirty Tracking with MPKs 
+
+Thread-level checkpointing requires identifying which pages the jointly checkpointed threads modified since their last checkpoint. ThreadShift builds on Linux’s soft-dirty mecha-nism [26], which tracks writes by clearing page write permis-sions and resetting a per-page “dirty” bit so that later writes fault and the kernel marks the corresponding pages dirty again. However, the stock mechanism operates at process granularity: clearing dirty bits affects all pages, requires scan-ning all memory, and typically forces stopping all threads to avoid missing concurrent writes, making it unsuitable for frequent fine-grained checkpointing. ThreadShift extends this mechanism to operate at the granularity of MPK groups. As discussed in Section 4.2, MPKs isolate the pages a thread may access and modify. When a set of threads is checkpointed, those threads are paused, and other threads do not have write access to their groups (and no new access is granted). ThreadShift can therefore safely scan just those groups, report the pages dirtied in the current interval, and clear their dirty bits so writes are tracked again for the next checkpoint, without pausing unrelated threads. This is implemented with a small kernel extension to the existing soft-dirty scan. Since that scan already iterates over all VMAs—contiguous memory ranges that notably have uni-form MPK groups—ThreadShift mainly adds a group-aware filter: for each VMA, the extension checks whether its group belongs to the jointly checkpointed threads, skips it other-wise, and clears dirty bits if it does. It then returns exactly the pages whose bits were cleared. As a result, ThreadShift processes only the pages relevant to the checkpoint without blocking other threads. For exam-ple, when 𝑇 1 is checkpointed (§3.1), only pages modified by 
+
+𝑇 1 are reported, while concurrent writes by 𝑇 2 are ignored. 
+
+Algorithm 2. Deferred page protection                                     
+
+> 1upon downgrade(page p, state s):
+> 2if safe_under_pkru(p, s): defer(p, s)
+> 3else :apply_protection(p, s)
+> 5upon pkru_update(thread t):
+> 6for each page pwith deferred protections:
+> 7if pkru_allows_violation(t, p, state(p)):
+> 8apply_protection(p, state(p))
+> 10 upon upgrade(page p, state s):
+> 11 cancel_deferred(p, s)
+
+4.4 Deferred Protection with MPKs 
+
+TMCP frequently needs to restrict accesses for coherence. For example, when a page is downgraded (e.g., to Invalid ), later accesses that violate its state must fault. Enforcing every such transition with standard page protection is expensive:  
+
+> mprotect
+
+incurs kernel crossings and TLB invalidations. ThreadShift instead observes that many downgrades are short-lived and predictable. When a thread is offloaded, pages such as its stack or working set are often transferred to a worker and then upgraded again when the thread reloads. During that interval, the thread is not running locally, so no protection is needed against it. ThreadShift therefore defers the protection whenever current MPK permissions already prevent other threads from violating the downgrade, and upgrades the page again before its usual accessors resume. Algorithm 2 shows the resulting logic, which applies on both the stable machine and workers using the MPK groups introduced in Section 4.2. Upon a page’s downgrade, Thread-Shift first checks whether current PKRU permissions already rule out accesses that would violate the new state. If so, the protection is deferred. It is applied only if a later PKRU up-date would make such accesses possible (e.g., when a thread resumes). If the page is upgraded first, the deferred protection is simply discarded. ThreadShift also prefetches pages and the permissions they will need after reload, so many deferred protections are canceled before they are ever applied. For example, when 𝑇 1 is offloaded, its stack is transferred to the worker and downgraded on the stable machine. Because 
+
+𝑇 1 is not running locally and other threads lack access to its stack under MPKs, the protection can be deferred. When 
+
+𝑇 1 later reloads, its stack is prefetched and upgraded, so the deferred protection is canceled without ever being applied. Standard page protections are still needed when current PKRU permissions do not already make the downgrade safe. For example, 𝑇 𝐶 may update on the stable machine a page that the worker can currently read through a larger group accessible to 𝑇 1 and 𝑇 2. If that page must be downgraded while the rest of the group remains accessible, some thread could still read it under its current group permissions. In that case, ThreadShift applies mprotect immediately.  
+
+> 7Preprint, arXiv, 2026 Antoine Murat, Clément Burgelin, and Rachid Guerraoui
+
+## 5 Implementation 
+
+Our prototype targets x86-64 Linux and consists of 9,229 lines of C++17. Most of ThreadShift is implemented in userspace, including offloading, memory coherence, and MPK-based dependency tracking. The only kernel component is a small extension to improve soft-dirty handling with groups (§4.3). 
+
+Hooking compute-heavy sections. ThreadShift is agnos-tic to how offload points are identified. In our prototype, we intercept calls to selected dynamic-library functions, moti-vated by the observation that many compute-intensive tasks rely on specialized libraries (e.g., ML frameworks, codecs, and numerical libraries [1, 23, 35, 63, 87]). For each such func-tion, a wrapper takes precedence at load time and initiates offloading before invoking the original function. 
+
+Handling faults and MPKs. ThreadShift relies on page fault signals to track dependencies and keep memory coher-ent. The manager installs signal handlers in the application, and workers install the same handlers in each thread pre-pared to host offloads. x86 MPKs provide only 16 groups per process, so ThreadShift dynamically merges and recycles groups to stay within this limit. When needed, groups cover-ing the fewest pages are merged, which may reduce precision but remains safe as it conservatively increases dependencies. 
+
+Tracking memory layout. ThreadShift maintains a copy of VMAs [33, 51, 96] to track which pages may be offloaded and with which rights. The manager initializes this state from  
+
+> /proc/self/maps
+
+and mirrors subsequent mapping changes (e.g., mmap , mprotect , brk ). It also detects mappings that can-not be safely offloaded (e.g., memory shared with other pro-cesses or device mappings) and forces reloads on access. To avoid conflicts with worker-private mappings, workers are restarted if necessary to obtain non-overlapping layouts. 
+
+Intercepting syscalls. We intercept all syscalls with neg-ligible overhead using zpoline [98]. This is used to trigger reloads or para-offloads on workers (§3.1, §3.3) and to lock user buffers and track VMAs on the stable machine (§4.1.2). 
+
+Isolating the manager. The manager runs in-process to control the application’s flow and resources without costly inter-process synchronization. To avoid interference, it is loaded with dlmopen and LM_ID_NEWLM [67], giving it a separate namespace and private copies of dependencies (e.g., libc ). As a result, only application code is instrumented and offloaded. 
+
+## 6 Evaluation 
+
+This section answers five questions: 1. When does ThreadShift lower deployment cost (§6.1)? 2. What is the cost of offloading and checkpointing (§6.2)? 3. How much does para-offloading amortize this cost (§6.3)? 4. What is the impact of worker reclamations (§6.4)? 5. How much does each MPK mechanism contribute (§6.5)? 
+
+Table 3. Configuration details of our c6i.8xlarge VMs.       
+
+> vCPU 8c/16t Intel Platinum 8375C @ 2.90–3.50 GHz
+> Memory 64 GiB DDR4 @ 3200 MT/s
+> Storage 10 Gbps 64 GiB EBS
+> Network 12.5 Gbps / Cluster placement (ping ≈65 μs)
+> Software Ubuntu 24.04.3 LTS / Linux 6.14.0-1011-aws
+
+Our testbed comprises AWS c6i VMs configured as per Table 3. Experiments run in Docker containers with CPU and memory limits matching that of cloud VMs [73]: compute ranges from 1x to 16x two-way hyper-threaded cores and memory from 4 to 64 GiB. All containers can page to EBS [7]. 
+
+6.1 End-to-End Benefits 
+
+This subsection asks when ThreadShift improves the cost efficiency of complete applications. 
+
+Methodology. Each ThreadShift deployment uses two containers on distinct machines: a weak stable machine and a stronger transient worker. All reported costs include both machines. We compare against two baselines: (1) a purely on-demand deployment, which provides the same guarantees as ThreadShift but uses only expensive resources; and (2) a purely transient deployment, which is cheaper but does not tolerate reclamations. Because transient prices vary across providers, regions, and time, we report through-put per dollar assuming a representative 60% transient dis-count [29, 53, 73]. This assumption is illustrative: changing the discount rescales the cost curves, but does not change the underlying throughput trends. We evaluate six applications spanning different compute-memory mixes, each built around widely used libraries. These includes image classification using PyTorch/ResNet50 [36, 63], speech transcription using Whisper.cpp [27], crypto-graphic workloads based on secp256k1 [94], and scientific computing using OneMKL [13, 19]. We also include two data-serving applications backed by SQLite [38] and std::map [20]. 
+
+6.1.1 Compute-heavy workloads. We first ask whether ThreadShift lowers the cost of compute-heavy workloads. For ML inference, we run 4–32 parallel instances either natively or via ThreadShift. Native deployments use just enough cores to run all instances in parallel. ThreadShift uses a 2-core stable machine and a worker with enough cores to host all offloads. PyTorch classifies batches of 1–32 images; Whisper.cpp transcribes 10-second samples. Offloading starts at inference and ends at batch or sample completion. Figure 6 shows that 4-thread ThreadShift deployments offer only marginal gains: the stable machine cost is still a large fraction of the total deployment cost. As parallelism grows, this fixed cost is amortized better. For PyTorch, 8- and 16-thread deployments improve throughput per dollar by up to 64% and 98%, respectively. At 32 threads, however, the stable machine becomes a bottleneck: starting at 16 threads       
+
+> 8ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs Preprint, arXiv, 2026 124816 32
+
+Batch size (log) 
+
+> 012
+> Normalized tput per $
+
+PyTorch (ResNet50) 
+
+> 012
+
+Whisper.cpp Threads 
+
+> 4816 32
+
+Figure 6. Normalized throughput per dollar of ML inference workloads. The red line ( 𝑦 =1) marks parity with a purely on-demand deployment; the purple line ( 𝑦 =2.5) is the upper bound given by a fully transient deployment under a 60% discount assumption. 1 4 16 64 256 
+
+Batch size (log) 
+
+> 012
+> Normalized tput per $
+
+ECDSA   
+
+> 1024 2Ki 4Ki 8Ki 16Ki
+
+Batch size (log) 
+
+> 012
+
+OneMKL Threads 
+
+> 4816 32
+
+Figure 7. Normalized throughput per dollar of pure-compute workloads, with the same interpretation as Figure 6. and striking at 32, memory pressure causes swapping during checkpoint writeback. Whisper.cpp writes back much less memory per offload than PyTorch (24 KiB vs. 38 MiB), so it scales better: 8-, 16-, and 32-thread deployments improve throughput per dollar by 58%, 101%, and 125%, respectively. Overall, ThreadShift can roughly halve the cost of infer-ence workloads with modest write sets. Yet, the contrast between PyTorch and Whisper.cpp highlights a key limi-tation of application-oblivious checkpointing: scratchpad memory is checkpointed even when it will never be read again. Supporting mechanisms to identify such scratchpad regions could further reduce checkpointing overhead. We next consider pure-compute workloads with little memory pressure. secp256k1 signs and verifies batches of 1– 256 signatures; OneMKL prices 2,000 options using 1Ki–16Ki Monte Carlo samples. Figure 7 shows the same overall trend. For batches of 256 signatures, 4-, 8-, 16-, and 32-thread ThreadShift deploy-ments improve throughput per dollar by 9%, 52%, 86%, and 114%, respectively. For OneMKL with 16Ki samples, the gains are 18%, 62%, 87%, and 103%. These workloads also show that useful offloads need not be long: ECDSA generation and ver-ification take only 32 μs and 42 μs, yet batches of 8 messages (about 0.6 ms of work) already amortize the offload cost. 8 64 512 4Ki 32Ki 
+
+Batch size (log) 
+
+> 0.00 0.25
+> Normalized tput per $
+
+std::map     
+
+> 864 512 4Ki 32Ki
+
+Batch size (log) 
+
+> 0.0 0.5
+
+SQLite    
+
+> ThreadShift SWAP READs WRITEs
+
+Figure 8. Normalized throughput per dollar of memory-heavy workloads relative to an on-demand deployment that keeps the full dataset in RAM. 
+
+6.1.2 Memory-heavy workloads. We next ask whether ThreadShift is useful when transient resources mainly pro-vide additional memory rather than compute. We evaluate SQLite and std::map on a 12 GiB dataset with read and write batches from 1 to 32Ki operations. We com-pare three deployments: (1) a pure on-demand deployment with enough RAM to hold all data, (2) a 4 GiB on-demand deployment forced to swap, and (3) ThreadShift combining a 4 GiB on-demand machine with a 16 GiB transient worker. A warm-up ensures the worker acquires the full dataset. Figure 8 shows that neither swapping nor ThreadShift beats keeping the dataset in on-demand RAM. For std::map ,swap-based deployments achieve only 0.4% of the normal-ized throughput of the RAM-resident baseline, while Thread-Shift reaches 18% for writes and 29% for reads. For SQLite, swap reaches 0.1% and 0.2% for 32Ki writes and reads, while ThreadShift reaches 60% and 68%. ThreadShift outperforms swapping because lookups run against RAM on the worker, but it remains worse than a fully RAM-resident deployment: checkpointing forces modified data back to the stable ma-chine, effectively reintroducing swapping. The takeaway is that ThreadShift is primarily a compute offloader: merely offloading memory is not enough. 
+
+6.2 Offloading and Checkpointing Latency 
+
+This subsection asks how much offloading costs in end-to-end latency, and how much faster ThreadShift checkpoints than coarse-grained process checkpointing. We use a synthetic workload in which one offloaded thread modifies 1–4Ki pages before reloading, and measure the end-to-end latency of the offload/reload cycle. To model contention, we also run 0, 3, or 7 independent background offloads on the same worker; each background thread repeat-edly writes 1–4Ki pages. We repeat each configuration 1,000 times and report medians. Figure 9 shows that the base latency of an offload that writes one page is 164 μs. Of this, about 65 μs comes from network latency, about 10 μs from checkpoint creation, and about 30 μs from local synchronization. With 3 or 7 back-ground offloads, the base latency rises modestly to 192 μs and        
+
+> 9Preprint, arXiv, 2026 Antoine Murat, Clément Burgelin, and Rachid Guerraoui 1416 64 100 500
+> 116 256 4Ki 100 1k 10k 100k
+> Duration (μs, log)
+
+Number of modified pages (log)   
+
+> 0 bg threads 3 bg threads 7 bg threads
+
+Figure 9. End-to-end offload latency for a thread that writes 1–4Ki pages, with 0, 3, or 7 independent background offloads. 1 16 256 4Ki 10 100 1k 10k    
+
+> ThreadShift
+> 116 256 4Ki 100k 60k 70k 80k 90k
+> CRIU
+> Checkpointing (μs, log)
+
+Number of modified pages (log)   
+
+> 0 bg threads 3 bg threads 7 bg threads
+
+Figure 10. Checkpoint latency for ThreadShift and CRIU after a thread writes 1–4Ki pages, with 0, 3, or 7 independent background threads running concurrently. 229 μs, mostly due to microarchitectural contention. Above 256 modified pages—when the working set exceeds cache capacity—latency grows roughly linearly with the write set and reaches about 30 ms at 4Ki pages. We then isolate checkpointing cost and compare against CRIU, the de facto process-level checkpointing system for Linux [80]. We do so by running the same workload natively and triggering a CRIU checkpoint whenever ThreadShift would reload. For fairness, CRIU uses incremental check-pointing and checkpoints to RAM. Figure 10 shows that ThreadShift checkpoints in 10–49 μs for a one-page write set, and in 13–20 ms for 4Ki pages. Cru-cially, this depends only on the pages written by the check-pointed thread, not on the size of the whole process. CRIU is over three orders of magnitude slower on small checkpoints, and remains substantially slower on large write sets. Its base latency is 61 ms because it checkpoints the full process state, including kernel objects. Moreover, CRIU cannot distinguish writes by unrelated threads, so its latency grows with both page count and thread count, reaching 67, 84, and 110 ms when 1, 4, and 8 threads each write 4Ki pages. It also pauses all background threads, whereas ThreadShift pauses only the threads being checkpointed. Thus, ThreadShift’s thread granularity and partial offload-ing reduce checkpoint latency from tens of milliseconds to tens of microseconds on small write sets. 0 50 100 150 
+
+Throughput (kOps) 
+
+> 01
+> Latency (ms)
+> b=2 b=16 b=128
+
+Processing of 5 μs   
+
+> 0510
+
+Throughput (kOps) 
+
+> 0510 15 b=2 b=16 b=128
+
+Processing of 100 μs   
+
+> Compute offload +Network para-offload No offload
+
+Figure 11. Latency/throughput tradeoff for a server de-ployed natively, with plain offloading, or with network para-offloading. 
+
+6.3 Network Para-Offloading 
+
+This subsection asks whether para-offloading enables net-worked servers to benefit from ThreadShift despite short per-request compute times. We build a server that replies to 128 B requests with 128 B replies after a configurable processing delay. We deploy it (1) natively, (2) with plain ThreadShift offloading, and (3) with ThreadShift plus network para-offloading. In the last case, requests are forwarded directly to the worker and replies are batched; we vary the batch size from 2 to 128. A client with 1 ms ping sends 8Ki requests, from which we measure throughput and latency. Figure 11 shows that for 5 μs requests, native throughput is 138 kOps at 1 ms latency. Plain offloading almost preserves latency but drops throughput to 5.7 kOps, as each request in-curs a full offload/reload cycle. Batching restores throughput: batches of 64 replies reach 112 kOps at 1.28 ms. For 100 μs requests, native throughput is 9.7 kOps, while plain offloading reaches 3.7 kOps. Here the base offload cost is better amortized, and batching only needs to be modest: batches of 8 replies reach 8.1 kOps with 1.5 ms latency. Thus, network para-offloading brings ThreadShift close to native per-core throughput for server workloads, at the cost of a modest latency increase. 
+
+6.4 Impact of Reclamations 
+
+We now evaluate the performance impact of reclamations. We measure the throughput of the secp256k1 workload while reclaiming its worker. We use batch sizes of 128, 512, and 4Ki, which determine how often the offloaded thread returns and therefore bound the amount of work that may be lost. We consider two cases: sudden reclamations, which lose all work since the last checkpoint, and notified reclamations, which allow threads to return before the worker disappears. After reclamation, execution continues briefly on the stable machine before being re-offloaded to a fresh worker. Figure 12 shows that sudden reclamations cause a through-put dip proportional to the amount of in-flight work. For batch size 512, the dip is narrow, indicating that most of the cost is recomputation rather than failover. With notifications,       
+
+> 10 ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs Preprint, arXiv, 2026 0.0 0.5 1.0 1.5 2.0 2.5
+
+Time (s) 
+
+> 010 20 30
+> Throughput (MOps)
+
+Sudden reclamation      
+
+> 0.0 0.5 1.0 1.5 2.0 2.5
+
+Time (s) 
+
+> 010 20 30
+
+Notified reclamation    
+
+> Batch size: 512 2048 8196
+
+Figure 12. Throughput during sudden and notified worker reclamations for three offload durations. 16 256 4Ki 0.0 0.5 1.0     
+
+> 1 short thread
+> 16 256 4Ki 0.0 0.5 1.0
+> 3 short threads
+> 16 256 4Ki 0.0 0.5 1.0
+> 7 short threads
+> Normalized tput
+
+Number of pages modified by short threads (log)  
+
+> Dep. tracking on Dep. tracking off
+
+Figure 13. Throughput of the long-running offload with dependency tracking disabled, normalized to the full system. no work is lost, but throughput still dips briefly while threads return and a new worker is initialized. The cold-start penalty lasts for roughly two offloads, during which VMAs, code, and MPK groups are re-established. Overall, reclamations cause only a brief throughput dip, mainly proportional to the amount of lost work. Notifications reduce this overhead, but are not required for fast recovery. 
+
+6.5 Mechanism Ablations 
+
+This subsection investigates how much each MPK-based mechanism contributes in isolation. 
+
+Dependency tracking. We first disable the MPK-based dependency tracker while keeping the rest of ThreadShift unchanged. We use a synthetic application with one long-running offloaded thread and 1, 3, or 7 short-running ones. Short threads repeatedly write 16–4Ki pages in batches of 1,000 iterations, while the long-running thread writes 16 pages per batch but runs for 10M iterations. Without depen-dency tracking, every checkpoint of a short thread at the end of a batch also checkpoints the long-running one. Figure 13 shows that unnecessary joint checkpoints are very costly. When short threads write only 16 pages, the throughput of the long-running thread drops by 64%, 76%, and 90% with 1, 3, and 7 short threads, respectively. De-pendency tracking is therefore essential when threads have mismatched checkpoint frequencies. 
+
+Dirty tracking. We next disable the per-group soft-dirty kernel extension while keeping dependency tracking en-abled, using the same workload as above. 16 256 4Ki 0.0 0.5 1.0     
+
+> 1 short thread
+> 16 256 4Ki 0.0 0.5 1.0
+> 3 short threads
+> 16 256 4Ki 0.0 0.5 1.0
+> 7 short threads
+> Normalized tput
+
+Number of pages modified by short threads (log)  
+
+> Per-thread dirty tracking Global dirty tracking
+
+Figure 14. Throughput of the long-running offload with per-thread dirty tracking disabled, normalized to the full system. 1 16 256 4Ki 0.0 0.5 1.0       
+
+> Pages written 1x
+> 116 256 4Ki 0.0 0.5 1.0
+> Pages written 64x
+> 116 256 4Ki 0.0 0.5 1.0
+> Pages written 4096x
+> Normalized tput
+
+Number of modified pages (log)    
+
+> Full Pref. only Def. only None
+
+Figure 15. Normalized throughput with deferred protection fully enabled, partially enabled, or disabled. Figure 14 shows a similar but stronger degradation. With-out per-group dirty tracking, reading and clearing soft-dirty bits requires stopping the entire application to avoid missing concurrent writes. As a result, even threads unrelated to the checkpoint are repeatedly paused. Under frequent check-pointing, these global pauses accumulate and significantly reduce throughput. Per-thread dirty tracking restricts dirty-bit handling to the relevant threads and is therefore critical to preserve concurrency during frequent checkpointing. 
+
+Deferred protection. Finally, we evaluate deferred protec-tion on a synthetic workload with one offloaded thread that repeatedly writes a configurable number of pages. At each offload, ownership of the thread’s stack moves to the worker and then back to the stable machine on reload. We com-pare the full mechanism against variants with only prefetch-ing (anticipating page upgrades), only deferred protections (delaying them until allowed PKRU accesses would violate permissions), and neither optimization. Figure 15 shows that deferred protection matters primar-ily for short offloads. When pages are touched only once, disabling the mechanism reduces throughput by up to 73%. Prefetching alone already doubles throughput by avoiding many faults and coherence round trips. In contrast, deferred protections alone bring little benefit: when the thread reloads, pages such as its stack remain in a downgraded state with de-ferred protections, which become unsafe and must therefore be enforced. As a result, the protection cost is merely shifted in time rather than avoided, and remains on the critical path. Combining both techniques avoids most protection syscalls and yields a further gain of up to 19%.  
+
+> 11 Preprint, arXiv, 2026 Antoine Murat, Clément Burgelin, and Rachid Guerraoui
+
+These ablations show a clear division of labor: dependency tracking avoids unnecessary joint checkpoints, per-thread dirty tracking prevents unrelated threads from being stalled, and deferred protection and prefetching remove much of the coherence overhead of short offloads. 
+
+## 7 Discussion, Limitations & Extensions 
+
+When is ThreadShift effective? ThreadShift is most ef-fective for applications whose hot paths are compute-heavy, have modest write sets, and amortize offloading over re-peated work. It is less effective for memory-bound applica-tions or workloads that modify large data, as checkpointing must write these changes back to the stable machine. 
+
+The role of MPKs. MPKs help make ThreadShift practical for multi-threaded applications. They enable ThreadShift to track dependencies efficiently, track writes without global synchronization, and defer memory protections. Without MPKs, these mechanisms would be much more expensive. 
+
+Automatically identifying offload points. Our proto-type offloads at selected shared-library calls, which capture many compute-heavy regions in practice. Automatically identifying profitable offload points would improve usability, but appears challenging in practice. 
+
+Leveraging faster data paths. ThreadShift’s efficiency depends on data movement latency. Faster networking, e.g., RDMA, could reduce offload and checkpoint costs. How-ever, integrating direct memory access with protections is challenging due to concurrency and coherence constraints. 
+
+Signals and vDSOs. Our prototype does not support sig-nals and requires disabling vDSOs. Signals introduce asyn-chronous control flow that complicates migration and check-pointing, while vDSOs rely on invariants that do not hold across machines. Supporting both would improve compati-bility but requires careful handling. 
+
+## 8 Related Work 
+
+ThreadShift relates to prior work on transient computing, checkpointing and migration, compute offloading, and Mem-ory Protection Keys (MPKs). 
+
+Reclamation-Tolerant Applications. Prior work stud-ied how to design applications for transient resources, includ-ing data stores [12, 91, 95], ML training systems [9, 84, 89], web services [5, 101], and batch processors [47, 78]. These approaches rely on statelessness or recomputation [5, 9, 78, 84, 101], or use replication [12, 91, 95]. More generally, crash-tolerant applications may still fail under frequent, correlated reclamations [6], which follow a different fault model. Frame-works like Kappa [100] structure applications to support checkpointing, but require rewriting. In contrast, Thread-Shift operates transparently on unmodified applications. 
+
+Transparent Checkpointing & Migration. Checkpoint-ing and migration have been widely studied for VMs [34, 37, 45, 58, 93], processes [8, 15, 25, 40, 56, 59, 60, 65, 66, 69, 70, 80, 81, 102, 103], containers [64, 77, 86], and managed run-times [72, 85, 105]. Recent work extends these techniques to transient environments [16, 42, 74, 75], but assume suffi-cient time to migrate. ThreadShift instead tolerates abrupt reclamations without such assumptions. Like prior systems, ThreadShift uses incremental check-pointing [25]. Existing approaches detect modified pages via instrumentation [88], hardware dirty bits [76], or OS support such as CRIU’s soft-dirty mechanism [26, 80]. ThreadShift extends the latter to thread granularity using MPKs, enabling fast checkpointing without pausing unrelated threads. 
+
+Compute Offloading. Several systems support partial offloading of computation. Some target managed runtimes such as the JVM [30, 46, 104, 105], while others provide frame-works for writing offloadable applications [17, 21, 44, 57, 61, 71]. Distributed shared-memory systems [24, 39, 52, 82] pro-vide a shared-memory abstraction across machines but re-quire application changes. Rapid [55] focuses on GPU offload-ing. In contrast, ThreadShift offloads threads of unmodified native applications with transparent memory coherence. 
+
+Memory Protection Keys. MPKs have primarily been used for isolation and security, including execute-only mem-ory [49], synchronization debugging [4], memory monitor-ing [92], and library sandboxing [11], as well as language-level isolation [28, 43]. Other work uses MPKs for fast in-process isolation [48, 97] or intra-kernel protection [31]. In contrast, ThreadShift uses MPKs not for security, but to track inter-thread dependencies, identify per-thread memory mod-ifications, and reduce the cost of enforcing coherence. Several systems address MPK limitations, such as key vir-tualization [32, 62, 99] and hardware extensions [3]. These approaches are complementary to ThreadShift. 
+
+## 9 Conclusion 
+
+We presented ThreadShift, the first system that transparently offloads threads of unmodified Linux applications to tran-sient resources while preserving correctness under reclama-tions. By operating at thread granularity, ThreadShift enables fast checkpoints and offloads only compute-heavy tasks. The main challenge is to checkpoint individual threads despite shared memory. ThreadShift addresses it with three novel MPK-based mechanisms that track inter-thread de-pendencies, identify per-thread memory modifications, and reduce the cost of enforcing coherence across machines. Our prototype shows that these mechanisms make trans-parent thread-level offloading practical on commodity clouds. ThreadShift offloads in as little as 164 μs, checkpoints up to three orders of magnitude faster than CRIU, and reduces deployment cost by up to 56% vs on-demand deployments. 
+
+> 12
+
+ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs Preprint, arXiv, 2026 
+
+## References 
+
+[1] Martín Abadi, Ashish Agarwal, Paul Barham, Eugene Brevdo, Zhifeng Chen, Craig Citro, Greg S. Corrado, Andy Davis, Jeffrey Dean, Matts Dusenberry, Sanjay Ghemawat, Ian Goodfellow, Andrew Harp, Ge-offrey Irving, Michael Isard, Yangqing Jia, Rafal Jozefowicz, Lukasz Kaiser, Menglong Zhu, Rajat Monga, Sherry Moore, Derek Murray, Chris Olah, David Petrov, Pieter Abbeel, Ruslan Salakhutdinov, Ilya Sutskever, Kunal Talwar, Paul Tucker, Vijay Vasudevan, Fernanda Viegas, Martin Wattenberg, Martin Wicke, Yuan Yu, and Xiaoqiang Zheng. 2015. TensorFlow: Large-Scale Machine Learning on Hetero-geneous Systems. https://www.tensorflow.org/ 
+
+[2] Abbas Acar, Hidayet Aksu, A. Selcuk Uluagac, and Mauro Conti. 2018. A Survey on Homomorphic Encryption Schemes: Theory and Implementation. ACM Comput. Surv. 51, 4, Article 79 (July 2018), 35 pages. doi: 10.1145/3214303 
+
+[3] Debpratim Adak, Huiyang Zhou, Eric Rotenberg, and Amro Awad. 2025. SpecMPK: Efficient In-Process Isolation with Speculative and Secure Permission Update Instruction. In Proceedings of the IEEE International Symposium on High-Performance Computer Architecture (HPCA) (HPCA ’25) .[4] Adil Ahmad, Sangho Lee, Pedro Fonseca, and Byoungyoung Lee. 2021. Kard: lightweight data race detection with per-thread memory protection. In Proceedings of the 26th ACM International Conference on Architectural Support for Programming Languages and Operating Systems (Virtual, USA) (ASPLOS ’21) . Association for Computing Ma-chinery, New York, NY, USA, 647–660. doi: 10.1145/3445814.3446727 
+
+[5] Ahmed Ali-Eldin, Jonathan Westin, Bin Wang, Prateek Sharma, and Prashant Shenoy. 2019. SpotWeb: Running Latency-sensitive Dis-tributed Web Services on Transient Cloud Servers. In Proceedings of the 28th International Symposium on High-Performance Parallel and Distributed Computing (Phoenix, AZ, USA) (HPDC ’19) . As-sociation for Computing Machinery, New York, NY, USA, 1–12. doi: 10.1145/3307681.3325397 
+
+[6] Abdullah Alourani, Ajay D. Kshemkalyani, and Mark Grechanik. 2020. T-BASIR: Finding Shutdown Bugs for Cloud-Based Applications in Cloud Spot Markets. IEEE Transactions on Parallel and Distributed Systems 31, 8 (2020), 1912–1924. doi: 10.1109/TPDS.2020.2980265 
+
+[7] Inc. Amazon Web Services. 2025. Amazon Elastic Block Store (EBS) — High-Performance Block Storage. https://aws.amazon.com/ebs/ .Accessed: 2025-09-18. [8] Y. Artsy and R. Finkel. 1989. Designing a process migration facility: the Charlotte experience. Computer 22, 9 (1989), 47–56. doi: 10.1109/ 2.35213 
+
+[9] Sanjith Athlur, Nitika Saran, Muthian Sivathanu, Ramachandran Ram-jee, and Nipun Kwatra. 2022. Varuna: scalable, low-cost training of massive deep learning models. In Proceedings of the Seventeenth Euro-pean Conference on Computer Systems (Rennes, France) (EuroSys ’22) .Association for Computing Machinery, New York, NY, USA, 472–487. doi: 10.1145/3492321.3519584 
+
+[10] Alex Biryukov, Daniel Dinu, and Dmitry Khovratovich. 2016. Argon2: New Generation of Memory-Hard Functions for Password Hashing and Other Applications. In 2016 IEEE European Symposium on Security and Privacy (EuroS&P) . 292–302. doi: 10.1109/EuroSP.2016.31 
+
+[11] William Blair, William Robertson, and Manuel Egele. 2023. Thread-Lock: Native Principal Isolation Through Memory Protection Keys. In Proceedings of the 2023 ACM Asia Conference on Computer and Communications Security (Melbourne, VIC, Australia) (ASIA CCS ’23) .Association for Computing Machinery, New York, NY, USA, 966–979. doi: 10.1145/3579856.3595797 
+
+[12] Malte Brodmann, Nikolas Ioannou, Bernard Metzler, Jonas Pfefferle, and Ana Klimovic. 2022. An Elastic Ephemeral Datastore using Cheap, Transient Cloud Resources. arXiv preprint arXiv:2205.11261 (2022). doi: 10.48550/arXiv.2205.11261 
+
+[13] Marek Capiński and Ekkehard Kopp. 2012. The Black–Scholes Model .Cambridge University Press. doi: 10.1017/CBO9781139026130 
+
+[14] K. Mani Chandy and Leslie Lamport. 1985. Distributed snapshots: determining global states of distributed systems. ACM Trans. Comput. Syst. 3, 1 (Feb. 1985), 63–75. doi: 10.1145/214451.214456 
+
+[15] David R. Cheriton and Willy Zwaenepoel. 1983. The distributed V kernel and its performance for diskless workstations. SIGOPS Oper. Syst. Rev. 17, 5 (Oct. 1983), 129–140. doi: 10.1145/773379.806621 
+
+[16] Ho-Ren Chuang, Karim Manaouil, Tong Xing, Antonio Barbalace, Pierre Olivier, Balvansh Heerekar, and Binoy Ravindran. 2023. Ag-gregate VM: Why Reduce or Evict VM’s Resources When You Can Borrow Them From Other Nodes?. In Proceedings of the Eighteenth European Conference on Computer Systems (Rome, Italy) (EuroSys ’23) .Association for Computing Machinery, New York, NY, USA, 469–487. doi: 10.1145/3552326.3587452 
+
+[17] Byung-Gon Chun, Sunghwan Ihm, Petros Maniatis, Mayur Naik, and Ashwin Patti. 2011. CloneCloud: elastic execution between mobile device and cloud. In Proceedings of the Sixth Conference on Computer Systems (Salzburg, Austria) (EuroSys ’11) . Association for Computing Machinery, New York, NY, USA, 301–314. doi: 10.1145/ 1966445.1966473 
+
+[18] Intel Corporation. 2019. Intel® 64 and IA-32 Architectures Soft-ware Developer’s Manual (volume 3: system programming guide ed.). https://www.intel.com/content/www/us/en/developer/articles/ technical/intel-sdm.html Accessed: December 6, 2024. [19] Intel Corporation. 2024. Intel® oneAPI Math Kernel Library (oneMKL). https://www.intel.com/content/www/us/en/developer/ tools/oneapi/onemkl.html Accessed: December 6, 2024. [20] The cppreference contributors. 2024. std::map - C++ Reference. https: //en.cppreference.com/w/cpp/container/map Accessed: December 6, 2024. [21] Eduardo Cuervo, Aruna Balasubramanian, Dae-ki Cho, Alec Wolman, Stefan Saroiu, Ranveer Chandra, and Paramvir Bahl. 2010. MAUI: making smartphones last longer with code offload. In Proceedings of the 8th International Conference on Mobile Systems, Applications, and Services (San Francisco, California, USA) (MobiSys ’10) . Association for Computing Machinery, New York, NY, USA, 49–62. doi: 10.1145/ 1814433.1814441 
+
+[22] Brendan Cully, Geoffrey Lefebvre, Dutch Meyer, Mike Feeley, Norm Hutchinson, and Andrew Warfield. 2008. Remus: high availability via asynchronous virtual machine replication. In Proceedings of the 5th USENIX Symposium on Networked Systems Design and Implementa-tion (San Francisco, California) (NSDI’08) . USENIX Association, USA, 161–174. doi: 10.5555/1387589.1387601 
+
+[23] FFmpeg Developers. 2000–. FFmpeg . FFmpeg. https://ffmpeg.org/ 
+
+Accessed: December 6, 2024. [24] Bozhidar Dimitrov and Vernon Rego. 1998. Arachne: A Portable Threads System Supporting Migrant Threads on Heterogeneous Net-work Farms. IEEE Trans. Parallel Distrib. Syst. 9, 5 (may 1998), 459–469. doi: 10.1109/71.679216 
+
+[25] E. N. (Mootaz) Elnozahy, Lorenzo Alvisi, Yi-Min Wang, and David B. Johnson. 2002. A survey of rollback-recovery protocols in message-passing systems. ACM Comput. Surv. 34, 3 (Sept. 2002), 375–408. doi: 10.1145/568522.568525 
+
+[26] Pavel Emelyanov. 2013. Soft-Dirty PTEs. The Linux Kernel doc-umentation (v6.1). https://www.kernel.org/doc/html/v6.1/admin-guide/mm/soft-dirty.html Accessed: 2025-08-27. [27] Georgi Gerganov and other whisper.cpp contributors. 2024. whis-per.cpp: Port of OpenAI’s Whisper model in C/C++. https://github. com/ggerganov/whisper.cpp 
+
+[28] Adrien Ghosn, Marios Kogias, Mathias Payer, James R. Larus, and Edouard Bugnion. 2021. Enclosure: language-based restriction of 13 Preprint, arXiv, 2026 Antoine Murat, Clément Burgelin, and Rachid Guerraoui 
+
+untrusted libraries. In Proceedings of the 26th ACM International Con-ference on Architectural Support for Programming Languages and Op-erating Systems (Virtual, USA) (ASPLOS ’21) . Association for Comput-ing Machinery, New York, NY, USA, 255–267. doi: 10.1145/3445814. 3446728 
+
+[29] Google. 2024. Google Cloud Documentation: Spot VMs. https:// cloud.google.com/compute/docs/instances/spot Accessed: December 6, 2024. [30] Mark S. Gordon, D. Anoushe Jamshidi, Scott Mahlke, Z. Morley Mao, and Xu Chen. 2012. COMET: code offload by migrating execution transparently. In Proceedings of the 10th USENIX Conference on Op-erating Systems Design and Implementation (Hollywood, CA, USA) 
+
+(OSDI’12) . USENIX Association, USA, 93–106. doi: 10.5555/2387880. 2387890 
+
+[31] Spyridoula Gravani, Mohammad Hedayati, John Criswell, and Michael L. Scott. 2021. Fast Intra-kernel Isolation and Security with IskiOS. In Proceedings of the 24th International Symposium on Research in Attacks, Intrusions and Defenses (San Sebastian, Spain) (RAID ’21) .Association for Computing Machinery, New York, NY, USA, 119–134. doi: 10.1145/3471621.3471849 
+
+[32] Jinyu Gu, Hao Li, Wentai Li, Yubin Xia, and Haibo Chen. 2022. EPK: Scalable and Efficient Memory Protection Keys. In 2022 USENIX An-nual Technical Conference (USENIX ATC 22) . USENIX Association, Carlsbad, CA, 609–624. https://www.usenix.org/conference/atc22/ presentation/gu-jinyu 
+
+[33] Siddharth Gupta, Atri Bhattacharyya, Yunho Oh, Abhishek Bhat-tacharjee, Babak Falsafi, and Mathias Payer. 2021. Rebooting virtual memory with midgard. In Proceedings of the 48th Annual International Symposium on Computer Architecture (Virtual Event, Spain) (ISCA ’21) . IEEE Press, 512–525. doi: 10.1109/ISCA52012.2021.00047 
+
+[34] Kiryong Ha, Yoshihisa Abe, Thomas Eiszler, Zhuo Chen, Wenlu Hu, Brandon Amos, Rohit Upadhyaya, Padmanabhan Pillai, and Mahadev Satyanarayanan. 2017. You can teach elephants to dance: agile VM handoff for edge computing. In Proceedings of the Second ACM/IEEE Symposium on Edge Computing (San Jose, California) (SEC ’17) . As-sociation for Computing Machinery, New York, NY, USA, Article 12, 14 pages. doi: 10.1145/3132211.3134453 
+
+[35] Charles R Harris, K Jarrod Millman, Stéfan J Van Der Walt, Ralf Gom-mers, Pauli Virtanen, David Cournapeau, Eric Wieser, Julian Taylor, Sebastian Berg, Nathaniel J Smith, et al. 2020. Array programming with NumPy. Nature 585, 7825 (2020), 357–362. doi: 10.1038/s41586-020-2649-2 
+
+[36] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016. Deep Residual Learning for Image Recognition. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR) . doi: 10. 1109/CVPR.2016.90 
+
+[37] Michael R. Hines and Kartik Gopalan. 2009. Post-copy based live virtual machine migration using adaptive pre-paging and dynamic self-ballooning. In Proceedings of the 2009 ACM SIGPLAN/SIGOPS International Conference on Virtual Execution Environments (Wash-ington, DC, USA) (VEE ’09) . Association for Computing Machinery, New York, NY, USA, 51–60. doi: 10.1145/1508293.1508301 
+
+[38] Richard Hipp and other SQLite contributors. 2024. SQLite. https: //www.sqlite.org/index.html Accessed: December 6, 2024. [39] Ayal Itzkovitz, Assaf Schuster, and Lea Shalev. 1998. Thread migration and its applications in distributed shared memory systems. J. Syst. Softw. 42, 1 (jul 1998), 71–87. doi: 10.1016/S0164-1212(98)00008-9 
+
+[40] G.J. Janakiraman, J.R. Santos, D. Subhraveti, and Y. Turner. 2005. Cruz: Application-Transparent Distributed Checkpoint-Restart on Standard Operating Systems. In 2005 International Conference on Dependable Systems and Networks (DSN’05) . 260–269. doi: 10.1109/DSN.2005.33 
+
+[41] Hrvoje Jasak, Aleksandar Jemcov, Zeljko Tukovic, et al. 2007. Open-FOAM: A C++ library for complex physics simulations. In Interna-tional workshop on coupled methods in numerical dynamics , Vol. 1000. Dubrovnik, Croatia), 1–20. [42] Qin Jia, Zhiming Shen, Weijia Song, Robbert van Renesse, and Hakim Weatherspoon. 2016. Smart spot instances for the supercloud. In 
+
+Proceedings of the 3rd Workshop on CrossCloud Infrastructures & Plat-forms, CrossCloud@EuroSys 2016, London, United Kingdom, April 18-21, 2016 , Yehia Elkhatib and Mohamed Faten Zhani (Eds.). ACM, 5:1–5:6. doi: 10.1145/2904111.2904114 
+
+[43] Paul Kirth, Mitchel Dickerson, Stephen Crane, Per Larsen, Adrian Dabrowski, David Gens, Yeoul Na, Stijn Volckaert, and Michael Franz. 2022. PKRU-safe: automatically locking down the heap between safe and unsafe languages. In Proceedings of the Seventeenth European Conference on Computer Systems (Rennes, France) (EuroSys ’22) . As-sociation for Computing Machinery, New York, NY, USA, 132–148. doi: 10.1145/3492321.3519582 
+
+[44] Sokol Kosta, Andrius Aucinas, Pan Hui, Richard Mortier, and Xinwen Zhang. 2012. ThinkAir: Dynamic resource allocation and parallel execution in the cloud for mobile code offloading. In 2012 Proceedings IEEE INFOCOM . 945–953. doi: 10.1109/INFCOM.2012.6195845 
+
+[45] Horacio Andrés Lagar-Cavilla, Joseph Andrew Whitney, Adin Matthew Scannell, Philip Patchin, Stephen M. Rumble, Eyal de Lara, Michael Brudno, and Mahadev Satyanarayanan. 2009. SnowFlock: rapid virtual machine cloning for cloud computing. In 
+
+Proceedings of the 4th ACM European Conference on Computer Systems 
+
+(Nuremberg, Germany) (EuroSys ’09) . Association for Computing Machinery, New York, NY, USA, 1–12. doi: 10.1145/1519065.1519067 
+
+[46] Jaemin Lee, Yuhun Jun, and Euiseong Seo. 2017. An enhanced DSM model for computation offloading. In 2017 IEEE International Confer-ence on Pervasive Computing and Communications (PerCom) . IEEE, 69–78. doi: 10.1109/PERCOM.2017.7917852 
+
+[47] Heshan Lin, Xiaosong Ma, and Wu-chun Feng. 2012. Reliable MapRe-duce computing on opportunistic resources. Clust. Comput. 15, 2 (2012), 145–161. doi: 10.1007/S10586-011-0158-7 
+
+[48] Jiazhen Lin, Youmin Chen, Shiwei Gao, and Youyou Lu. 2024. Fast Core Scheduling with Userspace Process Abstraction. In Proceedings of the ACM SIGOPS 30th Symposium on Operating Systems Principles 
+
+(Austin, TX, USA) (SOSP ’24) . Association for Computing Machinery, New York, NY, USA, 280–295. doi: 10.1145/3694715.3695976 
+
+[49] Daiping Liu, Mingwei Zhang, and Ravi Sahita. 2018. eXecutable-Only Memory-Switch (XOM-Switch). In Black Hat Asia Briefings . Black Hat Asia. [50] Tongping Liu, Charlie Curtsinger, and Emery D. Berger. 2011. Dthreads: efficient deterministic multithreading. In Proceedings of the Twenty-Third ACM Symposium on Operating Systems Principles 
+
+(Cascais, Portugal) (SOSP ’11) . Association for Computing Machinery, New York, NY, USA, 327–336. doi: 10.1145/2043556.2043587 
+
+[51] Artemiy Margaritov, Dmitrii Ustiugov, Edouard Bugnion, and Boris Grot. 2019. Prefetched Address Translation. In Proceedings of the 52nd Annual IEEE/ACM International Symposium on Microarchitec-ture (Columbus, OH, USA) (MICRO ’52) . Association for Computing Machinery, New York, NY, USA, 1023–1036. doi: 10.1145/3352460. 3358294 
+
+[52] Edward Mascarenhas and Vernon Rego. 1996. Ariadne: Architecture of a portable threads system supporting thread migration. Software: Practice and Experience 26, 3 (1996), 327–356. [53] Microsoft. 2024. Azure Spot Virtual Machines pricing. https://azure. microsoft.com/en-us/pricing/spot-advisor/ Accessed: December 6, 2024. [54] Microsoft. 2024. Use Azure Spot Virtual Machines. https://learn. microsoft.com/en-us/azure/virtual-machines/spot-vms Accessed: December 6, 2024. [55] Raffaele Montella, Sokol Kosta, David Oro, Javier Vera, Carles Fernán-dez, Carlo Palmieri, Diana Di Luccio, Giulio Giunta, Marco Lapegna, and Giuliano Laccetti. 2017. Accelerating Linux and Android appli-cations on low-power devices through remote GPGPU offloading. 14 ThreadShift: Transparent Thread-Level Offloading on Transient Cloud Resources Using MPKs Preprint, arXiv, 2026 
+
+Concurrency and Computation: Practice and Experience 29, 24 (2017). arXiv:https://onlinelibrary.wiley.com/doi/pdf/10.1002/cpe.4286 doi: 10.1002/cpe.4286 
+
+[56] Sape J. Mullender, Guido van Rossum, Andrew S. Tanenbaum, Robbert van Renesse, and Hans van Staveren. 1990. Amoeba: A Distributed Operating System for the 1990s. Computer 23, 5 (May 1990), 44–53. doi: 10.1109/2.53354 
+
+[57] S. Nithya, M. Sangeetha, K. N. Apinaya Prethi, Kshira Sagar Sa-hoo, Sanjaya Kumar Panda, and Amir H. Gandomi. 2020. SDCF: A Software-Defined Cyber Foraging Framework for Cloudlet Envi-ronment. IEEE Trans. on Netw. and Serv. Manag. 17, 4 (dec 2020), 2423–2435. doi: 10.1109/TNSM.2020.3015657 
+
+[58] Pierre Olivier, A. K. M. Fazla Mehrab, Stefan Lankes, Mo-hamed Lamine Karaoui, Robert Lyerly, and Binoy Ravindran. 2019. HEXO: Offloading HPC Compute-Intensive Workloads on Low-Cost, Low-Power Embedded Systems. In Proceedings of the 28th Interna-tional Symposium on High-Performance Parallel and Distributed Com-puting (Phoenix, AZ, USA) (HPDC ’19) . Association for Computing Machinery, New York, NY, USA, 85–96. doi: 10.1145/3307681.3325408 
+
+[59] Steven Osman, Dinesh Subhraveti, Gong Su, and Jason Nieh. 2003. The design and implementation of Zap: a system for migrating com-puting environments. SIGOPS Oper. Syst. Rev. 36, SI (Dec. 2003), 361–376. doi: 10.1145/844128.844162 
+
+[60] John K. Ousterhout, Andrew R. Cherenson, Frederick Douglis, Michael N. Nelson, and Brent B. Welch. 1988. The Sprite Network Operating System. Computer 21, 2 (Feb. 1988), 23–36. doi: 10.1109/2.16 
+
+[61] Sehoon Park, Qichen Chen, Hyuck Han, and Heon Y. Yeom. 2014. Design and evaluation of mobile offloading system for web-centric devices. J. Netw. Comput. Appl. 40, C (April 2014), 105–115. doi: 10. 5555/2773807.2774033 
+
+[62] Soyeon Park, Sangho Lee, Wen Xu, Hyungon Moon, and Taesoo Kim. 2019. Libmpk: software abstraction for intel memory protection keys (intel MPK). In Proceedings of the 2019 USENIX Conference on Usenix Annual Technical Conference (Renton, WA, USA) (USENIX ATC ’19) .USENIX Association, USA, 241–254. [63] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison, Andreas Köpf, Edward Yang, Zach DeVito, Martin Raison, Alykhan Tejani, Sasank Chil-amkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and Soumith Chintala. 2019. PyTorch: an imperative style, high-performance deep learning library . Curran Associates Inc., Red Hook, NY, USA. doi: 10.5555/ 3454287.3455008 
+
+[64] Simon Pickartz, Niklas Eiling, Stefan Lankes, Lukas Razik, and An-tonello Monti. 2016. Migrating LinuX Containers Using CRIU. In High Performance Computing , Michela Taufer, Bernd Mohr, and Julian M. Kunkel (Eds.). Springer International Publishing, Cham, 674–684. [65] Gerald J. Popek and Bruce J. Walker. 1986. The LOCUS distributed system architecture . Massachusetts Institute of Technology, USA. [66] Michael L. Powell and Barton P. Miller. 1983. Process migration in DEMOS/MP. SIGOPS Oper. Syst. Rev. 17, 5 (Oct. 1983), 110–119. doi: 10.1145/773379.806619 
+
+[67] GNU Project. 2024. dlopen(3) — Linux manual page . https://man7. org/linux/man-pages/man3/dlmopen.3.html 
+
+[68] GNU Project. 2025. ld.so(8) — Linux manual page . https://man7.org/ linux/man-pages/man8/ld.so.8.html 
+
+[69] Richard F. Rashid and George G. Robertson. 1981. Accent: A com-munication oriented network operating system kernel. SIGOPS Oper. Syst. Rev. 15, 5 (Dec. 1981), 64–75. doi: 10.1145/1067627.806593 
+
+[70] Marc Rozier. 1992. Chorus. In Proceedings of the Workshop on Micro-Kernels and Other Kernel Architectures . USENIX Association, USA, 39–70. [71] Zhenyuan Ruan, Shihang Li, Kaiyan Fan, Seo Jin Park, Marcos K. Aguilera, Adam Belay, and Malte Schwarzkopf. 2025. Quicksand: Har-nessing Stranded Datacenter Resources with Granular Computing. In 22nd USENIX Symposium on Networked Systems Design and Imple-mentation (NSDI 25) . USENIX Association, Philadelphia, PA, 147–165. 
+
+https://www.usenix.org/conference/nsdi25/presentation/ruan 
+
+[72] Takahiro Sakamoto, Tatsurou Sekiguchi, and Akinori Yonezawa. 2000. Bytecode Transformation for Portable Thread Migration in Java. In 
+
+Proceedings of the Second International Symposium on Agent Systems and Applications and Fourth International Symposium on Mobile Agents (ASA/MA 2000) . Springer-Verlag, Berlin, Heidelberg, 16–28. doi: 10. 5555/647629.732576 
+
+[73] Amazon Web Services. 2024. Amazon EC2 Spot Instances. https: //aws.amazon.com/ec2/spot/ Accessed: December 6, 2024. [74] Prateek Sharma, Stephen Lee, Tian Guo, David Irwin, and Prashant Shenoy. 2015. SpotCheck: designing a derivative IaaS cloud on the spot market. In Proceedings of the Tenth European Conference on Computer Systems (Bordeaux, France) (EuroSys ’15) . Association for Computing Machinery, New York, NY, USA, Article 16, 15 pages. doi: 10.1145/2741948.2741953 
+
+[75] Supreeth Shastri and David Irwin. 2017. HotSpot: automated server hopping in cloud spot markets. In Proceedings of the 2017 Symposium on Cloud Computing (Santa Clara, California) (SoCC ’17) . Association for Computing Machinery, New York, NY, USA, 493–505. doi: 10.1145/ 3127479.3132017 
+
+[76] Rohit Singh, Arun KP, and Debadatta Mishra. 2022. LDT: Lightweight Dirty Tracking of Memory Pages for x86 Systems. In 2022 IEEE 29th International Conference on High Performance Computing, Data, and Analytics (HiPC) . 85–94. doi: 10.1109/HiPC56025.2022.00023 
+
+[77] Radostin Stoyanov and Martin J. Kollingbaum. 2018. Efficient Live Migration of Linux Containers. In High Performance Computing , Rio Yokota, Michèle Weiland, John Shalf, and Sadaf Alam (Eds.). Springer International Publishing, Cham, 184–193. doi: 10.1007/978-3-030-02465-9_13 
+
+[78] Supreeth Subramanya, Tian Guo, Prateek Sharma, David Irwin, and Prashant Shenoy. 2015. SpotOn: a batch computing service for the spot market. In Proceedings of the Sixth ACM Symposium on Cloud Computing (Kohala Coast, Hawaii) (SoCC ’15) . Associ-ation for Computing Machinery, New York, NY, USA, 329–341. doi: 10.1145/2806777.2806851 
+
+[79] Xiaoqiang Sun, F. Richard Yu, Peng Zhang, Zhiwei Sun, Weixin Xie, and Xiang Peng. 2021. A Survey on Zero-Knowledge Proof in Blockchain. IEEE Network 35, 4 (2021), 198–205. doi: 10.1109/MNET. 011.2000473 
+
+[80] CRIU Development Team. 2024. CRIU: Checkpoint/Restore In Userspace. https://criu.org/ Accessed: December 6, 2024. [81] Douglas Thain, Todd Tannenbaum, and Miron Livny. 2005. Dis-tributed computing in practice: the Condor experience: Research Articles. Concurr. Comput.: Pract. Exper. 17, 2–4 (Feb. 2005), 323–356. [82] K. Thitikamol and P. Keleher. 1999. Thread migration and communi-cation minimization in DSM systems. Proc. IEEE 87, 3 (1999), 487–497. doi: 10.1109/5.747869 
+
+[83] Aidan P. Thompson, H. Metin Aktulga, Richard Berger, Dan S. Bolin-tineanu, W. Michael Brown, Paul S. Crozier, Pieter J. in ’t Veld, Axel Kohlmeyer, Stan G. Moore, Trung Dac Nguyen, Ray Shan, Mark J. Stevens, Julien Tranchida, Christian Trott, and Steven J. Plimpton. 2022. LAMMPS - a flexible simulation tool for particle-based materi-als modeling at the atomic, meso, and continuum scales. Computer Physics Communications 271 (2022), 108171. doi: 10.1016/j.cpc.2021. 108171 
+
+[84] John Thorpe, Pengzhan Zhao, Jonathan Eyolfson, Yifan Qiao, Zhihao Jia, Minjia Zhang, Ravi Netravali, and Guoqing Harry Xu. 2023. Bam-boo: Making Preemptible Instances Resilient for Affordable Training 15 Preprint, arXiv, 2026 Antoine Murat, Clément Burgelin, and Rachid Guerraoui 
+
+of Large DNNs. In 20th USENIX Symposium on Networked Systems De-sign and Implementation (NSDI 23) . USENIX Association, Boston, MA, 497–513. https://www.usenix.org/conference/nsdi23/presentation/ thorpe 
+
+[85] Eddy Truyen, Bert Robben, Bart Vanhaute, Tim Coninx, Wouter Joosen, and Pierre Verbaeten. 2000. Portable Support for Transparent Thread Migration in Java. In Proceedings of the Second International Symposium on Agent Systems and Applications and Fourth Interna-tional Symposium on Mobile Agents (ASA/MA 2000) . Springer-Verlag, Berlin, Heidelberg, 29–43. doi: 10.5555/647629.732581 
+
+[86] Nalini Vasudevan and Prasanna Venkatesh. 2006. Design and imple-mentation of a process migration system for the Linux environment. In 3rd International Conference on Neural, Parallel and Scientific Com-putations . 1–8. [87] Pauli Virtanen, Ralf Gommers, Travis E Oliphant, Matt Haberland, Tyler Reddy, David Cournapeau, Evgeni Burovski, Pearu Peterson, Warren Weckesser, Jonathan Bright, et al. 2020. SciPy 1.0: fundamen-tal algorithms for scientific computing in Python. Nature methods 17, 3 (2020), 261–272. doi: 10.1038/s41592-019-0686-2 
+
+[88] Dirk Vogt, Cristiano Giuffrida, Herbert Bos, and Andrew S. Tanen-baum. 2015. Lightweight Memory Checkpointing. In Proceedings of the 2015 45th Annual IEEE/IFIP International Conference on Depend-able Systems and Networks (DSN ’15) . IEEE Computer Society, USA, 474–484. doi: 10.1109/DSN.2015.45 
+
+[89] Marcel Wagenländer, Luo Mai, Guo Li, and Peter R. Pietzuch. 2020. Spotnik: Designing Distributed Machine Learning for Transient Cloud Resources. In 12th USENIX Workshop on Hot Topics in Cloud Computing, HotCloud 2020, July 13-14, 2020 , Amar Phanishayee and Ryan Stutsman (Eds.). USENIX Association. https://www.usenix.org/ conference/hotcloud20/presentation/wagenl%C3%A4nder 
+
+[90] Cheng Wang, Xusheng Chen, Weiwei Jia, Boxuan Li, Haoran Qiu, Shixiong Zhao, and Heming Cui. 2018. Plover: fast, multi-core scalable virtual machine fault-tolerance. In Proceedings of the 15th USENIX Conference on Networked Systems Design and Implementation (Renton, WA, USA) (NSDI’18) . USENIX Association, USA, 483–499. doi: 10. 5555/3307441.3307483 
+
+[91] Cheng Wang, Bhuvan Urgaonkar, Aayush Gupta, George Kesidis, and Qianlin Liang. 2017. Exploiting Spot and Burstable Instances for Im-proving the Cost-efficacy of In-Memory Caches on the Public Cloud. In Proceedings of the Twelfth European Conference on Computer Sys-tems (Belgrade, Serbia) (EuroSys ’17) . Association for Computing Ma-chinery, New York, NY, USA, 620–634. doi: 10.1145/3064176.3064220 
+
+[92] Rui-bo Wang, Zhen-wei Wu, Wen-zhe Zhang, Hui-jun Wu, Shu-qing Zhang-Yu, and Kai Lu. 2024. Fine-grained memory access monitoring based on memory protection keys. Computer Engineering & Science 
+
+46, 01, Article 21 (2024), 21-27 pages. [93] Timothy Wood, K. K. Ramakrishnan, Prashant Shenoy, and Jacobus van der Merwe. 2011. CloudNet: dynamic pooling of cloud resources by live WAN migration of virtual machines. SIGPLAN Not. 46, 7 (mar 2011), 121–132. doi: 10.1145/2007477.1952699 
+
+[94] Pieter Wuille and contributors. 2013. Optimized C library for EC operations on curve secp256k1. https://github.com/bitcoin-core/ secp256k1 
+
+[95] Zichen Xu, Christopher Stewart, Nan Deng, and Xiaorui Wang. 2016. Blending on-demand and spot instances to lower costs for in-memory storage. In IEEE INFOCOM 2016 - The 35th Annual IEEE International Conference on Computer Communications (San Francisco, CA, USA). IEEE Press, 1–9. doi: 10.1109/INFOCOM.2016.7524348 
+
+[96] Zi Yan, Daniel Lustig, David Nellans, and Abhishek Bhattacharjee. 2019. Translation ranger: operating system support for contiguity-aware TLBs. In Proceedings of the 46th International Symposium on Computer Architecture (Phoenix, Arizona) (ISCA ’19) . Association for Computing Machinery, New York, NY, USA, 698–710. doi: 10.1145/ 3307650.3322223 
+
+[97] Fangfei Yang, Bumjin Im, Weijie Huang, Kelly Kaoudis, Anjo Vahldiek-Oberwagner, Chia-Che Tsai, and Nathan Dautenhahn. 2024. Endok-ernel: a thread safe monitor for lightweight subprocess isolation. In 
+
+Proceedings of the 33rd USENIX Conference on Security Symposium 
+
+(Philadelphia, PA, USA) (SEC ’24) . USENIX Association, USA, Article 9, 18 pages. [98] Kenichi Yasukata, Hajime Tazaki, Pierre-Louis Aublin, and Kenta Ishiguro. 2023. zpoline: a system call hook mechanism based on binary rewriting. In 2023 USENIX Annual Technical Conference (USENIX ATC 23) . USENIX Association, Boston, MA, 293–300. https://www.usenix. org/conference/atc23/presentation/yasukata 
+
+[99] Ziqi Yuan, Siyu Hong, Rui Chang, Yajin Zhou, Wenbo Shen, and Kui Ren. 2023. VDom: Fast and Unlimited Virtual Domains on Multiple Architectures. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 (Vancouver, BC, Canada) (ASPLOS 2023) . Asso-ciation for Computing Machinery, New York, NY, USA, 905–919. doi: 10.1145/3575693.3575735 
+
+[100] Wen Zhang, Vivian Fang, Aurojit Panda, and Scott Shenker. 2020. Kappa: a programming framework for serverless computing. In Pro-ceedings of the 11th ACM Symposium on Cloud Computing (Virtual Event, USA) (SoCC ’20) . Association for Computing Machinery, New York, NY, USA, 328–343. doi: 10.1145/3419111.3421277 
+
+[101] Yanqi Zhang, Íñigo Goiri, Gohar Irfan Chaudhry, Rodrigo Fonseca, Sameh Elnikety, Christina Delimitrou, and Ricardo Bianchini. 2021. Faster and Cheaper Serverless Computing on Harvested Resources. In Proceedings of the ACM SIGOPS 28th Symposium on Operating Systems Principles (Virtual Event, Germany) (SOSP ’21) . Association for Computing Machinery, New York, NY, USA, 724–739. doi: 10.1145/ 3477132.3483580 
+
+[102] Hua Zhong and Jason Nieh. 2001. CRAK: Linux checkpoint/restart as a kernel module . Technical Report. Citeseer. [103] Diyu Zhou and Yuval Tamir. 2022. RRC: Responsive Replicated Con-tainers. In 2022 USENIX Annual Technical Conference (USENIX ATC 22) . USENIX Association, Carlsbad, CA, 85–100. https://www.usenix. org/conference/atc22/presentation/zhou-diyu 
+
+[104] Wenzhang Zhu, Cho-Li Wang, and F.C.M. Lau. 2003. Lightweight transparent Java thread migration for distributed JVM. In 2003 Inter-national Conference on Parallel Processing, 2003. Proceedings. 465–472. doi: 10.1109/ICPP.2003.1240611 
+
+[105] Wenzhang Zhu, Cho-Li Wang, and Francis C. M. Lau. 2002. JESSICA2: A Distributed Java Virtual Machine with Transparent Thread Migra-tion Support. In Proceedings of the IEEE International Conference on Cluster Computing (CLUSTER ’02) . IEEE Computer Society, USA, 381. doi: 10.5555/792762.793331 
+
+16
