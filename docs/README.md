@@ -48,7 +48,7 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-09-27</span>
+      <span class="dpr-home-dashboard-kicker">2026-09-28</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
     <strong class="dpr-home-dashboard-count">共 5 篇</strong>
@@ -58,7 +58,7 @@
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-09-27 21:51:23 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-09-29 00:03:04 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>2026-09-27日报：完成5篇速读、0篇精读，焦点落在智能体安全与硬件攻击。</p>
-<p>最值得看的是两篇7.0分方向——内核级证据用于智能体安全，以及内核级抢占与遏制 rogue agentic execution。</p>
-<p>普通读者可优先浏览这两篇7分文章，建立“内核层防护智能体失控”的基本认知。</p>
+<p>今天完成 5 篇速读、0 篇精读，聚焦 O-RAN 安全、硬件信息流验证与杀毒软件黑盒分析三条线。</p>
+<p>其中《rApp/xApp Attestation》把 O-RAN 应用认证作为新安全用例、《SLED-IFV》用 LLM 引导分解做可扩展硬件验证，均获 6.0 分，值得优先扫读。</p>
+<p>建议普通读者先看这两篇的摘要与图表结论，其余速读篇目留待需要时再回查原文。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -96,7 +96,7 @@
     <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="On the Effectiveness of Kernel-Level Evidence for Agent Security">On the Effectiveness of Kernel-Level Evidence for Agent Security</span></li><li><span class="dpr-home-dashboard-paper-title" title="Hard Stop: Kernel-Level Preemption and Containment for Rogue Agentic Execution">Hard Stop: Kernel-Level Preemption and Containment for Rogue Agentic Execution</span></li><li><span class="dpr-home-dashboard-paper-title" title="Exploiting Software-level Abstractions To Support Practical Hardware Trojan Attacks">Exploiting Software-level Abstractions To Support Practical Hardware Trojan Attacks</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="rApp/xApp Attestation: A New Security Use Case for O-RAN">rApp/xApp Attestation: A New Security Use Case for O-RAN</span></li><li><span class="dpr-home-dashboard-paper-title" title="SLED-IFV: Solver-Validated LLM-Guided Decomposition for Scalable Hardware Information-Flow Verification">SLED-IFV: Solver-Validated LLM-Guided Decomposition for Scalable Hardware Information-Flow Verification</span></li><li><span class="dpr-home-dashboard-paper-title" title="Breaking the Black Box: Byte-Level Boundary Inference of Real-World Antivirus Systems">Breaking the Black Box: Byte-Level Boundary Inference of Real-World Antivirus Systems</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>

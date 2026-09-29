@@ -1,0 +1,3096 @@
+Title: SADRA: Sound Capability-based Access Control System for Resource-Disaggregated Architectures
+
+URL Source: https://arxiv.org/pdf/2609.31119v1
+
+Published Time: Mon, 28 Sep 2026 01:12:50 GMT
+
+Number of Pages: 38
+
+Markdown Content:
+# SADRA: Sound Capability-based Access Control System for Resource-Disaggregated Architectures 
+
+## Hamed Rasifard 
+
+## Saarland University 
+
+## Amir Farahani Khojasteh 
+
+## CISPA Helmholtz Center for Information Security 
+
+## Hamed Nemati 
+
+## KTH Royal Institute of Technology 
+
+## Michael Backes 
+
+## CISPA Helmholtz Center for Information Security 
+
+## Abstract 
+
+Resource disaggregation separates memory and accelerators from compute nodes and makes them remotely accessible. This improves resource sharing, but also removes the local kernel from the resource-access path. Under an untrusted host, compromised host software may use stale authority, exceed delegated authority, or reuse authority provisioned for another process. Prior work identifies capability-based access control as well suited to these architectures. Our systematization of twenty-two prior capability systems finds that none combines host-independent validation of process authority, authorita-tive enforcement at the resource, and revocation that remains effective while remote authorization state is stale. We present SADRA , a distributed capability-based access-control system for resource-disaggregated architectures. SmartNIC hardware isolated from host software indepen-dently checks every inter-node request at two points, first at the compute node against the requesting process’s authority and again at the resource against the current authoritative ac-cess state. Linked process, compute, and resource capabilities allow these checks to use local state without coordination on the access path. When distributed authority is revoked, SADRA denies subsequent dependent accesses at the re-source without waiting for remote nodes to update, while stale capability state is reclaimed separately. We prove capability safety, authority safety, revocation soundness, and strong isolation for a formal architectural model, and model-check the formalization with SPIN. Our FPGA SmartNIC prototype sustains 89.5 Gbit/s aggregate throughput, within run-to-run variation of a non-enforcing baseline that peaks at 90–91 Gbit/s. Cleanup of a 128-capability subtree completes in 528 ns, while access denial does not depend on completion of that cleanup. 
+
+## 1 Introduction 
+
+Resource disaggregation separates memory and accelerators from compute nodes and pools them over a fabric, improv-ing utilization and elasticity [5, 24]. Prior work identifies capability-based access control as well suited to resource-disaggregated architectures because capabilities combine re-source designation, fine-grained authority, and delegation in references that remote enforcement points can validate di-rectly [9]. In conventional systems, the kernel mediates the resource-access path. However, disaggregation removes the kernel from that path, while the fabric provides no equiva-lent trusted mediator, so compromised host software can use stale authority, exceed delegated authority, or reuse authority provisioned for another process [38, 42]. The mediation gap is structural. Complete mediation [40] requires every access to be checked against current authority. Once authority is delegated across nodes, authorization state becomes distributed, and enforcement points may observe revocation at different times. An enforcement point with stale state may therefore continue accepting requests under revoked authority. The hard problem is denying those requests before distributed state converges. A concrete example shows how this problem arises. In a genomics pipeline over disaggregated memory [8], a stage del-egates read access to a downstream task and later completes its work; the system should then revoke that access (Figure 1). If requests are not checked against process-specific author-ity before fabric admission, compromised host software can continue issuing requests under authority provisioned to the completed stage. If they are not also checked against authorita-tive memory-side state before data access, a request admitted under stale compute-side state can still access the protected data after revocation. The same boundary failures arise in multi-tenant inference over shared embedding tables [33] and kernel-page swapping backed by disaggregated memory [2]. Neither check alone suffices. Enforcing both without host-side authorization or coordination on the access path raises three challenges. The first challenge is restoring complete mediation while enforcing fine-grained subject authority under an untrusted host. A resource-side enforcement point alone can authorita-tively decide access to the protected resource, but it cannot bind a request to process-specific authority or stop unautho-1arXiv:2609.31119v1 [cs.CR] 25 Sep 2026 rized traffic before fabric admission, because request-origin in-formation comes only from untrusted host. Thus, fine-grained subject authority requires a second point, outside host control, that validates each request against the authority of its issuing process before fabric admission. That compute-side point, in turn, cannot serve as the authoritative decision point for the remote resource. Each requirement pins enforcement to a different boundary, and no single placement satisfies both. The second challenge is revocation. Once authority is re-voked, one authoritative point must deny every dependent re-quest. Because authority may be re-delegated across compute nodes, waiting for remote enforcement points to update or for the affected hierarchy to be reclaimed leaves the propagation-dependent window open. A compute node may therefore continue issuing requests under stale authority; the resource-side enforcement point must reject them whether or not that node has observed the revocation. The third challenge is simultaneously supporting the capability-system dimensions that matter in this setting. We adapt the rack-scale capability design space of Bresniker et al. [9] to resource disaggregation under an untrusted host and define six dimensions: inter-node mediation, subject and object granularity, delegation, revocation, and persistence of capability state across failures. The difficulty lies in how these dimensions interact; process-granularity validation and au-thoritative resource decisions require different boundaries, distributed delegation makes revocation sensitive to propa-gation, and persistence must restore delegated authority and prior revocations across failures without reactivating stale authority. We evaluate twenty-two capability systems against these dimensions (§5) and find that none satisfies all six. The systems most relevant to resource-disaggregated ca-pability enforcement illustrate how enforcement placement, revocation, and recovery create these gaps. CEP [6] enforces only at the memory node and trusts the compute-side OS to assign channels to processes. A compromised host can there-fore reuse a channel provisioned for another process, while no trusted compute-side point validates process-specific author-ity before fabric admission. SemperOS [21] distributes en-forcement across cooperating microkernels, but cross-kernel revocation requires coordination and delegation-tree traversal. White et al. [45] provide version-based invalidation, but their controllers run in trusted host software, and recovery invali-dates stale authority rather than restoring live capability state. FractOS [44] combines distributed delegation with immediate owner-side revocation in heterogeneous disaggregated sys-tems, but its trusted software Controllers do not independently validate every inter-node resource request at both the compute and resource boundaries. Each leaves at least one of these challenges unresolved. We present SADRA , a distributed capability-based access-control system for resource-disaggregated architectures. SADRA provides host-independent mediation of remote re-source access by enforcing requests at both ends of the access 
+
+> Memory Node 1
+> Memory Node 2
+> Memory Node 3
+> p1
+> p2
+> p3
+> Compute Node 1
+> p4
+> p5
+> Compute Node 2
+> p6
+> Compute Node 3
+> Memory Node 4
+
+Figure 1: Genome data processing scenario. Legend: =direct read/write to memory; =write to mem-ory followed by a read from the same location. path. Hardware controllers isolated from untrusted host soft-ware validate requests against process-granularity authority before fabric admission and against authoritative resource state before resource access. Single-boundary enforcement is structurally insufficient: process-granularity authority must be validated before fab-ric admission, while the authoritative access decision must be made before resource access. SADRA’s core insight is that these checks can be enforced independently using lo-cal state while forming a two-stage enforcement invariant ,without coordination on the access path. Only the compute controller can validate process-granularity authority before fabric admission; only the resource controller can make the authoritative access decision before resource access. Achiev-ing this invariant requires an authority representation that lets each controller perform its check using local state. SADRA realizes the invariant by decomposing author-ity into linked process , compute , and resource capabilities, 
+
+cp 7 → cc 7 → cr. Resource capabilities anchor authoritative ac-cess rights at the resource controller. Compute capabilities derive from that authority and represent the rights delegated to a compute controller. Process capabilities derive from a compute capability and associate a subset of those rights with an individual process. Each controller maintains its local del-egation state as a rooted capability tree and validates the portion of the chain it enforces against that state. Delegation, including inter-node delegation, attenuates existing authority rather than creating independently rooted authority. The revocation point depends on where authority remains rooted. A compute controller locally revokes authority con-fined to its node. Authority delegated across compute nodes remains rooted at the authoritative resource controller, en-abling resource-rooted revocation ; the controller fences the revoked subtree and denies every dependent request at the resource boundary, regardless of whether remote compute con-trollers have observed the revocation. Because every resource access crosses that boundary, delayed propagation cannot ex-tend resource access. A remote compute controller discovers stale re-delegated authority after a denied request, then fences the stale subtree and reclaims it asynchronously. The fence determines authorization; cleanup only reclaims state. Under the untrusted-host model, SADRA satisfies four se-2curity properties, formalized in §4: capability safety, authority safety, revocation soundness, and strong isolation. We prove these properties for a formal architectural model using the assumption-commitment method [14, 31] and model-check the formalization with SPIN. The argument assumes neither trusted host software nor coordination on the access path. We implement SADRA on Xilinx Alveo U55C FPGA SmartNICs. The compute and resource controllers are syn-thesized hardware logic on the NIC datapath that enforces authorization inline for every protected request in a memory-disaggregated cluster, without host software on the enforce-ment path. This paper makes the following contributions: • We introduce a two-stage enforcement invariant : the compute controller validates process-granularity author-ity before fabric admission, while the resource controller makes the authoritative access decision before resource access. Neither check alone suffices, and the invariant holds without coordination on the access path (§6). • We design a two-level revocation mechanism: node-local authority is revoked at its compute controller, while au-thority delegated across nodes is fenced at the authori-tative resource controller, protecting the resource with-out waiting for remote-state propagation. Decomposing authority into linked process, compute, and resource ca-pabilities, cp 7 → cc 7 → cr, keeps remotely delegated au-thority linked to the resource capability from which it derives (§6). • We prove capability safety, authority safety, revocation soundness, and strong isolation for a formal architectural model using the assumption-commitment method, and model-check the formalization with SPIN (§4). • We implement SADRA on Xilinx Alveo U55C FP-GAs and evaluate it on a memory-disaggregated cluster. SADRA sustains 89.5 Gbit/s, effectively reaching the 90–91 Gbit/s throughput ceiling of the remote-memory datapath. Under a Meta-DLRM workload, it remains within 1.8% of baseline inference throughput while pro-cessing up to 1.42 million protected requests/s, produc-ing outputs bit-identical to the non-enforcing baseline in all 48 paired runs. Cleanup of 128 capabilities completes in 528 ns and, for a fixed capability count, is unchanged as the number of subtrees varies from one to eight (§8). 
+
+## 2 Background 2.1 Object-Capability Model 
+
+Building on the capability model [15, 18], the object-capability model [30, 37] represents authority through un-forgeable references called capabilities . A capability binds an object reference to access rights, so a subject invokes an 
+
+B F A R C
+
+Figure 2: Capability-Object Model. In this model, F is the forwarding proxy and R is the revoking proxy. object only by presenting a valid capability. Thus, authority is not ambient in this model; a subject can exercise only the authority conveyed by the capabilities it holds. Delegation transfers no more authority than the delegator holds, allow-ing authority to be attenuated but not amplified; SADRA formalizes this monotonic derivation relation (§4). This model handles revocation via indirection (Figure 2). To grant B access to object C, A interposes a forwarding proxy 
+
+F and a revocation point R, then revokes the authority by dis-abling R. This indirection suffices when a single enforcement point mediates every access. When several enforcement points check delegated authority but learn of revocation at different times, a revoked capability may remain usable at one that has not yet observed it [11, 26]. SADRA closes this window by rooting revocation of authority delegated across nodes at the authoritative resource-side controller, which denies depen-dent requests at the resource boundary whether or not remote compute-side controllers have observed the revocation (§6). 
+
+## 2.2 Disaggregated Architecture Model 
+
+In a resource-disaggregated architecture, compute nodes ac-cess remote memory and accelerators over a high-speed fab-ric. We consider kernel-bypass datapaths in which requests bypass the local kernel, enter the fabric, and reach the re-source node without traversing a software stack. No software mediator lies on this access path, so access control must be enforced explicitly at the interconnect boundaries. Resource-side enforcement also cannot assume the presence of soft-ware: some resource nodes expose memory or accelerators through hardware-only controllers , with no software stack at the boundary. Each compute and resource node connects to the fabric through a SmartNIC, whose isolated datapath provides an enforcement point outside host-software control. In multi-tenant deployments, tenants share compute and resource nodes under a hypervisor or container runtime. This creates two trust boundaries: the compute-side boundary, where requests enter the fabric, and the resource-side bound-ary, where requests leave the fabric before reaching the pro-tected resource. §3 defines the trust model, including the untrusted-host assumption. These boundaries provide the set-ting for SADRA’s enforcement points (§6). 
+
+## 2.3 SmartNICs as Enforcement Points 
+
+Programmable SmartNICs connect each node to the fabric and process datapath traffic at line rate [27,28]. Their enforce-3ment logic and security-critical state can be isolated from host software, allowing the host to submit requests through defined interfaces without permitting it to modify that state or bypass datapath checks. This placement provides two struc-tural properties of a reference monitor [4]: enforcement is invoked on every remote request and is tamper-resistant under the untrusted-host model. Deployed systems such as AWS Nitro [3] and NVIDIA BlueField [35] use SmartNICs to place security-critical func-tions outside host software control. Implementing enforce-ment in programmable SmartNIC hardware also allows capa-bility checks to run as fixed pipelines with bounded latency in-dependent of host load. Prior FPGA work such as μShell [12] implements capability enforcement in programmable hard-ware for memory access and inter-vFPGA communication. 
+
+## 3 Threat Model 
+
+System Model. We consider a multi-tenant, resource-disaggregated architecture in which compute nodes issue re-quests over a high-speed fabric to remote resource pools. Each compute and resource node connects to the fabric through a SmartNIC containing a SADRA controller. Every inter-node request to a disaggregated resource traverses the compute controller before fabric admission and the resource controller before resource access. 
+
+Adversary. The adversary controls all host-resident software, including tenant processes, kernels, and hypervisors. It may submit arbitrary requests through the host–SmartNIC inter-face, including requests that omit a capability, modify capabil-ity fields, present stale capabilities, reuse capabilities issued to another process, or request operations beyond the permissions a capability conveys. Compromised nodes may also inject, de-lay, reorder, or drop traffic that they originate. The adversary cannot modify a controller’s security-critical state, bypass its datapath enforcement, or forge the integrity protection on a capability or authenticated control-plane message. 
+
+Trust Assumptions. Controllers communicate over authenti-cated, integrity-protected control-plane channels. The trusted computing base (TCB) comprises the SmartNIC controller logic, its cryptographic keys, and the on-device stores holding capability, delegation, and revocation state. Any firmware or management component that can modify this state is also part of the TCB. We assume that the TCB executes correctly and that the cryptographic primitives remain secure. Host software may interact with the TCB only through defined interfaces. 
+
+Security Goals. SADRA provides capability safety , author-ity safety , revocation soundness , and strong isolation proper-ties, formalized in §4. These properties ensure that no request relying on forged, stale, or revoked authority is accepted for resource access and that every accepted inter-node request has passed both controller checks. 
+
+Out of Scope. We do not address physical attacks, timing or power side channels, compromise of TCB components, or denial-of-service attacks, and provide no availability guaran-tees under such attacks. Our security claims concern access-control correctness under untrusted hosts. 
+
+## 4 Security Properties and Soundness 4.1 Authority Model 
+
+SADRA models principals in three classes: processes ( P), compute controllers ( CC ), and resource controllers ( RC ). It partitions resources into disjoint regions, each managed by one resource controller, and presents authority over a region through capabilities : integrity-protected tokens that bind a principal, a resource region, and a permission set. Authoriza-tion depends on both the validity of the presented capability and the validity of its derivation chain (§A). SADRA represents delegated authority through linked ca-pability trees maintained by the resource and compute con-trollers. For each resource region, the resource controller maintains a resource capability tree rooted at the region’s resource capability. A compute capability derives from ex-actly one resource capability and delegates a subset of its authority to a compute controller. Each compute controller maintains a local compute capability tree rooted at a distin-guished virtual root, which serves only as a structural anchor and presents no authority. The controller inserts its compute capabilities below this root and derives process capabilities from the corresponding compute capabilities for individual processes on its node. Thus, every process capability is linked to a compute capability and, through it, to the resource capa-bility from which its authority derives. Fencing a resource capability in the resource capability tree causes that capability and every capability derived from it to fail validation at the resource controller. After the fence is installed, a compute controller may still retain a compute capability derived from the fenced resource capability in its local state. However, the compute capability can no longer authorize resource access because the resource controller rejects every request that presents it. 
+
+## 4.2 Two-Stage Enforcement Invariant 
+
+Invariant 1 (Two-Stage Enforcement) . SADRA authorizes an inter-node resource-access request if and only if both en-forcement controllers accept the request. The compute controller authenticates the process capa-bility, binds it to the hardware-observed requesting process, validates the c p 7 → cc authority relation, checks the requested resource extent and operation, and rejects the request if the corresponding compute authority is covered by an active local fence. After this check succeeds, the compute controller replaces the process capability with the corresponding root-anchored compute capability and forwards the request. 
+
+4The resource controller authenticates the forwarded capa-bility, verifies its association with the corresponding resource capability and the originating compute node, checks the re-quested resource extent and operation, and rejects the request if the corresponding resource authority is covered by an active resource-side fence. Resource access is permitted only after both checks suc-ceed. 
+
+This invariant realizes complete mediation for inter-node resource access. The compute controller enforces process-specific authority before fabric admission but cannot make the authoritative resource-access decision because the resource capability tree and its active fences reside at the resource con-troller. Conversely, the resource controller receives a resource-controller-created, root-anchored compute capability rather than the process capability and therefore does not indepen-dently establish the process-specific authorization performed at the compute controller. The architectural authority chain is 
+
+cp 7 → cc 7 → cr.
+
+For resource access, the compute controller first validates 
+
+cp 7 → cc, then forwards the root-anchored compute author-ity associated with cc for the resource controller to validate against cr.Both enforcement stages are therefore necessary. A request may pass the compute-side check while failing the resource-side check, for example when the compute controller still observes active local authority after the corresponding re-source authority has been fenced at the resource controller. Such a request is denied before resource access. Fence installation does not require removal of the corre-sponding capability linkage. An active fence independently disables the affected authority at that controller and causes subsequent requests depending on that authority to fail its enforcement check. 
+
+## 4.3 Security Properties 
+
+The following four properties hold under the threat model (§3). Formal statements and model details appear in Appendix A; complete proofs and SPIN model-checking details are de-ferred to a companion technical report. 
+
+Capability Safety. A process can acquire a valid capabil-ity only through resource allocation or legitimate delegation. Each valid process capability must form a chain cp 7 → cc 7 → cr
+
+ending at a resource capability in the authoritative resource capability tree. 
+
+Authority Safety. Delegation never amplifies authority. A subject can delegate only rights it already holds, and every delegated capability covers a subset of its parent’s permissions and resource extent. 
+
+Revocation Soundness. For revocation within one compute node, the compute controller invalidates the capability and its descendants; all later compute-controller validations of those capabilities fail. For authority delegated across nodes, revo-cation takes effect when the resource controller atomically installs a fence on the corresponding resource capability. All later resource-controller validations of dependent capability paths then fail without waiting for propagation to remote com-pute controllers or for subtree cleanup. Cleanup follows this authoritative denial and does not delay resource protection. 
+
+Strong Isolation. When a process allocates a resource region in exclusive mode, SADRA makes the resulting authority non-delegable, including by the allocating process. Since in-dependent allocations are disjoint, no other process can ac-quire authority over the region through either delegation or a separate allocation. 
+
+## 4.4 Soundness Argument 
+
+Using the assumption–commitment (A–C) method [14, 31], we model the compute and resource controllers as interact-ing state machines with local commitments. At the compute boundary, the controller accepts a request only after authen-ticating the process capability, binding it to the hardware-observed requesting process, validating the cp 7 → cc relation, establishing that the corresponding compute authority remains present in controller state and is not covered by an installed local fence, and checking the requested resource extent and operation. At the resource boundary, the controller indepen-dently accepts the forwarded request only after authenticating the root-anchored compute capability, validating its associ-ation with the corresponding resource capability and orig-inating compute node, establishing that the corresponding resource authority remains present in authoritative resource state and is not covered by an installed resource-side fence, and checking the requested resource extent and operation. Because every protected inter-node resource-access request necessarily traverses both enforcement points under the sys-tem model of §3, these local commitments jointly realize the two-stage enforcement invariant. The two-stage enforcement invariant combines with the capability-creation and delegation rules to establish capability and authority safety. Delegation monotonically attenuates re-source extent and permissions, while capability authentication and controller-resident authority state prevent fabricated or reclaimed authority from authorizing access. Strong isolation follows from three properties: independent resource alloca-tions are disjoint, the exclusive permission is preserved through the initial resource, compute, and process capability chain, and exclusive authority is non-delegable, including by the allocating process. For revocation rooted in a compute subtree, the compute controller installs a local fence, causing subsequent compute-side checks for the fenced capability and its descendants to fail before structural cleanup. If that subtree contains author-ity re-delegated to other compute nodes, the corresponding 5resource-side revocation requests are forwarded to the au-thoritative resource controller, which installs a fence on each corresponding resource capability. Each such authority is de-nied at the resource boundary once its resource-side fence is installed. A compute-subtree revocation with no such inter-node descendants is the purely local case. When a process directly revokes authority that it previously delegated across nodes, the compute controller resolves the process revocation handle to the corresponding compute re-vocation handle and forwards a copy of that handle to the authoritative resource controller. The compute controller does not install a compute fence on the compute revocation handle because the handle carries no usable authority. The resource controller authenticates the handle, verifies that its source-node binding matches the trusted origin of the revocation request, and installs the corresponding resource-side fence. Knowledge of a resource-side identifier alone does not autho-rize revocation. After the resource controller rejects a request that presents stale authority, the compute controller that forwarded the re-quest may install a local fence over the corresponding stale compute capability and its subtree. This containment reduces stale traffic and enables subsequent reclamation, but authori-tative resource protection does not depend on its completion. More generally, fence installation determines the security ef-fect at the controller where the fence is installed, while propa-gation, subtree traversal, and reclamation proceed separately from the resource-access path. The formal architectural model and supporting invariants appear in §A. Complete proofs of capability safety, authority safety, revocation soundness, and strong isolation are deferred to a companion technical report. 
+
+## 5 Systematization 
+
+We systematize twenty-two prior capability systems along six design dimensions tailored to resource disaggregation under an untrusted host. We adapt the dimensions most relevant to our setting from the rack-scale capability design space of Bres-niker et al. [9] to resource disaggregation under an untrusted host. These dimensions complement the broader taxonomy of capability systems developed by Mauthe et al. [29]. Inter-node mediation, subject granularity, and object granularity characterize whether and at what granularity a system me-diates the inter-node resource-access path, while delegation, revocation, and persistence characterize how authority can evolve securely. We classify each system as providing full, partial, or no support for each dimension. No prior system satisfies all six simultaneously. 
+
+## 5.1 Design Dimensions 
+
+We define six dimensions and classify each system as provid-ing full , partial , or no support for each. 
+
+Inter-Node Mediation. Under the untrusted-host model, com-plete mediation requires request validation before fabric ad-mission and an authoritative access decision before resource access; no single enforcement point can simultaneously pro-vide both. No : the design does not mediate an inter-node resource-access path; shared-memory multiprocessor access alone does not qualify. Partial : it mediates access at only one boundary or requires coordination between enforcement points on the access path. Full : it independently mediates access at both the compute and resource boundaries; authority that never crosses a node boundary may be handled locally. 
+
+Subject Granularity. The finest unit at which a system dis-tinguishes principals. No : the system does not distinguish subjects for access control. Partial : authority is associated with a host, VM, tenant, code domain, or principal other than an individual process. Full : authority is associated with an individual process. 
+
+Object Granularity. The finest unit of resource state over which authority can be independently granted and constrained. 
+
+No : the system does not distinguish protected resource objects. 
+
+Partial : authority is limited to predefined objects or fixed-granularity units, such as pages, segments, typed objects, or fixed-size regions. Full : authority can independently cover arbitrary sub-object ranges, including byte-granular ranges for byte-addressable resources. 
+
+Delegation. Whether a principal can transfer a subset of its authority without amplification. No : the system does not sup-port authority transfer. Partial : it supports transfer but does not enforce monotonic attenuation of permissions or resource extent. Full : every delegated capability is restricted to a subset of its parent’s permissions and resource extent. 
+
+Revocation. How a system invalidates granted authority. No :it provides no revocation mechanism. Partial : revocation is coarse-grained, depends on trusted host software, or requires distributed propagation before all dependent access is denied. 
+
+Full : an authoritative revocation action causes later validations of dependent authority to fail before resource access without waiting for propagation. 
+
+Persistence. Whether the architecture provides recovery se-mantics that preserve valid authority and prior revocations across failures or reboots without reactivating stale author-ity. No : the architecture does not define recovery of prior authority, or requires capabilities to be reacquired after fail-ure. Partial : the architecture preserves some authority state, but capability, delegation, or revocation state may be lost or recovered inconsistently. Full : the architecture provides re-covery of capability, delegation, and revocation state such that valid authority remains available without reprovisioning and stale authority cannot be reactivated. 
+
+## 5.2 Systematization Results 
+
+Support across the twenty-two prior systems varies among the six dimensions (Table 1). Subject granularity, object gran-6Table 1: Capability architectures taxonomized by disaggregation requirements. Legend: = Full support; G# = Partial support; #
+
+= No support. Enforcement: C = Compiler; Co-P = Co-Processor; FPGA = FPGA logic; HW = Hardware logic; ISA = ISA; K = Kernel; OS = Operating System; SW = Software (host-trusted); SNIC = SmartNIC controller.                                                                                                                 
+
+> Architectural / Hardware-Assisted OS Capability Systems Multiprocessor, Distributed, and Disaggregated Systems
+> CAP [34] IBM/38 [22] Hardbound [16] CHERI [46] M-Machine [10] CODOMs [43] Hydra [47] KeyKOS [19] EROS [41] seL4 [25] StarOS [23] iAPX432 [13] Chorus [39] Amoeba [32] Accent [36] Mach [1] Barrelfish [7] Zeno [17] CEP [6] SemperOS [21] FractOS [44] White et al. [45]
+> SADRA
+> Inter-Node Med. ############G#G#G#G#G#G#G#G#G#G#
+> Subject Gran. #G#G#G#G#
+> Object Gran. G#G#G#G#G#G#G#G#G#G#G#G#G#
+> Delegation G#G##G#G#G#G#G#G#G#G#G#
+> Revocation G#G##G#G#G#G##G#G#G#G#G#G#G#G#G#
+> Persistence #G###G#####G#######G####
+> Enforcement ISA/K ISA ISA/C ISA/C HW HW/K KKKKISA/K ISA KKKKKFPGA Co-P HW/K SW SW SNIC
+
+ularity, and delegation receive at least partial support in 95%, 100%, and 95% of the systems, respectively. Revocation is supported by 91%, but only a small subset provides author-itative revocation independent of distributed-state conver-gence; the remaining systems rely on coordination, traversal, or coarse OS-mediated invalidation. Inter-node mediation and persistence are substantially less common. No prior system independently validates every inter-node request for resource access at both the compute and resource boundaries. The 45% with inter-node enforcement mediate at only one bound-ary, leaving either process-granularity validation before fabric admission or authoritative validation before resource access absent. Persistence receives at least partial support in 27% of the systems and full support in two. No prior capability system realizes all six dimensions simul-taneously. Inter-node designs commonly rely on coordination, delayed propagation, or centralized state, preventing revoca-tion from taking effect at the authoritative resource bound-ary independently of distributed-state convergence. Memory-disaggregated designs come closest, but each lacks either dual-boundary enforcement or the required revocation and persistence properties. Thus, we use CEP [6], White et al. [45], SemperOS [21], and FractOS [44] as comparison baselines. CEP and White et al. target memory-disaggregated access, SemperOS provides the closest comparison for distributed delegation and revocation through software capability man-agement, and FractOS provides the closest comparison for immediate owner-side revocation in disaggregated systems. 
+
+## 5.3 State of the Art 
+
+CEP. CEP [6] enforces capabilities at the memory node, where a coprocessor mediates access after the compute node’s MMU checks. A process is associated with its CEP context through compute-side fabric identifiers, so CEP relies on the application OS to preserve channel integrity. Compromised host software can therefore misuse a channel provisioned for another process. The prototype dedicates one servlet to each client process and relies on the client OS for fair arbitration, coupling controller resources to host-managed process chan-nels. Revocation recursively traverses a derivation DAG, so its completion depends on the delegation history rather than on a fence checked before each dependent access. 
+
+SemperOS. SemperOS [21] distributes capability manage-ment across independent μ-kernels, each responsible for a group of processing elements. Cross-kernel delegation and revocation require inter-kernel messages. Revocation uses a two-phase mark-and-sweep traversal. A group-spanning revo-cation takes roughly three times as long as a local one, and although marked capabilities are immediately blocked from further exchange, subtree deletion waits for remote replies. SemperOS limits concurrent revocation work to two threads per kernel, but completion still depends on inter-kernel com-munication and traversal. 
+
+White et al. White et al. [45] use per-node controllers, per-process capability tables, and versioned references. Invali-dating a guard makes later use of guarded capabilities fail without distributed traversal, and delegation is attenuating with explicit withdrawal. The controllers, however, execute as trusted host software rather than as enforcement points isolated from the host kernel, so the design does not provide independent dual-boundary enforcement under an untrusted host. After a controller failure, stale authority is invalidated and applications must reacquire capabilities; live capability, delegation, and revocation state is not restored. 
+
+FractOS. FractOS [44] provides distributed capabilities for memory and service objects in heterogeneous disaggregated systems. Trusted Controllers run as user-level Linux processes on CPUs or SmartNICs, and delegation may span Controllers. FractOS makes revocation effective at the owning Controller by invalidating the referenced object, with separately revoca-ble objects organized in a revocation tree providing selectivity. Capabilities referring to invalidated objects are cleaned up later, so denial does not wait for distributed cleanup. Con-troller failure revokes the affected Processes’ capabilities, and reboot counters detect stale capabilities rather than restore 7live authority. FractOS does not independently validate every inter-node resource request before fabric admission and again before resource access, so it does not provide dual-boundary enforcement under an untrusted host. 
+
+Comparison Summary. Consider a delegated remote-memory capability that is revoked while the host OS is com-promised. A resource-boundary-only design cannot establish that a request was validated against the authority of its issu-ing process because request-origin information comes from untrusted host software. A compute-boundary-only design cannot ensure denial at the resource boundary after revocation if its local state is stale. Sound enforcement therefore requires process-granularity validation before fabric admission and an authoritative access decision before resource access. CEP enforces access in memory-side hardware, but trusts compute-side channel assignment and invalidates descendants through derivation-graph traversal. SemperOS distributes au-thority across kernels, but revocation depends on inter-kernel coordination and traversal. White et al. provide version-based invalidation, but retain trusted host software on the enforce-ment path and do not restore live authority after failure. Frac-tOS provides distributed delegation and selective owner-side revocation without waiting for distributed cleanup, but its trusted software Controllers do not independently validate every inter-node resource request at both the compute and re-source boundaries. None combines independent validation at both boundaries under the untrusted-host model with resource-boundary denial that does not wait for propagation to remote compute controllers. Adding a second checkpoint alone is in-sufficient; the controllers must validate linked authority from local state without coordinating on the access path. SADRA realizes this through the two-stage enforcement invariant (In-variant 1) and the capability chain cp 7 → cc 7 → cr (§6.2). This design places trusted controller logic at both bound-aries. It does not reduce the TCB; instead, it moves en-forcement outside host software control. Once installed, the resource-controller fence denies dependent requests at the re-source boundary, while compute-controller containment and subtree cleanup proceed separately. 
+
+## 6 System Design 
+
+SADRA realizes the two-stage enforcement invariant (§4) through hardware controllers at both boundaries: each inter-node request is validated against local authority state before fabric admission and before data access, with no synchronous coordination between controllers or with host software. The design maps to the four security properties of §4.3. The capability model (§6.2) supports capability safety by making every valid capability depend on a resource capability at the resource controller, and authority safety by requiring each del-egated capability to encode a subset of the delegator’s rights. The controller architecture (§6.4) supports strong isolation by denying other processes access to exclusively allocated 
+
+> Compute Node 1
+> Processes P 1
+> NIC
+> Compute Node 2
+> Processes P 2
+> NIC
+> Compute Node m
+> Processes P m
+> NIC
+> Resource Node 1
+> Resources R 1
+> Read / Write Ctrl.
+> NIC
+> Resource Node 2
+> Resources R 2
+> Read / Write Ctrl.
+> NIC
+> Resource Node n
+> Resources R n
+> Read / Write Ctrl.
+> NIC
+
+· · · · · · 
+
+> Inter-node Network Fabric
+
+(a) Abstract architecture of a resource-disaggregated system. 
+
+> SmartNICs
+> Compute Node 1
+> Processes P 1
+> Compute Controller
+> NIC
+> Compute Node 2
+> Processes P 2
+> Compute Controller
+> NIC
+> Compute Node m
+> Processes P m
+> Compute Controller
+> NIC
+> Resource Node 1
+> Resources R 1
+> Read/Write Ctrl. Resource Controller
+> NIC
+> Resource Node 2
+> Resources R 2
+> Read/Write Ctrl. Resource Controller
+> NIC
+> Resource Node n
+> Resources R n
+> Read/Write Ctrl. Resource Controller
+> NIC
+
+· · · · · · 
+
+> Inter-node Network Fabric
+
+(b) SADRA capability-based access control design. 
+
+Figure 3: Overview of resource disaggregation and SADRA’s architectural intervention. regions. Revocation soundness comes from the resource-side fence: a fixed-latency standing deny over the revoked subtree, independent of delegation depth, while compute-side con-tainment and structural cleanup proceed separately and never delay data protection. The following subsections describe each component. 
+
+## 6.1 Disaggregated System Model 
+
+In a resource-disaggregated system, compute nodes host pro-cesses that issue requests, while resource nodes manage and serve hardware resources such as memory or accelerators (Figure 3(a)). Each protected inter-node request crosses two enforcement boundaries: the compute-side boundary before fabric admission and the resource-side boundary before ac-cess to the managed resource. Each node attaches to the fabric through an enforcement point that mediates protected requests crossing its boundary. We instantiate this point as a SmartNIC, but the model requires only boundary-resident logic whose security-critical state is isolated from host-software control. The host may interact with the enforcement point through defined interfaces, but cannot modify its authority state or bypass its datapath checks. In multi-tenant deployments, tenants may share compute and resource nodes under a hypervisor or container runtime; the authority model applies independently of that partitioning. We formalize this structure with an abstract model M =(Nr, Nc, R, P, F), where Nr is the set of resource nodes, Nc is the set of compute nodes, R is the set of managed resources, P
+
+is the set of processes, and F represents the inter-node fabric. Each resource node N jr ∈ Nr manages a subset of resources 
+
+R j ⊆ R, while each compute node Nkc ∈ Nc hosts a subset of 8processes Pk ⊆ P. We use this model throughout the paper; its formalization appears in §A. 
+
+## 6.2 SADRA Capability Model 
+
+SADRA uses two types of hardware controllers. Compute controllers ( CC k ∈ CC ) reside on compute nodes and en-force authorization before fabric admission, while resource controllers ( RC j ∈ RC ) reside on resource nodes, maintain authoritative resource capability state, and enforce authoriza-tion before resource access. §6.4 describes their architectural organization and interaction. The capability model defines the authority structures these controllers maintain and the relationships among them. 
+
+Capability Taxonomy. SADRA classifies capabilities by residency and scope into resource capabilities ( Cr), compute 
+
+capabilities ( Cc), and process capabilities ( Cp) (Figure 4). Re-source and compute capabilities reside in controller-managed state that host software cannot directly modify. Process capa-bilities are protected tokens issued to applications and bound by the compute controller to individual processes; fabricated or altered tokens cannot authorize requests. Each cp binds authority to a process, preventing transfer between co-located processes. Each cr encodes precise access bounds, such as memory offsets or resource slices, supporting isolation below page or segment boundaries. 
+
+Capability Chain Invariant. The three capability types form a linear chain of authority: cp 7 → cc 7 → cr. SADRA authorizes a request only when its presented capability validates against the applicable link of a valid chain rooted at a resource capabil-ity managed by a resource controller. The compute controller validates the cp 7 → cc link locally, while the resource controller validates the cc 7 → cr link against authoritative resource-side state. Each controller validates its portion independently. Invalidating a link invalidates authority derived through that link. For resource-capability revocation, the resource controller first installs a fence that denies accesses through the revoked subtree at the authoritative resource boundary; compute-side containment and structural materialization then proceed separately. Delegation can only narrow authority: ev-ery derived capability encodes a subset of its parent’s rights over a subset of its parent’s resource region. 
+
+6.2.1 Indicator Flags and Delegation Tracking 
+
+SADRA tracks delegation relationships through a one-bit in-dicator flag in each compute and process capability descriptor. An unset flag denotes usable authority; a set flag denotes a re-vocation handle rather than a usable right. The flag preserves delegator-side revocation references for both local process-to-compute links cp 7 → cc and inter-node compute-to-resource links cc 7 → cr.When a process delegates authority, SADRA creates the capability issued to the recipient and a separate capability  
+
+> Process Capability Compute Capability Resource Capability
+
+Figure 4: Capability-object model with process ( Cp), compute (Cc), and resource ( Cr) capabilities. Edges represent the 7 → re-lation linking corresponding capabilities cp 7 → cc 7 → cr. Each capability represents authority over r ∈ R j, with permissions and resource extent monotonically attenuated along the chain for enforcement at the compute and resource controllers. retained for revocation control by the delegator. The retained capability has its indicator flag set and therefore acts as a revocation handle. The delegator’s original usable capability remains unchanged. Hardware rejects attempts to use the handle for reads, writes, or further delegation. The handle carries no operational authority; it retains the linkage needed to identify the delegated authority and serves only as the reference through which the delegator initiates revocation. 
+
+6.2.2 Capability Trees 
+
+SADRA organizes capabilities into rooted trees maintained by compute and resource controllers. These trees represent delegation and revocation dependencies that controllers con-sult when validating protected requests. Each resource controller roots its tree at a resource capabil-ity representing authority over a resource region. Before data access, it validates that the presented compute capability in a request maps to a resource-side capability under this root and that no active fence covers its delegation path. Each compute controller maintains a tree of compute capabilities derived from resource capabilities and tracks local delegation among processes. Process capabilities derive from compute capabili-ties and represent the authority exercised by applications. The tree structure captures dependency relationships among delegated capabilities. For resource-capability revoca-tion, the resource controller installs a fence at the authoritative resource boundary that denies accesses through the revoked subtree. This is a fixed-latency authorization check and takes effect independently of delegation depth. Structural cleanup of the affected subtree then proceeds separately and does not delay data protection. Because the fence already denies every access through the revoked subtree, not-yet-reclaimed capa-bilities cannot authorize access until cleanup removes them, so deferring removal does not affect authorization decisions. 
+
+6.2.3 Capability Operations 
+
+SADRA manages resource access through three operations: allocation, delegation, and revocation. Figure 5 illustrates the capability tree state at each step. We describe each operation for a representative process p ∈ Pk accessing resource r ∈ R j.9Compute Node k Resource Node j Compute Node k′         
+
+> (a) Initial state.
+> Root kcRoot jrRoot k′
+> c
+> Compute Node kResource Node jCompute Node k′
+> (b) Resource allocation – Resource Node.
+> Root kcRoot jrRoot k′
+> c
+
+c1 
+
+> r
+
+c1      
+
+> c
+> Compute Node kResource Node jCompute Node k′
+> (c) Resource allocation – Compute Nodes.
+> Root kcRoot jrRoot k′
+> c
+
+c1
+
+> r
+
+c1 
+
+> c
+
+c1      
+
+> p
+> Compute Node kResource Node jCompute Node k′
+> (d) Intra-Node Delegation.
+> Root kcRoot jrRoot k′
+> c
+
+c1
+
+> r
+
+c1
+
+> c
+
+c2
+
+> c
+
+c3
+
+> p
+
+c2      
+
+> p
+> Compute Node kResource Node jCompute Node k′
+> (e) Intra-Node Revocation.
+> Root kcRoot jrRoot k′
+> c
+
+c1
+
+> r
+
+c1
+
+> c
+
+c3
+
+> p
+
+c2      
+
+> c
+> Compute Node kResource Node jCompute Node k′
+> (f) Inter-Node Delegation – Resource Node.
+> Root kcRoot jrRoot k′
+> c
+
+c1 
+
+> c
+
+c1
+
+> r
+
+c2
+
+> r
+
+c4
+
+> c
+
+c3      
+
+> c
+> Compute Node kResource Node jCompute Node k′
+> (g) Inter-Node Delegation – Compute Nodes.
+> Root kcRoot jrRoot k′
+> c
+
+c1 
+
+> c
+
+c5
+
+> p
+
+c4
+
+> c
+
+c1
+
+> r
+
+c2
+
+> r
+
+c3
+
+> c
+
+c4      
+
+> p
+> Compute Node kResource Node jCompute Node k′
+> (h) Inter-Node Revocation – Compute Nodes.
+> Root kcRoot jrRoot k′
+> c
+
+c1 
+
+> c
+
+c5
+
+> p
+
+c4
+
+> c
+
+c1
+
+> r
+
+c2
+
+> r
+
+c3      
+
+> c
+> Compute Node kResource Node jCompute Node k′
+> (i) Inter-Node Revocation – Resource Node.
+> Root kcRoot jrRoot k′
+> c
+
+c1 
+
+> c
+
+c1
+
+> r
+
+c2
+
+> r
+
+c3
+
+> c
+
+c4
+
+> c
+
+Figure 5: Capability Trees. Legend: = resource capability; = compute capability; = process capability; = indicator flag is unset (usable capability); = indicator flag is set (revocation handle); : link-to connection in our capability-object model; : child-parent relation in a capability tree. 
+
+Resource Allocation. RC j creates c1
+
+r , encodes the granted rights, and inserts it into its resource tree. It derives c1
+
+c (c1
+
+c 7 →
+
+c1
+
+r ) and sends it to CC k (Figure 5b), which inserts it, derives 
+
+c1
+
+p (c1
+
+p 7 → c1
+
+c ), and returns it to p (Figure 5c). 
+
+Intra-Node Delegation. CC k derives c2
+
+c from c1
+
+c with a subset of its rights over a subset of its resource region, derives c2
+
+p for recipient p′, and issues a tagged capability to p as a revocation handle (Figure 5d). The compute controller performs this operation without contacting the resource controller. 
+
+Intra-Node Revocation. p invokes its revocation handle. CC k
+
+invalidates c2
+
+c in its tree, breaking the chain for all process capabilities that depend on it (Figure 5e). Subsequent requests from p′ fail at the compute controller. This revocation is local to CC k and does not involve the resource controller. 
+
+Inter-Node Delegation. RC j creates a new resource capabil-ity granting a subset of the delegating capability’s rights over a subset of its resource region. It then derives a compute capa-bility for the recipient node and a compute revocation handle for the delegating node, and sends each to the corresponding compute controller (Figure 5f). The recipient compute con-troller derives and issues a process capability to the recipient process, while the delegating compute controller creates a corresponding process revocation handle for the delegating process (Figure 5g). 
+
+Inter-Node Revocation. p invokes its revocation handle. CC k
+
+resolves it to the corresponding compute revocation handle, removes that handle from its tree, and forwards the revoca-tion request to RC j (Figure 5h). RC j then installs a fence at the resource boundary, denying accesses through the revoked subtree (Figure 5i). Once installed, the resource controller performs a fixed-latency fence check for each request and denies access without waiting for descendant-state propaga-tion. A request may still pass compute-side validation if CC k′
+
+retains stale state, but fails at the resource boundary because the fence covers the subtree. On learning of the revocation or observing the denial, CC k′ installs a local fence over the stale compute capability and derived subtree, then prunes that state asynchronously. The formal model underlying these operations appears in §A. 
+
+## 6.3 Persistent Capability State and Recovery 
+
+SADRA’s controller-maintained capability state provides the basis for persistent recovery. In conventional systems, authority state is often maintained by host software, requir-ing recovery to reconstruct authorization relationships from software-managed state. In contrast, SADRA records dele-gation and revocation state explicitly in the capability trees maintained by the compute and resource controllers. Recovery therefore restores the authority state enforced by the trusted controllers rather than reconstructing it from an untrusted host. Persistent controller state includes capability-tree relation-ships, controller-local authority identifiers and their allocation counters, delegation and revocation-control state, and active fences. The controller-local identifier counters are monotoni-cally increasing, non-wrapping persistent state. A controller durably advances the corresponding counter before authority carrying a newly allocated cid or rid becomes usable. Re-covery therefore cannot cause a reclaimed identifier to be reassigned to different authority. 10 Restoring the capability trees and fence state preserves the authority relationships required by two-stage enforcement. Process capabilities remain associated with compute-side authority through cp 7 → cc, while compute-side authority re-mains associated with resource-side authority through cc 7 → cr.A process token retained by untrusted software does not regain authority merely because it survives a failure: it can autho-rize a request only if it resolves to active controller-resident authority and the request passes both enforcement stages. SADRA orders capability creation so that newly created authority becomes usable only after the controller state re-quired to establish its authority chain has been durably com-mitted. Incomplete capability creation is therefore not made usable after recovery. This applies to initial allocation as well as intra-node and inter-node delegation. Revocation requires stronger recovery ordering because cleanup may span multiple controllers. A fence is durably established before capability state protected by that fence can be reclaimed. Consequently, a failure during local cleanup restores the fence before reclamation continues, so authority disabled before the failure does not become active again. For a fenced compute subtree that contains inter-node re-vocation handles, recovery must also preserve outstanding resource-side revocation obligations. A compute revocation handle is retained until the authoritative resource controller confirms that the corresponding resource authority has been fenced or already reclaimed. Thus, a crash after installation of a local compute fence but before completion of remote revocation cannot erase the information needed to finish that revocation. After recovery, the compute controller replays every unresolved resource-side revocation before retiring the corresponding handle or reclaiming the fenced subtree. For resource-rooted revocation, the resource-controller fence is the authoritative security-effect point for resource access. The resource controller durably commits this fence before acknowledging completion to the source compute con-troller. If either controller fails after the resource fence is installed, recovery restores the fence before affected resource authority can become active. If the source fails before receiv-ing the acknowledgment, it may safely resend the retained revocation request; resource-side revocation is idempotent when the target is already fenced or has already been re-claimed. After recovery, controllers restore committed capability and fence state, discard incomplete authority-creation transitions, and replay unresolved revocation transitions. The recovery invariant is therefore that recovery neither creates authority that was not previously committed nor reactivates authority already disabled by a committed fence. Pending inter-node revocations remain represented by their retained compute handles until the authoritative resource-side state has been secured. 
+
+## 6.4 SADRA Architectural Model 
+
+SADRA places hardware-resident controllers at the compute-side boundary before fabric admission and the resource-side boundary before data access to realize the two-stage enforce-ment invariant (Invariant 1), as shown in Figure 3b. A com-pute controller resides on each compute node, while a re-source controller resides on each resource node. Both reside in SmartNIC hardware whose enforcement state is isolated from host-software control. Every protected inter-node re-quest is validated at both points on the data path. 
+
+Compute Controller. The compute controller performs two functions on the hardware datapath. First, validation before fabric admission : it checks that the requesting process holds a capability locally valid with respect to its delegation and revocation state, and drops requests that fail at the source. Sec-ond, intra-node delegation : it transfers attenuated authority between co-located processes ( p, p′ ∈ Pk) without remote-node involvement or network coordination. 
+
+Resource Controller. The resource controller is the authori-tative enforcement point for its local resource subset R j and maintains authoritative resource capability state. It handles resource allocation across the fabric and manages inter-node delegation and revocation when participating processes re-side on different compute nodes. Before resource access, it independently validates every arriving request against the cor-responding resource-side capability state and active fences. The resource controller rejects requests that fail. When the resource controller revokes a resource capability, it installs a fence that denies every access through the revoked subtree at the resource boundary. This denial takes effect independently of whether corresponding compute controllers have fenced or pruned stale local state. Each controller makes its authorization decision locally. For resource-capability revocation, the resource-side fence is the authoritative effect; structural cleanup and compute-side containment proceed separately. This organization removes coordination bottlenecks on the access path while preserving authoritative resource-side protection. 
+
+## 7 Implementation 
+
+SADRA implements the compute and resource controllers as FPGA logic in the data path (Figure 6), placing authorization checks on the request path at both interconnect boundaries. This implementation realizes the two-stage enforcement in-variant (Invariant 1) in hardware. Each controller validates every inter-node request at its boundary, while controller-local enforcement state remains isolated from host software. 
+
+Controller Architecture. Each compute node hosts a com-pute controller ( CC ), while each resource node hosts a re-source controller ( RC ). Both controllers are implemented on Xilinx Alveo U55C FPGAs and synthesized as timing-closed designs at a 250 MHz operating frequency. The implemen-11 tation comprises approximately 11 K lines of VHDL for the resource controller and 9 K lines of VHDL for the compute controller. The compute controller integrates with the Xilinx QDMA software stack, whose PF/VF kernel drivers configure the SR-IOV virtual functions (VFs) shown in Figure 6. These drivers take no part in capability validation or security-critical state updates. 
+
+Capability Representation. Each capability is a 256-bit to-ken. Its identity comprises a controller-local slot identifier, a generation number, and a MAC tag. The remaining fields encode the permission mask, resource extent, capability type, and indicator flag. The controller verifies the tag before ac-cepting the capability, so a token fabricated or modified by host software cannot authorize a request. 
+
+Datapath Integration. The implementation uses QDMA VFs to provide tenants with a kernel-bypass path to the compute controller’s enforcement pipeline before the networking stack. The compute controller validates the process capability in a request by checking its MAC tag, permissions, resource range, active local fences, and binding to the hardware-observed QDMA queue identifier. These checks execute in bounded pipeline stages without host-dependent execution delays. 
+
+Capability State Management. Each controller stores its capability trees and revocation state in on-device SmartNIC memory and consults this state on every protected request. The active fence check is a fixed-latency operation within the authorization pipeline. Subtree cleanup proceeds separately and does not delay resource protection. The controllers per-form all security-critical capability, delegation, and revocation updates, preserving the TCB and isolation assumptions of §3. 
+
+Networking Stack Integration. A customized EasyNet net-work stack [20] provides TCP/IP processing on the FPGAs, while Mellanox ConnectX-5 NICs provide the 100 Gbps phys-ical links through a non-blocking optical switch. 
+
+## 8 Evaluation 
+
+We evaluate SADRA on FPGA hardware, focusing on dat-apath performance, capability cleanup, and implementation-level security validation. We measure the cost of enforcing the two-stage invariant (Invariant 1) at both boundaries and verify through adversarial scenarios that invalid and revoked authority is rejected at the expected enforcement point. We organize the quantitative evaluation around two ques-tions. RQ1 (Datapath performance): What throughput can SADRA sustain, and what latency and throughput overhead does enforcement introduce? RQ2 (Comparison): How does SADRA compare with prior capability systems in enforce-ment architecture, revocation, failure recovery, and perfor-mance? In addition, we evaluate representative scenarios involv-ing forged, over-privileged, stale, and revoked authority. For each scenario, we record the boundary that rejects the request and whether any unauthorized request reaches the protected 
+
+> FPGA Card
+> Memory Node
+> FPGA Card
+> Compute Node 1
+> FPGA Card
+> Compute Node 2 Memory Module Read / Write Ctrl. SADRA (RC) TCP/IP Stack Podman SR-IOV VFs QDMA SADRA (CC) TCP/IP Stack Podman SR-IOV VFs QDMA SADRA (CC) TCP/IP Stack
+> 100 GbE Optical Switch
+
+Figure 6: Prototype deployment of SADRA in a memory-disaggregated architecture with two compute controllers, one resource controller, and a 100 GbE switch. resource (§8.3). 
+
+Experimental Setup. We evaluate SADRA on three nodes: two compute nodes and one memory node. Each compute node runs up to 32 tenants in Podman containers, with one SR-IOV virtual function assigned to each tenant. Experiments using both compute nodes therefore include up to 64 con-current tenants. The baseline retains the QDMA, networking, transport, and resource-access paths but without SADRA ca-pability processing. We compare each SADRA configuration with its corresponding measured baseline to determine the overall runtime overhead of enforcement. We repeat each configuration three times on each compute node and all mea-surements cover the complete end-to-end datapath. 
+
+## 8.1 Datapath Performance (RQ1) 
+
+We measure absolute throughput, throughput relative to the baseline defined above, and per-request latency as the window size, tenant count, and payload size vary. The application-agnostic microbenchmark generates con-trolled remote-memory traffic over the parameter ranges de-fined in the setup, isolating the datapath cost of SADRA’s two-stage validation and linked capability chain from application-specific behavior. The multi-tenant embedding-lookup workload is representative of deep-learning recom-mendation systems [33]. It exercises the enforcement datapath under application-driven access patterns, including concurrent access to a shared embedding table in disaggregated memory, private per-tenant write buffers, and skewed memory accesses. In both workloads, SADRA validates requests at the com-pute and resource controllers. 
+
+8.1.1 Application-Agnostic Microbenchmarks 
+
+We use application-agnostic microbenchmarks to measure the end-to-end datapath cost of SADRA independently of application computation. The baseline uses the same QDMA, network, transport, and remote-memory datapaths without 12 −1012Throughput overhead (%)                                  
+
+> (a) 512 B
+> W=1W=2W=4W=8
+> (b) 1 KiB (c) 2 KiB (d) 4 KiB
+> 24816 32 64 020 40 60 80 100 Total tenants SADRA throughput (Gbit/s) 24816 32 64 Total tenants 24816 32 64 Total tenants 24816 32 64 Total tenants
+
+Figure 7: Throughput and overhead across payload sizes. Top: mean signed throughput overhead relative to baseline; negative values indicate that SADRA measured faster. Bottom: achieved SADRA throughput.                                    
+
+> 012Mean RTT increase (μs)
+> (a) 512 B
+> W=1W=2W=4W=8Baseline SADRA
+> (b) 1 KiB (c) 2 KiB (d) 4 KiB
+> 24816 32 64 020 40 60 80 Total tenants Mean RTT (μs) 24816 32 64 Total tenants 24816 32 64 Total tenants 24816 32 64 Total tenants
+
+Figure 8: Request RTT across payload sizes. Top: difference in mean RTT between SADRA and the paired baseline. Bottom: absolute mean RTT. Each point reports the mean across three synchronized rounds; run-to-run variation is discussed in the text. capability enforcement. In the SADRA configuration, every protected request additionally passes through the compute and resource controllers. The comparison therefore measures the performance cost of SADRA relative to the corresponding non-enforcing remote-memory datapath. 
+
+Workload and methodology. The microbenchmark uses a closed-loop, windowed request pattern. In each iteration, ev-ery tenant submits up to W writes and waits for all responses, then submits up to W reads and again waits for all responses. Each tenant transfers 1 GiB of write data and 1 GiB of read data over the complete run. We evaluate W ∈ { 1, 2, 4, 8} and payload sizes of 512 B, 1 KiB, 2 KiB, and 4 KiB. The two com-pute nodes generate traffic concurrently, with 2, 4, 8, 16, 32, or 64 total tenants distributed equally between them. Each tenant accesses a distinct region of the 16 GiB remote-memory space. 
+
+W = 1 corresponds to synchronous request–response execu-tion, while larger windows increase the number of outstanding requests and drive the datapath toward saturation. We evaluated each configuration in three synchronized rounds on both compute nodes. For throughput, we sum the measurements from the two nodes within each round and re-port the mean aggregate throughput across rounds. Through-put overhead is computed relative to the paired baseline; a negative value therefore means only that SADRA measured slightly faster in that configuration. For latency measurements, request construction, metadata preparation, response-mailbox clearing, and required cache preparation occur before the timer starts. RTT is measured from request submission until the corresponding completion response is received. We report the difference in mean RTT between SADRA and the paired baseline, with paired 95% confidence intervals. 
+
+Throughput. Figure 7 shows that SADRA closely tracks the baseline throughout the evaluated operating range. Of the 96 configurations, 94 differ from the baseline by at most 1% in either direction. Throughput overhead ranges from −0.78% to 1 .56%, and 32 configurations have a negative value. The presence of both small positive and negative differences indi-cates that the enforcement cost is comparable to run-to-run variation; the negative values should not be interpreted as an inherent performance benefit from capability checking. 13 Throughput increases with payload size, tenant count, and window size until the underlying remote-memory datapath reaches saturation. At the highest-load configuration, with 64 tenants, 4 KiB requests, and W = 8, SADRA reaches 89.542 Gbit/s, with a throughput overhead < 0.01%, com-pared with 89.545 Gbit/s for the baseline. Both are effectively at the measured 90–91 Gbit/s throughput ceiling of the remote-memory datapath. SADRA therefore reaches the platform’s saturation region without capability enforcement becoming a measurable throughput bottleneck. 
+
+Request latency. Figure 8 shows the corresponding request RTTs. Absolute RTT increases with larger windows and ten-ant counts as queueing increases, while the difference between SADRA and the paired baseline remains small across the evaluated operating range. The increase in mean RTT remains below 1 μs in every configuration and is typically only a few tenths of a microsecond. The paired 95% confidence inter-vals further show that many of the measured differences are comparable to run-to-run variation. These results indicate that the additional validation performed by SADRA adds little to end-to-end request latency even as the underlying datapath approaches saturation. The application-agnostic measurements show that SADRA drives the remote-memory datapath to its throughput ceiling while adding only a small latency cost. These microbench-marks isolate enforcement behavior under controlled request patterns; the application-driven evaluation examines the same enforcement datapath under an application workload. 
+
+8.1.2 Multi-Tenant ML Workload 
+
+We complement the application-agnostic microbenchmarks with a multi-tenant recommendation-inference workload based on Meta’s DLRM architecture [33]. The purpose of this experiment is to evaluate SADRA under an application-driven access pattern rather than to compare remote and local memory. The baseline therefore executes the same remote-memory workload without capability enforcement. 
+
+Workload and methodology. The model contains 13 dense features, a 13–64–32 bottom MLP, 26 categorical features with 26 embedding tables, dot-product feature interaction, and a 383–256–64–1 top MLP. Dense computation and input data remain local, while embedding-table accesses and result writes use remote memory. We use batch size 32 and 100,000 test records per tenant. Each inference generates 26 distinct remote embedding reads and one result write. Each embedding lookup is is-sued as a separate 512 B read request, the minimum payload granularity supported by the remote-memory datapath; the required 128-byte embedding vector is extracted locally from the returned block. A tenant writes the inference result with one separate 4 KiB write request. Thus, every inference gen-erates 27 protected remote requests and transfers 17,408 B. The window size W ∈ { 1, 2, 4, 8} controls only the number of               
+
+> −2
+> −1012Throughput overhead (%) 00.511.5Authorized req. per second (millions) 24816 020 40 60 Total tenants SADRA mean RTT (μs)
+> W=1W=2W=4W=8
+
+Figure 9: Meta-DLRM performance for batch size 32 on the test split. Top: mean signed inference-throughput overhead relative to baseline; negative values indicate that SADRA measured faster. Middle: protected remote request rate under SADRA, including 26 embedding reads and one result write per inference. Bottom: SADRA mean remote-operation RTT. outstanding remote operations and does not coalesce requests. We evaluate 2, 4, 8, and 16 total tenants across the two compute nodes; the application-agnostic microbenchmarks separately evaluate datapath scaling up to 64 tenants. We measure each ML configuration in three synchronized paired baseline–SADRA rounds. A two-node round serves as the statistical unit, with inference throughput summed across the two nodes and remote-operation latency weighted by the num-ber of completed remote read and write operations. Because the model uses deterministic parameters rather than a trained checkpoint, we evaluate systems behavior and output equiva-lence rather than model accuracy. 
+
+Application correctness. Across all 48 paired baseline– SADRA rounds, the prediction hashes match. Thus, every evaluated SADRA execution produces bit-identical predic-tion outputs to its corresponding non-enforcing baseline. This provides application-level evidence that routing the em-bedding accesses and result writes through the capability-enforcement path preserves the computation’s outputs. 
+
+Inference throughput. Figure 9 shows the signed inference-throughput overhead relative to the baseline. Across the 16 evaluated configurations, 12 are within 1% of the baseline and all are within 2%. The largest positive overhead is 1.76%. Ten configurations have negative signed overhead; as in the application-agnostic measurements, these small differences should be interpreted as measurement, scheduling, and queue-ing variation rather than as an inherent performance benefit from enforcement. The highest inference throughput occurs with 16 tenants and W = 2. The baseline reaches 52,824 inferences/s, while SADRA reaches 52,678 inferences/s, a difference of 0.276%. 14 Thus, at the workload’s highest-throughput operating point, capability enforcement has little effect on the throughput. 
+
+Authorization rate and remote-operation latency. Al-though this workload does not saturate network bandwidth, it generates a substantial rate of protected operations because every inference produces 27 separate remote requests. At the peak SADRA operating point, the system processes ap-proximately 1.42 million protected remote requests/s, com-prising about 1.37 million embedding read operations per second and 52.7 thousand result write operations per second, while transferring 7.34 Gbit/s. The corresponding baseline traffic is 7.36 Gbit/s. The middle panel of Figure 9 reports the protected-request rate across the evaluated configurations. The bottom panel reports SADRA’s mean remote-operation RTT. Increasing the window primarily increases the number of outstanding requests and therefore queueing latency. Across all configurations, the largest positive increase in mean remote-operation RTT relative to the paired baseline is 0.638 μs. The small application-level throughput differ-ences therefore coincide with a similarly small increase on the remote-access path itself, rather than being hidden solely by local ML computation. 
+
+Effect of request concurrency. Increasing W beyond 2 does not improve inference throughput. At 16 tenants, W = 2reaches approximately 52.8 thousand inferences/s, whereas 
+
+W = 4 and W = 8 fall to approximately 48 thousand infer-ences/s while remote-operation RTT increases. The largest observed throughput overhead, 1.76%, occurs at 16 tenants and W = 4, after the workload has already passed its highest-throughput operating point. We therefore report this value as the maximum observed overhead without attributing it to a specific enforcement or queueing mechanism. The ML experiment exercises a different operating regime from the application-agnostic microbenchmarks. The lat-ter drives the remote-memory datapath to its approximately 90 Gbit/s throughput ceiling, whereas the ML workload gener-ates smaller requests at up to approximately 1.42 million pro-tected operations per second. Across this application-driven workload, SADRA preserves prediction outputs, remains within 1.8% of baseline inference throughput in every evalu-ated configuration, and adds at most 0.638 μs to mean remote-operation RTT. 
+
+## 8.2 Comparison with Prior Capability Systems (RQ2) 
+
+We compare SADRA with CEP [6], SemperOS [21], White et al. [45], and FractOS [44]. These systems address different points in the capability design space: CEP targets rack-scale disaggregated memory, SemperOS provides distributed capa-bility management across microkernels, White et al. explore version-based capability invalidation, and FractOS provides distributed delegation and owner-side revocation for hetero-geneous disaggregated systems. We compare them along the Table 2: Capability Cleanup Time. Legend: C = Cycles.                               
+
+> Capability Count No. of Sub-trees 128 256 512 1024 2048 4096 One 132C 260C 516C 1028C 2052C 4100C Two 132C 260C 516C 1028C 2052C 4100C Four 132C 260C 516C 1028C 2052C 4100C Eight 132C 260C 516C 1028C 2052C 4100C
+
+properties most relevant to resource-disaggregated enforce-ment including enforcement architecture, revocation, failure recovery, and performance. 
+
+Enforcement architecture. The primary distinction among these systems is where they establish authorization and where they make the authoritative decision. CEP validates capabili-ties at the memory side, but relies on compute-side software to bind requests to processes and preserve channel integrity. SemperOS distributes capability management across cooper-ating μ-kernels and enforces authorization through a software-managed capability hierarchy. White et al. use per-node con-trollers and versioned references, but their controllers execute as trusted software components. FractOS moves capability management into distributed Controllers for heterogeneous disaggregation, but its Controllers remain software compo-nents rather than hardware enforcement. SADRA instead places hardware controllers isolated from host software at both ends of the remote access path. The com-pute controller validates process-granularity authority before fabric admission, while the resource controller performs the authoritative access decision before resource access. These checks use linked local capability state rather than coordina-tion on the access path. 
+
+Revocation. Prior systems provide different mechanisms for invalidating delegated authority. CEP and SemperOS rely on traversal-based revocation, where completion depends on pro-cessing the affected delegation structure and, for distributed cases, coordination across enforcement domains. White et al. avoid distributed traversal through versioned references, but stale authority after failure is invalidated rather than restored. FractOS provides immediate owner-side revocation through separately invalidatable delegation structures, with cleanup of derived state proceeding separately. SADRA separates the security effect of revocation from state reclamation. For revocation at the resource boundary, the resource controller installs a fence on the authoritative resource capability, and every dependent request is denied at the resource boundary regardless of whether remote compute controllers have observed the revocation. Similarly, compute controllers use fences when revoking authority within their local capability trees, ensuring that dependent accesses fail be-fore cleanup completes. Cleanup then proceeds separately by traversing the affected capability state. As shown in Table 2, for a fixed capability count, cleanup latency is unchanged as 15 the number of affected subtrees varies from one to eight. A 128-capability cleanup completes in 528 ns. The fence, rather than cleanup traversal, determines authorization. 
+
+Failure recovery. Persistence across failures provides another distinction among capability systems. White et al. invalidate stale authority after controller failure and require applications to reacquire capabilities rather than resuming from restored authority state. FractOS similarly treats controller failure as capability invalidation rather than restoration of live delegated authority. SADRA instead defines recovery semantics as part of its capability-chain architecture, preserving persistent capa-bility relationships and revocation state without reactivating stale authority. The complete persistence comparison is pro-vided in the systematization (§5). 
+
+Performance. CEP shows that capability validation can be integrated into the memory-side datapath, while SemperOS and FractOS demonstrate distributed capability management in software. Because these systems target different platforms and report different metrics, we compare design properties rather than directly comparing measured performance. SADRA combines hardware enforcement with distributed capability management. The application-agnostic evaluation shows that the two validation stages preserve throughput up to the measured remote-memory datapath ceiling of 89.5 Gbit/s. The ML evaluation shows at most 1.8% inference-throughput degradation relative to the baseline across all evaluated con-figurations, where twelve of the sixteen configurations remain within 1%, and all paired runs produce bit-identical outputs. 
+
+## 8.3 Prototype Security Validation 
+
+§4 establishes capability safety, authority safety, revocation soundness, and strong isolation for the SADRA architec-tural model and verifies the formalization using SPIN. The deployed resource and compute controllers contain approxi-mately 11 K and 9 K lines of VHDL, respectively, which are outside the scope of the formal analysis. Thus, we comple-ment the formal results with implementation-level tests that exercise a corresponding adversarial scenario for each prop-erty and record both the enforcement point that rejects the request and whether the request reaches the protected resource (Table 3). The scenarios map directly to the four properties. Forged capabilities test capability safety, rights amplification tests authority safety, revoked authority tests revocation soundness, and cross-tenant requests test strong isolation. Forged pro-cess capabilities and rights amplification are rejected by the compute controller before entering the fabric. For revocation, authority confined to one compute node is revoked and re-jected by its compute controller, while authority delegated across compute nodes is fenced by the authoritative resource controller and rejected before resource access. Cross-tenant requests without valid authority are likewise rejected before accessing the protected resource. Table 3: Implementation-level validation of the four security properties. All attack attempts were rejected before resource access.           
+
+> Attack Property Boundary Forgery Capability safety Compute Amplification Authority safety Compute Revocation Revocation soundness Resource & Compute Cross-tenant Strong isolation Resource & Compute
+
+In every trial reported in Table 3, SADRA rejected the unauthorized request at the expected enforcement point, and no unauthorized request reached the protected resource. These tests do not replace the formal analysis, but provide implementation-level evidence that the FPGA prototype be-haves consistently with the architectural model for the evalu-ated attack scenarios. 
+
+## 9 Conclusion 
+
+Resource disaggregation separates computation from memory and accelerator resources, but it also removes the local pro-tection boundary traditionally provided by the host operating system. This separation requires authorization mechanisms that can enforce access control across disaggregated trust boundaries without placing coordination or trusted host soft-ware on the resource-access path. This paper presented SADRA, a distributed capability-based access-control architecture for resource-disaggregated systems. SADRA introduces a two-stage enforcement invari-ant in which isolated SmartNIC hardware validates author-ity at both the compute and resource boundaries. A linked chain of process, compute, and resource capabilities enables fine-grained delegation while allowing each enforcement point to validate requests from local state. For revocation, SADRA separates the security effect from state reclama-tion: a resource-rooted fence immediately prevents dependent authority from reaching the resource, while capability-state cleanup proceeds independently. The same capability-chain representation also defines recovery semantics that preserve authority relationships without allowing stale authority to be reactivated. We formally establish capability safety, authority safety, revocation soundness, and strong isolation for the SADRA model and evaluate the implementation through FPGA-based adversarial security experiments. The prototype evaluation demonstrates that these guarantees can be achieved with-out making authorization the performance bottleneck. The FPGA SmartNIC implementation sustains 89.5 Gbit/s, with a throughput overhead < 0 .01%, effectively reaching the 90– 91 Gbit/s throughput ceiling of the evaluated remote-memory datapath. Under a Meta-DLRM workload, SADRA maintains inference throughput within 1.8% of the baseline while pro-16 cessing up to 1.42 million protected remote operations per sec-ond and producing bit-identical outputs across all paired runs. Revocation cleanup of a 128-capability subtree completes in 528 ns, while denial is determined by the resource-side fence rather than by completion of cleanup traversal. By combining distributed capability management with hardware-isolated authorization at the compute and re-source boundaries, SADRA demonstrates that resource-disaggregated systems can retain strong access-control guar-antees without sacrificing the performance characteristics that motivate disaggregation. 
+
+## References 
+
+[1] Mike Accetta, Robert Baron, William Bolosky, David Golub, Richard Rashid, Avadis Tevanian, and Michael Young. Mach: A new kernel foundation for UNIX de-velopment. Proceedings of the USENIX Summer Con-ference , pages 93–112, 1986. [2] Emmanuel Amaro, Christopher Branner-Augmon, Zhi-hong Luo, Amy Ousterhout, Marcos K. Aguilera, Au-rojit Panda, Sylvia Ratnasamy, and Scott Shenker. Can far memory improve job throughput? In Proceedings of the 15th European Conference on Computer Systems (EuroSys ’20) , pages 1–16, New York, NY, USA, 2020. Association for Computing Machinery. [3] Amazon Web Services. The security design of the AWS Nitro System. Technical report, Amazon Web Services, 2024. [4] James P. Anderson. Computer security technology plan-ning study. Technical Report ESD-TR-73-51, Deputy for Command and Management Systems, HQ Electronic Systems Division (AFSC), L.G. Hanscom Field, Bed-ford, MA, 1972. [5] Krste Asanovi´ c. Firebox: A hardware building block for 2020 warehouse-scale computers. In FAST , 2014. [6] Leonid Azriel, Lukas Humbel, Reto Achermann, Alex Richardson, Moritz Hoffmann, Avi Mendelson, Timothy Roscoe, Robert NM Watson, Paolo Faraboschi, and De-jan Milojicic. Memory-side protection with a capability enforcement co-processor. ACM Transactions on Ar-chitecture and Code Optimization (TACO) , 16(1):1–26, 2019. [7] Andrew Baumann et al. The multikernel: a new OS architecture for scalable multicore systems. In Proc. SOSP , pages 29–44, New York, NY, USA, 2009. ACM. [8] Matthias Becker, Hartmut Schultze, Kirk Bresniker, Sharad Singhal, Thomas Ulas, and Joachim L. Schultze. A novel computational architecture for large-scale ge-nomics. Nature Biotechnology , 38(11):1239–1241, 2020. [9] Kirk M Bresniker, Paolo Faraboschi, Avi Mendelson, Dejan Milojicic, Timothy Roscoe, and Robert NM Wat-son. Rack-scale capabilities: fine-grained protection for large-scale memories. Computer , 52(2):52–62, 2019. [10] Nicholas P Carter, Stephen W Keckler, and William J Dally. Hardware support for fast capability-based ad-dressing. ACM SIGOPS Operating Systems Review ,28(5):319–327, 1994. [11] Jeffrey S. Chase, Henry M. Levy, Miche Baker-Harvey, and Edward D. Lazowska. Sharing and protection in a single-address-space operating system. ACM Trans-actions on Computer Systems (TOCS) , 12(4):271–307, 1994. [12] Jiyang Chen, Anubhav Panda, Harshavardhan Unnib-havi, Atsushi Koshiba, and Pramod Bhatotia. {μShell }:A microkernel-based {FPGA } shell architecture. In 20th USENIX Symposium on Operating Systems Design and Implementation (OSDI 26) , pages 2103–2126, 2026. [13] George W Cox, William M Corwin, Konrad K Lai, and Fred J Pollack. A unified model and implementation for interprocess communication in a multiprocessor envi-ronment. In Proceedings of the eighth ACM symposium on Operating systems principles , pages 125–126, 1981. [14] W-P De Roever, Frank de Boer, Ulrich Hanneman, Jozef Hooman, Yassine Lakhnech, Mannes Poel, and Job Zwiers. Concurrency verification: Introduction to com-positional and non-compositional methods , volume 54. Cambridge University Press, 2001. [15] Jack B Dennis and Earl C Van Horn. Programming semantics for multiprogrammed computations. Commu-nications of the ACM , 9(3):143–155, 1966. [16] Joe Devietti, Colin Blundell, Milo MK Martin, and Steve Zdancewic. Hardbound: architectural support for spatial safety of the c programming language. ACM SIGOPS Operating Systems Review , 42(2):103–114, 2008. [17] Alan Ehret, Jacob Abraham, Mihailo Isakov, and Michel A Kinsy. Zeno: A scalable capability-based secure architecture. arXiv preprint arXiv:2208.09800 ,2022. [18] Robert S. Fabry. Capability-based addressing. Commu-nications of the ACM , 17(7):403–412, 1974. [19] Norman Hardy. Keykos architecture. ACM SIGOPS Operating Systems Review , 19(4):8–25, 1985. 17 [20] Zhenhao He, Dario Korolija, and Gustavo Alonso. Easynet: 100 gbps network for hls. In 2021 31st In-ternational Conference on Field-Programmable Logic and Applications (FPL) , pages 197–203. IEEE, 2021. [21] Matthias Hille et al. SemperOS: A distributed capa-bility system. In Proc. USENIX ATC , pages 709–722, Berkeley, CA, USA, 2019. USENIX Association. [22] Merle E Houdek, Frank G Soltis, and Roy L Hoffman. Ibm system/38 support for capability-based addressing. In Proceedings of the 8th annual symposium on Com-puter Architecture , pages 341–348, 1981. [23] Anita K. Jones et al. StarOS, a multiprocessor operating system for the support of task forces. In Proceedings of the seventh ACM symposium on Operating systems principles (SOSP ’79) , pages 117–127, New York, NY, USA, 1979. Association for Computing Machinery. [24] Kimberly Keeton. The machine: An architecture for memory-centric computing. In Proceedings of the 2015 IEEE International Conference on Big Data (Big Data) ,pages 25–25, Piscataway, NJ, USA, 2015. IEEE. [25] Gerwin Klein, Kevin Elphinstone, Gernot Heiser, June Andronick, David Cock, Philip Derrin, Dhammika Elka-duwe, Kai Engelhardt, Rafal Kolanski, Michael Norrish, et al. sel4: Formal verification of an os kernel. In 
+
+Proceedings of the ACM SIGOPS 22nd symposium on Operating systems principles , pages 207–220, 2009. [26] Henry M. Levy. Capability-Based Computer Systems .Digital Press, 1984. [27] Jiaxin Lin, Kiran Patel, Brent E Stephens, Anirudh Sivaraman, and Aditya Akella. {PANIC }: A {High-Performance } programmable {NIC } for multi-tenant networks. In 14th USENIX Symposium on Operating Systems Design and Implementation (OSDI 20) , pages 243–259, 2020. [28] Ming Liu, Simon Peter, Arvind Krishnamurthy, and Phitchaya Mangpo Phothilimthana. E3: {Energy-Efficient } microservices on {SmartNIC-Accelerated }
+
+servers. In 2019 USENIX Annual Technical Conference (USENIX ATC 19) , pages 363–378, 2019. [29] Noah Mauthe, Eric Ackermann, and Sven Bugiel. Sok: Capability operating systems: Is the future finally here? In 35th USENIX Security Symposium (USENIX Security ’26) . USENIX Association, 2026. [30] Mark S Miller, Ka-Ping Yee, Jonathan Shapiro, et al. Ca-pability myths demolished. Technical report, Technical Report SRL2003-02, Johns Hopkins University Systems Research . . . , 2003. [31] Jayadev Misra and K. Mani Chandy. Proofs of networks of processes. IEEE transactions on software engineer-ing , (4):417–426, 1981. [32] Sape J. Mullender, Guido Van Rossum, AS Tananbaum, Robbert Van Renesse, and Hans Van Staveren. Amoeba: A distributed operating system for the 1990s. Computer ,23(5):44–53, 1990. [33] Maxim Naumov, Dheevatsa Mudigere, Hao-Jun Michael Shi, Jianyu Huang, Narayanan Sundaraman, Jongsoo Park, Xiaodong Wang, Udit Gupta, Carole-Jean Wu, et al. Deep learning recommendation model for person-alization and recommendation systems. arXiv preprint arXiv:1906.00091 , 2019. [34] Roger M Needham and Robin DH Walker. The cam-bridge cap computer and its protection system. ACM SIGOPS Operating Systems Review , 11(5):1–10, 1977. [35] NVIDIA Corporation. NVIDIA BlueField-3 DPU: The World’s Most Advanced Infrastructure Compute Plat-form . NVIDIA, 2023. [36] Richard F Rashid and George G Robertson. Accent: A communication oriented network operating system ker-nel. ACM SIGOPS Operating Systems Review , 15(5):64– 75, 1981. [37] Hamed Rasifard, Rahul Gopinath, Michael Backes, and Hamed Nemati. Seal: Capability-based access control for data-analytic scenarios. In Proceedings of the 28th ACM Symposium on Access Control Models and Tech-nologies , pages 67–78, 2023. [38] Benjamin Rothenberger, Konstantin Taranov, Adrian Perrig, and Torsten Hoefler. ReDMArk: Bypassing RDMA security mechanisms. In Proceedings of the 30th USENIX Security Symposium , Berkeley, CA, USA, 2021. USENIX Association. [39] Marc Rozier, Vadim Abrossimov, François Armand, Ivan Boule, Michel Gien, Marc Guillemont, Frédéric Herrmann, Claude Kaiser, Sylvain Langlois, Pierre Léonard, et al. Overview of the chorus distributed oper-ating system. In Workshop on Micro-Kernels and Other Kernel Architectures , pages 39–70. Seattle WA (USA), 1992. [40] Jerome H. Saltzer and Michael D. Schroeder. The pro-tection of information in computer systems. Proceed-ings of the IEEE , 63(9):1278–1308, 1975. [41] Jonathan S. Shapiro, Jonathan M. Smith, and David J. Farber. EROS: A fast capability system. In Proceed-ings of the 17th ACM Symposium on Operating Systems Principles (SOSP ’99) , pages 170–185, New York, NY, USA, 1999. Association for Computing Machinery. 18 [42] Konstantin Taranov et al. NeVerMore: Exploiting RDMA mistakes in NVMe-oF storage applications. In 
+
+Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communications Security (CCS ’22) ,pages 2765–2778, New York, NY, USA, 2022. Asso-ciation for Computing Machinery. [43] Lluís Vilanova, Muli Ben-Yehuda, Nacho Navarro, Yoav Etsion, and Mateo Valero. Codoms: Protecting software with code-centric memory domains. ACM SIGARCH Computer Architecture News , 42(3):469–480, 2014. [44] Lluís Vilanova, Lina Maudlej, Shai Bergman, Till Miemietz, Matthias Hille, Nils Asmussen, Michael Roitzsch, Hermann Härtig, and Mark Silberstein. Slash-ing the disaggregation tax in heterogeneous data centers with fractos. In Proceedings of the seventeenth european conference on computer systems , pages 352–367, 2022. [45] Otto White, Yaoxin Jing, Adrien Ghosn, Michael Steiner, Anjo Vahldiek-Oberwagner, Mona Vij, and Lluis Vi-lanova. Enabling cloud-scale distributed capabilities. In Proceedings of the 4th Workshop on Heterogeneous Composable and Disaggregated Systems , pages 38–44, 2025. [46] Jonathan Woodruff et al. The CHERI capability model: Revisiting RISC in an age of risk. In Proceedings of the 41st International Symposium on Computer Architecture (ISCA ’14) , pages 457–468, Piscataway, NJ, USA, 2014. IEEE Press. [47] William Wulf, Ellis Cohen, William Corwin, Anita Jones, Roy Levin, Charles Pierson, and Fred Pollack. Hydra: The kernel of a multiprocessor operating system. 
+
+Communications of the ACM , 17(6):337–345, 1974. 
+
+## A Formal Model 
+
+This appendix defines the formal model of SADRA and the reasoning used to establish its security properties. The model captures capability relationships, delegation, validation, revo-cation, and the interaction between the compute and resource controllers. It underlies the four security properties estab-lished in §4: capability safety, authority safety, revocation soundness, and strong isolation. The model represents authority through the linked capabil-ity chain cp 7 → cc 7 → cr. Resource capabilities anchor authori-tative resource rights at the resource controller, compute capa-bilities represent authority delegated to a compute controller, and process capabilities associate subsets of that authority with individual processes. Each controller maintains its local delegation state as a rooted capability tree. These linked trees determine how authority is allocated, attenuated, validated, delegated, and revoked. We model the compute and resource controllers as inde-pendent state machines operating at their respective enforce-ment boundaries. The compute controller validates process-granularity authority before fabric admission, while the re-source controller makes the authoritative decision before re-source access. An inter-node request is authorized exactly when both validation stages succeed. Revocation is repre-sented through controller-local fences that cause dependent authority to fail validation before the corresponding capability state is reclaimed. 
+
+Basic notation. Let C = Cr ∪ Cc ∪ Cp denote the set of all capabilities. Let x ∈ { r, c} identify the resource or compute controller, so that Cx and ⪯x denote the capability set and delegation relation associated with controller x. Finally, let 
+
+B = {true , false } denote the Boolean domain. 
+
+## A.1 Formal Definitions 
+
+We first define the principals, resources, permissions, capa-bility representation, trusted request context, and capability authenticity used throughout the formal model. 
+
+Definition 1 (Principals) . Let P denote the set of processes, 
+
+CC the set of compute controllers, and RC the set of resource controllers. These sets are pairwise disjoint. Each compute and resource controller has a globally unique node identifier. Let NID c : CC → Nc and NID r : RC →
+
+Nr be injective mappings assigning identifiers to compute and resource controllers, respectively. The identifier value 0 is reserved and is not in the range of either mapping. 
+
+Definition 2 (Resources) . Let R be the set of disaggregated resources managed by SADRA. Resource ownership is parti-tioned across resource controllers: 
+
+R = ]
+
+> rc ∈RC
+
+Rrc ,
+
+where Rrc is the resource extent managed by resource con-troller rc. A capability may designate any subset of the resource extent managed by the resource controller from which its authority derives. 
+
+Definition 3 (Permissions) . The permission set is 
+
+V = {read , write , delegate , exclusive }.
+
+The permissions that directly authorize resource-access operations are 
+
+Vacc = {read , write }.
+
+The permissions delegate and exclusive have different semantics. The permission delegate allows the holder of a non-exclusive capability to derive authority for another principal. 
+
+19 A delegator may omit this permission from a delegated capa-bility to prevent the recipient from subsequently re-delegating that authority. The permission exclusive records that strong isolation was requested when the resource was initially allocated. Ex-clusive authority cannot be delegated, including by the pro-cess that requested the allocation. Hence, exclusive over-rides delegate if both are present. The exclusive permission is introduced only by initial resource allocation. SADRA preserves it through the corre-sponding resource, root-anchored compute, and process ca-pabilities. It cannot be introduced by a delegation operation. Creating the process capability corresponding to an ini-tially allocated root-anchored compute capability is not dele-gation and is therefore permitted even when that authority is exclusive. 
+
+Definition 4 (Capabilities) . A capability is represented ab-stractly as c = ⟨s, r, v,t, rnid , cnid , rid , cid ⟩,
+
+where: 
+
+• s is the capability subject; 
+
+• r ⊆ R is the resource extent; 
+
+• v ⊆ V is the permission set; 
+
+• t ∈ { usable , handle } is the capability type; 
+
+• rnid identifies the resource node; 
+
+• cnid identifies the compute node; 
+
+• rid is an authority identifier allocated locally by the resource controller identified by rnid; 
+
+• cid is an authority identifier allocated locally by the compute controller identified by cnid. We use the projections 
+
+subj (c), res (c), perm (c), type (c),
+
+rnid (c), cnid (c), rid (c), cid (c)
+
+for the corresponding fields. Let Cp, Cc, Cr denote the process, compute, and resource capability domains, respectively, and let C = Cp ∪ Cc ∪ Cr.
+
+The identifier pairs ⟨rnid , rid ⟩ and ⟨cnid , cid ⟩ are controller-scoped authority references. Neither rid nor cid is a globally unique capability identifier. The value 0 denotes an absent or inapplicable identifier and is never allocated as an rid or cid. 
+
+Definition 5 (Capability-Layer Field Conventions) . A usable resource capability has the form cr = ⟨sr, r, v, usable , rnid , cnid , rid , 0⟩,
+
+where sr ∈ RC ,
+
+rnid = NID r(sr),
+
+and rid ̸ = 0.
+
+Every allocated usable resource capability is issued for a particular compute node and therefore satisfies 
+
+cnid (cr)̸ = 0.
+
+The controller-owned resource-tree root c 0 is the exception and satisfies 
+
+cnid (c0) = 0.
+
+A compute capability has the form cc = ⟨sc, r, v,t, rnid , cnid , rid , cid ⟩,
+
+where sc ∈ CC ,
+
+cnid = NID c(sc),
+
+and rnid , rid , cid ̸ = 0.
+
+A process capability has the form cp = ⟨p, r, v,t, 0, cnid , 0, cid ⟩,
+
+where p ∈ P, cnid ̸ = 0, cid ̸ = 0.
+
+Thus, process capabilities expose only compute-side link-age. They do not carry the resource-controller-local rid or the resource-node identifier rnid. This separation is a layering property rather than a secrecy property: SADRA does not rely on hiding linkage identifiers for security. 
+
+Definition 6 (Authority Attenuation) . For capabilities c , c′ ∈
+
+C, we write c′ ⊑ cif and only if 
+
+res (c′) ⊆ res (c)
+
+and 
+
+perm (c′) ⊆ perm (c).
+
+Thus, derived authority cannot increase either resource extent or permissions. The exclusive permission has an additional preserva-tion rule for the initial allocation chain: if strong isolation is requested, exclusive must remain present in the corre-sponding resource, root-anchored compute, and process capa-bilities. Ordinary attenuation cannot clear it along that initial chain. 
+
+20 Definition 7 (Exclusive and Delegable Authority) . For any usable capability c, define 
+
+Exclusive (c) ⇐⇒ exclusive ∈ perm (c).
+
+We define 
+
+Delegable (c) ⇐⇒ delegate ∈ perm (c)
+
+∧ exclusive /∈ perm (c).
+
+Thus, the presence of delegate is necessary but not suffi-cient for delegation. Exclusive authority is never delegable. For a non-exclusive delegated capability, the delegator de-termines whether the recipient may re-delegate by including or omitting delegate from the delegated permission set. 
+
+Definition 8 (Trusted Request Context) . Let 
+
+Q
+
+be the set of requests processed by SADRA, and let 
+
+Qacc ⊆ Q
+
+denote resource-access requests. For req ∈ Qacc ,
+
+define 
+
+Op (req ) ∈ Vacc 
+
+as the requested resource-access operation and 
+
+Target (req ) ⊆ R
+
+as the requested resource extent. For a request presented by a process to a compute con-troller, 
+
+Requester (req ) ∈ P
+
+denotes the requesting process identity observed by the trusted compute-side request path. For a request received by a resource controller, 
+
+Origin (req ) ∈ Nc
+
+denotes the originating compute-node identity established by the trusted resource-side request path. 
+
+Requester (req ) and Origin (req ) are trusted enforcement observations. They are not identities supplied by untrusted host software. The requester observation applies to process-initiated op-erations authorized by a process capability or process re-vocation handle, including resource access, delegation, and handle-based revocation. The origin observation applies to controller-to-controller operations whose authorization depends on the originating compute node, including inter-node delegation and remote revocation. 
+
+Definition 9 (Capability Authenticity) . For a controller x ∈ CC ∪ RC ,
+
+we write 
+
+Authentic x(c)
+
+when the capability representation presented to x passes the controller’s capability-authentication check. Operational capability representations contain a MAC tag. The MAC is omitted from the logical capability tuple because it does not contribute authority semantics. The authentication domain is controller-specific. A com-pute controller authenticates process capabilities and pro-cess revocation handles presented to it. A resource controller authenticates the resource-controller-created root-anchored compute capabilities and compute revocation handles pre-sented to it. For each controller, the MAC protects every capability field consumed by that controller’s authorization decision. A field used only as local metadata by another controller need not belong to that controller’s MAC domain. Consequently, knowledge or fabrication of linkage identi-fiers alone does not create usable authority. 
+
+## A.2 Capability Trees Model 
+
+SADRA represents controller-resident capability relation-ships using resource and compute capability trees. Tree edges record immediate structural dependencies. For usable capa-bilities, these edges represent authority derivation. A handle edge in a compute tree records the revocation dependency created by inter-node delegation. The relations ⪯r and ⪯c define the authority and linkage constraints that must hold along resource-tree and compute-tree derivations, respectively. 
+
+Definition 10 (Tree Reachability) . Let T = ⟨V, E, ρ⟩
+
+be a rooted directed tree. We write 
+
+Reach T (c, c′)
+
+if and only if there exists a directed path from c to c ′ in T . Equivalently, Reach T is the reflexive-transitive closure of the edge relation E. 
+
+Resource Capability Tree. Definition 11 (Resource Delegation Relation) . For c, c′ ∈ Cr,
+
+we write c′ ⪯r cif and only if: 
+
+21 1. res (c′) ⊆ res (c);
+
+2. perm (c′) ⊆ perm (c);
+
+3. delegate ∈ perm (c);
+
+4. exclusive /∈ perm (c);
+
+5. type (c) = usable ;
+
+6. type (c′) = usable ; and 7. subj (c′) = subj (c).
+
+Thus, resource-tree delegation can only attenuate resource extent and permissions. The parent must carry delegation authority and must not represent an exclusive allocation. An exclusive resource capability therefore cannot have a resource capability derived from it. Because resource capabilities held by the same resource controller carry that controller’s resource-node identifier, 
+
+subj (c′) = subj (c)
+
+also implies 
+
+rnid (c′) = rnid (c).
+
+The compute-node identifiers need not be equal. In partic-ular, inter-node delegation may derive a resource capability for a destination compute node different from the compute node for which its parent was issued. The relation ⪯r constrains a permitted derivation but does not itself allocate a new resource-controller-local authority identifier or define a parent–child edge. 
+
+Definition 12 (Resource Capability Tree) . For a resource controller rc ∈ RC ,
+
+let c0 ∈ Cr
+
+be its controller-owned root resource capability satisfying 
+
+subj (c0) = rc ,
+
+type (c0) = usable ,
+
+and 
+
+cnid (c0) = 0.
+
+The resource capability tree is Tr(c0) = ⟨Vr, Er, c0⟩,
+
+where Vr ⊆ Cr, c0 ∈ Vr,
+
+and Er ⊆ Vr ×Vr.
+
+An edge 
+
+(c, c′) ∈ Er
+
+represents an immediate resource-authority derivation from c to c ′.
+
+Definition 13 (Well-Formed Resource Capability Tree) . Aresource capability tree Tr(c0) = ⟨Vr, Er, c0⟩
+
+maintained by resource controller rc is well-formed if and only if: 1. T r(c0) is acyclic; 2. c 0 has no incoming edge; 3. every c ′ ∈ Vr \ { c0} has exactly one parent in V r;4. every c ∈ Vr is reachable from c 0;5. every c ∈ Vr satisfies subj (c) = rc ;
+
+6. every allocated resource capability c ∈ Vr \ { c0} satisfies 
+
+cnid (c)̸ = 0; 
+
+7. resource-controller-local authority identifiers are unique among resource-tree entries: 
+
+∀c, c′ ∈ Vr, rid (c) = rid (c′) ⇒ c = c′;
+
+and 8. for every (c, c′) ∈ Er, c′ ⪯r c.
+
+Compute Capability Tree. Definition 14 (Compute Delegation Relation) . For c, c′ ∈ Cc,
+
+we write c′ ⪯c cif and only if: 1. res (c′) ⊆ res (c);
+
+2. perm (c′) ⊆ perm (c);
+
+3. delegate ∈ perm (c);
+
+4. exclusive /∈ perm (c);
+
+5. type (c) = usable ;
+
+6. type (c′) ∈ { usable , handle };
+
+7. subj (c′) = subj (c);
+
+8. rnid (c′) = rnid (c); and 9. if type (c′) = usable , then rid (c′) = rid (c).
+
+22 Thus, a usable compute capability derived within a com-pute tree retains the resource-side linkage of its parent: 
+
+rnid (c′), rid (c′) = ⟨rnid (c), rid (c)⟩ .
+
+It nevertheless receives a distinct compute-controller-local authority identifier when created. A compute handle created during inter-node delegation has different semantics. It remains on the same resource node, 
+
+rnid (c′) = rnid (c),
+
+but its rid identifies the newly derived resource capability whose revocation the handle controls. Therefore, for a handle child, 
+
+rid (c′)
+
+need not equal 
+
+rid (c).
+
+Because compute-tree nodes held by the same compute controller carry that controller’s compute-node identifier, 
+
+subj (c′) = subj (c)
+
+also implies 
+
+cnid (c′) = cnid (c).
+
+The relation ⪯c constrains structural derivation within a compute tree. Allocation of a new compute-controller-local authority identifier is defined by the corresponding capability-creation transition. The parent must carry delegation authority and must not represent an exclusive allocation. Thus, a root-anchored or derived compute capability carrying exclusive cannot ac-quire a child through intra-node or inter-node delegation. This restriction does not prevent the compute controller from creating the process capability corresponding to an exclusive compute capability. Process-capability creation es-tablishes the process-to-compute linkage rather than a child edge in T c(cc ) and therefore is not governed by ⪯c.
+
+Definition 15 (Compute Capability Tree) . For a compute controller cc ∈ CC ,
+
+the compute capability tree is Tc(cc ) = ⟨Vc, Ec, ⊥⟩ ,
+
+where Vc ⊆ Cc
+
+and Ec ⊆ (Vc ∪ {⊥} ) ×Vc.
+
+The symbol 
+
+⊥ /∈ C
+
+denotes a distinguished virtual root. It carries no authority and does not participate in ⪯c.An edge 
+
+(⊥, c) ∈ Ec
+
+is structural only and identifies a compute capability directly attached to the virtual root. An edge 
+
+(c, c′) ∈ Ec, c̸ = ⊥,
+
+represents an immediate structural derivation relationship. For a usable child, the edge represents authority delega-tion. For a handle child, it records the revocation dependency created when authority is delegated to another compute node. 
+
+Definition 16 (Root-Anchored Compute Capability) . Let Tc(cc ) = ⟨Vc, Ec, ⊥⟩ 
+
+be the compute capability tree maintained by compute con-troller cc ∈ CC .
+
+A compute capability cc ∈ Cc
+
+is root-anchored at cc if 
+
+RootAnchored cc (cc) ⇐⇒ cc ∈ Vc ∧ (⊥, cc) ∈ Ec.
+
+Root anchoring is a structural property. Usability of root-anchored capabilities follows from compute-tree well-formedness. 
+
+Definition 17 (Well-Formed Compute Capability Tree) . Acompute capability tree Tc(cc ) = ⟨Vc, Ec, ⊥⟩ 
+
+is well-formed if and only if: 1. T c(cc ) is acyclic; 2. ⊥ has no incoming edge; 3. every c′ ∈ Vc
+
+has exactly one parent in Vc ∪ {⊥} ;
+
+4. every c ∈ Vc
+
+is reachable from ⊥;5. every c ∈ Vc
+
+satisfies 
+
+subj (c) = cc ;23 6. compute-controller-local authority identifiers are unique among compute-tree entries: 
+
+∀c, c′ ∈ Vc, cid (c) = cid (c′) ⇒ c = c′;
+
+7. for every 
+
+(⊥, c) ∈ Ec,
+
+type (c) = usable ;
+
+and 8. for every 
+
+(c, c′) ∈ Ec with c̸ = ⊥,
+
+c′ ⪯c c.
+
+Lemma 1 (Compute Tree Root Reachability) . For every cc ∈ Vc
+
+in a well-formed compute capability tree Tc(cc ),
+
+there exists a unique root-anchored compute capability cra  
+
+> c
+
+∈ Vc
+
+such that 
+
+RootAnchored cc (cra  
+
+> c
+
+)
+
+and 
+
+Reach Tc(cc )(cra  
+
+> c
+
+, cc).
+
+Proof. By Definition 17, every 
+
+cc ∈ Vc
+
+is reachable from ⊥. Moreover, every capability in Vc has exactly one parent in 
+
+Vc ∪ {⊥} ,
+
+and the tree is acyclic. Hence there is a unique path from ⊥
+
+to cc.Let 
+
+cra 
+
+> c
+
+be the first capability on this path after ⊥. Then 
+
+(⊥, cra  
+
+> c
+
+) ∈ Ec,
+
+and therefore RootAnchored cc (cra  
+
+> c
+
+)
+
+by Definition 16. Since cra  
+
+> c
+
+lies on the path from ⊥ to cc,Reach Tc(cc )(cra  
+
+> c
+
+, cc)
+
+holds. For uniqueness, suppose another root-anchored compute capability ˆcra 
+
+> c
+
+̸ = cra 
+
+> c
+
+also satisfies Reach Tc(cc )( ˆcra  
+
+> c
+
+, cc).
+
+Then there would be two distinct paths from ⊥ to cc, one beginning with cra  
+
+> c
+
+and one beginning with ˆ cra  
+
+> c
+
+, contradict-ing the unique-parent property of the well-formed compute capability tree. Therefore cra  
+
+> c
+
+is unique. 
+
+Lemma 2 (Resource-Link Inheritance) . Let cc, cra  
+
+> c
+
+∈ Vc
+
+be usable compute capabilities in a well-formed compute capability tree T c(cc ) such that 
+
+RootAnchored cc (cra  
+
+> c
+
+)
+
+and 
+
+Reach Tc(cc )(cra  
+
+> c
+
+, cc).
+
+Then 
+
+rnid (cc) = rnid (cra  
+
+> c
+
+)
+
+and 
+
+rid (cc) = rid (cra  
+
+> c
+
+).
+
+Proof. If 
+
+cc = cra  
+
+> c
+
+,
+
+the result is immediate. Otherwise, let 
+
+cra  
+
+> c
+
+= d0, d1, . . . , dk = cc
+
+be the unique path from cra  
+
+> c
+
+to cc.Because cc is usable, every node on this derivation path is usable: a handle cannot serve as the parent of another compute-tree node under Definition 14. For each edge 
+
+(di, di+1),
+
+Definition 14 therefore gives rnid (di+1) = rnid (di)
+
+and rid (di+1) = rid (di).
+
+Applying these equalities along the path yields rnid (cc) = rnid (cra  
+
+> c
+
+)
+
+and rid (cc) = rid (cra  
+
+> c
+
+).
+
+24 Definition 18 (Fence-Anchor Domains) . Fences are installed on usable authority capabilities rather than on handle capa-bilities. The resource fence-anchor domain is 
+
+Ar = {c ∈ Cr | type (c) = usable } ,
+
+and the compute fence-anchor domain is 
+
+Ac = {c ∈ Cc | type (c) = usable } .
+
+Handle capabilities may exist in compute capability trees but cannot serve as fence anchors. The virtual root ⊥ is not a fence anchor. 
+
+## A.3 System State and Capability Linking 
+
+The capability trees define the structural relationships among controller-resident capabilities. The linkage fields defined in Definition 4 identify corresponding authority across capability layers. The pair ⟨cnid , cid ⟩ links a process-visible capability to compute-side authority, while ⟨rnid , rid ⟩ links compute-side authority to resource-side authority. These linkage relations are predicates over capability ob-jects rather than mutable components of the system state. They describe which authority a capability refers to, inde-pendently of whether that authority is currently live or active. Capability activity, authenticity, and request-specific autho-rization are defined separately in §A.4. 
+
+Definition 19 (System State) . A system state is a tuple 
+
+Σ = ( ΣP, ΣCC , ΣRC , Ec, Er, ctr CC , ctr RC , FCC , FRC ),
+
+where: 
+
+• ΣP : P → 2Cp maps each process to the process capabil-ities currently associated with that process; 
+
+• ΣCC : CC → 2Cc maps each compute controller to the compute capabilities currently stored locally; 
+
+• ΣRC : RC → 2Cr maps each resource controller to the resource capabilities currently stored locally; 
+
+• Ec and E r denote the current edge relations of the com-pute and resource capability trees, respectively; 
+
+• ctr CC : CC → N>0 maps each compute controller to its next compute-controller-local authority identifier; 
+
+• ctr RC : RC → N>0 maps each resource controller to its next resource-controller-local authority identifier; 
+
+• FCC and F RC denote the active fence sets maintained by compute and resource controllers. For every process p, compute controller cc, and resource controller rc, stored capability state is consistent with capa-bility subjects: cp ∈ ΣP(p) ⇒ subj (cp) = p,
+
+cc ∈ ΣCC (cc ) ⇒ subj (cc) = cc ,
+
+and cr ∈ ΣRC (rc ) ⇒ subj (cr) = rc .
+
+The vertex sets of the controller capability trees are derived from the corresponding controller-resident state: Vc(cc ) ≡ ΣCC (cc )
+
+and Vr(rc ) ≡ ΣRC (rc ).
+
+Thus, V c and V r are not additional mutable components of Σ.A compute or resource capability is live while it remains in the corresponding controller-resident capability tree. Re-moval from that tree therefore makes the capability no longer live. Liveness alone does not imply that the capability carries currently usable authority: a live capability may be covered by an active fence. A process may retain a stale capability token in untrusted memory after its controller-side authority has been revoked or reclaimed. Its linkage fields remain well defined, but the token cannot authorize a request unless the corresponding controller-side authority is active and the request satisfies the authenticity and request-binding checks defined in §A.4. The local authority-identifier counters are part of the trusted persistent controller state. They are monotonically increasing and never wrap. The value 0 is reserved and is never allocated. Before authority carrying a newly allocated local identifier becomes usable, the issuing controller durably advances the corresponding counter. Consequently, a pre-viously allocated rid or cid is never reassigned to different authority at the same controller. 
+
+Definition 20 (Process-to-Compute Linking Relation) . For cp ∈ Cp and cc ∈ Cc,
+
+we write cp 7 → cc
+
+if and only if 
+
+type (cp) = usable 
+
+∧ type (cc) = usable 
+
+∧ cnid (cp) = cnid (cc)
+
+∧ cid (cp) = cid (cc)
+
+∧ res (cp) ⊆ res (cc)
+
+∧ perm (cp) ⊆ perm (cc).
+
+25 Thus, the pair 
+
+⟨cnid (cp), cid (cp)⟩
+
+identifies the compute-side authority referenced by the process capability. The resource and permission conditions enforce attenuation of the authority exposed to the process. The relation is independent of membership in ΣP or ΣCC .Hence, a presented, replayed, stale, or fabricated token always has a well-defined linkage predicate. Whether that token can authorize a request is determined separately by controller-side activity, authenticity, requester binding, and the requested operation. Among live entries of a well-formed compute capabil-ity tree, the target of a process-to-compute link is unique because compute-controller-local authority identifiers are unique within that tree. Process-held handle capabilities do not participate in this usable authorization relation. 
+
+Definition 21 (Compute-to-Resource Linking Relation) . For cc ∈ Cc and cr ∈ Cr,
+
+we write cc 7 → cr
+
+if and only if 
+
+type (cc) = usable 
+
+∧ type (cr) = usable 
+
+∧ rnid (cc) = rnid (cr)
+
+∧ rid (cc) = rid (cr)
+
+∧ cnid (cc) = cnid (cr)
+
+∧ res (cc) ⊆ res (cr)
+
+∧ perm (cc) ⊆ perm (cr).
+
+The pair 
+
+⟨rnid (cc), rid (cc)⟩
+
+identifies the resource-side authority from which c c derives. Equality of the cnid fields records that this resource-side au-thority was issued for the compute node represented by c c.The relation expresses an authority association rather than activity or liveness. It therefore does not require either capa-bility to belong to the current controller-resident state. For a non-root usable compute capability, the resource-side linkage is inherited from its root-anchored ancestor. By Lemma 2, if c ra  
+
+> c
+
+is the root-anchored ancestor of usable capa-bility c c, then 
+
+rnid (cc) = rnid (cra  
+
+> c
+
+)
+
+and 
+
+rid (cc) = rid (cra  
+
+> c
+
+).
+
+Thus, a non-root usable compute capability remains as-sociated with the same resource-side authority as its root-anchored ancestor, although the non-root capability may carry attenuated resource extent and permissions. Compute handle capabilities do not participate in this us-able authorization relation. 
+
+Definition 22 (Root-Anchored Capability Selection) . For every usable compute capability cc ∈ Vc(cc )
+
+in a well-formed compute capability tree T c(cc ), the root-anchored capability associated with c c is the unique capabil-ity cra  
+
+> c
+
+∈ Vc(cc )
+
+satisfying 
+
+RootAnchored cc (cra  
+
+> c
+
+)
+
+and 
+
+Reach Tc(cc )(cra  
+
+> c
+
+, cc).
+
+Its existence and uniqueness follow from Lemma 1. By Lemma 2, 
+
+rnid (cc) = rnid (cra  
+
+> c
+
+)
+
+and 
+
+rid (cc) = rid (cra  
+
+> c
+
+).
+
+The tree relation establishes the structural ancestry of the root-anchored capability, while the inherited resource-side linkage identifies the resource authority associated with that root. 
+
+Definition 23 (Capability Chain) . The capability chain rep-resents the composition of usable authority across the three SADRA capability layers. For a process capability c p, compute capability c c, and resource capability c r, the authority chain has the form cp 7 → cc 7 → cr.
+
+The first relation identifies the compute-side authority refer-enced by c p. The second relation identifies the resource-side authority from which c c derives. For a non-root compute capability, the second relation ex-presses its resource-side authority association through the inherited ⟨rnid , rid ⟩ linkage. The actual root-anchored capa-bility presented to the resource controller is determined dur-ing resource-access authorization and is defined separately in §A.4. Thus, the capability chain describes authority composi-tion rather than the sequence of capability representations presented at the two enforcement boundaries. Handle capabilities do not form part of the usable autho-rization chain. 
+
+26 Definition 24 (Process-Handle-to-Compute Linking Rela-tion) . For hp ∈ Cp and ca ∈ Cc,
+
+we write hp H
+
+7−→ ca
+
+if and only if 
+
+type (hp) = handle 
+
+∧ cnid (hp) = cnid (ca)
+
+∧ cid (hp) = cid (ca).
+
+The target c a may be either a usable compute capability or a compute handle. For intra-node delegation, 
+
+type (ca) = usable ,
+
+and the relation identifies the delegated compute subtree con-trolled by the process handle. For inter-node delegation, 
+
+type (ca) = handle ,
+
+and the relation identifies the source-side compute revocation handle. The relation is derived solely from capability fields and does not require h p or c a to be live. Among live compute-tree entries at the controller identified by cnid (hp), its target is unique because compute-controller-local authority identifiers are unique within that tree. 
+
+Definition 25 (Compute-Handle-to-Resource Linking Rela-tion) . For hc ∈ Cc and cr ∈ Cr,
+
+we write hc R
+
+7−→ cr
+
+if and only if 
+
+type (hc) = handle 
+
+∧ type (cr) = usable 
+
+∧ rnid (hc) = rnid (cr)
+
+∧ rid (hc) = rid (cr).
+
+The pair 
+
+⟨rnid (hc), rid (hc)⟩
+
+identifies the resource capability whose revocation the com-pute handle controls. The cnid fields are intentionally not required to match. The compute handle belongs to the delegating compute node, while the resource capability created by inter-node delegation is issued for the destination compute node. The relation is independent of current resource-controller state. Among live resource capabilities at the resource con-troller identified by rnid (hc), the target is unique because resource-controller-local authority identifiers are unique within that resource tree. 
+
+Definition 26 (Revocation-Control Path) . Revocation-control relationships are separate from usable authorization relation-ships. For intra-node delegation, a process-held handle identifies the usable compute capability created for the delegation: hp H
+
+7−→ cdel  
+
+> c
+
+.
+
+For inter-node delegation, the delegating process’s han-dle identifies the compute revocation handle retained by the source compute controller, which in turn identifies the re-source capability created for the delegation: hsrc 
+
+> pH
+
+7−→ hsrc 
+
+> cR
+
+7−→ cdel  
+
+> r
+
+.
+
+The corresponding usable authority at the destination fol-lows cdst  
+
+> p
+
+7 → cdst  
+
+> c
+
+7 → cdel  
+
+> r
+
+.
+
+Thus, authorization and revocation control refer to the same delegated authority but follow distinct capability paths. Process and compute handles convey revocation control only and do not participate in the usable authorization chain. 
+
+Definition 27 (Fence State) . The fence state is represented by FCC : CC → 2Ac
+
+and FRC : RC → 2Ar ,
+
+where Ac and Ar are the compute and resource fence-anchor domains defined in Definition 18. A fence identifies a usable capability at which authority becomes inactive at that controller. Descendants need not appear individually in a fence set because the activity check determines whether the capability path contains an active fence ancestor. Handle capabilities cannot serve as fence anchors, and the virtual root ⊥ is not a fence anchor. 
+
+## A.4 Capability Activity and Authorization 
+
+This subsection distinguishes local capability activity from end-to-end resource-access authorization. A controller-resident capability is live if it remains in the controller’s capability tree. It is active if it is live, usable, and unaffected by the controller’s current fence state. Activity is therefore controller-local: compute-side activity depends only on compute-controller state, while resource-side activity depends only on resource-controller state. Activity does not by itself imply that a resource-access request is authorized. A request must first satisfy the compute-side acceptance predicate, after which the compute controller resolves and forwards the corresponding root-anchored com-pute capability. The resource controller then performs an 27 independent resource-side acceptance check. End-to-end au-thorization requires both stages to accept the request. This distinction permits the two enforcement points to observe different revocation state. In particular, a process capability may continue to resolve to active compute-side authority after the corresponding resource-side authority has been fenced. Such a request may pass the compute-side check but is rejected at the resource boundary. 
+
+Local Capability Activity. Definition 28 (Fence Path Clearance) . Let c r be a resource capability in resource capability tree Tr(c0) = ⟨Vr, Er, c0⟩
+
+maintained by resource controller rc. We define 
+
+NoFence r(cr, Σ) ⇐⇒ ∀ f ∈ FRC (rc ), ¬ Reach Tr (c0)( f , cr).
+
+Let c c be a compute capability in compute capability tree Tc(cc ) = ⟨Vc, Ec, ⊥⟩ 
+
+maintained by compute controller cc. We define 
+
+NoFence c(cc, Σ) ⇐⇒ ∀ f ∈ FCC (cc ), ¬ Reach Tc(cc )( f , cc).
+
+A live capability is clear of the local fence state if no active fence anchor is an ancestor of that capability in the corre-sponding capability tree. 
+
+Definition 29 (Permission Predicate) . For a capability c ∈ C
+
+and permission op ∈ V, define 
+
+Permitted (c, op ) ⇐⇒ op ∈ perm (c).
+
+Definition 30 (Resource Capability Activity) . Let cr ∈ Cr
+
+and let rc = subj (cr).
+
+The resource capability is active in system state Σ if 
+
+Active r(cr, Σ) ⇐⇒ cr ∈ Vr(rc )
+
+∧ type (cr) = usable 
+
+∧ NoFence r(cr, Σ).
+
+Thus, Active r depends only on resource-controller state. 
+
+Definition 31 (Compute Capability Activity) . Let cc ∈ Cc
+
+and let cc = subj (cc).
+
+The compute capability is active in system state Σ if 
+
+Active c(cc, Σ) ⇐⇒ cc ∈ Vc(cc )
+
+∧ type (cc) = usable 
+
+∧ NoFence c(cc, Σ).
+
+The predicate deliberately does not depend on resource-controller state. Consequently, a compute capability may re-main active after its corresponding resource-side authority has become inactive at the resource controller. 
+
+Definition 32 (Active Process-to-Compute Resolution) . For cp ∈ Cp and cc ∈ Cc,
+
+we write cp Σ
+
+7−→ cc
+
+if and only if cp 7 → cc ∧ Active c(cc, Σ).
+
+The relation therefore means that the process capability refers to currently active compute-side authority. Because compute-controller-local authority identifiers are unique among live entries of a well-formed compute capabil-ity tree, a process capability resolves to at most one active compute capability in any system state. 
+
+Definition 33 (Process Capability Activity) . A process capa-bility cp ∈ Cp
+
+is compute-locally active in system state Σ if 
+
+Active p(cp, Σ) ⇐⇒ type (cp) = usable 
+
+∧ ∃ cc ∈ Cc : cp Σ
+
+7−→ cc.
+
+Process-capability activity is a local property. It states that the process capability resolves to active compute-side authority; it does not state that a resource-access request using the capability will pass resource-side authorization. Thus, 
+
+Active p(cp, Σ)
+
+may hold even when the resource authority associated with its compute capability is no longer active at the resource controller. 
+
+Lemma 3 (Fence-Induced Inactivity) . Let T x be a capability tree maintained by controller x 0, where x ∈ { r, c}. Let f be an active fence anchor at x 0. If 
+
+Reach Tx ( f , c),
+
+then 
+
+¬Active x(c, Σ).
+
+28 Proof. Since f is an active fence anchor and Reach Tx ( f , c),
+
+Definition 28 implies 
+
+¬NoFence x(c, Σ).
+
+The corresponding activity predicate requires NoFence x(c, Σ). Therefore 
+
+¬Active x(c, Σ).
+
+Two-Stage Resource-Access Authorization. Definition 34 (Compute-Side Acceptance) . Let req ∈ Qacc 
+
+be a resource-access request presented to compute controller cc ∈ CC .
+
+For process capability cp ∈ Cp
+
+and compute capability cc ∈ Cc,
+
+the compute controller accepts the request if 
+
+ComputeAccept cc (req , cp,cc, Σ) ⇐⇒ 
+
+cp Σ
+
+7−→ cc
+
+∧ cnid (cc) = NID c(cc )
+
+∧ Authentic cc (cp)
+
+∧ subj (cp) = Requester (req )
+
+∧ Target (req ) ⊆ res (cp)
+
+∧ Permitted  cp, Op (req ).
+
+Because cp 7 → cc
+
+requires 
+
+res (cp) ⊆ res (cc)
+
+and 
+
+perm (cp) ⊆ perm (cc),
+
+compute-side acceptance also implies 
+
+Target (req ) ⊆ res (cc)
+
+and 
+
+Permitted  cc, Op (req ).
+
+The predicate depends only on the presented process capability, trusted compute-side request context, and cur-rent compute-controller state. It does not inspect resource-controller activity or fence state. 
+
+Definition 35 (Resource-Access Capability Resolution) . Sup-pose 
+
+ComputeAccept cc (req , cp, cc, Σ)
+
+holds. The compute controller resolves the corresponding root-anchored compute capability cra 
+
+> c
+
+according to Definition 22. We write cc ; cra 
+
+> c
+
+if 
+
+RootAnchored cc (cra  
+
+> c
+
+)
+
+and 
+
+Reach Tc(cc )(cra  
+
+> c
+
+, cc)
+
+hold. By Lemma 2, 
+
+rnid (cc) = rnid (cra  
+
+> c
+
+)
+
+and 
+
+rid (cc) = rid (cra  
+
+> c
+
+).
+
+Thus, c c and c ra  
+
+> c
+
+identify the same resource-side authority, although the non-root compute capability may contain more attenuated resource extent or permissions. The compute controller forwards the resource-controller-created root-anchored capability c ra  
+
+> c
+
+, rather than c p or a non-root compute capability, to the resource controller. The operational path after compute-side acceptance is therefore cp 7 → cc ; cra  
+
+> c
+
+7 → cr.
+
+The relation ; denotes local root-capability resolution rather than an additional authority-delegation relation. 
+
+Definition 36 (Resource-Side Acceptance) . Let req ∈ Qacc 
+
+be a resource-access request forwarded to resource controller rc ∈ RC 
+
+with root-anchored compute capability cra  
+
+> c
+
+.
+
+Let cr ∈ Cr
+
+be the resource capability identified by the resource-side link-age of c ra  
+
+> c
+
+.
+
+29 The resource controller accepts the request if 
+
+ResourceAccept rc (req , cra  
+
+> c
+
+,cr, Σ) ⇐⇒ 
+
+cra  
+
+> c
+
+7 → cr
+
+∧ Active r(cr, Σ)
+
+∧ rnid (cr) = NID r(rc )
+
+∧ Authentic rc (cra  
+
+> c
+
+)
+
+∧ Origin (req ) = cnid (cr)
+
+∧ Target (req ) ⊆ res (cra  
+
+> c
+
+)
+
+∧ Permitted  cra  
+
+> c
+
+, Op (req ).
+
+Since cra  
+
+> c
+
+7 → cr
+
+requires 
+
+res (cra  
+
+> c
+
+) ⊆ res (cr)
+
+and 
+
+perm (cra  
+
+> c
+
+) ⊆ perm (cr),
+
+resource-side acceptance also implies 
+
+Target (req ) ⊆ res (cr)
+
+and 
+
+Permitted  cr, Op (req ).
+
+The origin check 
+
+Origin (req ) = cnid (cr)
+
+binds ordinary resource access to the compute node for which the resource authority was issued. Here Origin (req ) is the trusted compute-node origin established by the resource-side request path as defined in Definition 8. Resource-side acceptance depends only on the forwarded resource-controller-authenticated capability, trusted resource-side request context, and current resource-controller state. It does not depend on current process or compute-tree state at the originating compute controller. 
+
+Lemma 4 (Authoritative Resource-Side Revocation) . Let cra  
+
+> c
+
+7 → cr.
+
+If 
+
+¬Active r(cr, Σ),
+
+then for every req ∈ Qacc ,
+
+¬ResourceAccept rc (req , cra  
+
+> c
+
+, cr, Σ),
+
+where rc = subj (cr).
+
+This conclusion does not require either 
+
+¬Active c(cc, Σ)
+
+or 
+
+¬Active p(cp, Σ)
+
+at the compute controller. Proof. By Definition 36, resource-side acceptance requires Active r(cr, Σ).
+
+Therefore, 
+
+¬Active r(cr, Σ)
+
+implies 
+
+¬ResourceAccept rc (req , cra  
+
+> c
+
+, cr, Σ).
+
+The predicates Active c and Active p depend only on compute-controller state and therefore need not change when the resource-side authority becomes inactive. 
+
+Definition 37 (End-to-End Authorization) . For req ∈ Qacc ,
+
+end-to-end resource access is authorized if and only if 
+
+Allow (req , Σ) ⇐⇒ ∃ cc ∈ CC , rc ∈ RC , cp ∈ Cp, cc, cra  
+
+> c
+
+∈ Cc, cr ∈ Cr :ComputeAccept cc (req , cp, cc, Σ)
+
+∧ cc ; cra 
+
+> c
+
+∧ ResourceAccept rc (req , cra  
+
+> c
+
+, cr, Σ).
+
+Thus, an access is allowed only when both enforcement stages accept the request. The compute controller validates process-bound local authority before fabric admission, while the resource controller independently validates the forwarded root-anchored authority against current resource-side state immediately before resource access. A request may therefore satisfy 
+
+ComputeAccept cc (req , cp, cc, Σ)
+
+while failing 
+
+ResourceAccept rc (req , cra  
+
+> c
+
+, cr, Σ).
+
+In that case, 
+
+¬Allow (req , Σ).
+
+Invariant 1 (Two-Stage Enforcement) . SADRA authorizes an inter-node resource-access request if and only if both en-forcement controllers accept the request. The compute controller authenticates the process capa-bility, binds it to the hardware-observed requesting process, validates the c p 7 → cc authority relation, checks the requested resource extent and operation, and rejects the request if the corresponding compute authority is covered by an active local fence. After this check succeeds, the compute controller replaces the process capability with the corresponding root-anchored compute capability and forwards the request. The resource controller authenticates the forwarded capa-bility, verifies its association with the corresponding resource 
+
+30 capability and the originating compute node, checks the re-quested resource extent and operation, and rejects the request if the corresponding resource authority is covered by an active resource-side fence. Resource access is permitted only after both checks suc-ceed. 
+
+By Definition 37, the invariant is realized by Allow (req , Σ) ⇐⇒ ComputeAccept cc (req , cp, cc, Σ)
+
+∧ cc ; cra 
+
+> c
+
+∧ ResourceAccept rc (req , cra  
+
+> c
+
+, cr, Σ).
+
+## A.5 Capability-Related Operations 
+
+Capability-related operations are modeled as transitions over capability trees, controller-local authority identifiers, fence state, and capability ownership state. Cross-layer authoriza-tion and revocation-control relationships follow from the link-age fields defined in §A.3; they are not maintained as inde-pendent mutable relations. Each transition preserves the capability-tree well-formedness conditions defined in §A.2. New controller-local authority identifiers are obtained from the persistent coun-ters defined in Definition 19. A controller durably advances the corresponding counter before authority carrying the new identifier becomes usable, and an allocated identifier is never reassigned to different authority. 
+
+Definition 38 (Resource Initialization) . Let rc ∈ RC 
+
+be a resource controller managing 
+
+Rrc .
+
+Let rid 0 = ctr RC (rc ).
+
+The resource controller first durably advances 
+
+ctr ′
+
+> RC
+
+(rc ) = rid 0 + 1
+
+and then creates the controller-owned root capability c0 = ⟨rc , Rrc , V \ { exclusive }, usable , NID r(rc ), 0, rid 0, 0⟩ .
+
+The initial resource capability tree is Tr(c0) = ⟨{ c0}, /0, c0⟩ .
+
+The root capability is controller-owned rather than allo-cated to a compute node and therefore satisfies 
+
+cnid (c0) = 0.
+
+Definition 39 (Allocation Disjointness) . Let Tr(c0) = ⟨Vr, Er, c0⟩
+
+be a resource capability tree. Resource capabilities produced by independent allocation operations are direct children of c 0. A candidate allocated resource capability c r satisfies allocation disjointness if 
+
+AllocationDisjoint (cr, Tr) ⇐⇒ ∀a ∈ Vr : (c0, a) ∈ Er ⇒ res (cr) ∩ res (a) = /0.
+
+Thus, simultaneously live allocations always designate dis-joint resource extents, independently of whether strong isola-tion was requested. Because every capability derived from an allocation root is attenuated to a subset of that root’s extent, disjointness of allocation roots also implies disjointness between authority derived from different allocations. 
+
+Definition 40 (Capability Allocation) . Capability allocation establishes an initial authority chain consisting of a resource capability, a root-anchored compute capability, and a process capability. Let rc ∈ RC , cc ∈ CC , p ∈ P.
+
+Let req alloc 
+
+be an admitted allocation request specifying a requested re-source extent r req , an ordinary requested permission set vreq ⊆ V \ { exclusive },
+
+and whether strong isolation is requested. SADRA constructs the resource permission set as vr =
+
+(vreq ∪ { exclusive }, if strong isolation is requested ,
+
+vreq , otherwise .
+
+Thus, exclusive is set by SADRA as a consequence of the strong-isolation request rather than introduced by delegation. Let rid r = ctr RC (rc ).
+
+Before the allocated authority becomes usable, the resource controller durably advances 
+
+ctr ′
+
+> RC
+
+(rc ) = rid r + 1.
+
+The resource controller creates cr = ⟨rc , rr, vr, usable , NID r(rc ), NID c(cc ), rid r, 0⟩ ,
+
+where rr ⊆ rreq ∩ Rrc ,
+
+res (cr) ⊆ res (c0),
+
+31 and 
+
+AllocationDisjoint (cr, Tr(c0)) .
+
+Allocation is not resource delegation. In particular, it does not require cr ⪯r c0.
+
+This distinction permits initial allocation to introduce 
+
+exclusive authority even though exclusive authority cannot subsequently be delegated. The resource tree becomes T ′ 
+
+> r
+
+(c0) = ⟨Vr(rc ) ∪ { cr}, Er(rc ) ∪ { (c0, cr)}, c0⟩ .
+
+The corresponding compute controller allocates cid c = ctr CC (cc )
+
+and durably advances 
+
+ctr ′
+
+> CC
+
+(cc ) = cid c + 1
+
+before the resulting compute authority becomes usable. The corresponding root-anchored compute capability is cc = ⟨cc , rc, vc, usable , NID r(rc ), NID c(cc ), rid r, cid c⟩ ,
+
+where 
+
+res (cc) ⊆ res (cr),
+
+perm (cc) ⊆ perm (cr),
+
+and 
+
+Exclusive (cc) ⇐⇒ Exclusive (cr).
+
+It is inserted directly below the structural compute-tree root: T ′ 
+
+> c
+
+(cc ) = ⟨Vc(cc ) ∪ { cc}, Ec(cc ) ∪ { (⊥, cc)}, ⊥⟩ .
+
+The compute controller creates the corresponding process capability cp = ⟨p, rp, vp, usable , 0, NID c(cc ), 0, cid c⟩ ,
+
+where 
+
+res (cp) ⊆ res (cc),
+
+perm (cp) ⊆ perm (cc),
+
+and 
+
+Exclusive (cp) ⇐⇒ Exclusive (cc).
+
+Hence, when strong isolation is requested, 
+
+exclusive ∈ perm (cr) ∩ perm (cc) ∩ perm (cp).
+
+Creating c p does not create a child in either capability tree and is not a delegation operation. It therefore remains permitted when the allocated authority is exclusive. The initial linkage is cp 7 → cc 7 → cr.
+
+The state is updated with cr ∈ Σ′
+
+> RC
+
+(rc ), cc ∈ Σ′
+
+> CC
+
+(cc ), cp ∈ Σ′
+
+> P
+
+(p).
+
+The process capability is authenticated by the compute controller. The resource-facing representation of the root-anchored compute capability is authenticated by the resource controller. Initial allocation creates no revocation handle. 
+
+Definition 41 (Intra-Node Delegation) . Intra-node delegation derives attenuated authority for another process managed by the same compute controller. The delegating process retains its original usable authority. Let req P
+
+> del
+
+be an intra-node delegation request presented to compute controller cc ∈ CC .
+
+Let p = Requester (req P
+
+> del
+
+)
+
+denote the delegating process, and let p′ ∈ P
+
+be the receiving process. Let csrc  
+
+> p
+
+∈ Cp
+
+be the process capability carried by the request, and let csrc  
+
+> c
+
+∈ Vc(cc )
+
+be its associated compute capability. The operation requires csrc 
+
+> p
+> Σ
+
+7−→ csrc  
+
+> c
+
+,
+
+Authentic cc (csrc  
+
+> p
+
+),
+
+subj (csrc  
+
+> p
+
+) = Requester (req P
+
+> del
+
+),
+
+and 
+
+Delegable (csrc  
+
+> p
+
+).
+
+Thus, 
+
+delegate ∈ perm (csrc  
+
+> p
+
+)
+
+and 
+
+exclusive /∈ perm (csrc  
+
+> p
+
+).
+
+Let cid del = ctr CC (cc ).
+
+32 Before making the delegated authority usable, the compute controller durably advances 
+
+ctr ′
+
+> CC
+
+(cc ) = cid del + 1.
+
+It creates the delegated usable compute capability c′ 
+
+> c
+
+= cc , r′
+
+> c
+
+, v′
+
+> c
+
+, usable , rnid (csrc  
+
+> c
+
+), cnid (csrc  
+
+> c
+
+), rid (csrc  
+
+> c
+
+), cid del ,
+
+where c′ 
+
+> c
+
+⪯c csrc  
+
+> c
+
+,
+
+res (c′
+
+> c
+
+) ⊆ res (csrc  
+
+> p
+
+),
+
+and 
+
+perm (c′
+
+> c
+
+) ⊆ perm (csrc  
+
+> p
+
+).
+
+Because delegation requires non-exclusive source authority and delegated permissions are attenuated, 
+
+exclusive /∈ perm (c′
+
+> c
+
+).
+
+Thus, delegation cannot introduce the exclusive permis-sion. The compute tree becomes T ′ 
+
+> c
+
+(cc ) = Vc(cc ) ∪ { c′
+
+> c
+
+}, Ec(cc ) ∪ { (csrc  
+
+> c
+
+, c′
+
+> c
+
+)}, ⊥ .
+
+The recipient receives c′p = p′, r′
+
+> p
+
+, v′p, usable , 0, NID c(cc ), 0, cid del ,
+
+where 
+
+res (c′p) ⊆ res (c′
+
+> c
+
+)
+
+and 
+
+perm (c′p) ⊆ perm (c′
+
+> c
+
+).
+
+Thus, c′p 7 → c′
+
+> c
+
+.
+
+The delegator controls whether the recipient may subse-quently re-delegate this authority through the delegated per-mission set. If 
+
+delegate ∈ perm (c′
+
+> p
+
+),
+
+the recipient may re-delegate subject to the remaining delega-tion conditions. If 
+
+delegate /∈ perm (c′
+
+> p
+
+),
+
+the recipient cannot re-delegate the capability. The delegating process receives a separate process revoca-tion handle hp = p, r′
+
+> c
+
+, v′
+
+> c
+
+, handle , 0, NID c(cc ), 0, cid del .
+
+The handle and delegated compute authority intentionally share the same compute-side linkage: hp H
+
+7−→ c′
+
+> c
+
+.
+
+The handle conveys revocation control only and is not in-serted into the compute capability tree. The state is updated with c′ 
+
+> c
+
+∈ Σ′
+
+> CC
+
+(cc ), c′p ∈ Σ′
+
+> P
+
+(p′), hp ∈ Σ′
+
+> P
+
+(p).
+
+The original capabilities c src  
+
+> p
+
+and c src  
+
+> c
+
+remain unchanged. 
+
+Definition 42 (Inter-Node Delegation) . Inter-node delegation derives attenuated resource authority for a process managed by a different compute controller. Let req P
+
+> del
+
+be an inter-node delegation request presented by a process to source compute controller cc ∈ CC .
+
+Let p = Requester (req P
+
+> del
+
+)
+
+denote the delegating process. Let cc ′ ∈ CC , cc ′̸ = cc ,
+
+be the destination compute controller, and let p′ ∈ P
+
+be the receiving process. Let csrc  
+
+> p
+
+∈ Cp
+
+be the process capability carried by req P
+
+> del
+
+, and let csrc  
+
+> c
+
+∈ Vc(cc )
+
+be its associated compute capability. The source compute controller requires csrc 
+
+> p
+> Σ
+
+7−→ csrc  
+
+> c
+
+,
+
+Authentic cc (csrc  
+
+> p
+
+),
+
+subj (csrc  
+
+> p
+
+) = Requester (req P
+
+> del
+
+),
+
+and 
+
+Delegable (csrc  
+
+> p
+
+).
+
+Let cra 
+
+> c
+
+be the root-anchored compute capability associated with c src 
+
+> c
+
+according to Definition 22, and let cra  
+
+> c
+
+7 → cr.
+
+After source-side authorization, the compute controller sends a controller-to-controller delegation request req R
+
+> del
+
+33 to the authoritative resource controller rc. The resource controller verifies 
+
+Active r(cr, Σ),
+
+Authentic rc (cra  
+
+> c
+
+),
+
+and 
+
+Origin (req R
+
+> del
+
+) = cnid (cr) = NID c(cc ).
+
+The distinction between req P 
+
+> del
+
+and req R 
+
+> del
+
+separates the trusted process identity observed at the source compute con-troller from the trusted compute-node origin observed at the resource controller. The newly delegated resource authority must satisfy c′ 
+
+> r
+
+⪯r cr.
+
+Consequently, resource-side delegation requires 
+
+delegate ∈ perm (cr)
+
+and 
+
+exclusive /∈ perm (cr).
+
+Therefore, an initially allocated resource marked 
+
+exclusive cannot be delegated to another compute node. Let rid del = ctr RC (rc ).
+
+Before making the new resource authority usable, the re-source controller durably advances 
+
+ctr ′
+
+> RC
+
+(rc ) = rid del + 1.
+
+It creates c′ 
+
+> r
+
+= rc , r′
+
+> r
+
+, v′
+
+> r
+
+, usable , NID r(rc ), NID c(cc ′), rid del , 0 ,
+
+where c′ 
+
+> r
+
+⪯r cr,
+
+res (c′
+
+> r
+
+) ⊆ res (csrc  
+
+> p
+
+),
+
+and 
+
+perm (c′
+
+> r
+
+) ⊆ perm (csrc  
+
+> p
+
+).
+
+Since the source authority is non-exclusive and permissions are attenuated, 
+
+exclusive /∈ perm (c′
+
+> r
+
+).
+
+The resource tree becomes T ′ 
+
+> r
+
+(c0) = Vr(rc ) ∪ { c′
+
+> r
+
+}, Er(rc ) ∪ { (cr, c′
+
+> r
+
+)}, c0 .
+
+The destination compute controller allocates cid dst = ctr CC (cc ′)
+
+and durably advances 
+
+ctr ′
+
+> CC
+
+(cc ′) = cid dst + 1.
+
+The corresponding destination root-anchored compute ca-pability is cdst  
+
+> c
+
+= cc ′, rdst , vdst , usable , NID r(rc ), NID c(cc ′), rid del , cid dst ,
+
+where 
+
+res (cdst  
+
+> c
+
+) ⊆ res (c′
+
+> r
+
+)
+
+and 
+
+perm (cdst  
+
+> c
+
+) ⊆ perm (c′
+
+> r
+
+).
+
+It is inserted directly below the destination compute-tree root: T ′ 
+
+> c
+
+(cc ′) = Vc(cc ′) ∪ { cdst  
+
+> c
+
+}, Ec(cc ′) ∪ { (⊥, cdst  
+
+> c
+
+)}, ⊥ .
+
+The receiving process obtains cdst  
+
+> p
+
+= p′, rdst ,p, vdst ,p, usable , 0, NID c(cc ′), 0, cid dst ,
+
+where 
+
+res (cdst  
+
+> p
+
+) ⊆ res (cdst  
+
+> c
+
+)
+
+and 
+
+perm (cdst  
+
+> p
+
+) ⊆ perm (cdst  
+
+> c
+
+).
+
+The usable destination chain is therefore cdst  
+
+> p
+
+7 → cdst  
+
+> c
+
+7 → c′
+
+> r
+
+.
+
+As with intra-node delegation, the source delegator deter-mines whether the destination may subsequently re-delegate the authority by including or omitting delegate from the delegated permission set. The source compute controller allocates a fresh local iden-tifier cid h = ctr CC (cc )
+
+for the inter-node compute revocation handle and durably advances 
+
+ctr ′
+
+> CC
+
+(cc ) = cid h + 1.
+
+The source-side compute handle is hsrc  
+
+> c
+
+= cc , r′
+
+> r
+
+, v′
+
+> r
+
+, handle , NID r(rc ), NID c(cc ), rid del , cid h .
+
+It is inserted below the usable source compute capability: T ′ 
+
+> c
+
+(cc ) = ⟨Vc(cc ) ∪ { hsrc  
+
+> c
+
+}, Ec(cc ) ∪ { (csrc  
+
+> c
+
+, hsrc  
+
+> c
+
+)}, ⊥⟩ .
+
+The handle belongs structurally to the source compute subtree but carries the rid of the newly delegated resource capability: 
+
+rid (hsrc  
+
+> c
+
+) = rid del .
+
+Hence, hsrc 
+
+> cR
+
+7−→ c′
+
+> r
+
+.
+
+34 The delegating process receives hsrc  
+
+> p
+
+= p, r′
+
+> r
+
+, v′
+
+> r
+
+, handle , 0, NID c(cc ), 0, cid h ,
+
+giving hsrc 
+
+> pH
+
+7−→ hsrc  
+
+> c
+
+.
+
+The inter-node revocation-control path is therefore hsrc 
+
+> pH
+
+7−→ hsrc 
+
+> cR
+
+7−→ c′
+
+> r
+
+.
+
+The resource-facing destination root capability and the resource-facing fields of the source compute revocation han-dle are authenticated by the resource controller. The source-local cid is used for compute-side handle resolution and need not be part of the resource-controller authentication domain because the resource controller does not use it for revocation authorization. The state is updated with c′ 
+
+> r
+
+∈ Σ′
+
+> RC
+
+(rc ),
+
+cdst  
+
+> c
+
+∈ Σ′
+
+> CC
+
+(cc ′), cdst  
+
+> p
+
+∈ Σ′
+
+> P
+
+(p′),
+
+hsrc  
+
+> c
+
+∈ Σ′
+
+> CC
+
+(cc ), hsrc  
+
+> p
+
+∈ Σ′
+
+> P
+
+(p).
+
+Neither handle conveys usable resource-access authority. 
+
+Definition 43 (Escaped Inter-Node Revocation Targets) . Let ca be a usable compute capability in Tc(cc ) = ⟨Vc(cc ), Ec(cc ), ⊥⟩ .
+
+The inter-node compute handles structurally dependent on ca are 
+
+Esc (ca, Σ) = 
+
+(
+
+hc ∈ Vc(cc ) type (hc) = handle 
+
+∧ Reach Tc(cc )(ca, hc)
+
+)
+
+.
+
+The corresponding live resource-side targets are 
+
+EscR (ca, Σ) = 
+
+(
+
+cr
+
+∃hc ∈ Esc (ca, Σ) :
+
+hc R
+
+7−→ cr ∧ cr ∈ Vr(subj (cr)) 
+
+)
+
+.
+
+Each such handle represents authority that escaped the lo-cal compute subtree through an earlier inter-node delegation. Because compute-tree derivation preserves rnid, all com-pute handles reachable from one usable compute subtree refer to capabilities maintained by the same authoritative resource controller, although the handles may contain different rid values. 
+
+Definition 44 (Resource-Side Revocation Authorization) . Let req R
+
+> rev
+
+be a controller-to-controller revocation request received by resource controller rc ∈ RC 
+
+with compute revocation handle hc ∈ Cc.
+
+For a live resource capability cr ∈ Vr(rc ),
+
+the request is authorized to target c r if 
+
+RevokeAccept rc (req R
+
+> rev
+
+, hc, cr,Σ) ⇐⇒ 
+
+hc R
+
+7−→ cr
+
+∧ rnid (cr) = NID r(rc )
+
+∧ Authentic rc (hc)
+
+∧ Origin (req R
+
+> rev
+
+) = cnid (hc).
+
+The compute handle is therefore the resource-side revoca-tion credential. Knowledge of an rid alone does not authorize installation of a resource fence. The origin check binds use of the handle to the source compute node for which the revocation handle was created. The targeted resource capability may itself be issued to a different compute node, namely the destination of the inter-node delegation. The predicate does not require c r to be active. Conse-quently, a repeated revocation request can be treated idempo-tently if the target is already fenced. If no live capability with the referenced ⟨rnid , rid ⟩ remains, the resource controller may acknowledge that the authority has already been reclaimed. 
+
+Definition 45 (Owner-Initiated Dis-allocation) . Owner-initiated dis-allocation disables authority controlled directly by a controller. Structural removal occurs only after the cor-responding fence takes effect. For a resource controller rc, let Tr(c0) = ⟨Vr(rc ), Er(rc ), c0⟩.
+
+A non-root resource capability cr ∈ Vr(rc ) \ { c0}
+
+is first fenced: F′
+
+> RC
+
+(rc ) = FRC (rc ) ∪ { cr}.
+
+For every c ∈ Vr(rc ),
+
+Reach Tr (c0)(cr, c) ⇒ ¬ Active r(c, Σ′).
+
+For a compute controller cc, let Tc(cc ) = ⟨Vc(cc ), Ec(cc ), ⊥⟩ .
+
+A compute capability may be owner-disallocated directly only if it is a usable root-anchored capability: cc ∈ Vc(cc ),
+
+35 (⊥, cc) ∈ Ec(cc ),
+
+and 
+
+type (cc) = usable .
+
+The compute controller first installs F′
+
+> CC
+
+(cc ) = FCC (cc ) ∪ { cc}.
+
+For every c ∈ Vc(cc ),
+
+Reach Tc(cc )(cc, c) ⇒ ¬ Active c(c, Σ′).
+
+If 
+
+Esc (cc, Σ)̸ = /0,
+
+the fenced compute subtree contains authority previously del-egated to other compute nodes. For every hc ∈ Esc (cc, Σ)
+
+whose resource-side target has not already been secured, the compute controller sends a controller-to-controller revocation request req R
+
+> rev
+
+carrying h c to the resource controller identified by 
+
+rnid (hc).
+
+The resource controller installs the corresponding resource fence only after 
+
+RevokeAccept rc (req R
+
+> rev
+
+, hc, cr, Σ)
+
+holds for the matching live resource capability c r.The local compute fence takes effect independently of this propagation. Compute handles representing escaped author-ity remain available until their resource-side targets have been secured. The presence of exclusive does not prevent dis-allocation or revocation. It prohibits delegation, not withdrawal of au-thority by its authorized owner or controller. 
+
+Definition 46 (Handle-Based Revocation) . Handle-based revocation allows a delegating process to revoke authority that it previously delegated. Let req P
+
+> rev
+
+be a handle-based revocation request presented to compute controller cc ∈ CC ,
+
+and let p = Requester (req P
+
+> rev
+
+)
+
+denote the requesting process. Let hp ∈ Cp
+
+be the process revocation handle carried by the request. The compute controller requires 
+
+type (hp) = handle ,
+
+Authentic cc (hp),
+
+subj (hp) = Requester (req P
+
+> rev
+
+),
+
+and a live compute-side target hp H
+
+7−→ ca, ca ∈ Vc(cc ).
+
+Thus, an authentic handle presented by a different process does not authorize revocation: the handle subject must match the trusted process identity observed by the compute-side request path. The operation then follows one of two paths. 
+
+Compute-local revocation. For an intra-node delegation, 
+
+type (ca) = usable .
+
+The compute controller first installs F′
+
+> CC
+
+(cc ) = FCC (cc ) ∪ { ca}.
+
+For every c ∈ Vc(cc ),
+
+Reach Tc(cc )(ca, c) ⇒ ¬ Active c(c, Σ′).
+
+Thus, local revocation takes effect when the compute fence is installed; structural reclamation is not required for denial. If 
+
+Esc (ca, Σ)̸ = /0,
+
+the subtree also contains inter-node delegations. For every hc ∈ Esc (ca, Σ)
+
+whose resource-side target has not yet been secured, the com-pute controller sends a controller-to-controller revocation request req R
+
+> rev
+
+carrying h c to the authoritative resource controller. For every matching live resource capability c r, the resource controller installs F′
+
+> RC
+
+(rc ) = FRC (rc ) ∪ { cr}
+
+only after 
+
+RevokeAccept rc (req R
+
+> rev
+
+, hc, cr, Σ)
+
+holds. The compute handles remain in the fenced local subtree until their resource-side targets have been secured. The process handle may be consumed after the local com-pute fence is durably established, because the corresponding compute handles remain in trusted controller state and pre-serve any outstanding remote revocation obligations: 
+
+Σ′
+
+> P
+
+(p) = ΣP(p) \ { hp}.
+
+36 Resource-rooted revocation. For an inter-node delegation, ca = hc
+
+and 
+
+type (hc) = handle .
+
+The handle identifies the delegated resource authority through hc R
+
+7−→ cr.
+
+The source compute controller sends a controller-to-controller revocation request req R
+
+> rev
+
+carrying h c to the authoritative resource controller. The resource controller identifies the source compute node from the trusted request path as 
+
+Origin (req R
+
+> rev
+
+).
+
+If the matching resource capability remains live and 
+
+RevokeAccept rc (req R
+
+> rev
+
+, hc, cr, Σ)
+
+holds, the resource controller installs F′
+
+> RC
+
+(rc ) = FRC (rc ) ∪ { cr}.
+
+For every resource capability c in the affected resource subtree, 
+
+Reach Tr (c0)(cr, c) ⇒ ¬ Active r(c, Σ′).
+
+By Lemma 4, accesses dependent on the fenced resource authority fail resource-side acceptance even if stale process or compute authority remains active at a destination compute controller. No compute fence is installed on h c. A compute handle conveys no usable authority and cannot serve as a fence anchor. The distinction between req P 
+
+> rev
+
+and req R 
+
+> rev
+
+separates the trusted identity of the process exercising h p from the trusted origin of the compute controller exercising h c.The source process handle and compute handle are re-tained until the resource controller acknowledges that the target resource authority has been fenced or has already been reclaimed. After that acknowledgment, they may be retired: 
+
+Σ′
+
+> CC
+
+(cc ) = ΣCC (cc ) \ { hc},
+
+E′
+
+> c
+
+(cc ) = Ec(cc ) \ { (a, b) | a = hc ∨ b = hc} ,
+
+and 
+
+Σ′
+
+> P
+
+(p) = ΣP(p) \ { hp}.
+
+Because a compute handle cannot serve as a parent for compute delegation, direct retirement of the handle cannot orphan another compute-tree node. Resource-rooted revocation takes effect for resource ac-cess when the resource controller installs the authoritative fence. Retirement of source handles and reclamation of stale destination-side state are subsequent cleanup actions. 
+
+Definition 47 (Resource-Side Security of a Compute Handle) .
+
+Let hc ∈ Cc
+
+be a compute revocation handle, and let rc be the unique resource controller satisfying 
+
+NID r(rc ) = rnid (hc).
+
+The resource-side authority identified by h c is secured in state Σ if no matching live resource capability remains active: 
+
+ResourceSecured (hc, Σ) ⇐⇒ ∀cr ∈ Vr(rc ) : hc R
+
+7−→ cr ⇒ ¬ Active r(cr, Σ).
+
+The predicate also holds when the corresponding re-source capability has already been reclaimed. Since resource-controller-local identifiers are never reassigned, absence of a matching live capability cannot later cause the same handle to identify different authority. 
+
+ResourceSecured is a specification predicate over global state. A compute controller does not evaluate it by reading resource-controller state directly. Operationally, the condition is established by an authenticated acknowledgment from the authoritative resource controller after the target has been fenced or found already reclaimed. 
+
+Definition 48 (Reclamation) . Reclamation removes controller-resident capability state only after the correspond-ing usable authority has been disabled by fencing. For a compute tree Tc(cc ) = ⟨Vc(cc ), Ec(cc ), ⊥⟩ ,
+
+let V rec  
+
+> c
+
+⊆ Vc(cc )
+
+be the nodes removed by one reclamation transition. Every reclaimed compute-tree node must be covered by an active compute fence: 
+
+∀c ∈ V rec  
+
+> c
+
+, ∃ f ∈ FCC (cc ) : Reach Tc(cc )( f , c).
+
+The reclaimed set is descendant-closed: 
+
+∀c ∈ V rec  
+
+> c
+
+, ∀d ∈ Vc(cc ), Reach Tc(cc )(c, d) ⇒ d ∈ V rec  
+
+> c
+
+.
+
+Every inter-node compute handle removed as part of recla-mation must have a secured resource-side target: 
+
+∀hc ∈ V rec  
+
+> c
+
+, type (hc) = handle ⇒ ResourceSecured (hc, Σ).
+
+The compute-controller state becomes 
+
+Σ′
+
+> CC
+
+(cc ) = ΣCC (cc ) \V rec  
+
+> c
+
+,
+
+and E′
+
+> c
+
+(cc ) = Ec(cc ) \ { (a, b) | a ∈ V rec  
+
+> c
+
+∨ b ∈ V rec  
+
+> c
+
+} .
+
+37 For a resource tree Tr(c0) = ⟨Vr(rc ), Er(rc ), c0⟩,
+
+let V rec  
+
+> r
+
+⊆ Vr(rc ) \ { c0}.
+
+Every reclaimed resource capability must be covered by an active resource fence: 
+
+∀c ∈ V rec  
+
+> r
+
+, ∃ f ∈ FRC (rc ) : Reach Tr (c0)( f , c).
+
+The resource reclamation set is descendant-closed: 
+
+∀c ∈ V rec  
+
+> r
+
+, ∀d ∈ Vr(rc ), Reach Tr (c0)(c, d) ⇒ d ∈ V rec  
+
+> r
+
+.
+
+The resource-controller state becomes 
+
+Σ′
+
+> RC
+
+(rc ) = ΣRC (rc ) \V rec  
+
+> r
+
+,
+
+and E′
+
+> r
+
+(rc ) = Er(rc ) \ { (a, b) | a ∈ V rec  
+
+> r
+
+∨ b ∈ V rec  
+
+> r
+
+} .
+
+Process-held capability tokens need not be removed during reclamation. Once their corresponding controller-resident authority has been reclaimed, they no longer resolve to active authority and cannot authorize subsequent operations. Reclamation never decrements or rewinds ctr CC or ctr RC .Identifiers associated with reclaimed authority are therefore never reassigned. A fence remains active until all capability-tree nodes cov-ered by that fence have been structurally removed. For a fence anchor f , let 
+
+Desc Tx ( f ) = {c ∈ Vx | Reach Tx ( f , c)}
+
+denote its subtree in the pre-transition state. The fence may be removed only when 
+
+Desc Tx ( f ) ∩V ′ 
+
+> x
+
+= /0.
+
+For the following invariant, let 
+
+Fx = FCC (cc )
+
+when x = c, and 
+
+Fx = FRC (rc )
+
+when x = r.
+
+Invariant 2 (Fence Before Reclamation) . For every reach-able state, structural reclamation of usable authority is en-abled only for capability-tree nodes covered by an active fence. For every node removed by a reclamation transition, c ∈ V rec  
+
+> x
+
+⇒ ∃ f ∈ Fx : Reach Tx ( f , c).
+
+Every reclamation set is descendant-closed, so removing an internal capability cannot leave an orphaned descendant in the capability tree. For compute-tree reclamation, an inter-node compute re-vocation handle may be removed as part of a fenced subtree only after 
+
+ResourceSecured (hc, Σ)
+
+holds. Thus, local reclamation cannot erase the retained refer-ence to escaped inter-node authority before the corresponding resource-side authority has been disabled. Direct retirement of an inter-node compute handle follow-ing an authoritative resource-side acknowledgment is not reclamation of usable authority and therefore does not re-quire a compute fence. A fence anchor may be removed only after every capability-tree node reachable from that anchor in the pre-transition tree has been removed. 
+
+Remark 1 (Fence Effect Without Descendant Enumeration) .
+
+Installing a fence does not require enumeration of descen-dant capabilities to make affected authority inactive at the controller where the fence is installed. The controller records the fence anchor in FCC 
+
+or FRC ,
+
+and subsequent activity checks reject usable capabilities whose capability-tree path contains that anchor. The security effect of the local fence therefore does not wait for structural traversal or reclamation. Cleanup may subsequently traverse the fenced subtree. If a fenced compute subtree contains inter-node compute handles, those handles must also be processed so that the correspond-ing resource-side authority is secured. This propagation is separate from the local fence effect and does not delay denial at the controller where the fence has already been installed. 
+
+38
