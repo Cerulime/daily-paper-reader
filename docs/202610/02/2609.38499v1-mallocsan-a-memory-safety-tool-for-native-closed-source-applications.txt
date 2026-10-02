@@ -1,0 +1,666 @@
+Title: MallocSan: A Memory Safety Tool for Native Closed-Source Applications
+
+URL Source: https://arxiv.org/pdf/2609.38499v1
+
+Published Time: Thu, 01 Oct 2026 00:27:08 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# MallocSan: A Memory Safety Tool for Native Closed-Source Applications 
+
+## ADEL BELKHIRI, Polytechnique Montreal, Canada 
+
+## MICHEL DAGENAIS, Polytechnique Montreal, Canada 
+
+## MAXIME LAMOTHE, Polytechnique Montreal, Canada 
+
+Memory-corruption errors remain a leading cause of high-impact vulnerabilities in C and C++ software. Deterministic detection, however, remains difficult to deploy: compiler-based sanitizers require source code and control of the build pipeline, hardware-assisted schemes depend on specific platforms, and dynamic binary translation can impose order-of-magnitude slowdowns. This paper presents MallocSan, a heap sanitizer for native, potentially closed-source x86-64 Linux applications that requires no source access, recompilation, or specialized hardware. MallocSan interposes on memory allocation through LD_PRELOAD and embeds an object identifier in the unused high bits of each protected pointer. Dereferencing the resulting noncanonical pointer faults at the offending instruction, which MallocSan decodes and patches at runtime so that subsequent executions perform per-object bounds checks entirely in userspace. Sites that cannot be patched fall back to in-handler emulation or single-stepping, while an optional profile-guided pass rewrites frequently executed residual sites offline. MallocSan also extends identity-based checking to vector gather/scatter instructions and supports policy-scoped coverage. Across seven SPEC CPU 2017 benchmarks, MallocSan outperforms Valgrind Memcheck on five, with a geometric-mean execution-time factor of 4 .82 × relative to native execution, compared with 18 .55 × for Memcheck, while preserving substantial parallel scaling on both evaluated multithreaded workloads: 644.nab_s and pigz. On the in-scope Juliet tests, MallocSan detects all seeded violations with no false reports on the good executions. It also detects heap-buffer errors in real-world applications, including a known one-byte overread in LibTIFF’s tiffcrop utility. CCS Concepts: • Software and its engineering → Software testing and debugging .Additional Key Words and Phrases: Memory safety, heap sanitizer, buffer overflow, pointer tagging, dynamic binary patching, closed-source binaries 
+
+1 Introduction 
+
+C and C++ remain deeply embedded in the software infrastructure on which modern computing depends. Operating systems, language runtimes, database engines, browsers, embedded firmware, and performance-critical libraries rely on these languages because they expose a level of control that higher-level environments abstract away. However, the same control is also these languages’ most persistent weakness. A pointer is not only a reference to an object but also an arithmetic value that can be copied, cast, incremented, stored, and dereferenced with limited runtime mediation. Memory correctness therefore lies largely outside the language runtime, distributed instead across programmers, libraries, compiler conventions, and testing practice. As a result, the object boundaries and lifetimes on which safe execution depends are never consistently enforced. Memory errors arise in two closely related forms. A spatial safety violation occurs when a program reads from or writes to an address outside the object that a pointer is intended to reference. Buffer overflows, overreads, and underflows are common examples. For instance, the expression a[i] compiles to pointer arithmetic with no automatic check that i remains within the array. A temporal safety violation occurs when a program uses an object outside its valid lifetime. Heap use-after-free, double-free, dangling-pointer dereferences, and use-after-return errors belong to this class. Both forms emerge from ordinary idioms, including calls to malloc and free , unchecked indexing, pointer casts, and legacy string routines whose contracts depend on conventions such as NUL termination [14, 45]. The consequences often extend beyond ordinary faults. Some invalid accesses crash immediately, whereas others corrupt adjacent state and manifest only later. An out-of-bounds write may silently damage allocator metadata or a function pointer, and a stale heap pointer may appear harmless until the freed region is reallocated. This distance between cause and symptom complicates 
+
+> ∗Preprint. Submitted to ACM Transactions on Software Engineering and Methodology (TOSEM); currently under review. Authors’ Contact Information: Adel Belkhiri, Polytechnique Montreal, Montreal, Quebec, Canada, adel.belkhiri@polymtl.ca; Michel Dagenais, Polytechnique Montreal, Montreal, Quebec, Canada, michel.dagenais@polymtl.ca; Maxime Lamothe, Polytechnique Montreal, Montreal, Quebec, Canada, maxime.lamothe@polymtl.ca.
+
+1arXiv:2609.38499v1 [cs.SE] 29 Sep 2026 2 Adel Belkhiri et al. diagnosis. Moreover, the same mechanisms can expose sensitive data, bypass program logic, or redirect control flow, which makes memory safety a prerequisite for trustworthy native software rather than a reliability concern alone [14, 30]. Awareness and disciplined programming have not been sufficient. Major operating-system and browser vendors attribute 65–70% of reported vulnerabilities in recent years to memory errors [45], and independent studies confirm that memory corruption continues to dominate high-impact failures in C and C++ software [33, 34]. This persistence is unsurprising, as the problem is rooted in the programming model itself and lies beyond the reach of coding standards or documentation, especially in systems that combine first-party and third-party code. Memory sanitization has therefore become one of the most practical responses. A sanitizer instruments a program, its runtime environment, or its binary so that invalid accesses are detected close to the instruction that performs them, turning latent corruption into a concrete diagnostic that identifies an address, an allocation context, and a failing instruction. Developers rely on sanitizers during testing, fuzzing, debugging, and, increasingly, production-like execution. Yet the need for sanitization also reveals a deeper limitation of native code: memory safety is not a default property of the execution environment but must be reconstructed through metadata, instrumentation, runtime checks, or hardware support. Existing approaches trade detection strength against deployability. Static and machine-learning analyzers impose no runtime overhead but warn rather than enforce, whereas compiler-based sanitizers require source code or control of the build pipeline [27, 38, 40]. Hardware-assisted schemes depend on specific processors, operating-system support, ABIs, or toolchains [8, 39, 47, 49]. Binary-level tools such as Memcheck and Dr. Memory accept unmodified executables but incur substantial dynamic-translation overhead [6, 31]. Runtime interposition avoids recompilation and specialized hardware, but allocator-based defenses such as DieHard and FreeGuard provide probabilistic spatial protection, while stronger pointer tracking such as CRCount still requires compiler instrumentation [4, 41, 42]. A consistent gap thus runs across these families: the most deployable tools lack deterministic identity-based spatial checking, whereas the tools that provide it require source access, recompilation, specialized hardware, or expensive whole-program translation. This gap motivates the central question of this paper: can a heap sanitizer operate on native closed-source applications on commodity x86-64 systems, without source access or recompilation, while still providing deterministic per-object spatial checking rather than probabilistic heap hardening? We answer this question with MallocSan, a hybrid design that combines allocator interposition for ease of deployment, object-identity checking for detection accuracy, and runtime binary patching for performance. Deployed as a shared library through LD_PRELOAD , MallocSan intercepts the malloc family and selectively protects heap allocations. Each protected object receives an object identifier (OID), encoded in the unused high bits of the returned pointer, together with an object-table entry that records the allocation’s base address, size, and allocation site. Bounds checking is thereby reduced to a single question: does the effective address derived from a pointer still fall within the object identified by its OID? Each protected dereference is checked against the recorded bounds of its corresponding allocation. As a result, even violations arising from nonlinear access patterns are reliably detected, making the detection process deterministic. MallocSan uses the processor itself as the first interception point. A pointer carrying its high-bit tag is noncanonical on x86-64, so a direct dereference faults at the exact memory-access instruction. The runtime handles this first fault, decodes the instruction, and records it in an instruction table that later executions reuse. It then strips the OID, validates the access against the object table, executes the original operation on the canonical address, and restores the tag when the pointer must remain protected. Because purely fault-driven checking would be prohibitively expensive in hot loops, recurring checks are moved out of kernel-mediated fault handling and into userspace through runtime binary patching. Where an instruction can be patched safely, libpatch [13] redirects the control flow to MallocSan’s checking logic and to an out-of-line copy of the original instruction. Several additional design choices make MallocSan practical for real-world binaries. Protection can be scoped by allocation size, allocation order, the number of protected objects, and caller origin, allowing overhead to be concentrated on the objects and components most relevant to an analysis. An optional guard-page backend complements OID tagging by placing selected large allocations adjacent to an inaccessible page, eliminating per-access instrumentation at the cost of additional memory and slightly reduced precision. MallocSan also extends checking to vector-indexed memory operations, validating each active lane against the MallocSan: A Memory Safety Tool for Native Closed-Source Applications 3bounds of the object its base pointer identifies. This capability is important because such instructions may be introduced explicitly through handwritten SIMD intrinsics or emitted automatically by the compiler under optimization and target-specific flags. Together, these mechanisms distinguish MallocSan from the closest alternatives. It requires neither source code nor control over the build pipeline, and it replaces whole-program translation with patched user-space paths for repeated accesses. Because it reacts to code as it is reached, it needs no relocation information, at the cost of performing instruction analysis and patching at run time upon the first fault. Moreover, it runs on commodity x86-64 systems without specialized hardware. Beyond deployability, MallocSan provides deterministic per-object spatial validation for protected heap accesses and a policy-driven mode for reporting stale-pointer dereferences. In summary, this paper makes four contributions: 1) MallocSan, a heap sanitizer combining allocator interposition, object-identity pointer tagging, fault-driven interception, and runtime binary patching to protect unmodified x86-64 Linux binaries; 2) 
+
+mechanisms that make identity-based checking practical for real-world machine code, including support for AVX2 gather and AVX-512 gather/scatter instructions, an extension to libpatch to enable the patching of instructions relocated to out-of-line buffers, and optimizations that defer or eliminate post-handlers; 3) an optional guard-page backend that avoids per-access instrumentation for selected large allocations, and a profile-guided pipeline that converts hot trap-based sites into direct jump-based redirections offline while preserving checking semantics; and 4) a detection-accuracy study using the heap bounds-error test cases from the NIST Juliet suite, an evaluation of execution-time and memory overhead on selected SPEC CPU 2017 workloads, and multithreaded-scaling experiments on OpenMP 644.nab_s and the pigz compression application. The remainder of the paper is organized as follows. Section 2 reviews memory-safety violations, sanitizer detection models, and the binary patching mechanisms on which MallocSan builds. Section 3 gives a high-level overview of MallocSan’s runtime architecture, and Section 4 presents its main design components. Section 5 describes implementation details, and Section 6 introduces the profile-guided hot-path optimization. Section 7 reports the detection-accuracy and overhead evaluations, and Section 8 discusses the implications and limitations of MallocSan. Section 9 situates MallocSan among static analyzers, compiler-based sanitizers, hardware-assisted defenses, binary instrumentation systems, and allocator-based approaches. Finally, Section 10 concludes the paper by summarizing its main findings and outlining future directions. 
+
+2 Background 
+
+This section presents the conceptual foundations needed to understand MallocSan. The first subsection describes the memory-safety problem and the detection model that shape its goals, while the second introduces the patching techniques underlying its instrumentation layer. 
+
+2.1 Memory Safety: Scope and Detection Model 
+
+Memory-safety violations fall into two orthogonal classes. Spatial safety errors occur when a pointer is used to access memory outside the bounds of its intended referent, as in a heap-buffer overflow, overread, or underflow. Temporal safety errors occur when an object is accessed or deallocated outside its valid lifetime; common heap manifestations include use-after-free (UAF) and double-free. The present work focuses on heap-resident manifestations of both classes, which are especially difficult to protect in closed-source, prebuilt binaries. Beyond error classification, detection mechanisms can be evaluated along four complementary dimensions. Detection timing 
+
+distinguishes immediate detection at the offending access from delayed detection after corruption has propagated, complicating root-cause attribution. Precision concerns false positives, which reduce usability, and false negatives, which leave vulnerabilities undetected. Coverage identifies the memory regions a technique can monitor: heap objects, stack variables, and global data present distinct recovery challenges, particularly for binary-level tools operating without source code. Finally, overhead encompasses both execution-time cost and space consumed by structures such as shadow memory and metadata tables, determining whether a tool is practical for continuous deployment or only for test-time use. Vintila et al. distinguish the conceptual detection potential of a sanitizer from its actual implementation coverage on a controlled test suite [46]. Location-based approaches, such as redzones and guard pages, mark regions adjacent to allocations as poisoned 4 Adel Belkhiri et al.                                          
+
+> (a) TRAP encoding
+> Before : 0 x1000 : mov eax , [ rbx +0 x8 ] ; 3 bytes After : 0 x1000 : int3 ; 1 byte ; Handler -> OLX copy -> return to 0x1003
+> (b) JUMP encoding (instruction >= 5 bytes)
+> Before : 0 x2000 : mov rax , [ rip +0 x1234 ] ; 7 bytes After : 0 x2000 : jmp rel32 < trampoline > ; 5 bytes ; Trampoline -> OLX copy -> return to 0x2007
+> (c) NOP-bridge encoding
+> Before : 0 x3000 : xor eax , eax ; 2 bytes 0 x3002 : ... ; other code 0 x300A : nop ; nop ; nop ; nop ; nop ; alignment pad After : 0 x3000 : jmp short 0 x300A ; 2-byte short jump 0 x300A : jmp rel32 < trampoline > ; 5-byte jump
+> Fig. 1. Core patching encodings shared by static and runtime tools. (a) TRAP replaces one byte with INT3 . (b) JUMP overwrites five or more bytes with a relative near jump. (c) NOP-bridge uses a short jump to reach nearby alignment padding, where a full five-byte jump is embedded.
+
+or inaccessible and detect accesses that enter those regions. Their detection potential is inherently bounded because nonlinear or inter-object pointer jumps can skip the designated invalid regions. Identity-based approaches, such as fat pointers, pointer tagging, and per-object metadata tables, associate protected pointers with records of their intended referents and validate those associations at dereference time. They offer greater conceptual detection potential but require richer metadata and systematic propagation through pointer-manipulating code. In practice, no existing design achieves complete spatial or temporal coverage, even when conceptually capable of doing so [46]. The gap between conceptual potential and realized coverage depends on both the detection strategy and the deployment model, motivating the design choices examined in the remainder of this paper. 
+
+2.2 Binary and Runtime Patching 
+
+Instrumentation frameworks differ in when and at what level they interact with compiled code. Compiler-based frameworks, such as the LLVM infrastructure [21] underlying AddressSanitizer (ASan) [38], insert checks during the build process by transforming source code or an intermediate representation. This enables systematic instrumentation of selected sites but requires access to the compilation pipeline. Dynamic binary instrumentation (DBI) frameworks such as Valgrind [31] remove the source-code requirement by translating executed code at runtime, at the cost of pervasive translation and instrumentation overhead. Binary patching constitutes a third approach. It modifies selected machine-code instructions and redirects their execution without translating all executed code. Its runtime overhead therefore depends primarily on the execution frequency and cost of the patched sites rather than on the size of the binary. Binary patching requires neither source access nor whole-program translation. It may be applied before launch ( static binary patching ) or to a running process ( runtime patching ). Static and runtime patchers share several instruction-site encoding strategies, illustrated in Fig. 1. The TRAP strategy replaces one byte with the INT3 opcode ( 0xCC ) and transfers control to a signal handler whenever the site executes. When sufficient space is available, the JUMP strategy overwrites at least five bytes with a relative near jump ( jmp rel32 , opcode 0xE9 ) to a trampoline, avoiding repeated signal delivery. When the target instruction is shorter than five bytes, a NOP-bridge places a two-byte short jump at the patch site and a full five-byte jump in nearby compiler-generated alignment padding. Other techniques extend the set of sites that can use direct redirection. Instruction punning selects the jump displacement so that its trailing bytes coincide with the opcodes of a successor instruction, while padded jumps prepend redundant prefixes to adjust the reachable trampoline range without changing program semantics [13, 15]. The displaced instruction bytes are copied to an out-of-line execution (OLX) buffer, and any program-counter-relative operands are adjusted for the copy’s new address. 
+
+2.2.1 Static Binary Patching. Static binary patching, also called binary rewriting, transforms a binary on disk before execution. Patch sites, redirections, and trampoline regions are determined offline, so their construction costs are paid once rather than during each run. Static rewriting is limited to code available at transformation time: shared libraries and plugins must be rewritten separately, while dynamically generated code requires a runtime mechanism. MallocSan: A Memory Safety Tool for Native Closed-Source Applications 5MallocSan’s profile-guided phase uses E9Patch [15], an x86-64 ELF rewriter that installs redirections without requiring complete control-flow recovery. E9Patch preserves original instruction addresses instead of globally relocating code and updating its incoming branches. Instructions of at least five bytes can host a direct JUMP encoding, as shown in Fig. 1(b). Shorter sites use in-place strategies such as instruction punning, padded jumps, successor eviction, and neighbor eviction. Successor eviction redirects a following instruction to free bytes for the primary patch, whereas neighbor eviction uses nearby padding to form the NOP-bridge pattern shown in Fig. 1(c). 
+
+2.2.2 Runtime Patching. Runtime patching modifies code in the memory image of an executing process. A patcher identifies a target instruction by its virtual address, installs an appropriate redirection, and allocates reachable trampoline and OLX regions. Because patches are applied to loaded code, runtime patching can instrument the main executable, dynamically loaded libraries, and other code discovered after startup without rewriting each component in advance. The encoding selected for a site depends on the available bytes and surrounding layout, including the length of the target instruction. A direct JUMP is preferred when the site provides at least five bytes. For shorter instructions, a NOP-bridge can use nearby alignment padding to host the full jump. When no safe jump-based encoding can be installed, the one-byte TRAP encoding provides a fallback at the cost of signal delivery on each execution. JUMP and TRAP therefore provide complementary fast and fallback paths. MallocSan uses libpatch as its runtime patching substrate [13], whose authors report that it can instrument approximately 99.1% of targeted sites across a wide range of executables. The library implements TRAP and JUMP together with in-place strategies such as NOP-bridge and instruction punning for sites that cannot host a direct five-byte jump. It allocates trampoline and OLX regions in pre-positioned executable-memory pools reachable from both position-independent executables and dynamically loaded libraries. Section 4 describes how MallocSan uses these mechanisms for runtime checking, while Section 6 describes the complementary role of E9Patch in profile-guided rewriting. 
+
+3 MallocSan Overview 
+
+MallocSan is a heap sanitizer for x86-64 programs. It interposes the malloc family via LD_PRELOAD and selectively protects heap objects by encoding an object identifier (OID) in the unused high bits of the returned pointer. Because the tagged address is noncanonical, any direct dereference triggers a hardware fault that MallocSan exploits as a precise interception point. The OID indexes an object table recording each allocation’s base address and size, so every protected access can be validated against object bounds. Temporal checking is policy-driven: by default, free clears the table entry and recycles the OID, while an optional use-after-free mode retains the entry and marks it freed, enabling later accesses through stale pointers to be reported. When a tagged pointer is first dereferenced at an instruction, MallocSan captures the faulting context and decodes the instruction to recover its operand structure—including its memory and register operands—and register dependencies. If the site is patchable, MallocSan then installs a binary patch so that subsequent executions remain entirely in userspace. In the steady state, the patched path strips the OID from any tagged register before the memory access, validates the resulting address against the object table, and restores the OID so that the register again holds a protected pointer. Removing the signal from this path is what makes protection affordable because when the faulting access sits inside a hot loop, the per-iteration handler overhead would dominate execution time. If a site cannot be patched, MallocSan takes one of two slower paths. If the target instruction is simple enough, it emulates the memory access directly inside the fault handler. Otherwise it single-steps: it removes the tag in the saved machine context, sets the processor trap flag, executes the original instruction once, and restores the tag in the ensuing SIGTRAP handler. Such sites are rare: even instructions that libpatch has relocated into an out-of-line (OLX) buffer, which the earlier design could not re-patch, are usually recovered through the overlapping-patch mechanism (Section 4.5). Fig. 2 illustrates these mechanisms end to end on a heap out-of-bounds write. We describe these mechanisms in detail in the next sections. 
+
+4 MallocSan Design 
+
+MallocSan’s design centers on nine components: tagged-pointer representation and object tracking, protection policy and coverage control, first-fault handling and instruction analysis, runtime patching and its fallback paths, overlapping patches for relocated 6 Adel Belkhiri et al. Source Code                                           
+
+> foo() {
+> int *ptr;
+> ptr =(int*) malloc (sizeof(int));
+> *(ptr +1) =123;
+> }
+> ①Allocation
+> malloc → tagged pointer:
+> 0x 0001 5b49425332a0
+> ②Memory Access
+> mov DWORD PTR [rax+rbx ], 123
+> Object Table
+> index base address size alloc. site
+> 0x1 0x 0000 5b49425332a0 4foo()
+> ③SIGSEGV Handler
+> call <Pre-handler>
+> mov DWORD PTR [rax+rbx], 123
+> call <Post-handler>
+> Disassembly & patch
+> via Libpatch
+> Instruction Table
+> fault addr. arg_m[ ] arg_r[ ] disassembly
+> base index scale
+> 0x55555650 rax rbx 1…mov DWORD PTR [rax+rbx], 123
+> malloc
+> insert
+> Fault
+> lookup / fill
+> disp.
+> 0
+> lookup
+
+Fig. 2. Overview of MallocSan’s runtime architecture, illustrated on a heap out-of-bounds write. 
+
+instructions, post-handler elimination and deferral, C-library and kernel boundary handling, thread safety, and an optional guard-page protection backend. The following subsections address each in turn. 
+
+4.1 Pointer Tagging and Object Table 
+
+MallocSan tracks protected allocations at object granularity. Each protected allocation receives a nonzero OID encoded in the unused high bits of the returned pointer. The tag occupies bits 48 to 62, while bit 63 is kept clear to avoid clobbering the sign bit, yielding 15 usable tag bits and up to 32,767 distinct identifiers. The OID indexes the object table , the authoritative record of all live protected allocations. Each entry stores the allocation base address, the object size, and the instruction pointer of the allocating call site. Bounds checking therefore reduces to an object-table lookup followed by a pointer comparison against the recorded range. This object-identity design provides precise per-allocation bounds at every protected access and enables diagnostics to report both the faulting access site and the corresponding allocation site. The object table also determines the lifetime of each protection entry. In the default configuration, free clears the corresponding entry and returns its OID to the tail of the free list. A stale tagged pointer therefore no longer resolves to a live entry, and any subsequent dereference is treated as invalid unless that OID has already been reassigned. 1 When optional use-after-free tracking is enabled, free instead retains the entry and marks it as freed. A later dereference of the stale pointer can then be classified explicitly as a use-after-free rather than as a generic invalid access. When all OID slots are in use, the allocator falls back to an unprotected malloc , emits a warning, and continues execution. By default, OIDs are recycled without a quarantine delay: upon deallocation the identifier is returned immediately to the tail of the free list via an atomic compare-exchange, making it eligible for reuse by the next protected allocation. This immediate reuse is an intentional tradeoff that keeps OID management allocation-free and lock-free. The cost is that a temporal bug can become a false negative: if a freed OID is reassigned before a stale-pointer dereference, the stale pointer resolves to the new object’s entry and may pass validation if the accessed range falls within that object’s bounds. Enabling use-after-free tracking avoids this immediate-reuse ambiguity for freed objects retained in the table, at the cost of increasing pressure on the finite OID space. 
+
+4.2 Protection Coverage Control 
+
+MallocSan stays practical on memory-intensive applications because it tags only the pointers returned by selected allocation sites: overhead tracks the scope of protection, not total heap activity. The runtime can limit protection according to allocation size, allocation order, and the maximum number of concurrently protected objects. Unprotected allocations follow the original malloc 
+
+path without modification, while protected allocations retain their tagged representation in memory and registers throughout ordinary execution. 
+
+> 1
+
+Even after OID reuse, a stale pointer will likely fall outside the new allocation’s bounds and trigger an error. An OID quarantine further reduces the chance of reassignment to an allocation containing the stale address. MallocSan: A Memory Safety Tool for Native Closed-Source Applications 7A complementary caller-origin filter further refines this selection. At each interposed malloc call, the runtime captures the caller’s return address and compares it against a table that separates the main executable’s address range from dynamically loaded libraries. Allocations originating from the main object and allowlisted libraries receive tags; those from other library code do not. This approach reduces overhead in workloads where most heap activity is library-internal and avoids spurious faults in library code that relies on pointer arithmetic incompatible with the tagged representation. The current implementation uses a configurable allowlist of shared objects, providing fine-grained coverage control independent of address-space layout. 
+
+4.3 First-Fault Handling and Instruction Analysis 
+
+Dereferencing a tagged pointer produces a synchronous fault at the offending instruction. MallocSan intercepts SIGSEGV and 
+
+SIGBUS on a dedicated alternate signal stack and retains control of SIGTRAP to implement single-step fallbacks and to cooperate with libpatch . To prevent its own handlers from being overridden, MallocSan saves any application-installed signal handlers for 
+
+SIGSEGV , SIGBUS , and SIGTRAP , ensuring that segmentation faults unrelated to tagged pointers are correctly forwarded to the application’s handlers. For instructions not yet patched, the segmentation fault handler records the machine context and fault metadata, then redirects execution to a trampoline. This indirection is necessary because Capstone, the disassembly library used for instruction analysis, is not async-signal-safe and cannot be invoked directly from a signal handler. The handler is therefore deliberately narrow: it performs only minimal bookkeeping and defers all decoding and patching decisions to the trampoline context. The trampoline preserves general-purpose registers, flags, and floating-point or vector state before invoking runtime code that can safely analyze the faulting instruction. This separation is essential for correctness because first-fault processing may require disassembly, instruction-table updates, and interactions with patch-management code, none of which can safely execute inside the handler. MallocSan decodes the faulting instruction fully to prevent repeated faults on the same memory access. Capstone identifies memory operands, resolves base and index registers, records register read and write sets, determines the access width, detects repeat prefixes, and classifies special cases such as vector-indexed accesses. The result is an instruction-table entry that caches everything needed to handle later executions of the same site. The instruction table is a hash table keyed by instruction address, with explicit entry states (empty, initializing, ready, and failed) that ensure at most one thread analyzes a newly faulting instruction while all others observe a stable result. Two instruction classes require specialized analysis and bounds-validation logic. REP -prefixed string instructions access a multi-element range over repeated iterations, whereas vector-indexed instructions use vector indices to generate a distinct, potentially noncontiguous address for each active lane. The following subsections explain how MallocSan derives and validates these memory footprints. 
+
+4.3.1 REP String Instructions. In x86-64, string instructions such as MOVS , STOS , LODS , CMPS , and SCAS may carry a repeat prefix. The prefix causes the processor to execute the elementary operation repeatedly while updating the relevant implicit pointer registers— rsi , rdi , or both—according to the direction flag ( DF ). The initial value of rcx specifies the maximum number of iterations. For fixed-count operations such as REP MOVS and REP STOS , it also determines the exact number of iterations. For data-dependent operations such as REPE /REPNE CMPS and SCAS , however, a comparison may terminate execution early, so rcx 
+
+provides only an upper bound. Compilers routinely emit these instructions for memcpy -, memset -, and strlen -style operations. Unlike an ordinary instruction, whose memory operands have fixed widths, a repeat-prefixed instruction may access a range whose extent is known only at run time. Instruction analysis therefore marks every repeat-prefixed site in its instruction-table entry and separately identifies the data-dependent forms, which require a different validation strategy. MallocSan validates fixed-count repetitions entirely before execution. Given an untagged initial address 𝐴 , an element size 𝑠 ,and an iteration count 𝑛 = rcx , the pre-handler derives the complete memory footprint and checks it against the referenced object’s bounds. For 𝑛 > 0 and DF = 0, the footprint is [𝐴, 𝐴 + 𝑛 × 𝑠 ). For DF = 1, it is [𝐴 − ( 𝑛 − 1) × 𝑠, 𝐴 + 𝑠 ). When 𝑛 = 0, the instruction performs no memory access and requires no bounds check. The span computation saturates on multiplication overflow, ensuring that an oversized count is reported as out of bounds rather than wrapping into an apparently valid range. Instructions 8 Adel Belkhiri et al.                            
+
+> ; rsi = tagged pointer to a protected source ; rdi = tagged pointer to a protected destination mov rcx , 64 ; iteration count: exactly 64 rep movsb ; copy 64 bytes from [rsi] to [rdi]
+> Fig. 3. A fixed-count REP copy implementing a 64-byte memcpy . Because rep movsb executes exactly rcx iterations, the pre-handler derives the complete source and destination footprints before execution and validates each interval against the bounds of the object referenced by its corresponding tagged pointer.
+> ; rdi = tagged pointer to a protected buffer xor al , al ; scan value: the NUL terminator mov rcx , -1 ; iteration limit: effectively unbounded repne scasb ; scan byte-wise until [rdi] matches al
+> Fig. 4. A data-dependent REP scan implementing strlen . Because rcx provides only an upper bound on the iteration count, the pre-handler validates only the first byte before execution. After execution, the post-handler derives the actual scanned range from the change in rdi and validates it against the bounds of the object referenced by the original tagged pointer.
+
+with multiple memory operands are handled independently: for MOVS , for example, the source and destination footprints are each checked against the object referenced by their respective tagged pointers. Fig. 3 illustrates this pre-execution validation for a 
+
+memcpy -style copy. Data-dependent repetitions cannot be validated from rcx alone. In the strlen idiom shown in Fig. 4, repne scasb begins with 
+
+rcx set to the sentinel value 2 64 − 1 but terminates when it encounters the first NUL byte. The actual extent therefore depends on memory contents, and treating rcx as the exact iteration count would incorrectly classify nearly every such scan as out of bounds. MallocSan instead divides validation between the pre-handler and the post-handler. If rcx is nonzero, the pre-handler validates the first element—the only access known to occur before the result of the comparison is available—and then allows the instruction to execute with untagged pointer registers. After every completed iteration, the processor adjusts each relevant pointer by one element in the direction specified by DF . The final pointer is therefore one element beyond the last access in the direction of traversal. By comparing the initial and final pointer values, the post-handler can recover the exact interval accessed, including its direction. While the register still contains its untagged final value, the post-handler combines the saved OID with the lower endpoint of the recovered interval. This reconstructed tagged address allows the bounds check to resolve the appropriate object-table entry. After validating the interval, the post-handler restores the tag to the updated pointer register. This deferred validation detects scans that run beyond an unterminated buffer. Although it is a deliberate exception to MallocSan’s check-before-execute rule, it allows data-dependent repetitions to be checked using their actual extents rather than potentially enormous upper bounds. 
+
+4.3.2 VSIB Instructions. In addition to scalar memory accesses, MallocSan supports instructions that use the Vector Scaled Index Byte (VSIB) addressing mode. These instructions, enabled by AVX extensions, may appear in compiler-generated code (e.g., through auto-vectorization with flags such as -O3 and -march=native ) as well as in handwritten SIMD intrinsics. Supporting them is therefore essential for extending memory safety from scalar to vector memory operations without constraining compiler optimization settings. VSIB instructions perform multiple lane-wise loads or stores from independently computed addresses. The effective address for lane 𝑖 is base + vreg [𝑖 ] × scale + disp , where the base is a general-purpose register and the vector index register provides per-lane integer offsets 2. AVX2 gather instructions use an explicit vector mask operand, whereas AVX-512 gather and scatter instructions use dedicated mask registers (e.g., k1 –k7 ). In both cases, inactive lanes must neither be accessed nor subjected to bounds checks. VSIB accesses differ from scalar ones in that a single instruction may touch several lane-specific addresses. MallocSan therefore records static VSIB metadata in the instruction-table entry, including the index-element width, the lane count, and the architectural registers supplying the base, index, and mask operands. At execution time, the pre-handler reads the current index-vector contents and active-lane mask from the saved register state, strips the OID from the base register, and checks each active lane individually 
+
+> 2In some cases, the base is zero, and each index is itself a complete address that may be tainted.
+
+MallocSan: A Memory Safety Tool for Native Closed-Source Applications 9Instruction                                                                                  
+
+> vgatherdpd ymm0, [rdi +xmm1*8], ymm2
+> rdi — tagged base pointer
+> bits 63–48
+> 0x0002
+> OID =2
+> bits 47–0
+> 5A00_0000_0080
+> canonical base
+> xmm1 — lane offsets (32-bit)
+> lane 3
+> 12
+> lane 2
+> 8
+> lane 1
+> 4
+> lane 0
+> 0
+> ymm2 — mask register
+> lane 3
+> 0
+> ✗off
+> lane 2
+> 1
+> ✓on
+> lane 1
+> 1
+> ✓on
+> lane 0
+> 1
+> ✓on
+> ⚙PRE-HANDLER
+> ①oid ←rdi >> 48
+> ②base ←rdi &0x0000_FFFF_FFFF_FFFF
+> ③active ←{i:mask(ymm2)[i] =1}
+> ④entry ←object_table[oid]
+> ⑤for iin active:
+> addr_i ←base +xmm1[i] ×8
+> assert [addr_i, addr_i+8) ⊆entry
+> ⑥rdi ←base (strip OID for gather)
+> ⌘OLX BUFFER
+> vgatherdpd ymm0, [rdi_untagged +xmm1*8], ymm2
+> Original instruction runs on the stripped base address.
+> ⚙POST-HANDLER
+> rdi ←(oid << 48) |base
+> OID restored to rdi so subsequent dereferences remain in the tagged
+> domain
+> Instruction Table
+> opcode
+> vgatherdpd
+> dst
+> ymm0
+> base
+> rdi
+> index
+> xmm1
+> scale
+> 8
+> mask
+> ymm2
+> Object Table
+> base
+> 0x5A00_0000_0080
+> size
+> 128 B
+> alloc site
+> foo()
+> Fetch Operands
+> Lookup OID
+
+Fig. 5. AVX2 VSIB gather checking in MallocSan. For a four-lane vgatherdpd , the pre-handler extracts the OID from tagged rdi , restores the canonical base address, derives the active lanes from ymm2 , and checks each enabled xmm1 -indexed lane against the bounds of the referenced object. The gather then executes on the untagged base, and the post-handler re-tags rdi .
+
+against the object-table entry referenced by that OID (Fig. 5). If any lane violates the recorded bounds, the report identifies both the lane number and the computed address. When the base register carries a tagged pointer, the post-handler restores its OID if the pointer value remains live after the instruction. In this base-tagged form, the index vector carries integer offsets rather than pointers and is therefore never tagged. 
+
+4.4 Runtime Patching and Fallback Paths 
+
+MallocSan leverages libpatch to atomically rewrite the faulting instruction, redirecting control to handler code and an out-of-line (OLX) buffer where the relocated instruction is subsequently executed. The ideal case is the JUMP strategy, which overwrites the target site with a 5-byte JMP and therefore applies only when the instruction is at least five bytes long. Because libpatch is not thread-safe, MallocSan delegates patch installation to a dedicated worker thread once the process becomes multithreaded. After the first fault, installed JUMP-based patches keep subsequent executions entirely in userspace, eliminating repeated fault handling. A patch diverts execution through a pre-handler that strips OIDs from the relevant base and index registers, reconstructs the effective address, and validates the access against the object table. The original instruction then executes on untagged addresses. If the instruction logically preserves a pointer-bearing register, a post-handler reapplies the saved OID to that register’s updated value. This restoration is a correctness requirement: without it, subsequent instructions using the same register as a pointer operand would escape the tagged domain and bypass bounds checking entirely. The pre/post-handler split is necessary because x86 instructions can simultaneously consume and transform the same registers. MallocSan records the removed OIDs and any auxiliary repair state before the instruction executes, and explicitly handles the case in which a register serves both as a memory-address component and as an explicit write destination, ensuring that transient untagging does not leak into program-visible state. This ideal scenario is not always available. For instructions shorter than five bytes, libpatch may still construct a JUMP -class redirect through instruction punning or a NOP bridge (Section 2.2). Both tactics consume a contiguous byte span at the target site, which libpatch relocates into the OLX buffer. If the relocated sequence contains additional memory-accessing instructions, they cannot be patched independently at their original addresses. Section 4.5 describes our extension to libpatch for supporting overlapping patches, which enables MallocSan to instrument these instructions as well. When no JUMP -class patch can be installed, MallocSan provides three fallback paths, ordered from fastest to slowest. The fastest is 
+
+in-handler emulation . For a supported instruction whose semantics can be reproduced directly from its decoded metadata and 10 Adel Belkhiri et al. Memory-access instruction  
+
+> with tagged registers
+> Can install
+> JUMP?
+> JUMP Path
+> Patch redirects execution to a probe
+> Emulation
+> eligible?
+> Emulate path
+> SIGSEGV handler performs the access and
+> skips the original instruction
+> Can install
+> TRAP?
+> TRAP/MIXED path
+> Trap at the target instruction, optionally
+> paired with a jump-patched instruction that
+> hosts the post-probe
+> Fallback path
+> SIGSEGV unprotects operands
+> TF single-step executes original instruction
+> SIGTRAP reprotects them
+> Yes
+> No Yes
+> No
+> Yes
+> No
+
+Fig. 6. MallocSan’s patching decision logic: a JUMP patch is attempted first, then in-handler emulation, then a TRAP patch, with trap-flag single-stepping as the last resort. 
+
+the saved machine context, the SIGSEGV handler computes the untagged effective address, validates it against the object table, performs the load or store, and advances the instruction pointer past the instruction. The access therefore requires only one signal delivery. Moreover, because the handler never strips tags from the architectural address registers, the protection model remains unchanged. The current implementation supports plain MOV instructions that address memory using a single general-purpose base register and a constant displacement, without an index register, and that access between one and eight bytes. In our measurements, this path is approximately 1.6 × as fast as a TRAP patch. Because validation precedes emulation, MallocSan never emulates an out-of-bounds or stale-pointer dereference. Instructions too complex for in-handler emulation are handled using the TRAP strategy. When post-execution processing is required, the trap-patched instruction may be paired with a subsequent JUMP -patched site that hosts the deferred post-handler (Section 4.6). Although this strategy is almost always feasible, it incurs signal delivery and handler dispatch every time the instruction executes. The last resort, used when a site can be neither patched nor emulated, is single-stepping . The SIGSEGV handler extracts and saves the OIDs from the relevant registers, validates the access, and, if validation succeeds, writes the corresponding untagged addresses to the saved machine context. It then sets the processor’s trap flag and resumes execution, causing the original instruction to execute exactly once. The resulting SIGTRAP handler restores the saved OIDs to the relevant registers, clears the trap flag, and resumes normal execution. Fig. 6 summarizes this patching and fallback hierarchy. In practice, the vast majority of sites receive 
+
+JUMP patches, while only a small fraction require emulation, TRAP patches, or single-stepping. Although MallocSan targets binaries that cannot be rebuilt, users who can recompile an application can reduce the fallback rate further by enabling -fpatchable-function-entry=5,5 . This option places five NOP s immediately before each function’s entry point. Because normal control transfers enter the function after this padding, libpatch can repurpose the additional space without overwriting application instructions. These spare bytes facilitate JUMP -based redirects for otherwise too-short instructions near function entries, measurably reducing reliance on the fallback paths. 
+
+4.5 Overlapping Patches for Relocated Instructions 
+
+Installing a patch can inadvertently make neighboring instructions unpatchable. To insert a 5-byte JMP , libpatch must overwrite enough complete instructions to cover at least five bytes. It relocates the displaced instructions to the patch’s OLX buffer, where they execute before control returns to the original code. If a relocated instruction subsequently dereferences a tagged pointer, the resulting fault occurs at its copy in the OLX buffer rather than at its original address. Because patches cannot be installed inside an OLX buffer and the original instruction is already covered by the existing patch, the site cannot be patched directly. Without MallocSan: A Memory Safety Tool for Native Closed-Source Applications 11           
+
+> 1mov rax , qword ptr [ rax +rbx *8]
+> Fig. 7. Post-handler elimination when rax serves as both the memory-address base and the load destination. Because the load unconditionally replaces rax , reapplying its original OID would incorrectly tag the loaded value. MallocSan therefore omits the post-handler.
+
+overlapping-patch support, every subsequent execution of that instruction would therefore require single-stepping—an especially costly fallback when the instruction lies in a hot loop. To remove this restriction, we extended libpatch with overlapping patches . The mechanism builds on the observation that the trampoline reaches the OLX buffer through an indirect pointer, which provides a natural update point. A patch requested on a relocated instruction is therefore registered as a child of the parent patch that owns the relocated region, and no new trampoline is created. Instead, libpatch rebuilds the parent’s OLX contents into a fresh buffer, this time surrounding the target instruction with the child’s pre-handler and, when tag restoration is required, its post-handler. The new buffer is then published atomically through the parent’s indirect pointer, and the old buffer is reclaimed lazily. A concurrent thread executing during the handoff observes either the old or the new buffer, both of which remain mapped and valid, so the transition requires no stop-the-world synchronization. Overlap children follow stricter rules than ordinary patches. Because a child shares the parent’s patch handle, it has no independent removal path: dropping the handle would tear down the parent and every sibling child. MallocSan therefore either commits a child probe or degrades without dropping it. Children are also excluded from post-handler deferral and restore tags immediately after the instruction. Finally, only the displaced non-head instructions of a relocated region are eligible to become children. When a child cannot be created, the site falls back to the single-step path. 
+
+4.6 Post-Handler Elimination and Deferral 
+
+At frequently executed sites, steady-state overhead is dominated by recurring pre-handler and post-handler execution rather than by one-time first-fault analysis. This cost is particularly high inside loops, where bounds validation, tag removal, and tag restoration may recur on every iteration. MallocSan therefore applies two complementary optimizations to the post-handler path: elimination when restoration is unnecessary and deferral when restoration can safely occur later. First, MallocSan eliminates the post-handler when the original values of all tagged registers become dead, either because the faulting instruction overwrites them or because a subsequent instruction overwrites them before any further pointer use. In such cases, restoring the saved OIDs would be unnecessary or incorrect. The pre-handler still removes the tags and validates the access, but no post-handler is installed. Fig. 7 illustrates this case. Second, when restoration remains necessary but need not occur immediately, MallocSan defers the post-handler to a later safe site. The runtime obtains the address range of the containing function through libunwind and uses Capstone to scan subsequent instructions. The scan stops at control-flow transfers and at instructions whose interaction with the tagged registers cannot be modeled safely. A full overwrite instead eliminates the need for restoration. The principal control-flow exception, described below, is a conditional back-edge that encloses the originating instruction. Algorithm 1 summarizes the scan used to select a restoration site and determine whether a post-handler remains necessary. The scanner advances the candidate restoration site only after encountering another fault-like access beyond the current candidate. This requirement ensures that each advancement meaningfully extends the untagged execution window. Because the preferred candidate may not have enough space for a 5-byte JMP , the scanner also retains a bounded set of later tail-fallback candidates. If no candidate can host the deferred post-handler, restoration remains immediately after the originating instruction. Four rules govern the forward scan. An instruction is tag-independent if it neither reads nor writes a register in the tagged set and does not reference one in a memory operand. The scanner may pass over such an instruction. However, the instruction may host the deferred post-handler only if it cannot itself fault on a tagged heap pointer. This condition holds when it has no memory operand; is a LEA or multi-byte NOP , neither of which dereferences its operands; or uses only non-heap addressing, such 12 Adel Belkhiri et al. as FS/GS-segment-relative, RIP-relative, or rsp -based addressing. MallocSan deliberately does not trust rbp , because frame-pointer omission allows it to hold an arbitrary pointer. A memory access is fault-like if it uses the same tagged base or index register as the originating instruction. During the scan, MallocSan recomputes the effective address of an access whose scale or displacement differs from the original access and verifies that it lies within the same object bounds. If accepted, the access is incorporated into the widened footprint validated by the originating pre-handler. It therefore remains covered even though the tagged register is untagged by the time the instruction executes. Each accepted fault-like access advances the deferral window. A constant pointer walk is an add , sub , inc , or dec that adjusts a tagged 64-bit register by an immediate value. Such an instruction does not terminate the scan. Instead, MallocSan folds the adjustment into a per-register delta and validates subsequent fault-like accesses against the correspondingly shifted address. A cap on the accumulated magnitude prevents the delta from reaching the tag field. During the forward scan, an instruction fully overwrites the tagged set if it unconditionally replaces every remaining tagged register with a value independent of the original pointer, without first using that value as a pointer input. Once this occurs, restoration is unnecessary and the post-handler can be eliminated. MallocSan recognizes register-zeroing idioms such as xor 𝑟, 𝑟 as a special case, even though their decoded register-access sets may syntactically include a read of the destination. The forward scan constructs a deferral plan, but memory safety ultimately depends on a runtime invariant. The scan initially reasons using the register values observed at the first fault, whereas subsequent executions may begin with different values. On every execution, the pre-handler at the originating site therefore validates a widened footprint against the object bounds using the tagged address register’s current value. The scan records this footprint as the displacement interval spanning the originating access and every accepted fault-like access before the restoration point, including any accumulated pointer-walk deltas. All accesses within the deferred window are consequently covered before the tag is removed. If the widened footprint exceeds the object bounds, MallocSan reports the violation at the originating site before entering the window. A loop back-edge would ordinarily terminate the scan. At a site that remains on the fault-driven path, restoring the tag before the back-edge would cause the protected access to fault again on every iteration. MallocSan avoids this per-iteration cost for a common straight-line, single-exit loop shape. When the scanner encounters a conditional backward branch whose target precedes the originating instruction, it treats the branch as a candidate loop latch and its fall-through as a candidate exit. Deferral may cross the back-edge only if all of the following conditions hold: 1) The region from the originating instruction to the latch contains no other control-flow transfer; 2) The loop prefix from the branch target to the originating instruction neither transfers control nor reads, writes, or dereferences through a tagged register; 3) The protected instruction has a single non-indexed memory operand whose effective address is formed from a loop-invariant base; 4) The latch does not access the tagged register; and 5) A provably non-heap restoration site exists within a bounded distance after the fall-through. For an eligible fault-driven site, the fault on loop entry invokes the pre-handler, which validates the loop-invariant address and removes its tag. Because the address does not change, this single check covers every iteration. The loop then executes natively with the untagged pointer, and one post-handler at the exit restores the tag. Multiple protected sites in the same loop can share the exit post-handler through a small registry. This optimization therefore converts a per-iteration signal cost into a once-per-loop-execution cost. The repeat-prefixed string instructions described in Section 4.3.1 are excluded from both optimizations. Capstone reports the relevant implicit pointer registers— rsi , rdi , or both—as written because the processor advances them after each iteration. These writes do not kill the pointers: their updated values may still reference the protected objects and must therefore be re-tagged. MallocSan consequently overrides the generic write-set classification and restores their tags immediately after the instruction. Data-dependent CMPS and SCAS operations impose an additional constraint because their exact footprints can be established only after execution. Their post-execution checks must remain at the instruction site, and the deferral scan never crosses them. MallocSan: A Memory Safety Tool for Native Closed-Source Applications 13 
+
+Algorithm 1 Post-Handler Deferral Algorithm 
+
+Require: faulting instruction 𝐼 𝑓 , original fault metadata 𝐹 , maximum scan distance max_scan 
+
+Ensure: deferred post-handler address safeAddr and flag postHandlerNeeded  
+
+> 1:
+
+function FindPostHandlerSafeSite( 𝐼 𝑓 , 𝐹, max_scan)  
+
+> 2:
+
+safeAddr ← NextInstruction (𝐼 𝑓 ) 
+
+> 3:
+
+postHandlerNeeded ← true  
+
+> 4:
+
+lastSimilarMemAddr ← ⊥  
+
+> 5:
+
+taggedRegs ← ExtractTaggedRegisters (𝐹 ) 
+
+> 6:
+
+faultShape ← ExtractMemoryShape (𝐹 ) ⊲ memory access pattern of 𝐼 𝑓 (base/index/scale/displacement and access size)  
+
+> 7:
+
+for 𝑖 ← 1 to max_scan do  
+
+> 8:
+
+𝐼 ← DecodeNextInstruction  
+
+> 9:
+
+if IsControlFlowInstruction( 𝐼 ) then  
+
+> 10:
+
+if IsSingleExitLoopLatch( 𝐼, 𝐼 𝑓 ) then  
+
+> 11:
+
+safeAddr ← FallThroughOf (𝐼 ) ⊲ conditional back-edge enclosing 𝐼 𝑓 : restore the tag once at the loop’s single exit (gates in text)  
+
+> 12:
+
+end if  
+
+> 13:
+
+return (safeAddr , postHandlerNeeded ) 
+
+> 14:
+
+end if  
+
+> 15:
+
+if IsTagIndependent( 𝐼, taggedRegs ) then  
+
+> 16:
+
+if not CanFaultOnHeap( 𝐼 ) and safeAddr ≤lastSimilarMemAddr then  
+
+> 17:
+
+safeAddr ← AddressOf (𝐼 ) ⊲ host site: register-only, LEA /NOP , or provably non-heap operands  
+
+> 18:
+
+end if  
+
+> 19:
+
+continue  
+
+> 20:
+
+end if  
+
+> 21:
+
+if UsesTaggedMemoryAddress( 𝐼, taggedRegs ) then  
+
+> 22:
+
+if not SameMemoryPattern( 𝐼, faultShape ) then  
+
+> 23:
+
+ea ← RecomputeEffectiveAddress (I) 
+
+> 24:
+
+if not WithinOriginalValidBounds( ea , 𝐹 ) then  
+
+> 25:
+
+ReportOOB( 𝐼, ea , 𝐹 ) 
+
+> 26:
+
+if AbortOnOOB then  
+
+> 27:
+
+AbortExecution ⊲ report OOB violation (unsafe divergence) and abort if in strict mode  
+
+> 28:
+
+end if  
+
+> 29:
+
+return (safeAddr , postHandlerNeeded ) 
+
+> 30:
+
+end if  
+
+> 31:
+
+end if  
+
+> 32:
+
+lastSimilarMemAddr ← AddressOf (𝐼 ) 
+
+> 33:
+
+continue  
+
+> 34:
+
+end if  
+
+> 35:
+
+if FullyOverwrites( 𝐼, taggedRegs ) then  
+
+> 36:
+
+postHandlerNeeded ← false  
+
+> 37:
+
+return (safeAddr , postHandlerNeeded ) 
+
+> 38:
+
+end if  
+
+> 39:
+
+if IsConstantPointerWalk( 𝐼, taggedRegs ) then  
+
+> 40:
+
+FoldIntoDelta( 𝐼 ) ⊲ add /sub 𝑟 , imm; inc /dec 𝑟 : later fault-like accesses validate at the shifted address  
+
+> 41:
+
+continue  
+
+> 42:
+
+end if  
+
+> 43:
+
+return (safeAddr , postHandlerNeeded ) ⊲ tag is consumed: tagged registers are read or partially overwritten  
+
+> 44:
+
+end for  
+
+> 45:
+
+return (safeAddr , postHandlerNeeded ) ⊲ maximum scan distance reached; stop deferral conservatively  
+
+> 46:
+
+end function 
+
+4.7 C Library and Kernel Boundaries 
+
+Tagged pointers require special handling at libc and kernel boundaries. Kernel interfaces may reject noncanonical user addresses, while some libc routines perform pointer manipulations incompatible with the tagged representation. Hence, a tagged pointer dereferenced inside a system call or a glibc internal routine may trigger a fault that the signal handler cannot intercept, leaving the process in an unrecoverable state. MallocSan therefore wraps a broad set of libc entry points (memory, string, file, locale, and 14 Adel Belkhiri et al. pthread routines), stripping tags from pointer arguments before each boundary crossing and reapplying them to any returned or derived pointer that should remain associated with the same protected object. This wrapper layer is a structural part of the design, not an optional convenience: many library operations perform internal pointer arithmetic or forward user buffers to the kernel, making transparent tag removal mandatory. Scoped coverage is an additional benefit: by selectively wrapping or excluding specific entry points, MallocSan confines protection to application components while leaving standard shared libraries uninstrumented. This design is complemented by a reentrancy guard that prevents MallocSan’s internal allocations, as well as those issued within wrapped libraries, from being subjected to tagging. The guard is implemented as a thread-local Boolean flag. Upon entry to each interposed allocator or libc wrapper, the flag is saved and cleared, temporarily disabling protection for internally issued allocations. On exit, the flag is restored to its prior state. Without this guard, an internal allocation would re-enter the interposed allocator with protection enabled, tag its own result, fault on the tagged pointer, and recurse until exhausting either the call stack or the OID table. Declaring the flag thread-local ensures that suppressing instrumentation in one thread does not inadvertently disable protection in any other. 
+
+4.8 Concurrency and Thread Safety 
+
+MallocSan achieves thread safety by separating immutable instruction metadata from mutable per-execution state. The instruction table stores per-instruction properties (decoded operands, register-access summaries, patching mode, and post-handler placement) that are written once and read frequently. Mutable state resides in a thread-local runtime structure holding temporary register values during execution. This separation eliminates contention on the instruction table along the common read path and prevents transient execution data from corrupting persistent metadata. Concurrency requires coordination at two points. First, instruction-table entries are created through an atomic state machine that ensures exactly one thread decodes a newly faulting instruction while all others encountering the same site wait for the entry to reach the ready state. Second, once the process becomes multithreaded, patch requests are serialized through a ring buffer to a dedicated patch worker, satisfying libpatch ’s single-threaded patching constraint without blocking application threads during ordinary execution. Performing instruction analysis outside the signal handler is also necessary for thread safety: because Capstone is not async-signal-safe, each thread maintains an independent disassembly context, and executing the analysis outside the handler guarantees that these contexts are never accessed from within a signal. 
+
+4.9 Guard-Page Protection Backend 
+
+In addition to OID tagging, MallocSan offers an optional guard-page backend that protects selected allocations without any per-access instrumentation. As shown in Fig. 8, an eligible allocation is served from a dedicated anonymous mmap region and placed at its end, so that the object is immediately followed by an inaccessible PROT_NONE page, in the manner of Electric Fence [35]. Any access that runs past the object lands on the guard page and raises a hardware fault at the exact offending instruction. Since the returned pointer is a plain canonical pointer rather than a tagged one, dereferences of guarded objects never fault during ordinary execution and bypass the fault-handling, analysis, and patching machinery of the preceding subsections entirely. This model gives up a small amount of precision. Preserving the 16-byte alignment that malloc guarantees can leave a gap of up to 15 bytes between the object’s last byte and the guard page. Overflows that reach the page, including every overflow of 16 bytes or more, trap immediately. To mitigate this limitation, the backend fills the residual gap with canary bytes at allocation and verifies them when the object is freed or resized in place, thereby detecting trailing writes that modify the gap. A small trailing read within the gap goes undetected, and underflows are outside this backend’s reach, since only the end of the allocation is guarded. The OID backend, in contrast, detects all of these cases at the moment of access. The memory cost is one page-granular mapping plus one inaccessible page per guarded object, so guarding is gated by a configurable minimum allocation size and a cap on concurrently live guarded objects. The two backends operate side by side: requests at or above the size threshold go to the guard backend, and all others, as well as any request it declines, fall back transparently to OID tagging. Guarded pointers are recognized ahead of the tagged-pointer logic on both the free path and the fault path, and a guard fault produces the same style of report as the OID path: object bounds, allocation site, and overflow distance. This division of labor is deliberate. Large objects, for which page rounding is proportionally negligible, are precisely the ones whose dense access MallocSan: A Memory Safety Tool for Native Closed-Source Applications 15 ALLOCATION / OBJECT BYTES  
+
+> requested object size in bytes
+> normal reads and writes
+> PAGE GUARD
+> one page
+> PROT_NONE
+> user pointer
+> 16-byte aligned
+> user + size page-aligned guard address
+> page-crossing overflow
+> small overflow
+> REDZONE
+> 0–15 B
+
+Fig. 8. Memory layout of a guard-page allocation. The object is placed at the end of its mapping, immediately before a PROT_NONE page, so a page-crossing overflow faults at the offending access, while the 16-byte alignment gap is filled with canary bytes that are verified at deallocation to catch small trailing overflows. 
+
+streams are most expensive to check through tagging, while small, numerous allocations, for which a page per object would be wasteful, remain under the OID model. Shifting large objects to hardware-enforced guard pages thus eliminates much of the per-access overhead at a minor cost in accuracy and memory. 
+
+5 Implementation Details 
+
+The MallocSan implementation is organized around four runtime modules that mirror the main phases of execution. The runtime-control module initializes the sanitizer, parses the environment-controlled protection policy, and installs the signal handlers. The 
+
+instruction-analysis module decodes faulting instructions, caches instruction-table entries, and implements the pre-handler and post-handler logic of the steady-state path, including the forward scan for post-handler elimination and deferral. The patching 
+
+module interfaces with libpatch to install binary rewrites, and routes patch requests to the patch worker. Finally, the wrapper 
+
+module interposes the malloc family and selected libc entry points, tagging newly protected allocations and stripping or restoring tags at library and kernel boundaries. The implementation comprises more than 10,000 lines of C code and is built with GNU Autotools using GCC or Clang on x86-64 Linux. It depends on four external runtime libraries: libpatch for binary patching, Capstone for disassembly, and libdw /libunwind 
+
+for ELF and DWARF introspection. Beyond detecting violations, MallocSan is designed to explain them. Object-table entries retain the allocation-site instruction pointer, so an out-of-bounds report identifies both the violated object and the offending access. The runtime also records per-instruction hit counts and patching metadata, and emits a statistics file at process exit listing each instruction-table entry with its address, symbolized location, access count, and patching mode. This file drives the profile-guided optimization of Section 6. 
+
+6 Profile-Guided Hot-Path Optimization 
+
+Although TRAP patching provides a safe and nearly universal fallback when a direct redirection cannot be installed at runtime, it is an expensive steady-state execution mode: every invocation incurs signal delivery, handler dispatch, and context recovery. In-handler emulation absorbs the simplest of these sites (Section 4.4), but instructions too complex to emulate remain trap-bound, and their cost is particularly harmful inside hot loops, where repeated traps can dominate total execution time. MallocSan therefore includes an optional profile-guided optimization pipeline that identifies frequently executed TRAP sites and rewrites them offline into direct JUMP -based redirections. The goal is to preserve checking semantics while promoting hot sites from a fault-driven slow path to a normal user-space control-flow path. The optimization relies on E9Patch [15], a static binary rewriter for optimized x86-64 ELF executables, and proceeds in two phases. In the profiling phase , the target program runs under MallocSan with its default runtime patching logic and produces the per-instruction statistics file described in Section 5. Its counters directly reveal which sites remain on the TRAP path and how frequently each executes. In the rewriting phase , a Python script reads the statistics file and selects candidate instructions according to three criteria: the site must have been finalized as a TRAP -patched instruction during profiling, its execution count must exceed a user-specified 16 Adel Belkhiri et al. threshold, and the instruction must offer a safe rewrite window, that is, a contiguous span of at least five bytes whose relocation captures no additional memory-access instruction. For the selected subset, the script invokes E9Patch to produce a new binary in which each eligible TRAP site is replaced by a JUMP -based redirection performing the same OID stripping, bounds check, and tag restoration as the original signal-driven path. The rewritten binary still runs with MallocSan preloaded, since the injected handlers continue to consult the object table and other runtime metadata maintained by the sanitizer. This selective rewriting preserves correctness because the rewritten fast path reuses the same checking logic as the original 
+
+TRAP -based path; only the dispatch mechanism changes. Instructions that do not satisfy the eligibility criteria remain unchanged and continue to use the signal-based fallback. The approach therefore trades the cost of one profiling run for lower steady-state overhead on hot sites in subsequent executions, making it particularly attractive for long-running workloads and benchmark settings in which hot-path behavior is stable across runs. 
+
+7 Evaluation 
+
+We organize the evaluation around four research questions: 
+
+RQ1: Detection effectiveness. Does MallocSan report an out-of-bounds violation for every heap allocation-boundary error that manifests within its protection scope, and does it remain silent on the corresponding defect-free executions? 
+
+RQ2: Runtime cost. What execution-time and memory overhead does MallocSan impose on SPEC CPU 2017 workloads, relative to Native execution and Memcheck? 
+
+RQ3: Profile-guided rewriting. How much does offline rewriting reduce the cost of workloads dominated by hot TRAP -based sites? 
+
+RQ4: Multithreaded scaling. How does MallocSan’s overhead vary with thread count, and does it degrade the application’s parallel speedup relative to Native? For the performance evaluation, we compare MallocSan with Valgrind’s Memcheck [31], a binary-level memory-error detector that can analyze unmodified, potentially closed-source x86-64 binaries without recompilation or specialized hardware. ASan is widely used and provides an important practical point of comparison, but its compile-time instrumentation normally requires rebuilding the application [38]. Memcheck is therefore the more directly comparable performance baseline in terms of deployment model, although it checks memory addressability broadly while MallocSan focuses on accesses through protected heap pointers. To reduce work unrelated to spatial-access validation, we disabled Memcheck’s leak and undefined-value error reporting and used the remaining configuration shown below. 3
+
+7.1 Detection Effectiveness (RQ1) 
+
+We assessed detection accuracy using version 1.3 of the NIST Juliet Test Suite for C/C++ [5]. The analysis covers the allocator-backed bounds-error families of CWE-122 (heap-based buffer overflow), CWE-124 (buffer underwrite), CWE-126 (buffer overread), and CWE-127 (buffer under-read). We included a test-case family only when its source obtains the affected buffer through malloc ,
+
+calloc , realloc , memalign , or posix_memalign , consistent with MallocSan’s heap-oriented protection scope. This selection produced 2,766 test-case families. Each family contributed two executions: a good run, which exercises the test case without the seeded defect, and a bad run, which attempts to trigger the defect. The initial corpus therefore contained 5,532 executions. Each binary ran with MallocSan preloaded and with deterministic inputs, including fixed out-of-range indices and controlled file, environment, random, and socket fixtures. The oracle classified a manifested, in-scope bad run as detected only when MallocSan emitted its out-of-bounds diagnostic; any such diagnostic during a good run counted as a false positive. Before scoring RQ1, we reviewed the 571 bad runs that emitted no MallocSan diagnostic. For each run, we established ground truth by manually inspecting the executed Juliet path under the deterministic input and evaluating the target object and accessed byte range under the x86-64 ABI. The missing diagnostic triggered the review, but exclusion required evidence that no violation     
+
+> 3Memcheck was invoked with --leak-check=no ,--undef-value-errors=no ,--track-origins=no , and --partial-loads-ok=yes .
+
+MallocSan: A Memory Safety Tool for Native Closed-Source Applications 17 
+
+> Table 1. RQ1 outcomes on the scored population. A positive diagnostic is MallocSan’s out-of-bounds report.
+
+Run class Report No report Total In-scope bad 2,195 0 2,195 Good 0 2,766 2,766 Total 2,195 2,766 4,961 manifested or that the access did not cross the boundary of an eligible heap allocation. This review identified 152 runs in which the seeded defect did not manifest: 144 sizeof -confusion cases were inactive on the 64-bit ABI because the erroneous pointer-size expression equaled the intended pointee size, and eight runs deterministically selected a safe, non-vulnerable sink. The remaining 419 runs contained violations outside the scope of heap-allocation bounds checking: 383 overflowed a stack-resident destination buffer even though the source buffer was allocated on the heap, and 36 crossed a field boundary while remaining within the enclosing heap allocation. The latter are intra-object violations that an allocation-granularity detector cannot distinguish from valid accesses without subobject metadata. We retain all 2,766 good runs as negative cases. Table 1 gives the resulting confusion matrix. MallocSan produced 2,195 true positives and 2,766 true negatives, with no false negatives or false positives. Accuracy, precision, recall, specificity, and the 𝐹 1 score are therefore all 1.00 on this scored population. The population includes reads and writes as well as underflows and overflows; the OID model treats these cases symmetrically by validating every protected access against both bounds of its referenced allocation. Beyond the Juliet suite, we evaluated MallocSan on existing applications and detected multiple heap-buffer underflows and overflows. For example, MallocSan reproduced the one-byte heap-buffer overread in LibTIFF 4.4.0 reported in issue #435 and CVE-2022-3598 [24, 29]. When tiffcrop processed the malformed TIFF file with -Z 1:4,3:3 , MallocSan identified the invalid read in extractContigSamplesShifted32bits() immediately beyond a 120-byte allocation created by rotateImage() . ASan independently reported the same invalid-access and allocation call stacks, confirming the result. The violation was no longer detected with the patched LibTIFF 4.5.0 . This case shows that MallocSan can detect byte-level spatial errors in real applications and provide diagnostic information consistent with ASan. 
+
+Answer to RQ1. For every manifested allocation-boundary violation in the selected Juliet population, MallocSan emitted its out-of-bounds diagnostic, and it emitted no such diagnostic in any corresponding good execution. This result is conditional on the stated oracle and scope: it does not cover the 152 non-manifesting bad runs, the 383 stack-destination violations, or the 36 intra-object violations. Our evaluation on existing applications provides complementary evidence: MallocSan detected multiple heap-buffer underflows and overflows. In the LibTIFF case , it detected the same one-byte overread and reported the same access and allocation call stacks as ASan, indicating that its detection capability extends to real software. 
+
+7.2 Performance Methodology 
+
+All experiments were conducted on a machine equipped with a 12th Gen Intel Core i7-12700 processor (8 performance cores, 4 efficiency cores, and 20 hardware threads; 2.1 GHz performance-core base frequency; 25 MB L3 cache) and 16 GB of RAM. The machine ran Ubuntu 22.04 with Linux kernel 6.8 and glibc 2.35, and processor Turbo Boost was disabled throughout the experiments. We compiled the benchmarks with GCC 11.4.0 using -O3 together with the required SPEC portability flags. We used Valgrind 3.21.0 with the Memcheck options listed earlier. We ran the benchmarks with the SPEC reference ( refspeed ) input set, invoking the binaries directly with the reference command lines, and we verified outputs with SPEC’s specdiff comparison tool. MallocSan’s allocation-selection policy was configured to protect every eligible heap allocation using the OID-based backend described in Section 4. The experiments used default OID recycling and did not enable optional use-after-free tracking, whose detection effectiveness and overhead are outside the scope of this evaluation. We also disabled the guard-page backend described in Section 4.9 because it reduces per-access checking costs at the expense of some detection precision. Evaluating only the OID-based backend reports MallocSan’s overhead under its most precise configuration and provides a more conservative comparison with Memcheck’s per-access addressability checking. 18 Adel Belkhiri et al.     
+
+> Fig. 9. Execution-time overhead of Valgrind Memcheck and MallocSan on seven SPEC CPU 2017 benchmarks. Each factor is the tool’s mean execution time divided by the corresponding Native mean; the vertical axis uses a base-2 logarithmic scale. The dashed line marks the 1.0×Native baseline, and lower is better.
+> Fig. 10. Normalized MRSS of Memcheck and MallocSan on seven selected SPEC CPU 2017 benchmarks. Each factor is the tool’s mean MRSS divided by the corresponding Native mean. The vertical axis uses a base-2 logarithmic scale; the dashed line marks the 1.0×Native baseline, and lower is better.
+
+The single-thread SPEC performance evaluation covers seven benchmarks from the SPEC CPU 2017 speed suites: 605.mcf_s, 619.lbm_s, 620.omnetpp_s, 625.x264_s, 631.deepsjeng_s, 644.nab_s, and 648.exchange2_s. Respectively, these workloads represent minimum-cost-flow computation with intensive pointer and integer arithmetic, lattice-Boltzmann fluid simulation, discrete-event network simulation, video encoding, chess-tree search, molecular modeling, and recursive Sudoku generation. Benchmark selection required that each workload both exercise heap accesses covered by MallocSan’s allocator-interposition model and execute correctly with its high-bit pointer representation. Accordingly, these results characterize MallocSan on selected workloads that yield application-level heap-allocation candidates under its current policy, rather than on the entire SPEC CPU 2017 suite. For example, we excluded 998.specrand_s because it made no application-level heap allocations. The only observed allocation was a 4 KiB shared-library allocation. Other benchmarks were incompatible with high-bit tagging. For example, 602.gcc_s uses GCC’s garbage-collected allocator, whose internal page-table lookup interprets the raw pointer bit pattern and consequently misinterprets tagged pointers, as discussed in Section 8.2. All measurements reported in Figures 9 and 10 used one application thread; the separate scaling experiments in Section 7.5 varied the thread count for 644.nab_s and pigz. For this single-thread SPEC experiment, we executed each benchmark configuration ten times. For each run, /usr/bin/time recorded wall-clock execution time and maximum resident set size (MRSS). All Native, Memcheck, and MallocSan executions passed SPEC’s output validation. We report the arithmetic mean of each quantity across the ten runs. MallocSan: A Memory Safety Tool for Native Closed-Source Applications 19 
+
+𝑅 𝑏,𝑢,𝑚 = 𝑥 𝑏,𝑢,𝑚 
+
+𝑥 𝑏, Native ,𝑚 
+
+, 𝑢 ∈ { Memcheck , MallocSan }.
+
+Here, 𝑅 𝑏,𝑢,𝑚 is the normalized factor and 𝑥 𝑏,𝑢,𝑚 is the arithmetic mean for benchmark 𝑏 , tool 𝑢 , and measured quantity 𝑚 , with 
+
+𝑚 denoting either execution time or MRSS. Because the denominator is the mean for the uninstrumented Native configuration, Native defines a 1 .0× baseline, and larger factors indicate greater overhead. Aggregate factors are computed as the geometric mean of the per-benchmark normalized factors. Figures 9 and 10 use base-2 logarithmic vertical axes so that both modest and extreme factors remain visible within each plot. Each bar is annotated with its normalized value, and the dashed horizontal line marks the Native baseline. Section 8.1 interprets these results and examines the design tradeoffs they expose. 
+
+7.3 Single-Thread Overhead (RQ2) 
+
+Execution time. Figure 9 reports execution time normalized to Native. MallocSan has a lower factor than Memcheck on five of the seven benchmarks. Its overhead is close to Native on 644.nab_s (1 .02 ×) and 620.omnetpp_s (1 .07 ×), and remains below 2 × on 648.exchange2_s (1 .75 ×) and 631.deepsjeng_s (1 .83 ×). On these four workloads, Memcheck’s factors range from 8 .79 × to 42 .14 ×.MallocSan also outperforms Memcheck on 625.x264_s, with factors of 12 .20 × and 18 .19 ×, respectively. Memcheck has lower factors on the other two benchmarks. On 605.mcf_s, MallocSan reaches 31 .46 × Native execution time, compared with 8 .72 × for Memcheck. We performed a static disassembly of the evaluated 605.mcf_s executable to characterize its control-flow density. The disassembly identifies 1,127 control-flow instructions among 6,463 instructions (17 .4%). On 619.lbm_s, MallocSan reaches 45 .56 × Native execution time, compared with 18 .57 × for Memcheck. Across the seven selected benchmarks, MallocSan’s geometric-mean factor is 4 .82 ×, compared with 18 .55 × for Memcheck. Memcheck’s geometric-mean factor is therefore approximately 3 .85 × as large as MallocSan’s. 
+
+Memory. Figure 10 reports the normalized MRSS factors. MallocSan has a lower mean MRSS than Memcheck on every evaluated benchmark. On six workloads, its factors range from 1 .01 × to 1 .40 ×: 1 .01 × on 631.deepsjeng_s and 605.mcf_s, 1 .02 × on 619.lbm_s, 1.08 × on 644.nab_s, 1 .21 × on 620.omnetpp_s, and 1 .40 × on 625.x264_s. The corresponding Memcheck factors range from 1 .26 × to 3.09 ×. Across all seven benchmarks, the geometric-mean MRSS factor is 1 .62 × for MallocSan and 2 .50 × for Memcheck. The outlier in normalized terms is 648.exchange2_s, with factors of 15 .09 × for MallocSan and 39 .33 × for Memcheck. The benchmark’s Native footprint is 3.59 MB. The mean MRSS values are 54.18 MB for MallocSan and 141.20 MB for Memcheck, corresponding to absolute increases over Native of approximately 50.6 MB and 137.6 MB, respectively. As a sensitivity analysis, excluding this small-denominator workload yields geometric-mean factors of 1 .11 × for MallocSan and 1 .58 × for Memcheck across the remaining six benchmarks; the seven-benchmark geometric means remain the primary aggregate results. 
+
+Answer to RQ2. On the seven selected compatible workloads, MallocSan has a lower mean execution-time factor than Memcheck on five benchmarks and a lower memory overhead on all seven. Its geometric-mean execution-time overhead is 4 .82 × Native, compared with 18 .55 × for Memcheck. Its geometric-mean MRSS factor is 1 .62 × Native, compared with 2 .50 × for Memcheck. These aggregate results characterize the selected workloads under the broadest OID policy and should not be interpreted as estimates for the complete SPEC CPU 2017 suite. 
+
+7.4 Effect of Profile-Guided Rewriting (RQ3) 
+
+Because 605.mcf_s and 619.lbm_s exhibit the two highest MallocSan slowdowns, we use them as a targeted case study of the profile-guided pipeline described in Section 6. We first ran each benchmark under MallocSan to collect per-site execution counts and identify frequently executed instructions that remained on the TRAP path. The offline rewriting phase then used E9Patch [15] to replace each eligible hot site with a direct JUMP -based redirection. A site was eligible only if it provided a safe rewrite window spanning at least five contiguous bytes and relocating that window captured no additional memory-access instruction. The rewritten binaries continued to run with MallocSan preloaded and performed the same OID stripping, bounds validation, and tag restoration as the original TRAP -based path; only the dispatch mechanism changed. 20 Adel Belkhiri et al. 
+
+(a) 644.nab_s (b) pigz 
+
+> Fig. 11. Execution-time overhead of Memcheck and MallocSan, normalized at each thread count to the corresponding Native execution time on a base-2 logarithmic scale; lower is better. Thread counts denote (a) OpenMP application threads for 644.nab_s and (b) compression threads for pigz.
+
+Profile-guided rewriting reduced the normalized execution time of both workloads, although by different amounts. For 605.mcf_s, the factor decreased from 31 .46 × to 26 .50 ×, a 15 .8% reduction. For 619.lbm_s, it decreased from 45 .56 × to 23 .40 ×, a 48 .6% reduction. Across the two benchmarks, the geometric-mean factor decreased from 37 .86 × to 24 .90 ×, a 34 .2% reduction. For both workloads, the rewritten factor remained above the corresponding Memcheck factor. Both rewritten binaries passed SPEC’s output validation for the evaluated inputs. Because this targeted case study profiles and evaluates the same repeatable benchmark workloads, it estimates the attainable steady-state benefit when hot-path behavior is stable. It does not establish that the selected rewrite sites or speedups generalize to unseen inputs. 
+
+Answer to RQ3. Offline rewriting reduces normalized execution time by 15 .8% on 605.mcf_s and 48 .6% on 619.lbm_s, for a two-workload geometric-mean reduction of 34 .2%. It mitigates, but does not eliminate, the overhead of these two unfavorable workloads; both rewritten factors remain above Memcheck’s corresponding factors. 
+
+7.5 Multithreaded Scaling (RQ4) 
+
+To evaluate both detector overhead and application scaling, we used the OpenMP-enabled SPEC CPU 2017 benchmark 644.nab_s and pigz [1], a parallel implementation of gzip that compresses input blocks using multiple worker threads. Pigz complements the molecular modeling benchmark with a general-purpose compression application used outside benchmark suites. Of the two SPEC workloads with the highest MallocSan overhead, 605.mcf_s is single-threaded, while 619.lbm_s scales poorly even without instrumentation: its Native execution time falls from 1947.5 s with one thread to 1178.1 s with 18 threads, a 1 .65 × speedup. These workloads therefore provide limited evidence about preserving substantial application parallelism. For both workloads, we swept 𝑇 ∈ { 1, 2, 4, 6, 8, 12 , 16 , 18 } under Native, Memcheck, and MallocSan. Here, 𝑇 denotes OpenMP application threads for 644.nab_s and compression threads for pigz, not pigz’s total process thread count, which can also include I/O and detector helper threads. The maximum configured count of 18 is below the processor’s 20 hardware contexts, but is not a cap on the total number of software threads. We invoked pigz as pigz -6 -p T -c input.tar , keeping the compression level fixed at 6 and using the same approximately 1.00 GB input archive at every setting. The -p option selects the compression-thread count; 
+
+-p 1 uses pigz’s non-threaded compression path [1]. Each pigz configuration was run five times, and we report arithmetic-mean wall-clock execution times. Figure 11 normalizes each detector’s mean against the Native mean for the same workload and thread count. This normalized view compares detector overhead at each thread count but does not directly measure parallel speedup. Figures 12(a) and 12(c) therefore report mean absolute execution times, while Figures 12(b) and 12(d) report the speedup of each configuration relative to its own one-thread execution: MallocSan: A Memory Safety Tool for Native Closed-Source Applications 21 
+
+(a) 644.nab_s: execution time (b) 644.nab_s: speedup 
+
+(c) pigz: execution time (d) pigz: speedup 
+
+> Fig. 12. Multithreaded scaling of Native, MallocSan, and Memcheck on (a)–(b) the OpenMP-enabled SPEC CPU 2017 benchmark 644.nab_s and (c)–(d) pigz. Thread counts refer to OpenMP application threads for nab and compression threads for pigz. Panels (a) and (c) show absolute execution time, where lower is better; panels (b) and (d) show speedup relative to each configuration’s own one-thread execution, where higher is better.
+
+𝑆 𝑐 (𝑇 ) = 𝑡 𝑐 (1)
+
+𝑡 𝑐 (𝑇 ) , 𝑐 ∈ { Native , MallocSan , Memcheck },
+
+where 𝑡 𝑐 (𝑇 ) is the mean execution time of configuration 𝑐 at thread count 𝑇 for the workload under consideration. This metric measures each configuration’s improvement over its own one-thread baseline. Consequently, overlapping speedup curves indicate comparable scaling rather than equal absolute execution time; the absolute-time and normalized-overhead panels show the detector cost. 
+
+OpenMP 644.nab_s. MallocSan remains near Native throughout the sweep, with its normalized factor rounding to 1 .00 × at 18 threads. Memcheck begins at 17 .6× Native with one thread and reaches 184 .4× with 18 threads. In absolute terms, Native’s mean execution time decreases from 6746.31 s to 652.70 s, while MallocSan’s decreases from 6850.87 s to 653.98 s. Their nearly overlapping curves yield 18-thread speedups of 10 .34 × and 10 .48 ×, respectively. Using 𝐸 𝑐 (𝑇 ) = 𝑆 𝑐 (𝑇 )/ 𝑇 to define parallel efficiency gives 57 .4% for Native and 58 .2% for MallocSan. Memcheck’s execution time remains approximately constant, so its increasing normalized factor reflects the scaling of the Native denominator rather than a comparable increase in Memcheck’s absolute cost. 
+
+Pigz compression. Native’s mean execution time falls from 62.368 s with one compression thread to 4.582 s with 18, a 13 .61 ×
+
+speedup. MallocSan falls from 107.166 s to 5.480 s, a higher one-thread-relative speedup of 19 .56 ×. Its normalized execution-time factor drops from 1 .72 × at one compression thread to 1 .12 × at two, then increases gradually to 1 .20 × at 18; across the multithreaded 22 Adel Belkhiri et al. settings, it stays within 1 .12–1 .20 × Native. Thus, the higher relative speedup does not mean that MallocSan outperforms Native in absolute time: at 18 compression threads it still takes about 19 .6% longer. Memcheck’s mean time changes only from 644.416 s to 652.500 s, yielding a 0 .99 × speedup. Its normalized factor consequently grows from 10 .3× to 142 .4× as Native becomes faster. 
+
+Patched-site intensity. The near overlap of Native and MallocSan in Figures 12(a)–(b) is consistent with 644.nab_s’s low dynamic checking intensity relative to its long execution time. In the one-thread profiles, all 271 NAB sites and 122 of the 123 pigz sites used the same direct JUMP mechanism; the remaining pigz site used emulation and accounted for only 7,630 hits. The profiles record 15.48 million total site hits for NAB and 63.42 million for pigz; relative to their mean MallocSan execution times of 6850.87 s and 107.166 s, respectively, these totals correspond to approximately 2.26 thousand and 591.8 thousand hits per second, a roughly 262 × higher dynamic rate for pigz. Despite their nearly identical patch strategies, pigz therefore exercises MallocSan’s recurring checking path much more intensively, making its detector overhead visible while the NAB curves nearly overlap. MallocSan’s higher speedup relative to its one-thread pigz baseline is a separate effect, consistent with overlap between first-fault initialization and useful compression work. As described in Section 4, when a thread first faults at an uninitialized instruction, it decodes the instruction, creates its shared metadata, and requests patch installation. Threads that concurrently fault at the same site wait for initialization to complete and then reuse the published metadata and installed patch. Meanwhile, other compression workers can execute already-patched sites or initialize distinct sites concurrently. Patch installation itself remains serialized through the dedicated patch worker. Increasing the compression-thread count can therefore distribute one-time discovery and metadata preparation across workers and overlap analysis and patching with useful execution. This provides a mechanism for reducing the relative impact of initialization, although the aggregate timings do not isolate its contribution from other scaling effects. Because MallocSan’s one-thread baseline includes a larger relative detector cost, its 19 .56 × speedup can exceed the configured count of 18 compression threads without implying superlinear scaling of compression work itself. 
+
+Answer to RQ4. MallocSan preserves substantial parallel scaling on both the OpenMP benchmark and the general-purpose compression application. On 644.nab_s, its 18-thread speedup (10 .48 ×) closely matches Native’s (10 .34 ×), with a normalized execution-time factor near 1 .0×. On pigz, it achieves a 19 .56 × speedup relative to its own one-thread baseline, versus Native’s 13 .61 ×, while retaining a 1 .20 × execution-time factor at 18 compression threads. Memcheck shows essentially no parallel speedup on either workload. These results cover the two evaluated workloads, inputs, and thread ranges on this machine; they do not establish the same behavior for all multithreaded applications or hardware topologies. 
+
+8 General Discussion 
+
+This section interprets the evaluation results and delineates the conditions under which MallocSan’s guarantees apply. 
+
+8.1 Evaluation Findings and Design Tradeoffs 
+
+Within the evaluated scope, the accuracy results support the correctness of MallocSan’s OID-based interception and bounds-validation mechanisms across the selected control- and data-flow variants. They do not establish complete memory-safety coverage: the excluded stack and intra-object violations illustrate the boundary of allocation-granularity heap protection, while the synthetic nature of Juliet limits generalization to more complex defects. The comparison with Memcheck highlights the tradeoff at the center of MallocSan’s deployment model and explains why the tools’ costs diverge. Memcheck translates executed code and propagates shadow state to perform broad addressability checking across the process, regardless of whether an access involves an object of current interest. MallocSan instead concentrates its checking cost on instructions that dereference protected heap pointers. When a site supports direct JUMP -based redirection, recurring checks remain in userspace, while post-handler elimination and deferral reduce additional handler work and control transfers. This difference in scope explains the execution-time divergence across workloads. Because the experiment protects every eligible heap allocation, it represents MallocSan’s widest OID-tagging policy; a narrower policy could reduce overhead by protecting only allocations relevant to the analysis. The behavior of 605.mcf_s and 619.lbm_s exposes distinct unfavorable cases for this model. MallocSan’s deferral analysis conser-vatively stops at nearly all control-flow boundaries, which fragments deferral windows, restores protected pointers relatively MallocSan: A Memory Safety Tool for Native Closed-Source Applications 23 early, and requires subsequent accesses to re-enter the checking path. In 605.mcf_s, dense control flow repeatedly shortens these windows. In 619.lbm_s, a streaming lattice-Boltzmann kernel executes a dense set of memory accesses at high dynamic frequency in hot loops, so a loop boundary or another eligibility condition that limits deferral across the kernel leaves even a small set of protected sites costly. In either workload, a hot site that requires the TRAP fallback adds signal delivery, handler dispatch, and context recovery on every invocation. The results are therefore consistent with an interaction between limited deferral and frequently executed fault-driven sites rather than with a uniform per-access cost across workloads. The profile-guided study shows that replacing eligible hot sites with direct JUMP -based redirection can recover some of this fallback cost. The residual overhead after the transformation exposes the limits of this optimization. Sites without a safe rewrite window remain on the TRAP path, while rewritten sites still perform OID stripping, bounds validation, and tag restoration. The attainable benefit consequently depends on the dynamic coverage of eligible sites and the residual cost of checking along the rewritten path. The memory pattern similarly follows from the tools’ memory-management designs. Memcheck maintains shadow metadata, allocation redzones, and runtime translation structures. MallocSan’s persistent state includes a bounded object table, an instruction table that grows with the number of distinct protected sites, and fixed-capacity trampoline and OLX pools. The relative effect of these largely additive costs depends on workload scale: the runtime state is prominent relative to 648.exchange2_s’s exceptionally small Native footprint but contributes little in relative terms on workloads with large Native footprints. The multithreaded results on 644.nab_s and pigz reflect the tools’ execution models. Memcheck serializes client-thread execution, preventing the instrumented application from exploiting multiple cores [31]; its nearly constant execution time on both workloads contrasts with Native’s decreasing time, causing the normalized execution-time ratio to widen. MallocSan does not serialize ordinary application execution: application threads run concurrently, faults are handled on the faulting thread’s alternate signal stack, and steady-state checking uses thread-local execution state. Because libpatch is not thread-safe, patch installation is routed through a dedicated worker (Section 4), but this serialization occurs once per newly encountered instruction site rather than on every protected access. The two workloads expose different aspects of this design. On 644.nab_s, MallocSan’s execution-time and speedup curves closely match Native’s. Pigz extends the evidence to a general-purpose compression application, but also illustrates why relative speedup must be distinguished from absolute cost: at 18 compression threads, MallocSan achieves a 19 .56 × speedup against its own one-thread baseline, versus Native’s 13 .61 ×, while still taking 1 .20 × as long. As discussed in Section 7.5, this higher relative speedup is consistent with overlap between first-fault initialization and useful execution. Workers can analyze distinct newly faulting sites concurrently, while workers reaching the same site wait for initialization and then reuse its metadata and patch. Although installation remains serialized, analysis and patching can overlap with other workers’ compression work, reducing the relative impact of initialization. Scaling must also be interpreted against the processor’s heterogeneous topology: its performance cores support simultaneous multithreading, while its efficiency cores offer different throughput, so additional workers do not necessarily contribute the capacity of independent performance cores. Native execution on the same hardware and input therefore provides the relevant empirical baseline. Equal configured thread counts do not imply identical total software-thread counts: for pigz they count compression workers, excluding I/O and detector helper threads. Moreover, speedup relative to an instrumented one-thread baseline includes changes in detector overhead as well as application parallelism; MallocSan’s speedup exceeding the configured pigz compression-thread count does not imply superlinear scaling of compression itself. The absolute-time and speedup results support preserved parallelism on both workloads, with workload-dependent detector costs. Taken together, these results place MallocSan and Memcheck at different operating points rather than making them direct substitutes. Memcheck is better suited to analyses that require broad whole-process memory checking and can tolerate substantial overhead. MallocSan is designed for unmodified binaries in settings where deterministic per-object validation of selected heap accesses must coexist with lower overhead and concurrent application execution. Its protection policy makes this tradeoff explicit: narrowing the policy reduces both checking cost and coverage, whereas broadening it extends heap coverage at a correspondingly higher cost. 24 Adel Belkhiri et al. Within this niche, MallocSan is most applicable to dynamically linked x86-64 Linux applications whose protected allocations pass through supported allocation interfaces, whose pointers do not repurpose MallocSan’s tag bits, and whose protection requirements align with allocation-granularity heap checking. We do not estimate how common this application class is: the evaluated workloads were selected for relevance and compatibility rather than sampled from a representative application population. Quantifying its prevalence would require a corpus study measuring execution compatibility, eligible-allocation coverage, and protected-access coverage across a defined set of real applications. 
+
+8.2 Limitations and Threats to Validity 
+
+MallocSan relies on assumptions about the virtual-address layout, allocation interface, and application use of pointer bits. These assumptions hold for many dynamically linked x86-64 Linux applications, but not universally. When they do not hold, MallocSan may protect fewer objects, omit allocations from coverage, or be incompatible with the application. 
+
+Reduced tag space under five-level paging. Under conventional four-level paging (LA48), lower-half user virtual addresses use bits 0–46, while bits 47–63 are zero in canonical addresses. MallocSan can therefore store a 15-bit OID in bits 48–62 while keeping bit 63 clear; any nonzero OID makes the resulting pointer noncanonical. On systems actively using five-level paging (LA57), lower-half user addresses may use bits 0–55. To preserve the noncanonical-address trap, the tag must be restricted to bits 56–62, reducing the number of simultaneously available nonzero OIDs from 32,767 to 127. 
+
+Non-standard allocators. MallocSan discovers heap objects by interposing standard allocation functions through LD_PRELOAD .Allocations that are not returned through these interposed entry points receive neither an OID nor an object-table entry. This includes objects managed by custom arenas, slab allocators, or memory pools that obtain or subdivide storage without using the intercepted interface, as well as allocations obtained directly through mmap or brk . Errors within such objects may therefore go undetected. Stack-allocated buffers and global variables are likewise outside the scope of MallocSan’s heap-oriented protection model. 
+
+Applications that repurpose high pointer bits. MallocSan assumes that the application does not use the selected tag bits for its own metadata. This assumption fails for programs or runtimes that interpret the high bits of pointers. One example is GCC’s garbage-collected heap ( ggc_alloc /ggc_free ), whose runtime uses the raw pointer value, including its high bits, to index an internal page table. A MallocSan tag can therefore cause the pointer to be interpreted as referring to a different page-table entry, resulting in an invalid lookup or a crash. Applications with similar pointer-encoding conventions require allocator-specific integration or an alternative tag representation and are not supported by the current implementation. 
+
+Scope of scaling evidence. The scaling experiments cover two workloads on one heterogeneous processor, with the inputs and settings reported in Section 7.5. They do not establish the same behavior for other workload classes, compression inputs or levels, or hardware topologies. Aggregate timings also do not isolate the contribution of concurrent first-fault analysis and its overlap with useful work; quantifying that contribution would require targeted profiling or an ablation study. 
+
+9 Related Work 
+
+This section surveys userspace memory-safety techniques for C and C++ applications, focusing on the design dimensions most relevant to MallocSan. Kernel-level mechanisms, managed-runtime defenses, and memory-safe language migration strategies fall outside our scope. 
+
+9.1 Static Detection of Memory Errors 
+
+Static analysis imposes no runtime overhead on the analyzed program, but practical analyzers must balance soundness, precision, and scalability [40]. Lightweight tools such as Flawfinder and Cppcheck scale to large codebases but may miss defects requiring deeper semantic or interprocedural reasoning [25, 48]. Path-sensitive tools such as ARCHER and Marple reason more precisely about feasible executions but must contend with path explosion [22, 50]. Empirical studies nevertheless reveal substantial limitations. On the Toyota ITC benchmark, the best-performing evaluated configuration achieved a robust detection rate of only 25.67% [3]. Similarly, among 159 real-world buffer-overflow vulnerabilities, only 22 fixes (13.84%) changed the alerts produced by Cppcheck or Flawfinder [34]. Symbolic execution, exemplified by KLEE, can uncover deeper errors through path-constraint solving, but MallocSan: A Memory Safety Tool for Native Closed-Source Applications 25 exponential state growth and symbolic-memory challenges limit its scalability; compositional summaries mitigate rather than eliminate these problems [7, 17]. Learning-based detectors seek to infer implicit vulnerability signatures. Token-based approaches include a neural memory network that predicts buffer overruns directly from raw C/C++ source and a CNN-BLSTM model augmented with static taint analysis for CWE-119 and CWE-399 [9, 32]. Graph-based approaches encode abstract syntax, control flow, and data flow. One graph-and-transformer model reportedly outperformed Cppcheck and Flawfinder on a dataset of more than 12,000 code fragments, while related work developed graph-based data-preparation pipelines for CI/CD environments [36, 37]. However, source-level models require parseable code, while learning-based detectors depend on accurately labeled data and may generalize poorly to projects that differ from their training distributions. Assembly-level representations reduce dependence on source availability, but their generalization to real-world binaries remains insufficiently established [11]. More generally, false positives increase analyst workload and impede operational adoption [20]. Like conventional static analyzers, these methods detect rather than prevent vulnerabilities and therefore provide no runtime protection when defects are missed. 
+
+9.2 Compiler-Based Dynamic Enforcement 
+
+Compiler-based sanitizers are widely used for dynamic memory-error testing. ASan maps every eight bytes of application memory to one shadow byte, places redzones around objects, and quarantines freed heap memory to detect spatial errors and heap use-after-free, with a reported average slowdown of 73% and a memory overhead of approximately 3 .4× [38]. MemorySanitizer similarly maintains bit-precise shadow state to detect uses of uninitialized values [44, 45]. CMASan extends ASan to objects managed by custom allocators by identifying allocator functions and instrumenting their APIs, although categorizing allocator API families still requires user input [18]. By contrast, StackGuard is a runtime mitigation that uses compiler-inserted canaries to protect return addresses rather than general object bounds [10]. The Memory Sanitizer Evaluation Tool (MSET) distinguishes theoretical guarantees from realized detection coverage: location-based approaches using redzones or guard pages can miss spatial errors, whereas identity-based per-pointer tracking can support deterministic object-bounds checking [46]. SoftBound associates base-and-bound metadata with each pointer, while CETS adds key-and-lock metadata and changes the value stored at the lock upon deallocation, causing checks on stale pointers to fail [27, 28]. The latest software-only SoftBoundCETS prototype, based on LLVM 17.6, averages 72% overhead across a collection of SPEC benchmarks [26]. EffectiveSan uses low-fat allocation and dynamic type metadata to check object and sub-object bounds and detect type confusion, although its temporal-error coverage is partial [16]. These approaches rely on compiler instrumentation and therefore cannot fully protect prebuilt binaries, even when interoperability with uninstrumented code is supported. 
+
+9.3 Hardware-Assisted Detection 
+
+Hardware assistance reduces enforcement cost but introduces platform dependencies. CHERI extends the ISA with 128-bit capability registers encoding base, length, permissions, and a hardware-protected validity tag, enabling checks at single-digit percentage overhead [47, 49]. However, it requires CHERI processors, a CHERI-aware OS such as CheriBSD, and recompilation of the software stack for a capability ABI [43]. No-FAT derives bounds from a binning allocator’s fixed-size regions using a hardware table and three new instructions, adding 8% overhead on SPEC CPU 2017 [19]; PACMem embeds object metadata in ARM pointer signatures, providing spatial and temporal coverage at 69% overhead [23]. On AArch64, compiler-based HWASan assigns 8-bit tags to 16-byte granules and embeds matching tags in pointers’ top bytes, incurring about 2 × overhead with a 0.39% collision-based false-negative rate [39]. MTSan instead uses ARM Memory Tagging Extension to instrument COTS binaries and probabilistically infer heap, stack, and global boundaries without source code. Its 4-bit tags reduce overhead to about 1 .82 × but increase the irreducible false-negative rate to 6.25% [8]. These approaches therefore depend on a capability architecture, custom ISA extensions, or ARM-specific pointer and tagging features. None readily protects commodity x86-64 binaries without recompilation or execution-platform changes. 26 Adel Belkhiri et al. 
+
+9.4 Binary-Level Instrumentation 
+
+Without source code, tools rely on dynamic binary translation (DBT) or static rewriting. Valgrind’s Memcheck instruments every load and store during translation while maintaining shadow state. Because stripped binaries lack precise stack and global boundaries, its object-level checking focuses on the heap; its translation pipeline also imposes a 17–40 × slowdown, limiting continuous monitoring and fuzzing [31]. RetroWrite offers a lower-cost alternative by reconstructing assembly from position-independent ELF binaries and injecting ASan-compatible checks at ASan-like overhead. However, it requires sufficient relocation information and well-structured compiler output, and provides limited stack and global coverage [12]. MTSan combines static rewriting with MTE to cover heap, stack, and global objects in COTS AArch64 binaries. It detected 18 of 27 real vulnerabilities, compared with 12 for ASan-RetroWrite and 13 for Memcheck, largely because of its stack and global coverage [8]. However, it cannot automatically instrument custom allocators that bypass malloc /free , while its 16-byte granularity misses sub-object overflows. Together, these systems expose the binary-level semantic gap: recovering object boundaries, fitting metadata into fixed layouts, and covering non-standard allocation paths remain difficult. Existing designs bridge this gap only partially through whole-program translation, relocation-driven reconstruction, probabilistic inference, or platform-specific hardware. 
+
+9.5 Runtime Interposition and Allocator-Based Defenses 
+
+Runtime interposition replaces allocator functions through the dynamic linker, enabling protection of prebuilt binaries without source access, binary rewriting, or specialized hardware. DieHard approximates an infinite heap by randomizing object placement and delaying reuse, making adjacent overflows and use-after-free less likely to affect live objects. It averages 8–12% overhead on standard benchmarks, but nonlinear overflows into live objects and unlucky reuse remain undetected [4]. FreeGuard combines randomized chunk placement, canaries, and guard pages at below 2% average overhead. Although its bounds protection remains probabilistic, it deterministically detects double and invalid frees and reports precise call stacks [42]. MarkUs provides deterministic temporal safety by delaying reuse until a conservative background scan finds no live pointers to the freed object, but performs no bounds checking [2]. CRCount maintains reference counts and nullifies pointers to freed objects, but requires compiler instrumentation to propagate pointer tracking [41]. These systems demonstrate that interposition is practical for heap protection in existing binaries, yet allocator-level visibility cannot validate individual accesses. They provide probabilistic spatial protection (DieHard and FreeGuard), temporal-only protection (MarkUs), or compiler-dependent pointer tracking (CRCount); none offers identity-based deterministic spatial detection for heap objects in unmodified binaries. MallocSan fills this gap. Like DieHard and FreeGuard, it uses LD_PRELOAD on commodity x86-64 systems without source access, recompilation, or specialized hardware. Unlike them, it validates every protected access against per-object bounds, providing deterministic, identity-based spatial checking previously limited to source-level or hardware-assisted approaches, plus policy-driven use-after-free reporting (Section 4). This comparison concerns the guarantee for objects selected by MallocSan’s protection policy; allocations that bypass the interposed interface remain outside its scope. Runtime binary patching and optional profile-guided rewriting reduce the cost at hot instruction sites. 
+
+10 Conclusion 
+
+This paper presented MallocSan, a heap sanitizer for deterministic, per-object spatial checking of unmodified x86-64 Linux binaries. MallocSan interposes allocation routines, assigns each protected allocation an object identifier (OID), and encodes it in otherwise unused pointer bits. The first execution of an unpatched memory-access instruction through a tagged pointer triggers a noncanonical-address fault, allowing the runtime to validate the access and, when possible, install a direct JUMP -based redirection for later executions. TRAP -based patching, in-handler emulation, and single-stepping preserve checking at sites that cannot use direct redirection. Together, these mechanisms provide policy-scoped heap protection and optional use-after-free reporting without source access, recompilation, or specialized hardware. The evaluation supports the model’s correctness within its stated scope while showing workload-dependent performance. Across the seven selected SPEC CPU 2017 benchmarks, MallocSan’s execution-time geometric-mean factor was 4 .82 ×, compared with 18 .55 × for Memcheck. On the in-scope Juliet tests, MallocSan detected every manifested violation and issued no reports on the MallocSan: A Memory Safety Tool for Native Closed-Source Applications 27 good executions. MallocSan preserved substantial parallel scaling on both evaluated multithreaded workloads. At 18 threads on 644.nab_s, its 10 .48 × speedup closely matched Native’s 10 .34 × speedup, with a normalized execution-time factor near 1 .0×. At 18 compression threads on pigz, MallocSan achieved a 19 .56 × speedup relative to its own one-thread baseline, compared with Native’s 13 .61 ×, while taking 1 .20 × as long. Memcheck showed essentially no parallel speedup on either workload. Taken together, the results show that runtime interposition and identity-based spatial checking can coexist in a practical sanitizer for native binaries, subject to a defined scope. MallocSan protects heap allocations obtained through interposed interfaces on x86-64 Linux. Stack and global objects, allocations managed through unsupported custom interfaces, and applications that repurpose the selected pointer bits fall outside this scope. Future work should extend direct redirection to sites that currently remain unpatchable, broaden instruction coverage in in-handler emulation, and reduce the recurring cost of the patched checking path. Support is also needed for platforms where features such as ARM Top-Byte Ignore and Intel Linear Address Masking prevent tagged pointers from producing MallocSan’s address faults. Such platforms would require explicit checks or another interception mechanism, potentially through binary rewriting analogous in function to HWASan’s compiler-inserted checks [39]. These extensions would broaden MallocSan’s applicability while preserving its central objective: deterministic validation of protected heap accesses in binaries that cannot be rebuilt. 
+
+Data and Artifact Availability 
+
+To facilitate reproducibility, the source code of MallocSan and of our extended version of libpatch is publicly available at https://github.com/adel-belkhiri/MallocSan and https://github.com/adel-belkhiri/libpatch, respectively. 
+
+Acknowledgments 
+
+We thank Ciena, Ericsson, EfficiOS, and the Natural Sciences and Engineering Research Council of Canada for supporting this work. 
+
+References 
+
+[1] Mark Adler. 2023. pigz: A Parallel Implementation of gzip . https://zlib.net/pigz/pigz.pdf [2] Sam Ainsworth and Timothy M. Jones. 2020. MarkUs: Drop-in use-after-free prevention for low-level languages. In 2020 IEEE Symposium on Security and Privacy (SP) . IEEE, San Francisco, CA, USA, 578–591. doi:10.1109/SP40000.2020.00058 [3] Andrei Arusoaie, Stefan Ciobâca, Vlad Craciun, Dragos Gavrilut, and Dorel Lucanu. 2017. A comparison of open-source static analysis tools for vulnerability detection in C/C++ code. In 2017 19th International Symposium on Symbolic and Numeric Algorithms for Scientific Computing (SYNASC) . IEEE, 161–168. [4] Emery D. Berger and Benjamin G. Zorn. 2006. DieHard: probabilistic memory safety for unsafe languages. In Proceedings of the 27th ACM SIGPLAN Conference on Programming Language Design and Implementation . ACM, Ottawa Ontario Canada, 158–168. doi:10.1145/1133981.1134000 [5] Paul E. Black. 2018. Juliet 1.3 Test Suite: Changes From 1.2 . Technical Note NIST TN 1995. National Institute of Standards and Technology. doi:10.6028/NIST.TN.1995 [6] Derek Bruening and Qin Zhao. 2011. Practical Memory Checking with Dr. Memory. In 2011 International Symposium on Code Generation and Optimization . IEEE, 213–223. doi:10.1109/CGO.2011.5764689 [7] Cristian Cadar, Daniel Dunbar, and Dawson Engler. 2008. KLEE: unassisted and automatic generation of high-coverage tests for complex systems programs. In 
+
+Proceedings of the 8th USENIX conference on operating systems design and implementation (OSDI’08) . USENIX Association, San Diego, California, 209–224. [8] Xingman Chen, Yinghao Shi, Zheyu Jiang, Yuan Li, Ruoyu Wang, Haixin Duan, Haoyu Wang, and Chao Zhang. 2023. MTSan: A Feasible and Practical Memory Sanitizer for Fuzzing COTS Binaries. In 32nd USENIX Security Symposium (USENIX Security 23) . 841–858. https://www.usenix.org/conference/usenixsecurity23/ presentation/chen-xingman [9] Min-je Choi, Sehun Jeong, Hakjoo Oh, and Jaegul Choo. 2017. End-to-end prediction of buffer overruns from raw source code via neural memory networks. arXiv:1703.02458. [10] Crispan Cowan, Calton Pu, Dave Maier, Jonathan Walpole, Peat Bakke, Steve Beattie, Aaron Grier, Perry Wagle, Qian Zhang, and Heather Hinton. 1998. Stackguard: Automatic adaptive detection and prevention of buffer-overflow attacks. In USENIX security symposium , Vol. 98. San Antonio, TX, 63–78. [11] William Arild Dahl, Laszlo Erdodi, and Fabio Massimo Zennaro. 2020. Stack-based buffer overflow detection using recurrent neural networks. arXiv:2012.15116. [12] Sushant Dinesh, Nathan Burow, Dongyan Xu, and Mathias Payer. 2020. RetroWrite: Statically Instrumenting COTS Binaries for Fuzzing and Sanitization. In 2020 IEEE Symposium on Security and Privacy (SP) . IEEE, San Francisco, CA, USA, 1497–1511. doi:10.1109/SP40000.2020.00009 [13] Olivier Dion, Mathieu Desnoyers, Mohammad Nassiri, and Michel Dagenais. 2023. Libpatch - Dynamic Patching of Binaries in Userspace. Software: Practice and Experience (2023). [14] Farzam Dorostkar. 2025. Détection à faible surcoût des conditions de course et des violations de la sûreté de la mémoire de tas . Ph. D. Dissertation. Ecole Polytechnique, Montreal (Canada), Canada – Quebec, CA. [15] Gregory J. Duck, Xiang Gao, and Abhik Roychoudhury. 2020. Binary rewriting without control flow recovery. In Proceedings of the 41st ACM SIGPLAN Conference on Programming Language Design and Implementation . ACM, London UK, 151–163. doi:10.1145/3385412.3385972 [16] Gregory J. Duck and Roland H. C. Yap. 2018. EffectiveSan: Type and Memory Error Detection using Dynamically Typed C/C++. In Proceedings of the 39th ACM SIGPLAN Conference on Programming Language Design and Implementation . ACM, Philadelphia, PA, USA, 181–195. doi:10.1145/3192366.3192388 [17] Patrice Godefroid. 2007. Compositional dynamic test generation. In Proceedings of the 34th annual ACM SIGPLAN-SIGACT symposium on Principles of programming languages . ACM, Nice France, 47–54. doi:10.1145/1190216.1190226 28 Adel Belkhiri et al. 
+
+[18] Junwha Hong, Wonil Jang, Mijung Kim, Lei Yu, Yonghwi Kwon, and Yuseok Jeon. 2025. CMASan: Custom memory allocator-aware address sanitizer. In 2025 IEEE Symposium on Security and Privacy (SP) . IEEE, 740–757. [19] Mohamed Tarek Ibn Ziad, Miguel A. Arroyo, Evgeny Manzhosov, Ryan Piersma, and Simha Sethumadhavan. 2021. No-FAT: Architectural Support for Low Overhead Memory Safety Checks. In 2021 ACM/IEEE 48th Annual International Symposium on Computer Architecture (ISCA) . 916–929. doi:10.1109/ISCA52012.2021.00076 [20] Brittany Johnson, Yoonki Song, Emerson Murphy-Hill, and Robert Bowdidge. 2013. Why don’t software developers use static analysis tools to find bugs?. In 2013 35th International Conference on Software Engineering (ICSE) . IEEE, San Francisco, CA, USA, 672–681. doi:10.1109/ICSE.2013.6606613 [21] C. Lattner and V. Adve. 2004. LLVM: A compilation framework for lifelong program analysis & transformation. In International Symposium on Code Generation and Optimization, 2004. CGO 2004. IEEE, San Jose, CA, USA, 75–86. doi:10.1109/CGO.2004.1281665 [22] Wei Le and Mary Lou Soffa. 2008. Marple: a demand-driven path-sensitive buffer overflow detector. In Proceedings of the 16th ACM SIGSOFT International Symposium on Foundations of software engineering . ACM, Atlanta Georgia, 272–282. doi:10.1145/1453101.1453137 [23] Yuan Li, Wende Tan, Zhizheng Lv, Songtao Yang, Mathias Payer, Ying Liu, and Chao Zhang. 2022. PACMem: Enforcing Spatial and Temporal Memory Safety via ARM Pointer Authentication. In Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communications Security (CCS ’22) . Association for Computing Machinery, New York, NY, USA, 1901–1915. doi:10.1145/3548606.3560598 [24] LibTIFF Project. 2022. tiffcrop: heap-buffer-overflow in extractContigSamplesShifted24bits, tiffcrop.c:3604. GitLab Issue #435, https://gitlab.com/libtiff/libtiff/-/issues/435. Reported June 15, 2022. [25] Daniel Marjamäki and Cppcheck Team. 2026. Cppcheck 2.20. https://cppcheck.sourceforge.io/. [26] Santosh Nagarakatte. 2024. Full Spatial and Temporal Memory Safety for C. IEEE Security & Privacy 22, 4 (July 2024), 30–39. doi:10.1109/MSEC.2024.3363142 [27] Santosh Nagarakatte, Jianzhou Zhao, Milo MK Martin, and Steve Zdancewic. 2009. SoftBound: Highly compatible and complete spatial memory safety for C. In 
+
+Proceedings of the 30th ACM SIGPLAN Conference on Programming Language Design and Implementation . 245–258. [28] Santosh Nagarakatte, Jianzhou Zhao, Milo M.K. Martin, and Steve Zdancewic. 2010. CETS: compiler enforced temporal safety for C. In Proceedings of the 2010 international symposium on Memory management . ACM, Toronto Ontario Canada, 31–40. doi:10.1145/1806651.1806657 [29] National Institute of Standards and Technology. 2022. CVE-2022-3598. National Vulnerability Database, https://nvd.nist.gov/vuln/detail/CVE-2022-3598. [30] National Security Agency. 2022. Software Memory Safety. Cybersecurity Information Sheet, https://media.defense.gov/2022/Nov/10/2003112742/-1/-1/0/CSI_ SOFTWARE_MEMORY_SAFETY.PDF. [31] Nicholas Nethercote and Julian Seward. 2007. Valgrind: a framework for heavyweight dynamic binary instrumentation. In Proceedings of the 28th ACM SIGPLAN Conference on Programming Language Design and Implementation . ACM, San Diego California USA, 89–100. doi:10.1145/1250734.1250746 [32] Weina Niu, Xiaosong Zhang, Xiaojiang Du, Lingyuan Zhao, Rong Cao, and Mohsen Guizani. 2020. A deep learning based static taint analysis approach for IoT software vulnerability location. Measurement 152 (Feb. 2020), 107139. doi:10.1016/j.measurement.2019.107139 [33] Office of the National Cyber Director. 2024. Back to the Building Blocks: A Path Toward Secure and Measurable Software. The White House, https:// bidenwhitehouse.archives.gov/wp-content/uploads/2024/02/Final-ONCD-Technical-Report.pdf. [34] José D’Abruzzo Pereira, Naghmeh Ivaki, and Marco Vieira. 2021. Characterizing Buffer Overflow Vulnerabilities in Large C/C++ Projects. IEEE Access 9 (2021), 142879–142892. doi:10.1109/ACCESS.2021.3120349 [35] Bruce Perens. 1993. Electric Fence Malloc Debugger. https://github.com/kallisti5/ElectricFence. [36] Oleg Savenko, Piotr Gaj, and Yevhenii Sierhieiev. 2025. Detection of buffer overflow vulnerabilities in system software based on a graph and transformer model. In The International Workshop on Applied Intelligent Security Systems in Law Enforcement .[37] Oleg Savenko, Silvia Lips, Piotr Gaj, and Yevhenii Sierhieiev. 2025. Graph-based data preparation for detecting buffer overflow vulnerabilities in code within CI/CD pipelines. In AdvAIT-2025: 2nd International Workshop on Advanced Applied Information Technologies .[38] Konstantin Serebryany, Derek Bruening, Alexander Potapenko, and Dmitriy Vyukov. 2012. AddressSanitizer: A fast address sanity checker. In 2012 USENIX annual technical conference (USENIX ATC 12) . 309–318. [39] Kostya Serebryany, Evgenii Stepanov, Aleksey Shlyapnikov, Vlad Tsyrklevich, and Dmitry Vyukov. 2018. Memory Tagging and how it improves C/C++ memory safety. arXiv:1802.09517. [40] Hossain Shahriar and Mohammad Zulkernine. 2010. Classification of static analysis-based buffer overflow detectors. In 2010 Fourth International Conference on Secure Software Integration and Reliability Improvement Companion . IEEE, 94–101. [41] Jangseop Shin, Donghyun Kwon, Jiwon Seo, Yeongpil Cho, and Yunheung Paek. 2019. CRCount: Pointer Invalidation with Reference Counting to Mitigate Use-after-free in Legacy C/C++. In Proceedings 2019 Network and Distributed System Security Symposium . Internet Society, San Diego, CA. doi:10.14722/ndss.2019.23541 [42] Sam Silvestro, Hongyu Liu, Corey Crosser, Zhiqiang Lin, and Tongping Liu. 2017. FreeGuard: A Faster Secure Heap Allocator. In Proceedings of the 2017 ACM SIGSAC Conference on Computer and Communications Security . ACM, Dallas Texas USA, 2389–2403. doi:10.1145/3133956.3133957 [43] SRI International and University of Cambridge. 2026. CheriBSD. https://www.cheribsd.org/. [44] Evgeniy Stepanov and Konstantin Serebryany. 2015. MemorySanitizer: Fast detector of uninitialized memory use in {C}++. In 2015 IEEE/ACM International Symposium on Code Generation and Optimization (CGO) . IEEE, San Francisco, CA, USA, 46–55. doi:10.1109/CGO.2015.7054186 [45] Paul C. van Oorschot. 2023. Memory Errors and Memory Safety: C as a Case Study. IEEE Security & Privacy 21, 2 (March 2023), 70–76. doi:10.1109/MSEC.2023. 3236542 [46] Emanuel Q. Vintila, Philipp Zieris, and Julian Horsch. 2025. Evaluating the Effectiveness of Memory Safety Sanitizers. In 2025 IEEE Symposium on Security and Privacy (SP) . 774–792. doi:10.1109/SP61157.2025.00088 [47] Robert N.M. Watson, Jonathan Woodruff, Peter G. Neumann, Simon W. Moore, Jonathan Anderson, David Chisnall, Nirav Dave, Brooks Davis, Khilan Gudka, Ben Laurie, Steven J. Murdoch, Robert Norton, Michael Roe, Stacey Son, and Munraj Vadera. 2015. CHERI: A Hybrid Capability-System Architecture for Scalable Software Compartmentalization. In 2015 IEEE Symposium on Security and Privacy . IEEE, San Jose, CA, 20–37. doi:10.1109/SP.2015.9 [48] David A. Wheeler. 2021. Flawfinder 2.0.19. https://dwheeler.com/flawfinder/. [49] Jonathan Woodruff, Alexandre Joannou, Hongyan Xia, Anthony Fox, Robert M. Norton, David Chisnall, Brooks Davis, Khilan Gudka, Nathaniel W. Filardo, A. Theodore Markettos, Michael Roe, Peter G. Neumann, Robert N. M. Watson, and Simon W. Moore. 2019. CHERI Concentrate: Practical Compressed Capabilities. 
+
+IEEE Trans. Comput. 68, 10 (Oct. 2019), 1455–1469. doi:10.1109/TC.2019.2914037 [50] Yichen Xie, Andy Chou, and Dawson Engler. 2003. ARCHER: using symbolic, path-sensitive analysis to detect memory access errors. In Proceedings of the 9th European software engineering conference held jointly with 11th ACM SIGSOFT international symposium on Foundations of software engineering . ACM, Helsinki Finland, 327–336. doi:10.1145/940071.940115

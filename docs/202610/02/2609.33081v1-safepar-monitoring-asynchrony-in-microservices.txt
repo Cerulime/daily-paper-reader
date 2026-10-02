@@ -1,0 +1,831 @@
+Title: SafePar: Monitoring Asynchrony in Microservices
+
+URL Source: https://arxiv.org/pdf/2609.33081v1
+
+Published Time: Tue, 29 Sep 2026 01:37:46 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# SafePar: Monitoring Asynchrony in Microservices 
+
+KARUNA GREWAL, Cornell University, USA 
+
+P. BRIGHTEN GODFREY, University of Illinois Urbana-Champaign, USA 
+
+JUSTIN HSU, Cornell University, USA 
+
+UMANG MATHUR, National University of Singapore, Singapore Modern cloud applications are built from loosely-coupled microservices that coordinate through well-defined APIs to service user requests. A single API request often triggers multiple downstream API calls, some executed sequentially and others spawned asynchronously in parallel. To certify safe and secure inter-service interactions in such applications, security and compliance teams must enforce policies not only over nested call/return structure, but also over the parallel structure of an execution: which calls may run concurrently, how many parallel branches can be spawned, and what combination of branch outcomes are allowed. However, existing runtime enforcement mechanisms typically model executions as sequential or purely nested traces, and cannot capture the parallel structure introduced by asynchronous API calls. Furthermore, since application implementations may not be accessible to security and compliance teams, the policy enforcement mechanism should be decoupled from the service implementation. We introduce SafePar, a specification and monitoring framework for policies over concurrent microservice executions. A SafePar policy constrains both the order of API calls and their series-parallel structure. To support seamless deployments, each policy is compiled into a series-parallel visibly pushdown automaton, a new model of computation we propose in this work, that drives a distributed runtime monitor implemented on top of the servicemesh layer. Our technique is blackbox and non-invasive: it requires no access or changes to the service implementation. Our experiments show that SafePar enforces rich concurrency-aware policies while incurring only millisecond-scale latency overhead. 
+
+1 Introduction 
+
+Microservice architecture [11] is a widely used design paradigm for building cloud-native applica-tions. In this architecture, an application is decomposed into loosely coupled components called microservices, which expose their functionalities over well-defined API endpoints for other services to consume. This decomposition enables microservices to be owned, developed, and deployed by independent teams. This modular design also benefits the application’s performance and availability because de-ployment team can now scale up only the services under load, or replicate only necessary services like backend data stores, instead of scaling up all the components of the application, in contrast to vanilla monolithic architectures. However, microservice applications are difficult to develop correctly: a local change that appears correct from one team’s perspective can silently violate an application-wide safety property, especially when different services rely on implicit or outdated assumptions about each other’s API contracts. Prior studies [39] report that a substantial share of production in faults in microservice systems arise from cross-service interactions, and are difficult to catch with simple unit or and integration tests. Furthermore, conventional bugs due to logic errors and improper error handling are still present, and the microservice setting amplifies their impact with its distributed communication patterns and independently evolving services that make violations harder to anticipate and debug.  
+
+> Authors’ Contact Information: Karuna Grewal, kgrewal@cs.cornell.edu, Cornell University, USA; P. Brighten Godfrey, University of Illinois Urbana-Champaign, USA, pbg@illinois.edu; Justin Hsu, Cornell University, USA, justin@cs.cornell.edu; Umang Mathur, National University of Singapore, , Singapore, umathur@nus.edu.sg. arXiv:2609.33081v1 [cs.PL] 27 Sep 2026 2Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur
+
+1.1 Enforcing safety properties for microservices 
+
+In a microservice application, an API call may trigger a tree of API interactions over protocols like HTTP or gRPC. Therefore, realistic safety properties require simultaneously reasoning over multiple APIs calls in the application’s runtime trace rather than a simple single API call in isolation. For example, a GDPR regulation [2] may require a database write API to occur only after an encrypt API for a European region user; a CI/CD pipeline may require a software release API only after a testing API and vulnerability scan API succeed. Despite teams not having access to the application’s implementation, they want to enforce such safety properties because failure to enforce then can lead to mishandling of sensitive data and loss of client trust. Policies on microservice communication patterns are a useful way for security or compliance teams to specify and enforce fine-grained aspects of the application runtime behavior (i.e., inter-service communication) without peeking into service code. For instance, the recent ICLR 2026 incident that leaked reviewer identities was caused by an internal admin OpenReview API being publicly reachable due to deployment misconfiguration [20]. To ensure that policy enforcement aligns with the constraints of deployability, the online runtime monitoring and enforcement framework should satisfy the following natural requirements: 
+
+Non-invasive . The monitor should enforce policies without requiring changes to the service code which might not be available. 
+
+Distributed and streaming. The monitoring framework should not require a centralized observer that sees the entire execution trace in a serialized manner, since a centralized observer introduces significant overhead. Instead, the framework should allow for the monitor to be distributed across services such that it processes API calls/responses as they occur—at their source of origin—and works in a streaming manner, i.e., storing only a small amount of monitoring information that gets updated as new events in the execution are observed. 
+
+Structure aware. Many meaningful policies express constraints on the structure of the execution trace, for example, order of API calls, nesting structure of invocations of other APIs, etc. The monitoring framework should be flexible and expressive so as to expose the structure of the execution allowing for precise policy enforcement. 
+
+Existing work and limitation. Recent work [17, 18] shows how the above desiderata can be met for microservice applications that are synchronous , where a service issuing an API request waits for its callee’s response before proceeding. Grewal et al. [18] presented a policy language for this setting, where safety properties could be expressed as regular expression-styled policies over API call order. In more recent work, SafeTree [17] adds declarative constructs for specifying valid tree and parent-child nesting. Both frameworks enforce these structural policies in a non-invasive, distributed, and incremental manner using runtime monitors based on appropriate models of computation models, namely word automata and nested word automata respectively. These approaches are well-suited for executions that can be represented as nested words, where a parent invokes a child and then waits for that child to return before continuing. Unfortunately, policies that only express vanilla temporal and nesting constraints are not always sufficient to capture meaningful behaviors in more realistic microservice applications. Indeed, we are interested in modern microservice-based applications that make API calls asynchronously ,allowing them to reduce latency and provide higher availability. For instance, after authenticating a request, a frontend may issue concurrent read operations on multiple confidential files, or a service may concurrently query multiple replicas to improve availability. Indeed, in modern microservice architectures, services invoke several APIs in parallel, each of which performs its (nested) computation independently, and then collect all of their responses before continuing. Such a fork-join structured parallelism, in turn, means that correctness requirements may require one to SafePar: Monitoring Asynchrony in Microservices 3
+
+talk about concurrent sibling branches. For example, a deployment team may want a request sent to multiple backend replicas to continue only if at least one replica returns a valid response, or a security team may want every branch that accesses confidential data to be accompanied with a sibling logging branch. Prior work on nested word based monitoring framework cannot express and enforce such policies because they represent execution sequentially and cannot model parallel structure in asynchronous traces. In this paper, we seek to answer the question: “How can we express and non-invasively enforce safety properties over structured parallel executions of blackbox microservice ap-plications with asynchronous APIs?” Answering this question requires addressing all the monitoring desiderata from first principles; the last two are especially challenging and require careful consideration: 
+
+Challenge 1: need for a series-parallel structure with matching call-returns. The safety properties in the microservice setting involving asynchrony require us to model executions using structures that capture two key details about the execution tree: (a) the series-parallel structure of sub-executions of API calls, and (b) the well-matched and nested API call/return structure, i.e., 
+
+each API call has a corresponding return and children API’s execution is enclosed between the scope of its parent’s API call and return. 
+
+Challenge 2: need for an computation model over the above structure with monitoring-amenable semantics. A distributed runtime monitor in the microservice setting observes an execution one event at a time at its source of origin. This means that the underlying computation model for such monitors must be able to support incremental input, rather than requiring the entire trace upfront. Unfortunately, existing monitor models (most of which are automata models) for recognizing series-parallel structures, like graphs, posets, and pomsets, are not expressive enough for reasoning about the class of behaviors (concurrency together with well-nesting) that arise in our setting. 
+
+1.2 Our solution 
+
+In this work, we develop a monitoring framework for asynchronous microservice applications consisting of three parts: (a) a policy language for expressing microservice communication patterns involving asynchronous API calls, (b) an automaton model that incrementally reads the events in a series-parallel trace, (c) a non-invasive online distributed runtime monitor, atop servicemesh [8, 22], for enforcing policies in our language. We elaborate on each component below. 
+
+Series-parallel nested words policy language for asynchronous microservice behaviors. To model microservice traces with asynchronous API calls, we define series-parallel nested word (SPNW) structures. Conceptually, SPNW structures (or SPNWs for short) extend nested words [4] with a parallel composition operator. Such structures can then naturally model multiple concurrently executing API calls made by a parent API, along with the usual constructs of sequential composition and nested calls. We next introduce SafePar, whose policy language is based on our notion of series-parallel nested word expressions (SPNWE). SafePar can express properties like: (a) A call to API A should be nested inside the scope induced by a call to API B, (b) The execution of API A should happen after that of API B, and (c) Collective properties over concurrent executions, for example: in a group of concurrent execution branches, at least/at most/exactly 𝑛 branches should satisfy property 𝜑 .
+
+A visibly pushdown automaton extension for policy enforcement. We next design an au-tomata model amenable to monitor SPNWs against the our class of policies. More concretely, we introduce a novel series-parallel visibly pushdown automaton (SP-VPA) model for accepting 4 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+SPNW (i.e., nested words with structured parallelism) by extending the standard visibly pushdown automaton (VPA) [3] model. A key ingredient in making this model amenable to our monitoring setup is the careful design of its semantics. SP-VPA transitions on incrementally reading one API call/return symbol at a time as it is generated during the application’s execution, instead of the entire service tree’s series-parallel structure upfront, as required by existing automata models. SP-VPA preserves the standard VPA’s stack-based semantics for sequentially composed nested API calls/returns. However, on observing an asynchronous API calls, the automaton spawns into one sub-automaton per API call; each sub-automaton incrementally processes its assigned concurrent execution; finally all the sub-automata join into one automaton after all the APIs return. 
+
+Servicemesh based distributed runtime monitor implementation. A service mesh deploy-ment [8, 21] is suitable for our blackbox monitoring goal because in this layer a service is co-located with a servicemesh layer’s sidecar proxy that runs our monitor and observes and controls all the incoming/outgoing traffic for its service. Following the key idea of carrying automaton configu-ration in HTTP headers used by SafeTree for VPA-based monitoring, we implement SafePar as a SP-VPA-based monitor. SafePar’s main extension is support for asynchronous calls: concurrent branches are monitored independently and then the caller’s proxy join their returned states to compute the next state. 
+
+Contributions. We summarize our technical contributions as follows: (1) a notion of series-parallel nested words (SPNW) to model microservice traces with asyn-chronous API calls and a regular expression-style policy language over SPNW (in Section 3), (2) case studies to demonstrate the expressiveness of our policy language (in Section 4), (3) a visibly pushdown automaton (SP-VPA) model to recognize SPNW and operational seman-tics to incrementally process events along with a sound compilation from our policies into SP-VPA (in Section 5), (4) a SP-VPA-based distributed monitor implementation atop servicemesh layer and its evalua-tion (in Section 6, Section 7). We survey related work (in Section 8) and conclude with some future directions (in Section 9). 
+
+2 Technical Overview 
+
+This section motivates SafePar through an example and gives an informal tour of its SafePar specification and enforcement. The example illustrates the need for policies over asynchronous microservice executions that are sufficiently rich to allow simultaneously expressing call-return nesting, sequential order, and collective behavior of independently executing concurrent branches. 
+
+2.1 Example: data administration console 
+
+Consider a data administration console for managing production data. The console lets an operator perform privileged operations like permanently deleting a production database. This functionality is implemented using several APIs, each implemented by different services: delete API, which carries out the deletion; log API, which records a delete request; review API, which sends a request to a reviewer; and approve API, which records a reviewer’s approval. 
+
+Deletion safety property . Permanently deletion of a production database is often deemed a high-risk operation. Security teams in larger organization, therefore, often require that every delete 
+
+request should be logged (through a call to an explicity log API). In fact, such teams impose higher scrutiny, for example by additionally requiring that, before the deletion proceeds, at least two of the several concurrently requested review branches should be approved. A reviewer typically processes SafePar: Monitoring Asynchrony in Microservices 5
+
+an approval by calling approve . Review branches that do not approve can nonetheless co-exist, provided that a minimum number, say at least two, concurrent approvals are obtained.                 
+
+> delete 0
+> log 0review 1review 2review 3
+> approve 1approve 2
+> sync async async async sync sync
+> parallel
+> 122233
+> Fig. 1. A valid API call tree for the deletion policy. The delete API first calls log, then spawns three concurrent review re-quests, two of which invoke approve.
+
+Consider a valid execution (shown in Fig. 1) that begins with a call to delete .The delete operation first logs the request by synchronously calling log and waits for it to return. Then, delete sends asyn-chronous requests to three reviewers by concurrently calling review operations. In the first two branches, the reviewer ap-proves the request by synchronously call-ing approve ; this is followed by a return from approve API, and then a return from the respective review API in both these calls to reviewer. In the third branch, how-ever, the call to review returns without an approval. The execution of the three review branches is recorded independently. Once all three review branches complete, delete aggregates their responses, resumes its execution and eventually returns. We are interested in the design of streaming monitors, and such a monitor cannot see the tree structure induced by the execution in Fig. 1 upfront. It must instead observe events as they occur. Since the three review branches execute concurrently, the monitor may observe their events in different orders. Let the call and return events of some API be denoted by its initials ⟨A and A⟩,respectively. To distinguish which branch produced each event, we annotate the call-return events with a subscript. For example, events in the first review branch are annotated by 1. Branch 0 contains the root delete and its synchronous log child, and branches 1 , 2, 3 are the three concurrent review branches. Two possible linearizations that the monitor may observe are: 
+
+⟨D0 ⟨L0 L⟩0 ⟨R1 ⟨A1 ⟨R2 ⟨A2 A⟩1 A⟩2 R⟩1 R⟩2 ⟨R3 R⟩3 D⟩0,
+
+⟨D0 ⟨L0 L⟩0 ⟨R1 ⟨A1 ⟨R2 ⟨A2 A⟩2 A⟩1 R⟩2 R⟩1 ⟨R3 R⟩3 D⟩0.
+
+These linearizations only differ in the relative order of events across independent review branches, while the relative ordering of events within a branch is preserved across the two. As a result, both linearizations satisfy the ‘safe deletion’ specification and agree on the ordering of logging and review phases with at least two approvals. Indeed, this is not surprising, given that the security policy outlined by the ‘safe deletion’ specification happens to be invariant under interleavings of events across different branches. In fact, it only restricts an execution’s sequential, parallel, and parent-child nesting structure, rather than the order picked by a global scheduler. Reasoning at the granularity of interleavings (or linearizations) is often unnecessary, given that most safety properties of interest are invariant under equivalent interleavings. Further, in our setting, where an ideal monitor must be distributed, observing a consistent global linearization comes at both a performance cost as well as engineering cost. Nonetheless, monitors cannot be completely oblivious of the structure of the execution and must reason about temporal order, including nesting and parallel structure, of API calls. We need a happy medium between a word-like representation for online monitoring, but structured enough to record call-return nesting and parallelism. 
+
+2.2 Executions as series-parallel nested words 
+
+SafePar models executions as series-parallel nested words (SPNWs). Intuitively, the series aspect of such words demarcate the sequential order between sub-executions, their parallel aspect demarcate 6 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+sub-executions that happen in parallel, and their nesting aspect outlines the parent-child structure of the API calls. SPNWs achieve this by extending the standard nested words model [4] with explicit fork-join structure to denote parallel blocks. The SPNW corresponding to the execution of Fig. 1 is: 
+
+⟨delete ⟨log log ⟩ fork 3 ∥3 (𝑤 1, 𝑤 2, 𝑤 3 )join delete ⟩
+
+In the above, the first two sub-executions are identical: 𝑤 1 = 𝑤 2 = ⟨review ⟨approve approve ⟩ review ⟩,while the third one is different: 𝑤 3 = ⟨review review ⟩.The above SPNW can intuitively be understood as a structured parsing of the execution. We start with the request to the root, recorded as ⟨delete and delete ⟩ enclosing the SPNW encoding of its execution. The execution of delete begins with a synchronous call to leaf node log , recorded by the first matched call-return pair ⟨log log ⟩ in the inner SPNW. The execution of the three concurrent branches to review are recorded as part of the sub-execution fork 3 ∥3 (𝑤 1, 𝑤 2, 𝑤 3 )join ,where 𝑤 𝑖 denotes the SPNW corresponding to each concurrent branch. Notice that the first and second branches nest the execution of approve within that of its parent review . To summarize, the matched call-return pairs record the nesting in the tree, the concatenation records the sequential execution, and the fork-join block records the concurrency structure of the tree. This view avoids committing to a specific interleaving. It is the right view for distributed, incremental monitoring where the monitor tracks the call-return and fork-join structure as the events occur, rather than assuming a global observer that can give the entire tree or a linearized view of the execution. 
+
+2.3 SafePar specification 
+
+We now illustrate series-parallel nested word expressions (SPNWEs) that we use to express SafePar policies. Consider again the safe deletion policy we outlined above. Intuitively, it can be decomposed into two phases: (a) the logging phase, and (b) the concurrent review phase. 
+
+Logging phase . The accountability requirement asks that a delete request be logged. We can encode this requirement as a mini-policy consisting of the matched call-return pair for log :
+
+𝑝 log = ⟨log log ⟩.
+
+Single approved review . A review approval requires review to synchronously call approve as its child. The execution of approve is nested between that of review . We express this parent-child relationship by nesting a well-matched call to approve , i.e., ⟨approve approve ⟩ between the call and return of its parent review API: 𝑝 approve = ⟨review ⟨approve approve ⟩ review ⟩.
+
+Concurrent review phase . The review phase consists of several concurrently executing re-view branches. The policy requires that at least two of these branches should satisfy 𝑝 approve . In SafePar, such collective constraints across parallel branches are expressed using a parallel com-position operator ∥(. . . ) that takes a constraint, like 𝑝 approve , with a multiplicity guard, like ≥2: 
+
+𝑝 review = ∥(𝑝 ≥2
+
+> approve
+
+). The guard requires that at least two branches in the parallel block must match 𝑝 approve . Other branches in the same block may fail to match this branch constraint without violating the safety policy. 
+
+Composing the logging and the review phases . The deletion policy first requires that logging must complete before the concurrent review phase. We express this condition by sequentially composing the sub-policies: 𝑝 log 𝑝 review . Next, since the entire workflow is part of delete ’s execution, we express the full policy as: 𝑝 safeDel = ⟨delete 𝑝 log 𝑝 review delete ⟩.This policy illustrates three aspects of our language: (a) call-return nesting, (b) sequential composition, and (c) parallel operator to express constraints over the concurrent branches. SafePar: Monitoring Asynchrony in Microservices 7
+
+2.4 SafePar policy enforcement 
+
+SafePar enforces an SPNWE policy by compiling it to series-parallel visibly pushdown automaton 
+
+(SP-VPA) that we introduce in this work. SP-VPA is an extension of standard VPA to support aggregate summaries from parallel blocks. It preserves the usual visible stack discipline of a VPA for synchronous API calls and returns, where reading a call symbol pushes a stack symbol and reading a return pops it. For example, for the delete policy, in a successful run of the automaton on the above SPNW, the automaton will behave like a usual VPA until the fork-join block. In the parallel block, the automaton tracks each branch in parallel. The SP-VPA aggregates the summaries of the automaton run on individual branches and checks whether at least two branches have satisfied the review approval policy. Finally, the automaton transitions on delete ⟩ like a usual VPA. SafePar realizes this enforcement in the servicemesh networking layer [8, 22], where each service’s container is co-located with a sidecar container running a proxy that intercepts all the API call and returns of the given service. The proxy observes API calls and returns, simulates the corresponding SP-VPA transition, and propagates the current monitor configuration through HTTP headers. This lets SafePar’s monitor enforce policies in a blackbox and non-invasive manner. 
+
+3 Series-Parallel Nested Words 
+
+In this section, we formally define series-parallel nested words (SPNWs), a word model for encoding microservice traces with both synchronous and asynchronous API calls. We then present the specification language used by the SafePar framework for expressing concurrent inter-service communication properties. As discussed in Section 2, a runtime monitor in the microservice setting does not receive the entire execution tree as an input object. Instead, it observes a stream of HTTP call and return events online. Therefore, we need a word-like trace representation that does not impose a global linearization on concurrent events, while still preserving the structure needed to enforce useful safety properties. These include: (a) matched API calls and returns, which define each API’s execution scope; (b) parent-child nesting; (c) sequential order, which records when one sibling execution completes before the next sibling begins executing; (d) fork-join structure, which records which sibling APIs execute in parallel. Nested words [4] satisfy the first three requirements by enriching a linear sequence of API call and return symbols with information about the matching call/return symbol. This is sufficient for the synchronous setting, where sibling APIs sequentially execute one after another. However, nested words cannot distinguish sequential sibling calls from concurrently executing siblings. For instance, a nested word can express that, in Fig. 2a, both the review APIs are invoked inside the scope of delete ; it cannot, however, express that they execute concurrently. This distinction is important for policies that require enforcing constraints such as ‘enough concurrent replicas should respond’, ‘a parallel read to database should also be logged’, or ‘the number of parallel calls performing some sensitive operation is bounded above by 𝑐 ’ for some fixed number 𝑐 . In fact, when the asynchronous structure of executions is not faithfully represented, then the structure may incorrectly be labelled as ill-nested! SPNWs, which extend nested words with an explicit parallel composition operator, allows us to precisely capture asynchrony and nesting. 
+
+3.1 Series-Parallel Nested Word Grammar 
+
+Notation. Let ˜ Σ be the set of API names. For an API a ∈ ˜Σ, we write ⟨a for its call symbol and 
+
+a⟩ for its matching return symbol. Let the set of all API call events be Σ𝑐 = {⟨a | a ∈ ˜Σ} and the set of all API return events be Σ𝑟 = {a⟩ | a ∈ ˜Σ}. We write Σ = Σ𝑐 ∪ Σ𝑟 .8 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+Definition 3.1. The set of SPNWs over Σ is defined by the grammar: 
+
+𝑤 :: = 𝜖 | ⟨a 𝑤 a⟩ | 𝑤 1 · 𝑤 2 | fork 𝑛 ∥𝑛 (𝑤 1, . . . , 𝑤 𝑛 )join , where a ∈ ˜Σ and 𝑛 ≥ 2.
+
+Here, 𝜖 denotes the empty trace. The word ⟨a 𝑤 a⟩ denotes an execution trace of API a: the terminal call and return events mark the beginning and ending of the API’s execution, respectively, and the subword 𝑤 record the events that occur during this API’s execution. Sequential composition 
+
+𝑤 1 · 𝑤 2 denotes that the execution represented by 𝑤 1 completes before the execution represented by 
+
+𝑤 2 begins. The parallel composition fork 𝑛 ∥𝑛 (𝑤 1, . . . , 𝑤 𝑛 )join denotes a parallel (fork-join) block of 𝑛 
+
+concurrent sibling executions. Here, the symbol fork 𝑛 opens the parallel block and records its arity; the symbol join closes the block after all the branches complete. Each 𝑤 𝑖 represents the SPNW for one branch. Branches are unordered and as meant to execute concurrently with each other. Further, all the branches complete their execution before the surrounding execution continues. Thus, SPNWs extend nested words with an explicit parallel composition operator while preserving the usual well-nested call-return structure of nested words. Let us illustrate SPNWs using three different execution traces: a purely sequential trace, a purely parallel trace, an a trace that combines the two. Example 1 (Seqential Composition). Consider an execution in which API delete first calls one review ; and after this review returns, delete calls a second review ; finally, after the second review returns, delete sends its response. The corresponding SPNW is: 
+
+⟨delete ⟨review review ⟩ ⟨ review review ⟩ delete ⟩.
+
+The events from both review executions are nested between the call/return symbol of the parent 
+
+delete . The sequential concatenation denotes that the execution of the first review was completed before the execution of the second review began. 
+
+The next example illustrates how SPNWs model concurrent sibling executions. Example 2 (Parallel Composition). Consider an asynchronous variant of the above example, where API delete calls both the review APIs in parallel and returns only after both the children have returned. This trace can be represented using the parallel composition operator: 
+
+⟨delete fork 2 ∥2 (⟨review review ⟩, ⟨review review ⟩)join delete ⟩.
+
+Eventhough, the tuple lists the two sibling branches in order, as such, the fork-join combinator does not impose an order between the individual events in these two siblings. 
+
+Finally, we illustrate how sequential and parallel compositions can be combined. Example 3 (Seqence+Parallel Combination). Suppose the API delete first calls log , and when 
+
+log returns, delete calls two review in parallel. Finally, after both the review calls return, delete sends its response. This trace is encoded as follows: 
+
+⟨delete ⟨log log ⟩ fork 2 ∥2 (⟨review review ⟩, ⟨review review ⟩)join delete ⟩.
+
+Here, the execution of log is sequentially composed with the parallel block containing the concurrent executions of two review .
+
+This SPNW encodes the execution trace in Fig. 2a. To highlight the series-parallel structure of the word, Fig. 2b visualizes the same trace as a series-parallel graph. Reading from left to right, the graph begins with ⟨delete and ends with its matching return, shown by the red dashed arc. Nested between these terminal, delete first invokes log synchronously, represented by the matched pair ⟨log log ⟩. The trace then reaches the fork node, which corresponds to delete API starting a fork-join block for two concurrent executions of review . The two outgoing branches execute independently and synchronize at join before the control returns to delete .SafePar: Monitoring Asynchrony in Microservices 9      
+
+> delete log review 1review 2
+> sync async async
+> parallel
+> 122
+
+(a) Call tree.        
+
+> ⟨delete ⟨log log ⟩fork join delete ⟩⟨review 1review 1⟩⟨review 2review 2⟩
+> match relation
+> parallel region
+
+(b) Graph encoding. Fig. 2. (a) Simplified variant of the API call tree for the admin console deletion example in Fig. 1. log API is invoked synchronously and it returns before the two asynchronous calls to review; (b) series-parallel graph encoding of the tree with APIs called in parallel are wrapped between fork and join nodes and API call/return matching depictned in red. 
+
+3.2 Series-Parallel Nested Word Expressions 
+
+We now describe series-parallel nested word expressions (SPNWEs), which is a class of rational expressions. Intuitively, SPNWEs correspond to regular sets of SPNWs. SPNWEs extend the usual regular expression operations for choice, sequencing, and iteration with a parallel composition operator to specify constraints over the branches of a fork-join block. The key feature of the parallel composition operator is that it does not fix the number or order of concurrently executed branches. Instead, each operand of a parallel operator describes a class of branch executions and is annotated with a multiplicity constraint describing how many branches of that class must appear in the parallel block. These multiplicity constraints are necessary because the number of branches spawned in a parallel block is a dynamic property of the execution. For example, a service may fan out to an input-dependent number of replicas, log, database. Therefore, a policy may require that “at least one branch logs the operation”, “exactly one branch performs a payment” or “no branch accesses private database”. Formally, a multiplicity constraint 𝑚 = (⊲⊳ , 𝑛 )
+
+(or simply 𝑚 =⊲⊳ 𝑛 ) is a pair of a comparison operator ⊲⊳ ∈ { =, ≤, ≥} and a threshold 𝑛 ∈ N. For a number 𝑖 ∈ N, we write 𝑖 ⊨ ⊲⊳ 𝑛 iff 𝑖 ⊲⊳ 𝑛 holds. 
+
+Definition 3.2. The syntax of SPNWEs is defined by the grammar: 
+
+𝑠𝑝𝑒 :: = 0 | 1 | ⟨a · 𝑠𝑝𝑒 · a⟩ | 𝑠𝑝𝑒 1 + 𝑠𝑝𝑒 2 | 𝑠𝑝𝑒 1 · 𝑠𝑝𝑒 2 | 𝑠𝑝𝑒 ∗ | ∥(𝑠𝑝𝑒 𝑚 1 
+
+> 1
+
+, . . . , 𝑠𝑝𝑒 𝑚 𝑘  
+
+> 𝑘
+
+).
+
+The expression 0 denotes the null expression, and corresponds to the empty set of SPNWs. 1 denotes the unit expression and corresponds to the language containing the empty word. The expression ⟨a · 𝑠𝑝𝑒 · a⟩ specifies that the body of API a’s execution should satisfy 𝑠𝑝𝑒 . We write a leaf call to a as the shorthand ⟨a a ⟩ for ⟨a 1 a⟩.The expression 𝑠𝑝𝑒 1 + 𝑠𝑝𝑒 2 specifies a choice: an execution may satisfy either 𝑠𝑝𝑒 1 or 𝑠𝑝𝑒 2. The expression 𝑠𝑝𝑒 1 · 𝑠𝑝𝑒 2 denotes sequencing: an accepted word is a concatenation of a word accepted 10 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+by 𝑠𝑝𝑒 1 followed by a word accepted by 𝑠𝑝𝑒 2. The Kleene star 𝑠𝑝𝑒 ∗ expression denotes finite iteration of words accepted by 𝑠𝑝𝑒 .The parallel composition expression ∥(𝑠𝑝𝑒 𝑚 1 
+
+> 1
+
+, . . . , 𝑠𝑝𝑒 𝑚 𝑘  
+
+> 𝑘
+
+) matches a parallel fork-join block when its branches can be assigned to the sub-expressions 𝑠𝑝𝑒 1, · · · , 𝑠𝑝𝑒 𝑘 such that, for every 𝑖 , the number of branches assigned to 𝑠𝑝𝑒 𝑖 satisfies the multiplicity constraint 𝑚 𝑖 . The expression only constrains the collection of concurrent branches, not their relative execution order. For instance, the expression 
+
+∥(𝑠𝑝𝑒 ≥5) specifies that in a parallel block of several concurrent branches, there should be atleast five branches satisfying 𝑠𝑝𝑒 . Other branches are not requires to satisfy 𝑠𝑝𝑒 .Now, we formally define the semantics of SPNWEs. Below we write [𝑛 ] ≜ {1, . . . , 𝑛 }, and for a function 𝛼 : 𝐴 → 𝐵 and an element 𝑗 ∈ 𝐵 , we let the pre-image of 𝑗 be 𝛼 −1 ( 𝑗 ) ≜ {𝑖 ∈ 𝐴 | 𝛼 (𝑖 ) = 𝑗 }.
+
+Definition 3.3. The language 𝐿 (𝑠𝑝𝑒 ) of an SPNWE spe is defined inductively as follows: 
+
+𝐿 (0) ≜ ∅
+
+𝐿 (1) ≜ {𝜖 }
+
+𝐿 (⟨a · 𝑠𝑝𝑒 · a⟩) ≜ {⟨a 𝑤 a⟩ | 𝑤 ∈ 𝐿 (𝑠𝑝𝑒 )} 
+
+𝐿 (𝑠𝑝𝑒 1 + 𝑠𝑝𝑒 2) ≜ 𝐿 (𝑠𝑝𝑒 1) ∪ 𝐿 (𝑠𝑝𝑒 2)
+
+𝐿 (𝑠𝑝𝑒 1 · 𝑠𝑝𝑒 2) ≜ {𝑤 1 · 𝑤 2 | 𝑤 1 ∈ 𝐿 (𝑠𝑝𝑒 1), 𝑤 2 ∈ 𝐿 (𝑠𝑝𝑒 2)} 
+
+𝐿 (𝑠𝑝𝑒 ∗) ≜
+
+Ø 
+
+> 𝑖 ≥0
+
+𝐿 (𝑠𝑝𝑒 )𝑖 , where 𝐿 (𝑠𝑝𝑒 )𝑖 +1 = 𝐿 (𝑠𝑝𝑒 ) · 𝐿 (𝑠𝑝𝑒 )𝑖 , and 𝐿 (𝑠𝑝𝑒 )0 = {𝜖 }
+
+𝐿 (∥(𝑠𝑝𝑒 𝑚 1 
+
+> 1
+
+, . . . , 𝑠𝑝𝑒 𝑚 𝑘  
+
+> 𝑘
+
+)) ≜
+
+   
+
+> fork 𝑛 ∥𝑛 (𝑤 1, . . . , 𝑤 𝑛 )join
+
+𝑛 ∈ N,
+
+∃𝛼 : [𝑛 ] → [ 𝑘 ] ∪ {⊥} s.t. 
+
+𝛼 (𝑖 ) = ⊥ ⇒ ∀ 𝑗 . 𝑤 𝑖 ∉ 𝐿 (𝑠𝑝𝑒 𝑗 ) (𝑖 ∈ [ 𝑛 ]) ,𝛼 (𝑖 ) ≠ ⊥ ⇒ 𝑤 𝑖 ∈ 𝐿 (𝑠𝑝𝑒 𝛼 (𝑖 ) ) (𝑖 ∈ [ 𝑛 ]) ,
+
+|𝛼 −1 ( 𝑗 )| ⊨ 𝑚 𝑗 ( 𝑗 ∈ [ 𝑘 ]) 
+
+
+
+Here, the expression ⟨a · 𝑠𝑝𝑒 · a⟩ accepts SPNWs where the inner sub-word between the outer ⟨a
+
+and its matching a⟩ symbol is accepted by 𝑠𝑝𝑒 . The interpretation for the choice, sequence, and Kleene star follow the usual regular expression interpretation. The parallel expression accepts a word if there exists an assignment 𝛼 : [𝑛 ] → [ 𝑘 ] ∪ {⊥} from the branch 𝑤 𝑖 to the sub-expression 
+
+𝑠𝑝𝑒 𝛼 (𝑖 ) that accepts the word such that the number of branches satisfying 𝑠𝑝𝑒 𝑗 , i.e., |𝛼 −1 ( 𝑗 )| , should satisfy the constraint 𝑚 𝑗 . Branches that do not match any of the listed sub-expressions are assigned to ⊥ and are ignored by the multiplicity constraints. The acceptance condition for the parallel word requires the existence of some valid 𝛼 .We illustrate SPNWEs using three common patterns: nesting, iteration, and parallel composition. Example 4 (Nesting). Consider API A is allowed to invoke only one child API B, which must immediately return without making any further calls. First, we express that API B should not invoke any APIs as ⟨B B ⟩, a shorthand for ⟨B 1 B⟩. Then we specify the parent-child constraint as: 
+
+⟨A ⟨B B ⟩ A⟩.
+
+Example 5 (Kleene Star). Suppose in the previous example A may invoke any number of leaf calls to B or C, one after the other, sequentially. We specify this using the union and Kleene star operator as: 
+
+⟨A (⟨B B ⟩ + ⟨C C ⟩)∗ A⟩.
+
+Next, we specify a constraint on concurrent executions. Example 6 (Parallel composition). Consider that in a parallel block, exactly one branch should satisfy 𝑠𝑝𝑒 1 and no branch should satisfy 𝑠𝑝𝑒 2. This can be expressed as: 
+
+∥(𝑠𝑝𝑒 =11 , 𝑠𝑝𝑒 =02 ).SafePar: Monitoring Asynchrony in Microservices 11 
+
+Note that this policy does not impose any order in which branches should satisfy 𝑠𝑝𝑒 1 and 𝑠𝑝𝑒 2.
+
+Finally, we describe an example combining policies over synchronously and asynchronously invoked children. Example 7 (Seqence and parallel combination). Consider that API A should invoke some concurrent APIs such that exactly two branch should match 𝑠𝑝𝑒 1 and no branch should match 𝑠𝑝𝑒 2;once these concurrent APIs return, A should invoke B, which should immediately return; finally A
+
+also returns. Specifying this property requires sequentially combining the children constraints in the previous examples as follows: 
+
+⟨A ∥(𝑠𝑝𝑒 =21 , 𝑠𝑝𝑒 =02 ) ⟨B B ⟩ A⟩.
+
+Let 𝑤 1, 𝑤 2 ∈ 𝐿 (𝑠𝑝𝑒 1) and 𝑤 2 ∈ 𝐿 (𝑠𝑝𝑒 2). The above property accepts ⟨A fork 2 ∥2 (𝑤 1, 𝑤 2 )join ⟨B B ⟩ A⟩
+
+because there exists a branch assignment 𝛼 ≜ {1 ↦ → 1, 2 ↦ → 1} under which both branches are matched by 𝑠𝑝𝑒 1. This assignment witnesses that two branches satisfied the required multiplicity for 𝑠𝑝𝑒 1, while no branch is assigned to 𝑠𝑝𝑒 2. However, the second branch also matches 𝑠𝑝𝑒 2, so the branch assignment is not uniquely determined by the trace. Thus, an online monitor cannot deter-ministically pick the correct assignment when a branch can match multiple sub-expressions. Since our goal is to deterministically monitor policies, we restrict SafePar specifications to a monitorable fragment of SPNWEs. 
+
+4 SafePar Language: A monitorable fragment of SPNWEs 
+
+We first define the auxiliary notions used to define the SafePar fragment. Nullability records whether an expression accepts the empty word. Since the same symbol may repeat in an expression, we distinguish different syntatic occurrences of symbols by assigning each occurrence a unique position. For instance, in the SPNWE 𝑠𝑝𝑒 = ⟨a1 ⟨a2a⟩3a⟩4, we have uniquely identified each syntactic occurrence of calls and returns to a by the superscripts. We write 𝑃𝑜𝑠 (𝑠𝑝𝑒 ) = {⟨a1, ⟨a2, a⟩3, a⟩4 } for the set of positions and Label (𝑝 ) for the symbol at the position 𝑝 . For instance, Label (⟨a2) = ⟨a.We also require three standard position sets to state 1-unambiguity: First , Follow , and Last ;their formal definitions are presented in Appendix, but we describe them intuitively here. For an expression 𝑠𝑝𝑒 , First (𝑠𝑝𝑒 ) is the set of positions that can appear as the first event of some word in 𝐿 (𝑠𝑝𝑒 ). For example, in the above example First (𝑠𝑝𝑒 ) = {⟨a1 }. Similarly, Last (𝑠𝑝𝑒 ) is the set of positions that can appear as the last symbol of some word in 𝐿 (𝑠𝑝𝑒 ). In the above example, Last (𝑠𝑝𝑒 ) = {a⟩4 }. For a position 𝑝 ∈ 𝑃𝑜𝑠 (𝑠𝑝𝑒 ), the set Follow 𝑠𝑝𝑒 (𝑝 ) has positions that can immediately follow 𝑝 in some word in 𝐿 (𝑠𝑝𝑒 ). For instance, in the above example, Follow 𝑠𝑝𝑒 (⟨a2) =
+
+{a⟩3 }.
+
+Definition 4.1 (SafePar specifications). The SafePar fragment is the smallest set of SPNWEs satisfying the following conditions: (1) 0, 1 are in SafePar .(2) ⟨a 𝑠𝑝𝑒 ′ a⟩ is in SafePar if 𝑠𝑝𝑒 ′ is in SafePar .(3) 𝑠𝑝𝑒 1+𝑠𝑝𝑒 2 is in SafePar if 𝑠𝑝𝑒 1 and 𝑠𝑝𝑒 2 are in SafePar and Label (First (𝑠𝑝𝑒 1))∩ Label (First (𝑠𝑝𝑒 2)) =
+
+∅ and not both 𝑠𝑝𝑒 1 and 𝑠𝑝𝑒 2 are nullable. (4) 𝑠𝑝𝑒 1 · 𝑠𝑝𝑒 2 is in SafePar if 𝑠𝑝𝑒 1 and 𝑠𝑝𝑒 2 are in SafePar and for every 𝑝 ∈ Last (𝑠𝑝𝑒 1),
+
+Label (Follow 𝑠𝑝𝑒 1 (𝑝 ))∩ Label (First (𝑠𝑝𝑒 2)) = ∅. Moreover, if 𝑠𝑝𝑒 1 is nullable then Label (First (𝑠𝑝𝑒 1))∩ 
+
+Label (First (𝑠𝑝𝑒 2)) = ∅.(5) 𝑠𝑝𝑒 ∗ is in SafePar if 𝑠𝑝𝑒 is non-nullable and in SafePar , and for every 𝑝 ∈ Last (𝑠𝑝𝑒 ) satisfy 
+
+Label (Follow 𝑠𝑝𝑒 (𝑝 )) ∩ Label (First (𝑠𝑝𝑒 )) = ∅.(6) ∥(𝑠𝑝𝑒 1, . . . , 𝑠𝑝𝑒 𝑘 ) is in SafePar if every 𝑠𝑝𝑒 𝑖 is non-nullable and in SafePar and for all distinct 
+
+𝑖, 𝑗 ∈ [ 𝑘 ], Label (First (𝑠𝑝𝑒 𝑖 )) ∩ Label (First (𝑠𝑝𝑒 𝑗 )) = ∅.12 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+Here, the union condition ensures that the next observed symbol uniquely determines which sub-expression matches it, while the nullability condition rules out an ambiguous empty choice. The concatenation condition ensures that, after reading a position matched by 𝑠𝑝𝑒 1, the next symbol cannot be interpreted as a continuation of a word matching 𝑠𝑝𝑒 1 and the starting symbol of words matching 𝑠𝑝𝑒 2. The additional nullable case handles the situation where 𝑠𝑝𝑒 1 may be skipped. The Kleene star condition ensures that the next symbol uniquely determines whether it is a continuation of the current iteration or starting of a new one. Finally, the parallel condition ensures that the first observable symbol of each branch uniquely determines which sub-expression can that branch match. If the first symbol of a branch is not in the set of first symbols of any sub-expression, the branch is irrelevant and assigned to ⊥. Thus, the witness function 𝛼 that recorded the expression a branch matched can be uniquely picked. Besides the parallel condition, these requirements closely follow the standard 1-unambiguity conditions for regular expressions [9]. 
+
+Case Studies 
+
+We illustrate SafePar’s expressiveness through representative policies that combine constraints on nesting, sequencing, and the collective behavior of concurrent branches. 
+
+Scoped order of children. SafePar can express ordering constraints among the children API calls of a parent request. This is useful for: a compliance workflow that may require the data to be encrypted before being written to a database; an audit workflow that may require logging before the parent returns; or a deployment pipeline requiring that a build artifact’s Docker image should be built and scanned before being published. We illustrate this pattern with a hospital compliance policy. 
+
+Example 8. 
+
+Consider a hospital application comprising: a test API for requesting a medical test; a pay API for charging the patient; a de-id API for removing a patient’s personal health information (PHI) from its input; and a lab API for submitting the request to a third-party lab. Suppose the compliance team requires the patient to be charged first, the PHI to be de-identified next, and the request to be submitted to the third party lab only after de-identification. Let 
+
+𝑝 pay = ⟨pay pay ⟩ denote a call to the payment API; 𝑝 de-id = ⟨de-id de-id ⟩ denote a call to de-identify the record; 𝑝 lab = ⟨lab lab ⟩ denote a call to the lab API. This property can be specified by describing the constraint on the SPNW between the API call/return of the test 
+
+API: 
+
+⟨test 𝑝 pay 𝑝 de-id 𝑝 lab test ⟩.
+
+Iterated sibling constraint. We can use the Kleene star to specify that a parent may invoke mul-tiple child API calls, each satisfying the same sub-policy. This is useful when a parent first performs a one-time setup action like authentication or secure channel establishment and then repeatedly invoke similar child operations like multiple database writes or secure message transmissions. One such example is described below. 
+
+Example 9. SafePar: Monitoring Asynchrony in Microservices 13 
+
+Consider a file download application comprising: a download API that starts a batch download request; authenticate API that validates the user identity; db API that reads files from the backend. A developer may want to enforce that download authenticates the user before reading any file, after which the user can read any number of files during the session using the 
+
+download API. This property can be specified using the Kleene star around the sub-property 
+
+𝑝 db = ⟨db db ⟩ describing the call to db :
+
+⟨download ⟨authenticate authenticate ⟩(𝑝 db )∗ download ⟩.
+
+Single constraint across concurrent branches. SafePar can constrain the number of concurrent child branches that satisfy a given sub-policy 𝑝 using a pattern of the form ∥(𝑝 𝑚 ). Different multiplicities 𝑚 capture different classes of branch-level constraints. Upper-bound multiplicities, expressed using the at most construct, are useful for specifying resource limits. For example, a policy may bound the number of writes or notifications to avoid overwhelming the application; or limit the number of calls to a third-party service to ensure the application stays within budget. This is illustrated below. 
+
+Example 10. 
+
+Consider a storage service comprising: the frontend save API for saving data and write API for writing data to a backend database. For reliability, save may send multiple write calls in parallel to update multiple database replicas. Although this parallelism can reduce latency, too many writes from a single parent request can overload the backend. So a deployment team may enforce an upper bound on the number of write branches that any save request can invoke. Let 𝑝 write = ⟨write write ⟩ denote a successful write branch. Then the bounded write policy is specified as: 
+
+⟨save ∥(𝑝 ≤𝑘 
+
+> write
+
+) save ⟩.
+
+SafePar’s lower-bound multiplicities specify requirements such as quorum or Byzantine approval, where sufficiently many concurrent branches must succeed before the parent request continues. This is illustrated below. 
+
+Example 11. 
+
+Consider a cloud admin console that executes privileged operations, such as reading confiden-tial customer data or deleting a production database. Let this functionality be implemented using: the frontend console API that takes in the operation to be executed; the auth API that checks if the user has admin privilege to execute a safety-critical operation; the run API that invokes the requested operation. Before invoking the operation, the console checks if the requesting user has the required admin privilege. For availability, the authorization state, such as access control lists (ACLs), may be replicated across multiple backend databases. After a user’s admin privilege is revoked, some replicas may temporarily have stale ACL entries. As a result, querying a single stale replica may incorrectly approve a privileged operation. A security team may, therefore, enforce a quorum policy : console must query multiple auth 
+
+replicas in parallel and call run only after atleast 𝑛 replicas approve. Now, let the policy for a successful approval be 𝑝 auth = ⟨auth approved-auth ⟩, where the matching approval response for the authenticated call is denoted by approved-auth ⟩. Then the quorum authorization can 14 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+be specified using the atleast 𝑛 multiplicity on the auth branches: 
+
+⟨console ∥(𝑝 ≥𝑛 
+
+> auth
+
+) ⟨run run ⟩ console ⟩, where 𝑝 auth = ⟨auth approved-auth ⟩.
+
+SafePar’s exact constraints let us express uniqueness requirements. For example, they can require that non-idempotent operations, like payment, password update, or one-time token use, occurs exactly once within a parent request. The special case of an exact bound set to zero can be used to specify that some operation is forbidden. For instance, no branch should access private details, no file read branch should return without logging. This is illustrated below. 
+
+Example 12. 
+
+Consider a password reset service implemented using: frontend recover API to reset the password; email API to send a link to the registered email; phone to send a link to the registered phone number; and reset to update the password after clicking the link. To improve availability, the recover service may send the recovery links through multiple registered channels, like email and SMS to all phones in parallel. Each channel can lead to a reset 
+
+call to update the password. Since a password update is a non-idempotent security-critical action, a recovery request should contain exactly one successful password update. Let 𝑝 𝑟𝑒𝑠𝑒𝑡 =
+
+⟨email ⟨reset reset ⟩ email ⟩ + ⟨phone ⟨reset reset ⟩ phone ⟩ be the policy of a successful recovery branch capturing that an email link or a phone message was used to reset the password. Then the password recovery policy is expressed as: 
+
+⟨recover ∥(𝑝 =1 
+
+> 𝑟𝑒𝑠𝑒𝑡
+
+) recover ⟩.
+
+The multiplicity =1 specifies that only one reset branch can exist in a recovery request. The policy rejects a trace where the password is not updated or where it is updated through multiple channels. 
+
+Multiple constraints across concurrent branches. Recall that the parallel construct can express policies in which different concurrent branches must satisfy different sub-policies with different multiplicity constraints. This can be specified using a pattern of the form ∥(𝑝 𝑐 1 
+
+> 1
+
+, 𝑝 𝑐 2 
+
+> 2
+
+).In addition to specifying that some set of calls may occur in parallel, this pattern also specifies how many branches should satisfy a given sub-policy. This pattern can capture coordination requirements like “before operation A, exactly (or atleast) 𝑚 𝑖 branches should satisfy the behavior encoded by the policy 𝑝 𝑖 . Policies requiring such constraints arise in distributed workflows where progress to a later stage depends on completion of multiple concurrent operations exposed by different services. For example, a CI/CD pipeline must provision compute and storage resources, and enable networking in parallel before it begins running the workflow; an e-commerce application should require payment authorization and inventory reservation before placing an order. 
+
+Example 13. 
+
+Consider an online store that requires the pay service to charge the customer and the inventory 
+
+service to reserve the item in the cart. Since these services manage their persistent data independently, we should not allow one service to make a durable change when the other has failed. This could lead to charging the customer without the item being reserved or the item being reserved even when the payment has failed. The store therefore uses a two-phase SafePar: Monitoring Asynchrony in Microservices 15 
+
+commit before completing an order. The checkout service first asks the pay service to prepare by authorizing the charge and the inventory service to prepare by placing a hold on the item. Only after both services have prepared should checkout commit the order by calling order .This policy can be specified as: 
+
+⟨checkout ∥(𝑝 =1
+
+> pay
+
+, 𝑝 =1
+
+> inventory
+
+) ⟨order order ⟩ checkout ⟩, where 
+
+𝑝 pay = ⟨pay pay ⟩ and 𝑝 inventory = ⟨inventory inventory ⟩.
+
+Constraints on nested parallel branches. Some applications exhibit concurrency at more than one level. A top-level request may spawn several concurrent tasks and each task may further spawn concurrent sub-tasks. The nested word structure of our policies lets us express such hierarchical concurrency to describe the internal structure of a concurrent branch. Such patterns are common in hierarchical coordination workflows, where a coordinator decomposes the task into smaller units of work to be executed in parallel and each sub-task must independently collect enough supporting evidence from its children branches. For example, a hiring platform may run multiple interview rounds for a candidate and each round should collect evaluations from multiple interviewers; a hospital application may process several medical cases in parallel and require opinions from multiple doctors for each case; and an incident response system may launch several investigations and each investigation may require confirmation about health status from multiple services. The next example illustrates this pattern. 
+
+Example 14. 
+
+Consider a hiring platform implemented using the following APIs: hire API to initiate the hiring; round API to initiate an interview round; and eval API to send an evaluation request to an interviewer. The platform evaluates a candidate by running several interview rounds in parallel. This concurrency must be controlled at two levels. At the top level the platform should not overschedule the candidate, so the platform may run at most 𝑘 rounds. At the inner level, each round must collect evaluations from at least two interviewers in parallel before the round completes to avoid single-interviewer bias. This policy can be expressed by nesting constraints on parallel blocks. Let 𝑝 eval = ⟨eval eval ⟩ denote one interviewer evaluation. Let 𝑝 round = ⟨round ∥(𝑝 ≥2
+
+> eval
+
+)round ⟩ denote an interview round that collects atleast two evaluations. We can write the overall policy limiting the number of rounds to 𝑘 at the top level as: 
+
+⟨hire ∥(𝑝 ≤𝑘 
+
+> round
+
+) hire ⟩.
+
+This policy rejects a trace with more than 𝑘 rounds. It also rejects a trace with fewer than two interviewer evaluations in any round. 
+
+Multiple options for constraints. SPNWEs can express choice between several allowed execu-tion patterns using the union operator. This is useful when a service may support multiple mutually exclusive protocols for completing the same logical operations. Some example domains where the need for such patterns arise include authentication systems with multiple login mechanisms, storage systems that may service a request either from a cache or from a backend store. 16 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+Example 15. 
+
+Consider an authentication service implemented using: auth API that starts an authentication request, pwd API that offers password-based login flow, and auth API that supports an authenticator-based login flow. Suppose a valid authentication request should follow either the password-based login flow or the authenticator-based login flow, but it should not mix both protocols within one request. Suppose 𝑝 1 = ⟨pwd pwd ⟩ describes a valid password-based login and 𝑝 2 = ⟨auth auth ⟩ describes a valid authenticator login. Then the overall policy can be specified as ⟨auth (𝑝 1 + 𝑝 2) auth ⟩.
+
+Sequential composition of series-parallel blocks. We can sequentially compose constraints on series/parallel blocks with that of another to specify workflows with ordered phases. This is useful to describe settings where an application may exploit concurrency within each phase, but one phase should complete before the next starts. Such requirements arise in specifying correctness of map-reduce jobs, plan-then-execute agent workflows, cloud deployment pipelines, etc. The example below illustrates this pattern. 
+
+Example 16. 
+
+Consider an agentic system implemented using the following APIs: agent API starts an agent run, plan API generates a plan for a prompt, execute API executes a step in the plan, safe 
+
+checks whether an atomic action in a step is safe, and run API runs the action. The agent first runs a planning phase in which it may invoke atmost 𝑘 plan API calls in parallel. Only after the planning phase completes, the agent can start the execution phase where it may issue upto 𝑙 execute calls in parallel. Furthermore, each execution branch must check the safety of each action using safe before running it using run . First, we can specify the execution phase as 𝑝 𝑠𝑎𝑓 𝑒 = ⟨execute ⟨safe safe ⟩ (⟨run run ⟩)∗) execute ⟩. This requires every run call in an execution phase to be preceded by a call to safe . Second, the planning phase can be specified as 𝑝 𝑝𝑙𝑎𝑛 = ⟨planplan ⟩. Finally, the sequential ordering on the planning and execution phase in agent’s run can be specified as: 
+
+⟨agent ∥(𝑝 ≤𝑘 𝑝𝑙𝑎𝑛 ) ∥(𝑝 ≤𝑙 𝑠𝑎𝑓 𝑒 ) agent ⟩.
+
+This policy will prevent an unsafe action from being executed. 
+
+5 Visibly Pushdown Automaton for Series-Parallel Nested Words 
+
+To recognize series-parallel nested words, we define a series-parallel visibly pushdown automaton (SP-VPA), extending the stack-based discpline of standard visibly pushdown automaton [3] from nested words to SPNWs. Our automata handle sequential call/return structure exactly as in a VPA: call symbols push stack symbols and return symbols pop stack symbols. The new aspect in SP-VPA is its support for parallel composition: when an SP-VPA reads the parallel fragment     
+
+> fork 𝑛 ∥𝑛 (𝑤 1, . . . , 𝑤 𝑛 )join
+
+in an SPNW, the automaton forks into 𝑛 independent sub-runs, one per branch. At the synchronization point, the automaton applies a new join transition to the multiset of the terminal states of each sub-run. We are now ready to formalize SP-VPAs. These automata have transitions specified by four functions: 𝛿 𝑐 for call symbols, 𝛿 𝑟 for return symbols, 𝛿 𝑓 for fork symbols, and 𝛿 𝑗 for join symbol. 
+
+Definition 5.1 (Series-Parallel Visibly Pushdown Automaton). A series-parallel visibly pushdown automaton (SP-VPA) A is a tuple (𝑄, 𝑞 𝑖𝑛𝑖𝑡 , 𝐹, Σ, Γ, ⊥, 𝛿 𝑐 , 𝛿 𝑟 , 𝛿 𝑓 , 𝛿 𝑗 , 𝜅 ), where: SafePar: Monitoring Asynchrony in Microservices 17                                          
+
+> 𝑞 𝑠 start 𝑞 0𝑞 𝑓
+> 𝑞 1
+> 𝑞 2
+> 𝑞 𝐵
+> 𝑞 𝐶
+> 𝑞 𝐵𝐶 𝑞 𝐴
+> ⟨A/𝛾 𝐴 fork
+> ⟨B/𝛾 𝐵
+> ⟨C/𝛾 𝐶
+> B⟩, 𝛾 𝐵
+> C⟩, 𝛾 𝐶
+> join join A⟩, 𝛾 𝐴
+> 𝛿 𝑐 ={ ( 𝑞 𝑠 ,⟨A) ↦ → ( 𝑞 0, 𝛾 𝐴 ),
+> (𝑞 𝑓 ,⟨B) ↦ → ( 𝑞 1, 𝛾 𝐵 ),
+> (𝑞 𝑓 ,⟨C) ↦ → ( 𝑞 2, 𝛾 𝐶 ) }
+> 𝛿 𝑟 ={ ( 𝑞 1,B⟩, 𝛾 𝐵 ) ↦ → 𝑞 𝐵 ,
+> (𝑞 2,C⟩, 𝛾 𝐶 ) ↦ → 𝑞 𝐶 ,
+> (𝑞 𝐵𝐶 ,A⟩, 𝛾 𝐴 ) ↦ → 𝑞 𝐴 }
+> 𝛿 𝑓 ={𝑞 0↦→𝑞 𝑓 }
+> 𝛿 𝑗 ={ ( 𝑞 0,{𝑞 1
+> 𝐵 , 𝑞 1
+> 𝐶 } ) ↦ → 𝑞 𝐵𝐶 }
+
+Fig. 3. A SP-VPA that accepts 𝐿 (⟨A ∥(( ⟨B B ⟩)=1, (⟨C C ⟩)=1) A⟩).
+
+• 𝑄 is the set of all states, 𝑞 𝑖𝑛𝑖𝑡 ∈ 𝑄 is the initial state, and 𝐹 ⊆ 𝑄 is the set of final states, 
+
+• Σ = Σ𝑐 ⊎ Σ𝑟 is the alphabet, a disjoint union of call and return annotated symbols from some base alphabet ˜ Σ,
+
+• Γ is the set of stack symbols, with a special bottom of stack symbol ⊥ ∈ Γ,
+
+• 𝛿 𝑐 : 𝑄 × Σ𝑐 → ( 𝑄 × ( Γ − {⊥}) is the call transition function, 
+
+• 𝛿 𝑟 : 𝑄 × ( Γ − {⊥}) × Σ𝑟 → 𝑄 is the return transition function, 
+
+• 𝛿 𝑓 : 𝑄 → 𝑄 is the fork function, 
+
+• 𝛿 𝑗 : 𝑄 × M 𝜅 (𝑄 ) → 𝑄 is the join function, where M𝜅 (𝑄 ) is the set of multisets over 𝑄 with all multiplicities at most 𝜅 ∈ N.We will exclusively consider finite SP-VPA, where all sets are assumed to be finite. For convenience, we will also assume that 𝑄 ⊆ Γ throughout. The call and return transition functions, 𝛿 𝑐 and 𝛿 𝑟 , are inherited from VPA. On a call symbol, 𝛿 𝑐 
+
+takes the current state and returns the next state along with a (non-bottom) stack symbol to push. On a return symbol, 𝛿 𝑟 takes the current state, the return symbol, and the (non-bottom) symbol on top of the stack, and returns the next state. The fork transition function 𝛿 𝑓 and the join transition function 𝛿 𝑗 are new to SP-VPA. On a fork 𝑛 
+
+symbol, 𝛿 𝑓 takes the current state and returns the initial state that will be used for each of the 𝑛 
+
+forked branches. On a join symbol, 𝛿 𝑗 takes a state and a multiset of states—intuitively, the terminal states of branches at a join symbol—and returns the next state. Since the set M𝜅 (𝑄 ) is finite, the join transition function is finitely representable. Example 17. The SP-VPA shown in Fig. 3 starts at 𝑞 𝑠 and ends at 𝑞 𝐴 . A solid transition from 𝑞 𝑠 to 
+
+𝑞 0 labeled with ⟨A/𝛾 𝐴 depicts a 𝛿 𝑐 transition from 𝑞 𝑠 to 𝑞 0 on the call symbol ⟨A that pushes 𝛾 𝐴 on the stack. A solid transition from 𝑞 𝐵𝐶 to 𝑞 𝐴 labeled with A⟩, 𝛾 𝐴 depicts a 𝛿 𝑟 transition from 𝑞 𝐵𝐶 to 𝑞 𝐴 on the return symbol A⟩ when 𝛾 𝐴 is at the top of the stack. The dashed transition from 𝑞 0 to 𝑞 𝑓 labeled with fork is a 𝛿 𝑓 transition from 𝑞 0 to 𝑞 𝑓 . The two dashed transitions labeled join correspond to 𝛿 𝑗 
+
+transitions. In this case, the transition is from the state 𝑞 0 before the fork to 𝑞 BC , given the multiset with one occurrence of each 𝑞 B and 𝑞 C.
+
+5.1 SP-VPA transition semantics 
+
+We design the SP-VPA semantics to enable an incremental online monitor, rather than for an offline acceptor that receives the whole SPNW at once. At each step, the monitor observes one event from each active branch. In order to track which event occurs in which branch, we first formalize structured inputs to the automaton that records which events belongs to which branch. Then, we define SP-VPA transition semantics over these inputs. 18 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+We begin with the inputs. In the sequential portions of an execution with one active branch, the automaton observes the next call or return symbol. Inside a parallel block, the automaton observes one token for each active branch. We formalize these structured inputs to the automaton as the set 
+
+Tok of incremental tokens generated by the following grammar: 
+
+𝑠 ∈ Σ ∪ { fork 𝑛 | 𝑛 ∈ N} ∪ { join , 𝜖 }
+
+𝑒 :: = 𝑠 | ∥(𝑒 1, . . . , 𝑒 𝑛 )
+
+A flat sequential token 𝑠 can be a single call, return, fork, join, or an empty observation 𝜖 . A compound token ∥(𝑒 1, . . . , 𝑒 𝑛 ) records that among the 𝑛 parallel branches in a parallel block, the 
+
+𝑖 𝑡ℎ branch observes the incremental token 𝑒 𝑖 .We will define an operational semantics for SP-VPA, where the current state of the SP-VPA is captured by a configuration , and each incremental token steps the current configuration. Outside a parallel regions, an SP-VPA configuration is the usual VPA configuration: a state and stack. Inside a parallel region, an SP-VPA configuration tracks the multiset of local configurations of each active branch along with the suspended outer context that will be resumed at the matching join. 
+
+Definition 5.2. SP-VPA configurations are generated by the following grammar: 
+
+𝑇 :: = ⟨𝑞, 𝜎 ⟩ | ⟨ ∥(𝑇 1, . . . ,𝑇 𝑛 ), 𝜎 ⟩
+
+We write 𝐶𝑜𝑛𝑓 𝑖𝑔 for the set of all configurations. An sequential configuration ⟨𝑞, 𝜎 ⟩ consists of a state 𝑞 and a stack 𝜎 ∈ ⊥ Γ∗. A parallel configu-ration ⟨∥(𝑇 1, . . . ,𝑇 𝑛 ), 𝜎 ⟩ consists of one local configuration per active branch and an outer stack 
+
+𝜎 that records the suspended parent context to resume at the matching join; the top symbol in 𝜎 
+
+records the fork state 𝑞 , while the rest of the 𝜎 records the stack when the fork occurred. Now, we are ready to define the SP-VPA transition semantics. 
+
+Definition 5.3 (Transition Semantics). For each 𝑒 ∈ 𝐸 , the relation 𝑒 
+
+−→A ⊆ 𝐶𝑜𝑛𝑓 𝑖𝑔 × 𝐶𝑜𝑛𝑓 𝑖𝑔 relates the current configuration to the next configuration after reading an incremental token 𝑒 .
+
+(𝑞 ′, 𝑠 ) ∈ 𝛿 𝑐 (𝑞, ⟨a)⟨𝑞, 𝜎 ⟩ ⟨a
+
+−→A ⟨𝑞 ′, 𝜎𝑠 ⟩ 
+
+> T-Call
+
+𝑞 ′ ∈ 𝛿 𝑟 (𝑞, a⟩, 𝑠 )⟨𝑞, 𝜎𝑠 ⟩ a⟩
+
+−→A ⟨𝑞 ′, 𝜎 ⟩
+
+> T-Ret
+
+⟨𝑞, 𝜎 ⟩ 𝜖 
+
+−→A ⟨𝑞, 𝜎 ⟩
+
+> T-Eps
+
+𝛿 𝑓 (𝑞 ) = 𝑞 ′
+
+⟨𝑞, 𝜎 ⟩ fork 𝑛 
+
+−−−−→A ⟨∥(⟨ 𝑞 ′, ⊥⟩ , . . . , ⟨𝑞 ′, ⊥⟩ 
+
+| {z }
+
+> 𝑛
+
+), 𝜎𝑞 ⟩
+
+> T-Fork
+
+for all 𝑖 ∈ [ 𝑛 ], 𝑇 𝑖 𝑒 𝑖 
+
+−→A 𝑇 ′
+
+> 𝑖
+
+⟨∥(𝑇 1, . . . ,𝑇 𝑛 ), 𝜎 ⟩ ∥ (𝑒 1,...,𝑒 𝑛 )
+
+−−−−−−−−→A ⟨∥(𝑇 ′ 
+
+> 1
+
+, . . . ,𝑇 ′ 
+
+> 𝑛
+
+), 𝜎 ⟩
+
+> T-Par
+
+𝑀 = trunc 𝑘 ({| 𝑞 1, . . . , 𝑞 𝑛 |}) 𝑞 ′ ∈ 𝛿 𝑗 (𝑞, 𝑀 )⟨∥(⟨ 𝑞 1, ⊥⟩ , . . . , ⟨𝑞 𝑛 , ⊥⟩) , 𝜎𝑞 ⟩ join 
+
+−−−→A ⟨𝑞 ′, 𝜎 ⟩
+
+> T-Join
+
+where we write {| 𝑞 1, . . . , 𝑞 𝑛 |} for the multiset of states, and trunc 𝜅 (𝑀 ) for the 𝜅 -truncation of a multiset 𝑀 ∈ M ( 𝑄 ), defined as trunc 𝜅 (𝑀 )( 𝑞 ) = min (𝑀 (𝑞 ), 𝜅 ) for every 𝑞 ∈ 𝑀 .SafePar: Monitoring Asynchrony in Microservices 19 
+
+Rules T-Call and T-Ret are the usual VPA transitions: on a call symbol, the automaton updates its sequential configuration’s state and pushes a stack symbol; on a ret symbol, the automaton transitions using the return transition function and pops the stack. Rule T-Eps is the trivial transition for stalled branches. Rules T-Fork , T-Par , and T-Join handle the parallel regions without commiting to a specific interleaving. When T-Fork is applied on reading some fork 𝑛 , the sequential configuration becomes a parallel configuration with 𝑛 branch configurations ⟨∥(⟨ 𝑞 ′, ⊥⟩ , . . . , ⟨𝑞 ′, ⊥⟩) , 𝜎𝑞 ⟩, each initialized at the same state and with an empty stack. The fork state is pushed onto the outer stack, so the automaton can recover it at join . Rule 
+
+T-Par advances each branch on its local token 𝑒 𝑖 . If a branch has no symbol to emit while others continue, since its local incremental token is 𝜖 , it steps by T-Eps . A completed branch has an empty local stack, meaning it has entirely read the well-matched word. Once all branches have completed, T-Join aggregates the multiset of all branch states; truncates it at 𝜅 ; and collapses the local configurations into a single sequential configuration by applying the join transition to the multiset of terminal branch states. The truncation step is a technical device: for our compilation, we will statically select the parameter 𝜅 large enough so that truncation will not affect the multiset. 
+
+5.2 Single-step incremental semantics 
+
+The transition relation 𝑒 
+
+−→A describes how an SPVPA reacts to an incremental token, but it does not yet describe how such tokens are read from an SPNW. For instance, from the word 
+
+⟨a fork 2 ∥2 (⟨b b ⟩, ⟨c c ⟩)join a⟩, the monitor first observes ⟨a; then fork 2; and then the structured events ∥2 (⟨b, ⟨c) , and so on. So before we can define how an SPNW is incrementally processed by an SP-VPA, we need to describe how an incremental token is read from an SPNW. We formalize this using residual words, which intuitively represent the remaining SPNW after reading some prefix. 
+
+Definition 5.4 (Residual words). We define the set of residual SPNWs, written 𝑅𝑒𝑠 , by the grammar: 
+
+𝑟 :: = 𝜖 | 𝑎 · 𝑟 (𝑎 ∈ Σ)| fork 𝑛 ∥𝑛 (𝑟 1, . . . , 𝑟 𝑛 )join · 𝑟 
+
+| ∥𝑛 (𝑟 1, . . . , 𝑟 𝑛 )join · 𝑟 . 
+
+The last term represents a parallel block whose opening fork has already been read but whose branches have not all completed. Every complete SPNW is a residual word, i.e., 𝑆𝑃𝑁𝑊 ⊆ 𝑅𝑒𝑠 .Now, we define how incremental tokens are read from a residual word. 
+
+Definition 5.5 (Incremental Read). For each incremental token 𝑒 ∈ Tok , the relation 𝑒 
+
+−→inc ⊆
+
+𝑅𝑒𝑠 × 𝑅𝑒𝑠 relates a residual word to the residual word that remains after reading 𝑒 .
+
+⟨a · 𝑟 ⟨a
+
+−→inc 𝑟 
+
+R-Call 
+
+a⟩ · 𝑟 a⟩
+
+−→inc 𝑟 
+
+R-Ret 
+
+𝑟 𝜖 
+
+−→inc 𝑟 
+
+R-Eps     
+
+> fork 𝑛 ∥𝑛 (𝑟 1, . . . , 𝑟 𝑛 )join
+
+· 𝑟 fork 𝑛 
+
+−−−−→inc ∥𝑛 (𝑟 1, . . . , 𝑟 𝑛 )join · 𝑟 
+
+R-Fork 
+
+𝑟 1
+
+> 𝑒 1
+
+−→inc 𝑟 ′ 
+
+> 1
+
+· · · 𝑟 𝑛 𝑒 𝑛 
+
+−−→inc 𝑟 ′   
+
+> 𝑛
+> ∥𝑛 (𝑟 1, . . . , 𝑟 𝑛 )join
+
+· 𝑟 ∥ (𝑒 1,...,𝑒 𝑛 )
+
+−−−−−−−−→inc ∥𝑛 (𝑟 ′   
+
+> 1, . . . , 𝑟 ′
+> 𝑛 )join
+
+· 𝑟 
+
+R-Par    
+
+> ∥𝑛 (𝜖, . . . , 𝜖 )join
+
+· 𝑟 join 
+
+−−−→inc 𝑟 
+
+R-Join 20 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur                                                                 
+
+> Call ⟨Afork 2∥2(⟨ B B ⟩⟨C C ⟩)join A⟩→⟨A
+> Fork ⟨Afork 2∥2(⟨ B B ⟩⟨C C ⟩)join A⟩→fork 2
+> Par ⟨Afork 2∥2( ⟨ BB⟩,⟨CC⟩)join A⟩→∥(⟨B,⟨C)
+> Par ⟨Afork 2∥2(⟨ BB⟩,⟨CC⟩)join A⟩→∥(B⟩,C⟩)
+> Join ⟨Afork 2∥2(⟨ B B ⟩⟨C C ⟩)join A⟩→join
+> Ret ⟨Afork 2∥2(⟨ B B ⟩⟨C C ⟩)join A⟩→A⟩
+
+(a)                              
+
+> Configuration
+> (𝑞 0,⊥𝛾 𝑎 )⟨∥( ( 𝑞 𝑓 ,⊥) ( 𝑞 𝑓 ,⊥) ⟩ ,⊥𝛾 𝑎 𝑞 0)⟨∥( ( 𝑞 1,⊥𝛾 𝑏 ) ( 𝑞 2,⊥𝛾 𝑐 ) ⟩ ,⊥𝛾 𝑎 𝑞 𝑠 )⟨∥( ( 𝑞 𝐵 ,⊥) ( 𝑞 𝐶 ,⊥) ⟩ ,⊥𝛾 𝑎 𝑞 𝑠 )(𝑞 𝐵𝐶 ,⊥𝛾 𝑎 )(𝑞 𝐴 ,⊥)
+> (accepted)
+
+(b) Fig. 4. (a) Incremental read of ⟨A fork 2 ∥2 (⟨B B ⟩, ⟨C C ⟩)join A⟩ and (b) the run of SP-VPA in Fig. 3. 
+
+Rules R-Call and R-Ret consume the leading call or return symbol; R-Eps leaves the residual word unchanged, modeling a branch that does not advance in the current step. Rule R-Fork consumes the opening fork 𝑛 and exposes the pending parallel block. Rule R-Par performs one read step in each concurrent branch, possibly 𝜖 ; the lockstep presentation abstracts away concrete interleavings. Incremental reads continue until all branches have been reduced to 𝜖 , meaning they have completed. At that point, R-Join consumes the join symbol and resumes sequential reading. Example 18. Fig. 4 describes the incremental read of the word ⟨A fork 2 ∥2 (⟨B B ⟩, ⟨C C ⟩)join A⟩,which begins by sequentially reading the call to A followed by reading the fork symbol and entering the parallel block with two branches. There are two applications of R-Par in the parallel block. In the first step, the first symbols of each branch are read in lockstep followed by the second symbols. Finally, the join and final return symbol is read. 
+
+Finally, we define an incremental step relation for SP-VPA by combing the incremental read relation with the SP-VPA transition relation. This step relation describes, for a given SPNW or residual word, both the incremental token exposed in the current step and the corresponding update to the automaton configuration. 
+
+Definition 5.6 (Incremental Step). Given a residual word 𝑟 ∈ 𝑅𝑒𝑠 , an incremental step is a relation 
+
+(𝑇 , 𝑟 ) 𝑒 
+
+=⇒ ( 𝑇 ′, 𝑟 ′) between configurations defined by: 
+
+𝑇 𝑒 
+
+−→A 𝑇 ′ 𝑟 𝑒 
+
+−→inc 𝑟 ′
+
+(𝑇 , 𝑟 ) 𝑒 
+
+=⇒ ( 𝑇 ′, 𝑟 ′)
+
+In an incremental step, A reads the next incremental token 𝑒 from the residual word 𝑟 and updates the configuration from 𝑇 to 𝑇 ′, leaving the residual word 𝑟 ′. Finally, we can define our semantics for SP-VPA. 
+
+Definition 5.7 (SP-VPA Semantics). A run of an SP-VPA A on a residual word 𝑟 is defined as the sequence (⟨ 𝑞 0, ⊥⟩ , 𝑟 ) 𝑒 1
+
+==⇒ . . . 𝑒 𝑛 
+
+==⇒ (⟨ 𝑞 𝑓 , ⊥⟩ , 𝜖 ) of incremental steps until the entire word 𝑟 is read SafePar: Monitoring Asynchrony in Microservices 21 
+
+and the residual is 𝜖 . A run is accepting if 𝑇 ′ = (𝑞 𝑓 , ⊥) , where 𝑞 𝑓 is a final state of the automaton, otherwise it is rejecting .Example 19. Fig. 4(b) illustrates the run of the SP-VPA in Fig. 3 on the word ⟨A fork 2 ∥2 (⟨B B ⟩, ⟨C C ⟩)join A⟩.At each step, the automaton consumes an incremental token and steps via incremental read and SP-VPA transition rules. The input word is accepted by the automaton as it arrives at the final state 𝑞 𝐴 .
+
+5.3 Compilation 
+
+To automatically check whether a SPNW is accepted by a SafePar policy 𝑠𝑝𝑒 , we define a sound compilation procedure from 𝑠𝑝𝑒 to SP-VPA A𝑠𝑝𝑒 . We sketch our Thompson-style construction here, and provide details in the Appendix. (1) For ⟨a 𝑠𝑝𝑒 a⟩, the construction adds a fresh entry state 𝑞 𝑠 , a fresh final state 𝑞 𝑓 , and a fresh stack marker 𝛾 . On reading ⟨a, the automaton pushes 𝛾 and enters A𝑠𝑝𝑒 . Once A𝑠𝑝𝑒 reaches its final state, the automaton reads the matching a⟩ and move to 𝑞 𝑓 .(2) For parallel composition , ∥(𝑠𝑝𝑒 𝑚 1 
+
+> 1
+
+, . . . , 𝑠𝑝𝑒 𝑚 𝑘  
+
+> 𝑘
+
+), the construction adds a new start state 𝑞 𝑠 
+
+and accepting state 𝑞 𝑓 to the union of A𝑠𝑝𝑒 𝑖 . At a fork, each branch is dispatched to the unique sub-automaton determined by its first visible symbol. If the branch begins with a symbol in First (𝑠𝑝𝑒 𝑖 ) then it is processed by A𝑠𝑝𝑒 𝑖 . Once a branch has entered A𝑠𝑝𝑒 𝑖 , its remaining symbols are processed according to this automaton’s transitions. At the join, the automaton inspects the multiset of terminal branch states and transitions to the final state if the multiset satisfies the specified multiplicity constraints of the policy. (3) For union, concatenation, and Kleene star , we follow the usual Thompson-style construction. Finally, we can show that our construction is sound; we detail the proof in the Appendix. Theorem 5.8 (Soundness). Given a SafePar policy 𝑠𝑝𝑒 and its automaton A𝑠𝑝𝑒 , we have: 
+
+L(A 𝑠𝑝𝑒 ) = 𝐿 (𝑠𝑝𝑒 ).
+
+6 SafePar Monitor Implementation 
+
+Prototype . We implement a SafePar prototype in ∼ 2 kLoC that compiles a SafePar policy into an SP-VPA and extracts a monitor that is deployed as an Envoy WebAssembly filter atop the Istio service mesh layer. The deployment follows the same non-invasive setting as SafeTree. Each microservice runs in an independent service container. The service mesh framework pairs each service container with a sidecar container that implements an Envoy proxy [13] (as shown in Fig. 5). The proxy intercepts all HTTP requests and responses corresponding to its service and can read the HTTP message headers, add/delete/update the headers, or allow/block HTTP messages. Thus, SafePar does not require any modifications to the service implementation. The lightweight monitoring metadata, i.e., the current SP-VPA state, is propagated as an HTTP header. In the service mesh, the sidecar proxy at a service handles the call and return events for its own service. This design enables SafePar’s distributed monitoring, where the monitoring metadata is locally updated, rather than by a centralized monitor. Each Envoy proxy exposes two filter hooks: inbound and outbound , depicted in Fig. 5 as green and orange boxes inside the proxy. The inbound filter fires when a request arrives at the service and again when the service’s response is sent back to its caller. The outbound filter fires when the service issues requests to other services and when the corresponding child responses return to the caller. Together, these hooks implement the SP-VPA’s call/return and fork/join transitions in a local, per request manner. 
+
+Inbound call/return monitoring . When a request arrives at a service, the inbound filter reads the current automaton state from the request header and runs the SP-VPA’s call transition for 22 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+> Fig. 5. SafePar monitor deployed atop Istio service mesh
+
+the service’s call symbol. The current state header is updated with the successor state. The stack symbol pushed by this transition is locally saved at the proxy rather than transmitting the entire stack over the network. This works because in our setting, matching call and return events are observed at the same proxy, so the local value can be looked up when running the return transition. 
+
+Outbound fork/join monitoring . Fork and join are handled analogously at the outbound filter. Before a forked child request exits the proxy, the outbound filter runs the fork transition and updates the state header in the child request. When all child requests return, the final states in their responses are aggregated and checked against the join predicate to determine next state. For simplicity, our prototype logs any policy violation by checking whether, after processing the trace, the SP-VPA is in an accepting configuration or not. The same mechanism can be extended to actively block the request as soon as the monitor reaches a state for which there exists no suffix that can lead to an accepting state. 
+
+7 Evaluation 
+
+We evaluate SafePar monitor along two dimensions: the header metadata required to carry the monitor’s configuration, and the latency overhead introduced by monitoring. We structure the evaluation around the following research questions: 
+
+• RQ1: How much header space is required to carry the configuration metadata? 
+
+• RQ2: How much latency overhead is incurred by monitoring? 
+
+• RQ3: How does the latency overhead change as we vary the topology scale? 
+
+We evaluate SafePar on a suite of policies that cover the main language constructs. The SafePar monitor is deployed in an Istio-enabled Kubernetes cluster. We instantiate the policy suite on two Go-based microservice applications: a hospital workflow and a hotel reservation application [16] running in the cluster. Each service in the application gets a proxy and is injected with a WebAssembly SafePar filter. The average number of nodes in the service tree of both applications is 6 and 4.5, respectively. Since SafePar runs outside the application, its performance overhead is not affected by the application’s internal implementation. However, its performance does depend on the policies being checked, which we evaluate. The case studies and the detailed deployment information is in Appendix . SafePar: Monitoring Asynchrony in Microservices 23                                                                                                                          
+
+> Table 1. Evaluation summary for the SafePar policy suite. Policies prefixed with “Hotel” are evaluated on the hotel application; the remaining policies are evaluated on the hospital application. For each policy, the number of SP-VPA states fits in a few header bits and monitoring adds only millisecond-scale latency overhead.
+> SP-VPA Class Latency
+> Policy #states #bits #trans Name #Par Depth overhead (ms) Scoped order 11 410 Series 021.11 Bounded-write 737Parallel 121.26 Quorum1 10 410 Series–Par 120.35 Once-reset 15 416 Series–Par 130.42 Two-phase 13 413 Series–Par 220.53 Nested 11 412 Parallel 230.59 Choice 949Series 220.41 Agent-phase 17 523 Series–Par 230.73 Audit 15 417 Parallel 340.83 Mixed-mult 16 416 Series–Par 320.77 Map-reduce 26 536 Series–Par 230.64 Quorum2 18 521 Parallel 230.56 Hotel-Bounded-write 737Parallel 120.435 Hotel-Quorum1 10 410 Series–Par 120.42 Hotel-Once-reset 15 416 Series–Par 130.142 Hotel-Two-phase 13 413 Series–Par 220.158
+
+Policy metadata 
+
+Since SafePar enforces policies by propagating the current SP-VPA state in HTTP headers, the memory footprint of the monitoring metadata is determined by the number of monitor states. Table 1’s “SP-VPA” columns give the number of states (in #states), the number of bits needed to encode the current state in a header (in #bits), and the number of transitions in the monitor (in #trans). The “Class” columns describe the policy structure: #Name indicates whether the policy is purely sequential (Series), purely parallel (Parallel), or combines sequential and parallel (Series–Par); #Par reports the number of distinct parallel expressions in the policy; and #Nesting reports the maximum depth of nesting in the policy. The key result is that across all the policies, the monitoring metadata is less than six bits of HTTP header, which is small compared with the kilobytes worth of available HTTP header space. We observe that policies with more parallel structure and deeper nesting tend to compile to monitors with more states. The “Map-reduce” policy is an exception because, despite its shallow nesting and fewer number of parallel operators, the multiple occurrences of Kleene star operator yields the largest SP-VPA. 
+
+Monitoring overhead 
+
+To evaluate SafePar’s latency overhead, we compare request latency with monitoring enabled against latency without monitoring. We use a workload of 200 concurrent requests to frontend endpoints of both applications in our cluster. For each policy, we extract and deploy the corresponding Envoy filter and report the average difference between the latency when the application is monitored and when it is not. The “Overhead” column in Table 1 reports this monitoring cost in milliseconds. Observe that across the evaluated policies, the measure overhead is at most 1.5ms. The overhead is also stable across both applications, as expected because SafePar monitors requests at the servicemesh 24 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 10 100 
+
+> Number of Nodes
+> 0.1 110
+> Overhead (ms)
+> Sync Async
+
+(a) Overhead vs Calls 10 100  
+
+> Number of Nodes
+> 00.05 0.1 0.15 0.2 0.25
+> Overhead / Nodes (ms per node)
+> Sync Sync avg ~ 0.0782 ms/node Async Async avg ~ 0.0355 ms/node
+
+(b) Ratio (Overhead/Calls) Fig. 6. Latency overhead vs topology scale, measured as number of API calls in the trace. 
+
+layer and does not depend on the internal implementation of the services. To summarize, SafePar can enforce expressive policies with low latency overhead. 
+
+Topology scaling 
+
+We next experimentally explore how the application’s API call topology affects monitor performance. We use a synthetic topology generator with varying fanout, concurrency mode, and depths. For each topology, we construct two variants with the same number of API calls. In the synchronous variant, calls are issued sequentially, whereas in the asynchronous variant, all calls at the same level are issued in parallel. We fix the policy to Quorum1 and run the same overhead experiment from the previous section. Fig. 6a reports the latency overhead in millisecond on the y-axis and the topology size measured as number of API calls on the x-axis, both on logarithmic scale. The overhead grows with the topology size in both the execution models, but remains below 10ms for topologies containing approximately 100 API calls and below 25ms even for the largest topologies considered. Empirical studies [32] report that a common-case microservice topology contains approximately 31 API calls; at this scale, SafePar introduces only a few milliseconds of additional latency. For topologies of comparable size, the synchronous variant (in blue) generally incurs higher end-to-end overhead than the asynchronous variant (in orange). This can be attributed to all monitoring operations being on the request’s critical path in the sequential setting, so the cost of intercepting a request and updating its headers at each call/return accumulates end to end. In contrast, SafePar processes asynchronous branches independently and combines their states only at the join, yielding lower overhead in asynchronous settings. We also report the per-API call overhead for both models of execution in Fig. 6b. The average per-hop overhead for totally synchronous and totally parallel topology is 0.078 and 0.035, respectively. Apart from greater variability for the smallest topologies, where fixed costs constitute a larger fraction of total latency, the per-node overhead remains mostly stable as the topology grows. These results indicate that SafePar’s monitoring cost scales approximately linearly with the number of calls. 
+
+8 Related Work 
+
+Trace models for concurrent executions . Classical language-theoretic models often represent concurrent executions through their linearizations. A run is modeled as a word and the concurrency is accounted for by considering the interleavings of concurrent events, or more formally a total order between events. Mazurkiewicz trace theory refines this view by using a partial order semantics and quotienting the interleaved words modulo swaps of independent interleaved events [10, 34]. In this model, a concurrent execution denotes an equivalence class of linearizations rather than a single SafePar: Monitoring Asynchrony in Microservices 25 
+
+word recording a specific schedule of events. While trace theory offer a very expressive formalism for modeling concurrent executions, the expressiveness comes at the expense of monitorability, in that only a small fragment of properties admit efficient monitors [36]. In contrast, in our setting we crucially leverage structured executions, allowing us to build efficient monitors. 
+
+Pomsets and series-parallel languages . Another line of work models executions as partial orders [26, 30] rather than interleaved sequences. Pomsets replace replace words by partial ordered multiset of events, and series-parallel pomsets restrict these partial orders to those generated by sequential and parallel composition. They explicitly capture the series-parallel structure of a concurrent execution and, therefore, are a natural semantic model for fork-join style concurrent computations [30]. Branching automata [30] and pomset automata [23, 24] recognize languages of series-parallel pomsets using operational semantics that use fork-join transition, in close spirit to our work. The key difference is that these automata models are designed to operate over the completed pomset objects or their algebraic decompositions rather and do not lend themselves to incremental online monitoring over a stream of HTTP call/returns. Moreover, call-return matching is not a primitive part of the pomset model, in the way it is for nested words and visibly pushdown automata. 
+
+Series-parallel graph automata . There are several automata models for concurrent setting, like communicating automata [27], asynchronous automata [1, 40]. Of the closest interest to us, are series-parallel graph automata [7], which are interpreted over synchronized series-parallel graphs. In this model, series composition represents causal sequencing, while parallel composition represents fork-join structure. The synchronization edge makes the matching between split and join vertices explicit. The corresponding graph automata also supports join transitions that are guarded by checks on multisets of concurrent branch states. This is the closest prior automata-theoretic analogue to our fork/join transition. However, synchronized series-parallel graph automata are still defined over the whole graph view. Our SP-VPA contribution is to define an automata model that can operate over a stream of word-like inputs with primitive support for enforcing call-return matching. 
+
+Runtime verification of concurrent properties . Prior work has approached verification of concurrent properties from several directions, often with the goal of specifying properties in an interleaving independence manner while keeping the verification procedure tractable. One line of work develops trace-based logic that interpret specifications directly over Mazurkiewicz traces [28]; or related partial-order models of concurrency [29, 35]. A second line of work appears in model checking and testing domain, where the goal is to reason over partial-order model of executions or to prune redundant interleavings during exploration [5, 6, 15, 19] or to infer alternate reorderings from a given execution [14, 25, 33]. A third line of work focuses on specification-based monitoring and enforcement frameworks for multi-threaded programs such as Enforce MOP and related monitors for generic concurrent systems [12, 31, 38]. These techniques are often invasive and require instrumentation. SafePar targets a more specialized microservice, where the monitor must support the desired class of concurrent properties, while preserving black-box deployment, non-invasiveness, and distributed execution. As described earlier related work in this domain [17, 18, 37] do not meet all our requirements. 
+
+9 Conclusion 
+
+We present SafePar, a blackbox and non-invasive distributed runtime monitoring framework for enforcing safety properties over concurrent microservice executions. The key insight behind SafePar is to model concurrent microservice executions as series-parallel nested words, a formalism we 26 Karuna Grewal, P. Brighten Godfrey, Justin Hsu, and Umang Mathur 
+
+introduce to capture both call-return nesting and fork-join parallelism. SafePar provides a policy language over SPNWs and enforces the policies using a series-parallel visibly pushdown automaton. We see several future directions. First, it would be interesting to extend SafePar beyond fork-join concurrency to support other asynchronous patterns in microservice applications, such as callbacks, message queues, and publish-subscribe communication. Second, SafePar currently focuses on the structure of the call tree, without reasoning about the parameters carried by the requests and responses; it could also be interesting to extend the framework to support properties that reason about both the call structure and the parameter values. 
+
+References 
+
+[1] 2006. Mazurkiewicz Traces and Asynchronous Automata . Springer Berlin Heidelberg, Berlin, Heidelberg, 77–90. doi:10.1007/3-540-32923-4_6 [2] Proton AG. 2024. Complete guide to GDPR compliance. https://gdpr.eu/. Accessed: 2024-11-04. [3] Rajeev Alur and P. Madhusudan. 2004. Visibly pushdown languages. In ACM SIGACT Symposium on Theory of Computing (STOC), Chicago, Illinois . ACM, 202–211. doi:10.1145/1007352.1007390 [4] Rajeev Alur and P. Madhusudan. 2006. Adding Nesting Structure to Words. In International Conference on Developments in Language Theory (DLT), Santa Barbara, California (Lecture Notes in Computer Science, Vol. 4036) . Springer-Verlag, 1–13. doi:10.1007/11779148_1 [5] Rajeev Alur, Kenneth L. McMillan, and Doron A. Peled. 1998. Deciding Global Partial-Order Properties. In Automata, Languages and Programming, 25th International Colloquium, ICALP’98, Aalborg, Denmark, July 13-17, 1998, Proceedings (Lecture Notes in Computer Science, Vol. 1443) , Kim Guldstrand Larsen, Sven Skyum, and Glynn Winskel (Eds.). Springer, 41–52. doi:10.1007/BFB0055039 [6] Rajeev Alur, Doron A. Peled, and Wojciech Penczek. 1995. Model-Checking of Causality Properties. In Proceedings, 10th Annual IEEE Symposium on Logic in Computer Science, San Diego, California, USA, June 26-29, 1995 . IEEE Computer Society, 90–100. doi:10.1109/LICS.1995.523247 [7] Rajeev Alur, Caleb Stanford, and Christopher Watson. 2023. A Robust Theory of Series Parallel Graphs. Proc. ACM Program. Lang. 7, POPL (2023), 1058–1088. doi:10.1145/3571230 [8] Sachin Ashok, P. Brighten Godfrey, and Radhika Mittal. 2021. Leveraging Service Meshes as a New Network Layer. In 
+
+Twentieth ACM Workshop on Hot Topics in Networks (HotNets) .[9] Anne Brüggemann-Klein and Derick Wood. 1998. One-unambiguous regular languages. Inf. Comput. 142, 2 (May 1998), 182–206. doi:10.1006/inco.1997.2695 [10] Volker Diekert and Grzegorz Rozenberg (Eds.). 1995. The Book of Traces . World Scientific. [11] Nicola Dragoni, Saverio Giallorenzo, Alberto Lluch Lafuente, Manuel Mazzara, Fabrizio Montesi, Ruslan Mustafin, and Larisa Safina. 2017. Microservices: Yesterday, Today, and Tomorrow . Springer International Publishing, Cham, 195–216. doi:10.1007/978-3-319-67425-4_12 [12] Tayfun Elmas, Serdar Tasiran, and Shaz Qadeer. 2005. VYRD: verifYing concurrent programs by runtime refinement-violation detection. SIGPLAN Not. 40, 6 (June 2005), 27–37. doi:10.1145/1064978.1065015 [13] Envoy. 2024. Envoy Proxy. https://www.envoyproxy.io/. Accessed: 2024-11-04. [14] Azadeh Farzan and Umang Mathur. 2024. Coarser Equivalences for Causal Concurrency. Proc. ACM Program. Lang. 8, POPL, Article 31 (Jan. 2024), 31 pages. doi:10.1145/3632873 [15] Cormac Flanagan and Patrice Godefroid. 2005. Dynamic partial-order reduction for model checking software. SIGPLAN Not. 40, 1 (Jan. 2005), 110–121. doi:10.1145/1047659.1040315 [16] Yu Gan, Yanqi Zhang, Dailun Cheng, Ankitha Shetty, Priyal Rathi, Nayan Katarki, Ariana Bruno, Justin Hu, Brian Ritchken, Brendon Jackson, Kelvin Hu, Meghna Pancholi, Yuan He, Brett Clancy, Chris Colen, Fukang Wen, Catherine Leung, Siyuan Wang, Leon Zaruvinsky, Mateo Espinosa, Rick Lin, Zhongling Liu, Jake Padilla, and Christina Delimitrou. 2019. An Open-Source Benchmark Suite for Microservices and Their Hardware-Software Implications for Cloud & Edge Systems. In International Conference on Architectural Support for Programming Langauages and Operating Systems (ASPLOS), Providence, Rhode Island . Association for Computing Machinery, New York, NY, USA, 3–18. doi:10.1145/ 3297858.3304013 [17] Karuna Grewal, Brighten Godfrey, and Justin Hsu. 2025. SafeTree: Expressive Tree Policies for Microservices. Proc. ACM Program. Lang. 9, OOPSLA2, Article 349 (Oct. 2025), 27 pages. doi:10.1145/3763127 [18] Karuna Grewal, Philip Brighten Godfrey, and Justin Hsu. 2023. Expressive Policies For Microservice Networks. In 
+
+USENIX Workshop on Hot Topics in Cloud Computing (HotCloud), Cambridge, Massachusetts . ACM, 280–286. doi:10. 1145/3626111.3628181 SafePar: Monitoring Asynchrony in Microservices 27 
+
+[19] Jeff Huang. 2015. Stateless model checking concurrent programs with maximal causality reduction. SIGPLAN Not. 50, 6 (June 2015), 165–174. doi:10.1145/2813885.2737975 [20] ICLR. 2026. ICLR 2026 Response to Security Incident. https://blog.iclr.cc/2025/12/03/iclr-2026-response-to-security-incident/. [21] Istio. 2024. Istio. https://istio.io/. Accessed: 2024-11-04. [22] Istio. 2024. The Istio service mesh. https://istio.io/latest/about/service-mesh/. Accessed: 2024-11-06. [23] Tobias Kappé, Paul Brunet, Bas Luttik, Alexandra Silva, and Fabio Zanasi. 2017. Brzozowski Goes Concurrent -A Kleene Theorem for Pomset Languages. In 28th International Conference on Concurrency Theory, CONCUR 2017, Berlin, Germany, September 5-8, 2017 (LIPIcs, Vol. 85) , Roland Meyer and Uwe Nestmann (Eds.). Schloss Dagstuhl -Leibniz-Zentrum für Informatik, 25:1–25:16. doi:10.4230/LIPICS.CONCUR.2017.25 [24] Tobias Kappé, Paul Brunet, Bas Luttik, Alexandra Silva, and Fabio Zanasi. 2018. On Series-Parallel Pomset Languages: Rationality, Context-Freeness and Automata. CoRR abs/1812.03058 (2018). arXiv:1812.03058 http://arxiv.org/abs/1812. 03058 [25] Dileep Kini, Umang Mathur, and Mahesh Viswanathan. 2017. Dynamic Race Prediction in Linear Time. In Proceedings of the 38th ACM SIGPLAN Conference on Programming Language Design and Implementation (Barcelona, Spain) (PLDI 2017) . ACM, New York, NY, USA, 157–170. doi:10.1145/3062341.3062374 [26] Dietrich Kuske. 2000. Infinite Series-Parallel Posets: Logic and Languages. In Automata, Languages and Programming, 27th International Colloquium, ICALP 2000, Geneva, Switzerland, July 9-15, 2000, Proceedings (Lecture Notes in Computer Science, Vol. 1853) , Ugo Montanari, José D. P. Rolim, and Emo Welzl (Eds.). Springer, 648–662. doi:10.1007/3-540-45022-X_55 [27] Dietrich Kuske and Anca Muscholl. 2021. Communicating automata. In Handbook of Automata Theory , Jean-Éric Pin (Ed.). European Mathematical Society Publishing House, Zürich, Switzerland, 1147–1188. doi:10.4171/AUTOMATA-2/9 [28] Martin Leucker. 2026. A Note on Runtime Verification of Concurrent Systems . Springer Nature Switzerland, Cham, 253–265. doi:10.1007/978-3-031-97439-7_12 [29] Martin Leucker. 2026. A Note on Runtime Verification of Concurrent Systems . Springer Nature Switzerland, Cham, 253–265. doi:10.1007/978-3-031-97439-7_12 [30] K. Lodaya and P. Weil. 1998. Series-parallel posets: Algebra, automata and languages. In STACS 98 , Michel Morvan, Christoph Meinel, and Daniel Krob (Eds.). Springer Berlin Heidelberg, Berlin, Heidelberg, 555–565. [31] Qingzhou Luo and Grigore Roşu. 2013. EnforceMOP: a runtime property enforcement system for multithreaded programs. In Proceedings of the 2013 International Symposium on Software Testing and Analysis (Lugano, Switzerland) 
+
+(ISSTA 2013) . Association for Computing Machinery, New York, NY, USA, 156–166. doi:10.1145/2483760.2483766 [32] Shutian Luo, Huanle Xu, Chengzhi Lu, Kejiang Ye, Guoyao Xu, Liping Zhang, Yu Ding, Jian He, and Chengzhong Xu. 2021. Characterizing Microservice Dependency and Performance: Alibaba Trace Analysis. In ACM Symposium on Cloud Computing (SoCC), Seattle, Washington . Association for Computing Machinery, New York, NY, USA, 412–426. doi:10.1145/3472883.3487003 [33] Umang Mathur, Andreas Pavlogiannis, and Mahesh Viswanathan. 2021. Optimal Prediction of Synchronization-Preserving Races. Proc. ACM Program. Lang. 5, POPL, Article 36 (Jan. 2021), 29 pages. doi:10.1145/3434317 [34] A Mazurkiewicz. 1987. Trace Theory. In Advances in Petri Nets 1986, Part II on Petri Nets: Applications and Relationships to Other Models of Concurrency . Springer-Verlag New York, Inc., 279–324. [35] Madhavan Mukund and P. S. Thiagarajan. 1996. Linear Time Temporal Logics over Mazurkiewicz Traces. In Proceedings of the 21st International Symposium on Mathematical Foundations of Computer Science (MFCS ’96) . Springer-Verlag, Berlin, Heidelberg, 62–92. [36] Edward Ochmański. 1985. Regular behaviour of concurrent systems. Bull. EATCS 27 (1985), 56–67. [37] Lucas Waye, Stephen Chong, and Christos Dimoulas. 2017. Whip: higher-order contracts for modern services. 
+
+Proceedings of the ACM on Programming Languages 1, ICFP, Article 36 (Aug. 2017). doi:10.1145/3110280 [38] Yoriyuki Yamagata, Cyrille Artho, Masami Hagiya, Jun Inoue, Lei Ma, Yoshinori Tanabe, and Mitsuharu Yamamoto. 2016. Runtime Monitoring for Concurrent Systems. In Runtime Verification - 16th International Conference, RV 2016, Madrid, Spain, September 23-30, 2016, Proceedings (Lecture Notes in Computer Science, Vol. 10012) , Yliès Falcone and César Sánchez (Eds.). Springer, 386–403. doi:10.1007/978-3-319-46982-9_24 [39] Xiang Zhou, Xin Peng, Tao Xie, Jun Sun, Chao Ji, Wenhai Li, and Dan Ding. 2021. Fault Analysis and Debugging of Microservice Systems: Industrial Survey, Benchmark System, and Empirical Study. IEEE Trans. Softw. Eng. 47, 2 (Feb. 2021), 243–260. doi:10.1109/TSE.2018.2887384 [40] Wiesław Zielonka. 1987. Notes on Finite Asynchronous Automata. RAIRO – Theoretical Informatics and Applications 
+
+21, 2 (1987), 99–135. doi:10.1051/ita/1987210200991
