@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-10-06</span>
+      <span class="dpr-home-dashboard-kicker">2026-10-07</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 6 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 3 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
-    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>2 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-10-06 23:13:28 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-10-07 23:18:06 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,7 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日精选6篇，精读2篇9.0分论文聚焦TEE场景下的可验证审计与客户端应用证明。最值得关注的是《Attestable Audit》提出的无需泄露工件即可对专有负载进行属性证明，以及《PRA-TLS》针对TEE客户端应用的证明方案。普通读者可优先了解这两篇如何在不暴露源码的前提下验证计算可信性。</p>
+<p>今日速读 3 篇，聚焦 AI 与软件安全的交叉风险，其中 CheckerBench 以 7.0 分居首。最值得看的是长程智能体能否自主合成静态分析检查器，以及 EviLLM 揭示的大模型被用于注入漏洞的新威胁。普通读者可优先了解这两项研究，关注 AI 辅助代码安全能力的双刃剑效应。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -78,12 +78,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">0 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Attestable Audit: Property-Based Attestation for Proprietary Workloads without Artifact Disclosure">Attestable Audit: Property-Based Attestation for Proprietary Workloads without Artifact Disclosure</span></li><li><span class="dpr-home-dashboard-paper-title" title="PRA-TLS: Attestation of a Client Application for TEE">PRA-TLS: Attestation of a Client Application for TEE</span></li><li><span class="dpr-home-dashboard-paper-title" title="VulValidate: Auditing Function-Level Vulnerability Labels with Executable Evidence">VulValidate: Auditing Function-Level Vulnerability Labels with Executable Evidence</span></li></ul>
+<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -94,7 +94,7 @@
     <strong class="dpr-home-dashboard-count">3 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Beyond Predefined Sinks: Security-Aware Dependency Analysis for LLM Agents">Beyond Predefined Sinks: Security-Aware Dependency Analysis for LLM Agents</span></li><li><span class="dpr-home-dashboard-paper-title" title="Trusted Hardware Acceleration for Malicious-Secure Function Secret Sharing">Trusted Hardware Acceleration for Malicious-Secure Function Secret Sharing</span></li><li><span class="dpr-home-dashboard-paper-title" title="Does AI Help Cyber Attackers or Defenders? Evidence from Nonpublic Vulnerabilities and Subsequent Attacks">Does AI Help Cyber Attackers or Defenders? Evidence from Nonpublic Vulnerabilities and Subsequent Attacks</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CheckerBench: Can Long-Horizon Agents Synthesize Static-Analysis Checkers?">CheckerBench: Can Long-Horizon Agents Synthesize Static-Analysis Checkers?</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beware EviLLM: Enabling Vulnerability Injection via Large Language Models">Beware EviLLM: Enabling Vulnerability Injection via Large Language Models</span></li><li><span class="dpr-home-dashboard-paper-title" title="PerSpectron: Detecting Invariant Footprints of Microarchitectural Attacks with Perceptron">PerSpectron: Detecting Invariant Footprints of Microarchitectural Attacks with Perceptron</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
 </section>
