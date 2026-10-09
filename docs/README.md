@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-10-07</span>
+      <span class="dpr-home-dashboard-kicker">2026-10-08</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
     <strong class="dpr-home-dashboard-count">共 3 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>0</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>3</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>2</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-10-07 23:18:06 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-10-09 00:06:24 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,7 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日速读 3 篇，聚焦 AI 与软件安全的交叉风险，其中 CheckerBench 以 7.0 分居首。最值得看的是长程智能体能否自主合成静态分析检查器，以及 EviLLM 揭示的大模型被用于注入漏洞的新威胁。普通读者可优先了解这两项研究，关注 AI 辅助代码安全能力的双刃剑效应。</p>
+<p>2026-10-08 安全论文日报：3篇新鲜成果，1篇精读锁定LLM软件漏洞检测，2篇速读覆盖编译器安全Bug与攻击路径生成。</p>
+<p>最值得看的是8.0分《GRAML》把图推理与多任务学习结合做LLM漏洞检测，7.0分《CISB-Bench》则提供可审计的源码-IR编译器安全缺陷数据集。</p>
+<p>普通读者可先读GRAML抓方法，再拿CISB-Bench做验证，最后用CVE2AP思路观察LLM自动生成攻击路径的落地风险。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -78,12 +80,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">精读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">0 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="GRAML: Graph-Grounded Reasoning and Multi-Task Learning for LLM-Based Software Vulnerability Detection">GRAML: Graph-Grounded Reasoning and Multi-Task Learning for LLM-Based Software Vulnerability Detection</span></li></ul>
   </div>
-
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-skim-card">
   <div class="dpr-home-dashboard-header">
@@ -91,12 +93,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">3 篇</strong>
+    <strong class="dpr-home-dashboard-count">2 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CheckerBench: Can Long-Horizon Agents Synthesize Static-Analysis Checkers?">CheckerBench: Can Long-Horizon Agents Synthesize Static-Analysis Checkers?</span></li><li><span class="dpr-home-dashboard-paper-title" title="Beware EviLLM: Enabling Vulnerability Injection via Large Language Models">Beware EviLLM: Enabling Vulnerability Injection via Large Language Models</span></li><li><span class="dpr-home-dashboard-paper-title" title="PerSpectron: Detecting Invariant Footprints of Microarchitectural Attacks with Perceptron">PerSpectron: Detecting Invariant Footprints of Microarchitectural Attacks with Perceptron</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="CISB-Bench: An Auditable Source--IR Dataset of Compiler-Introduced Security Bugs">CISB-Bench: An Auditable Source--IR Dataset of Compiler-Introduced Security Bugs</span></li><li><span class="dpr-home-dashboard-paper-title" title="CVE2AP: Automated Generation of PDDL-Encoded Attack Paths via Large Language Models">CVE2AP: Automated Generation of PDDL-Encoded Attack Paths via Large Language Models</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>3</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>2</strong></span></div>
 </section>
 </div>
 
