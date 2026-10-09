@@ -1,0 +1,532 @@
+Title: NosRacer: Dynamic Detection of Race Conditions in On-Device Network Operating Systems
+
+URL Source: https://arxiv.org/pdf/2610.11875v1
+
+Published Time: Fri, 09 Oct 2026 01:28:17 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# NosRacer: Dynamic Detection of Race Conditions in On-Device Network Operating Systems 
+
+## Runze Wu 1 Jingbo Zhai 1 Shanming Ping 2 Lingzhi Ouyang 2 Hua Duan 2 Qin Zou 2
+
+## Chengcheng Huang 2 Bingshe Liu 2 Xudong Lang 2 Xiaoxing Ma 1 Yu Huang 1 * 
+
+> 1
+
+State Key Laboratory of Novel Software Technology, Nanjing University 
+
+> 2
+
+Huawei Technologies Co., Ltd 
+
+## Abstract 
+
+Commercial on-device network operating systems (NOSes) run complex control planes in production routers and switches, where configuration update tasks are executed by multiple loosely coupled components through asynchronous message passing. Such executions are prone to race conditions: the same ordered input commands may produce different out-comes when messages are delivered in different orders. The race conditions are difficult to expose because they often manifest only as subtle, delayed malfunctions. Existing static analysis techniques lack scalability and precision for large-scale industrial NOSes, while dynamic ones incur substantial system-execution cost when attempting to cover the space of asynchronous message interleavings. To address the challenges above, we present NosRacer, a dynamic analysis framework for race condition detection in industrial-grade on-device NOSes. NosRacer uses a two-phase design. The concentration phase reduces analysis scope by leveraging the locality of configuration update tasks. Race condition detection is then limited to a small subset of involved components and crucial state variables, thereby reducing the detection cost. The perturbation phase proactively perturbs message asynchrony to increase the like-lihood of executions with race-condition-exposing message interleavings. It keeps perturbation practical by grouping compatible perturbations for parallel execution and adap-tively strengthening perturbations. We implement NosRacer in a commercial, actively devel-oped NOS. NosRacer is integrated into the existing testing factory and used to detect race conditions in 5 key control-plane components. NosRacer achieves 66% precision and detects 21 race conditions confirmed by developers as severe bugs, while keeping the detection overhead below 10%.         
+
+> ∗Corresponding author.
+> This work is licensed under aCreative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License.
+> SIGOPS ATC 2026, Hong Kong, China
+> © 2026 Copyright held by the owner/author(s). ACM ISBN 979-8-4007-2818-1/2026/11
+> https://doi.org/10.1145/3828523.3857055
+
+CCS Concepts: • Software and its engineering → Soft-ware testing and debugging ; • Computer systems orga-nization → Reliability .
+
+Keywords: on-device network operating systems, race con-ditions, dynamic analysis 
+
+ACM Reference Format: 
+
+Runze Wu, Jingbo Zhai, Shanming Ping, Lingzhi Ouyang, Hua Duan, Qin Zou, Chengcheng Huang, Bingshe Liu, Xudong Lang, Xiaoxing Ma, and Yu Huang. 2026. NosRacer: Dynamic Detection of Race Conditions in On-Device Network Operating Systems. In 
+
+The 2026 ACM SIGOPS Annual Technical Conference (SIGOPS ATC 2026), November 15–18, 2026, Hong Kong, China. ACM, New York, NY, USA, 18 pages. https://doi.org/10.1145/3828523.3857055 
+
+## 1 Introduction 
+
+Commercial on-device Network Operating Systems (NOSes), such as Cisco IOS XR, Juniper JunOS, Huawei VRP, and SONiC, are complex software stacks deployed on produc-tion routers and switches [6, 18, 21, 52]. In a typical NOS control plane, protocol and management functions are imple-mented by tens to hundreds of loosely coupled components, which coordinate with one another through asynchronous messages [19, 20, 51]. Configuration updates are routine operations in produc-tion NOSes, e.g., due to topology changes, traffic dynamics, and policy revisions [24, 47, 62]. As shown in Figure 1, one configuration update task typically consists of an ordered sequence of configuration commands. These commands are processed by multiple control-plane components, which in-teract through asynchronous messages, in order to validate, propagate, and realize the requested state changes. Correct execution of the configuration update task is of vi-tal importance to the NOS control plane [22, 54, 55]. However, ensuring correct execution of the task is greatly hampered by the race condition problem [40]. That is, in different ex-ecutions of the same update task, asynchronous message passing may result in different ways of coordination among components, thus producing different update results. Race conditions typically do not manifest immediately as user-visible system anomalies. Instead, they manifest themselves in silent and subtle malfunctions, e.g., a subscription quietly lost, a state left stale, or a downstream notification missed [34, 35, 55]. By the time severe network failures occur, it is 
+
+> 1arXiv:2610.11875v1 [cs.DC] 8 Oct 2026
+
+usually too late to identify the underlying race conditions or trace failures back to them. This also explains the difficulties in reproducing the race conditions. An exemplar race condition from the NOS we study is shown in Figure 2. An upstream component sends an un-sub_vlan command followed by a sub_vlan command for the same virtual LAN interface to ARP. The ARP compo-nent needs to interact with the interface management (MGR) component to cancel and reestablish the virtual LAN sub-scription. 
+
+• Possible Execution 1 . When the ACK of unsub_vlan is pro-cessed before ARP handles the second sub_vlan command, ARP observes the updated unsubscribed state. It then sends a new sub_vlan request, and ends subscribed , which is the intended outcome. 
+
+• Possible Execution 2 . When the ACK of unsub_vlan is de-layed, ARP handles the sub_vlan command first, reads a stale subscribed state, and thus ignores the second com-mand. ARP ends unsubscribed , which is a confirmed bug. Although the sequence of input commands from the up-stream component is unchanged, the update of the virtual LAN status differs when the processing order of the two messages differs. This race condition manifests itself in se-vere system failures, where the VLAN interface cannot for-ward packets. Race conditions are notoriously difficult to detect and fix in various concurrent and distributed systems [5, 23, 32, 39]. In NOSes, though each component under-goes extensive unit, integration, and stress testing, these tests mainly validate component-wise functional correctness [50, 53, 60]. Race-condition checking is still insufficient. We analyzed the anomalies observed in a large-scale production NOS deployment (2021~2024). Among all the 53 issues clas-sified as “message timing related", 27 issues were caused by race conditions, as confirmed by the testing engineers. The race condition problem has been extensively stud-ied in concurrent programming [9, 10, 45] and event-driven programming [15, 31, 38, 44]. Both static [1, 14] and dy-namic [45, 63] analysis techniques have been developed. In this work, we study how to cope with race conditions in a production NOS with 200+ control-plane components, each typically containing 5k+ variables and 10k+ functions. At this scale, existing static analysis techniques face severe scal-ability challenges, and their precision is also limited [14, 29]. Although dynamic analysis techniques can improve accuracy by using concrete execution information, the enormous num-ber of possible asynchronous executions makes the system-execution cost unacceptable [28, 39, 42]. To unearth race conditions in a production NOS, we pro-pose the dynamic analysis framework NosRacer. The core innovation of NosRacer lies in its two-phase design. The 
+
+concentration phase substantially reduces the detection cost, while the perturbation phase improves its effectiveness in exposing race conditions, as detailed below. 
+
+> commands commands
+> VLAN ARP MGR C1 C2 C3 C4 C5 C6 C7 C8 C9
+> target component interacting components upstream component
+> addVlanIfHandler :if (vlan.status == SUBSCRIBE) sendAddReq();
+> cancelACKHandler :vlan.status = UNSUBSCRIBE; sendReply(ACK); startTimer(arp.timer);
+> timerExpireHandler :arp.timer = 0; refreshTable();
+> vlan.status
+> addVlanIfHandler
+> ∥
+> cancelACKHandler
+> arp.timer
+> cancelACKHandler
+> →
+> timerExpireHandler crucial variable non-crucial variable
+
+Figure 1. A configuration update task. 
+
+Concentration. In the concentration phase, the key issue is to cope with the complexity of an industry-grade NOS. NosRacer first leverages the existing testing factory of the target NOS to run a small subset of closely related test cases and concentrate on a small subset of components in the NOS. This is motivated by the observation that configuration update tasks exhibit locality, i.e., each task typically involves only a limited number of components. Among the 27 race-condition-induced bugs we studied, every task involves no more than 8 of the 200+ components, and 80% involve at most 5. After identifying the components involved in a configura-tion update task, NosRacer then leverages static analysis to concentrate on a small subset of crucial variables in compo-nent implementations. This is based on the observation that, in essence, the configuration update is the update of the cru-cial state information of the involved components. Such state is typically stored in a small set of crucial variables in the component implementations. Tracking reads and updates on the variable values can help us efficiently detect race condi-tions. That is, if the crucial state information variables are accessed by concurrent operations in asynchronous message handlers, potential race conditions can occur. 
+
+Perturbation. The major obstacle to effective race condi-tion detection in NosRacer is the enormous space of possible system executions induced by asynchronous message inter-leavings. As a dynamic analysis tool, NosRacer must care-fully plan system executions to keep the overheads under control. To address this obstacle, NosRacer proactively per-turbs the asynchrony of message passing, thereby increasing the likelihood of test executions with the specific message in-terleavings needed to expose race conditions. In a statistical sense, the perturbation is expected to consistently reproduce the race condition until it is fixed. If the update tasks can     
+
+> 2Possible Execution 1 Possible Execution 2
+> unsub_vlan ACK sub_vlan ACK unsub_vlan ACK ignore unsub_cmd sub_cmd
+> MGR ARP MGR
+
+Figure 2. An exemplar race condition. survive such perturbation, developers can gain more con-fidence in deploying and operating the NOS in production environments. The perturbed test execution is performed using the ex-isting testing factory. NosRacer consolidates perturbations within the same test execution whenever possible, thereby conserving the limited testing budget. However, two factors fundamentally affect the efficiency of perturbation. In industrial-grade NOSes, NosRacer lacks fine-grained control over message-passing perturbations. As a result, dif-ferent perturbations may conflict with one another. Nos-Racer groups compatible perturbations within the same test execution and dispatches multiple groups of perturbations to the testing factory for parallel execution. A perturbation may also fail to produce a perturbed execu-tion with the message ordering required for race condition detection. Based on failed perturbed executions, NosRacer adaptively strengthens the perturbation to improve the like-lihood of successful race condition detection. Due to the side effects introduced by imprecise perturbation, increasing the perturbation strength is not always beneficial. Excessive perturbation may drive the system execution away from the original execution, rendering it ineffective for race con-dition detection. NosRacer estimates an upper bound on perturbation strengthening by statically analyzing how time-out mechanisms are implemented in the system. NosRacer further uses a small number of perturbed executions to em-pirically estimate this upper bound. 
+
+Key results. We evaluate NosRacer on 5 control-plane components of a commercial on-device NOS (200+ compo-nents, 100M+ LOC, 200,000+ test cases). It detects 15 new race conditions and reproduces 6 known ones, with a pre-cision of 66%. All 21 bugs have been fixed. The deployment and usage cost of NosRacer is no more than 20 person-days, and the increase in testing cost is less than 10%. 
+
+Summary. This work makes three main contributions. 
+
+• We propose NosRacer, a dynamic analysis framework for race condition detection in configuration-update scenarios in industrial-grade NOSes. 
+
+• We implement NosRacer in a commercial NOS under ac-tive development and integrate it into the existing testing factory. 
+
+• We apply NosRacer to detect race conditions in 5 com-ponents of the NOS under test, and present detailed eval-uations showcasing the effectiveness and efficiency of NosRacer. 
+
+## 2 NosRacer Happen-Before Model 
+
+At the core of race condition detection lies the problem of rea-soning about the temporal ordering relations among shared-resource accesses [26]. This section defines the happen-before model behind NosRacer. It first defines the configuration update task, and then the happen-before relation between operations in the task. The definition of a race condition naturally follows from that of the happen-before relation. 
+
+2.1 Configuration Update Task 
+
+Configuration updates are routine in production NOSes. A 
+
+configuration update task consists of a sequence of configu-ration update commands issued by upstream components in the NOS control plane. A task is carried out by multiple com-ponents that coordinate through asynchronous messages. In each run, NosRacer selects one task and designates one component involved in the task as the target component .NosRacer analyzes race conditions on a per-component ba-sis because components constitute the natural ownership and concurrency boundaries in the NOS control plane. This design improves effectiveness by localizing potential race conditions to the state variables and message-handling logic of individual components. The detection of race conditions utilizes the asynchronous interaction between the target component and the interacting components . Instead of rea-soning about all possible shared-resource accesses and mes-sage interleavings at the system level, NosRacer restricts the analysis to a small subset of components, thereby reducing the search space. Since components interact via message passing, compo-nent execution follows an event-driven model. Upon the delivery of one message, the component will initiate the corresponding message handler to process the message. The message handler consists of two types of operations. One is local operations, which mainly read and update local in-formation of the component. The other is message-sending operations, which result in message handler execution in another component. The key to race condition detection is the reasoning about the temporal happen-before relations among operations in message handlers, as defined in detail below. 
+
+> 3
+
+2.2 Happen-before Model 
+
+The happen-before model primarily defines the temporal relations among operations, which may occur within the same component or across different components. Operations within the same component are totally ordered by the serial execution semantics of the component. Operations on dif-ferent components are ordered by the causality inherent in message passing. We define these ordering relations formally as follows. 
+
+Handler program order. The operations inside one mes-sage handler are totally ordered. Specifically, for any two operations 𝑜𝑝 1 and 𝑜𝑝 2 in one message handler, if 𝑜𝑝 1 is executed before 𝑜𝑝 2, we have: 𝑜𝑝 1
+
+> 𝑃
+
+→ 𝑜𝑝 2.
+
+Message passing order. The message sending operation and the corresponding message handling operations are tem-porally ordered. Specifically, assume that operation 𝑜𝑝 1 is a message sending operation in message handler ℎ𝑑𝑙 1 in some component 𝐶 1, which results in the message delivery on another component 𝐶 2. The message delivery is processed by message handler ℎ𝑑𝑙 2. For any operation 𝑜𝑝 2 ∈ ℎ𝑑𝑙 2, we have: 𝑜𝑝 1
+
+> 𝑀
+
+→ 𝑜𝑝 2.Note that, not all operations in ℎ𝑑𝑙 1 happen-before opera-tions in ℎ𝑑𝑙 2. Only 𝑜𝑝 1 (as well as operations before 𝑜𝑝 1 in 
+
+ℎ𝑑𝑙 1) happens-before operations in ℎ𝑑𝑙 2. This subtlety will af-fect our definition of the happen-before relationship between message handlers below. 
+
+FIFO channel order. When two message sending opera-tions in one component have already been ordered based on 𝑃 
+
+→ and 𝑀 
+
+→ defined above, this order will be preserved by the FIFO property of the message communication channel. Specifically, assume that 𝑠𝑛𝑑 1 and 𝑠𝑛𝑑 2 are two sending op-erations on the same component, and these two messages have the same receiver component. Let ℎ𝑑𝑙 1 and ℎ𝑑𝑙 2 denote the message handlers of 𝑠𝑛𝑑 1 and 𝑠𝑛𝑑 2 respectively. If 𝑠𝑛𝑑 1
+
+precedes 𝑠𝑛𝑑 2 with respect to the transitive closure of 𝑃 
+
+→ and 
+
+> 𝑀
+
+→, we have: 
+
+∀𝑜𝑝 1 ∈ ℎ𝑑𝑙 1, ∀𝑜𝑝 2 ∈ ℎ𝑑𝑙 2, 𝑜𝑝 1
+
+> 𝐹
+
+→ 𝑜𝑝 2
+
+Task order. Commands within a task are totally ordered. When two ordered commands are sent from one upstream component to one (target or interacting) component, this command order is preserved by the FIFO message channel. Specifically, we have two commands 𝑐𝑚𝑑 1 and 𝑐𝑚𝑑 2 from one upstream component and 𝑐𝑚𝑑 1 precedes 𝑐𝑚𝑑 2. If 𝑐𝑚𝑑 1
+
+and 𝑐𝑚𝑑 2 result in two message handlers ℎ𝑑𝑙 1 and ℎ𝑑𝑙 2 on one receiver component, we have: 
+
+∀𝑜𝑝 1 ∈ ℎ𝑑𝑙 1, ∀𝑜𝑝 2 ∈ ℎ𝑑𝑙 2, 𝑜𝑝 1
+
+> 𝑇
+
+→ 𝑜𝑝 2
+
+The task order is in essence the same as the FIFO channel order. The main difference is that the task order originates from the order in the input commands in a given task, while the FIFO channel order originates from the sequential local processing and the causality in message passing. Note that in subsequent race condition checking, the task order serves as the basis for determining whether the external test inputs have changed. 
+
+Happen-before order. The ordering relations defined above collectively form the happen-before relation between oper-ations. Specifically, for two operations 𝑜𝑝 1 and 𝑜𝑝 2 in one or two components, the happen-before relation → between 
+
+𝑜𝑝 1 and 𝑜𝑝 2 is defined as the transitive closure of 𝑃 
+
+→, 𝑀 
+
+→, 𝐹 
+
+→
+
+and 𝑇 
+
+→:
+
+→ ≜ ( 𝑃 
+
+→ ∪ 𝑀 
+
+→ ∪ 𝐹 
+
+→ ∪ 𝑇 
+
+→) +
+
+We denote two operations as concurrent , if neither one happens-before the other. That is: 
+
+𝑜𝑝 1 || 𝑜𝑝 2 iff ¬( 𝑜𝑝 1 → 𝑜𝑝 2) ∧ ¬( 𝑜𝑝 2 → 𝑜𝑝 1)
+
+For the ease of presentation, we also define the happen-before relation between message handlers. The happen-before relation between message handlers follows from its counter-part between operations, except for a few subtle differences. Specifically, for two message handlers ℎ𝑑𝑙 1 and ℎ𝑑𝑙 2:
+
+ℎ𝑑𝑙 1 → ℎ𝑑𝑙 2, iff ∀𝑜𝑝 1 ∈ ℎ𝑑𝑙 1, ∀𝑜𝑝 2 ∈ ℎ𝑑𝑙 2, 𝑜𝑝 1 → 𝑜𝑝 2
+
+Here, we overload ‘ →’ to also denote the happen-before relation between message handlers. Note that the univer-sal quantifier ‘ ∀’ before 𝑜𝑝 1 and 𝑜𝑝 2 is due to the subtlety that one message handler may have only part of its oper-ations happening-before operations in another handler, as discussed in definition of 𝑀 
+
+→.
+
+Concrete execution order. Since each component fol-lows serial execution semantics, all operations and handlers within the same component are necessarily totally ordered in any concrete execution. We denote this order in a given concrete execution 𝜎 as →𝜎 . Note that, this order pertaining to one concrete execution should not be confused with the happens-before order defined above. The happen-before or-der → is preserved across all executions, rather than being valid only for one single concrete execution. 
+
+2.3 Race Condition 
+
+In a configuration update task, a race condition [40] is char-acterized by the fact that the same task may lead to different outcomes under different message orderings. 
+
+Crucial variable. For a configuration update task, the core logic of a component is to update the various states it holds throughout the configuration update process. The intermedi-ate state of a component is maintained through variables that encode the state information. We call such variables crucial variables . Once we concentrate on crucial variables, the race condition detection problem reduces to determining whether a crucial variable may be concurrently updated. Concurrent update operations on a crucial variable can potentially be 
+
+> 4
+
+ordered differently across executions, resulting in nonde-terministic values of the variable. NosRacer leverages the testing factory (Appendix A) to run test cases of configura-tion update tasks. Then NosRacer checks concurrent reads and updates on crucial variables in the test executions. Here, for ease of presentation, we assume that crucial variables can be uniquely identified and their occurrences correlated in one test execution and across different test executions. Note that during actual system execution, a class may be instantiated into multiple concrete objects. Thus the crucial variable, typically defined in some class, will have multiple concrete instances. Within an execution, accesses to different instances must be distinguished. 
+
+Concurrent and perturbed accesses. We denote the con-current access on a runtime instance of crucial variable 𝑣𝑎𝑟 in some original test execution 𝜎 𝑜𝑟𝑖 as 𝑎𝑐𝑐 𝑐𝑜𝑛 = (𝑣𝑎𝑟, ℎ𝑑𝑙 1, ℎ𝑑𝑙 2),where: 
+
+ℎ𝑑𝑙 1 || ℎ𝑑𝑙 2, ℎ𝑑𝑙 1 →𝜎 𝑜𝑟𝑖 ℎ𝑑𝑙 2
+
+NosRacer perturbs test executions to obtain a perturbed access from one concurrent access (as detailed in §3.2). A perturbed access corresponds to the original concurrent ac-cess in another execution, with the order of the two message handlers reversed. That is, given one original concurrent access 𝑎𝑐𝑐 𝑐𝑜𝑛 , the perturbed access in perturbed execution 
+
+𝜎 𝑝𝑒𝑟 is 𝑎𝑐𝑐 𝑝𝑒𝑟 = (𝑣𝑎𝑟, ℎ𝑑𝑙 2, ℎ𝑑𝑙 1), where ℎ𝑑𝑙 2 →𝜎 𝑝𝑒𝑟 ℎ𝑑𝑙 1. The technical details behind instance identification and access alignment are provided in §4. 
+
+Race condition. Given a configuration update task, a race condition is detected, if concurrent accesses to a crucial variable may render its value nondeterministic. Specifically, given concurrent access 𝑎𝑐𝑐 𝑐𝑜𝑛 and its paired perturbed ac-cess 𝑎𝑐𝑐 𝑝𝑒𝑟 , a race condition is found if: 
+
+• the sequence of input commands remains unchanged after perturbation; 
+
+• ( ℎ𝑑𝑙 1 || ℎ𝑑𝑙 2) ∧ ( ℎ𝑑𝑙 1 →𝜎 𝑜𝑟𝑖 ℎ𝑑𝑙 2) ∧ ( ℎ𝑑𝑙 2 →𝜎 𝑝𝑒𝑟 ℎ𝑑𝑙 1);
+
+• val 𝜎 𝑜𝑟𝑖 (𝑣𝑎𝑟 ) ≠ val 𝜎 𝑝𝑒𝑟 (𝑣𝑎𝑟 ).The concurrent and perturbed accesses, as well as the race condition defined above are essentially patterns in test exe-cutions. These patterns may have duplicate occurrences both within a single test execution and across different test execu-tions. As for two concurrent accesses, if they access the same crucial variable, with the same two message handlers in the same order, we refer to the two occurrences as duplicates of each other. Two duplicate concurrent accesses only differ in where they occur in one test execution or across different executions. Duplicates of perturbed accesses are defined sim-ilarly. Duplicate concurrent accesses and perturbed accesses may also result in duplicate race conditions. In our termi-nology, a race condition refers to an equivalence class of duplicate race-condition occurrences. For the ease of presen-tation, we treat it as one single race condition. Concurrent accesses and perturbed accesses are treated similarly. 
+
+Severity of a race condition. When race conditions are detected, test engineers are primarily concerned with the severity of the race condition, i.e., how the effects of a race condition propagate and are amplified through subsequent component executions. In this work, the severity assessment (§3.3) primarily focuses on whether a race condition affects the subsequent sequences of message-sending operations and message handler function calls. 
+
+## 3 NosRacer Framework 
+
+NosRacer is a dynamic analysis framework for race condi-tion detection. The practical deployability of NosRacer in industrial-grade NOSes stems from two key technical innova-tions, as shown in Figure 3. In the concentration phase, Nos-Racer tackles the scalability limitations of existing static and dynamic analysis techniques. In the perturbation phase, by amplifying the asynchrony of inter-component message in-teractions, NosRacer proactively constructs execution con-ditions that expose race conditions. 
+
+3.1 Concentration 
+
+The concentration phase serves two primary purposes: reduc-ing hundreds of components to a small subset, and thousands of component-state variables to tens or hundreds of crucial ones, as shown in Figure 1. 
+
+3.1.1 Identification of interacting components. Our inspection of existing test executions provides the intuition that a configuration update task typically involves only a small subset of components. We conducted a comprehensive empirical study of the latest bugs related to configuration updates. The study confirms our intuition. Among 27 real-world bugs we analyzed, all involve no more than 8 interact-ing components, and 22 involve no more than 5. According to our study, NosRacer efficiently identifies the interact-ing components of the pre-specified target component, by running test cases of configuration update tasks. Note that, static analysis alone cannot precisely identify all interacting components for a given target component, because component interactions are largely determined by runtime message routing, system state, and asynchronous ex-ecution order. Although static analysis can over-approximate potential interactions, such an approximation often includes an excessive number of irrelevant components and thus pro-vides limited scalability benefits in the concentration phase. In the testing factory, each test case is annotated with rich functional labels. NosRacer uses the functional labels to se-lect test cases pertaining to the target component. Moreover, the test case profiles provide coverage statistics for the target component. The selected test cases are prioritized accord-ing to the coverage statistics. More information of test case profiles is provided in Appendix A. Dynamic executions of the selected test cases can help NosRacer identify the interacting components with respect    
+
+> 5Component Identification
+> (§3.1.1)
+> Crucial Variable Identification
+> (§3.1.2)
+> Grouping
+> (§3.2.1)
+> Strengthening
+> (§3.2.2)
+> Target component Test cases Reports
+> Preparatory execution Detection Validation
+> Phase 1: Concentration Phase 2: Perturbation
+
+Figure 3. The concentration-and-perturbation design of NosRacer. to the target component. Specifically, NosRacer constructs a component graph, whose nodes are simply the compo-nents. If two components interact with each other via one message, a directed edge is added from the message sender to the receiver. The direct predecessor and direct successor components of the target component are identified as inter-acting components. Test cases are executed in descending order of priority, until the set of interacting components stops changing. In the practical deployment of NosRacer, this convergence takes no more than 20 test cases. 
+
+3.1.2 Identification of crucial variables. A target com-ponent may contain a great number of configuration update-related variables (typically more than 1,000 in the NOS stud-ied in this work). However, most of such variables are ir-relevant to the inter-component message interactions. Nos-Racer identifies a variable as crucial, when it is accessed by multiple message handlers and at least one updates the variable value. Analysis of crucial variables starts from the message handler executions recorded in the test executions in the previous step (§3.1.1). NosRacer uses the Abstract Syn-tax Tree (AST) to provide a structured representation of the message handling logic, allowing NosRacer to identify vari-able declarations, read/update accesses, and message passing operations. By analyzing these syntactic structures together with component-level execution contexts, NosRacer can statically identify variables which are potentially shared across asynchronous executions and may therefore give rise to race conditions. For each identified variable, NosRacer records the access sites together with their enclosing func-tions. Our choice of an AST-based approach is motivated by the following subtle tradeoffs. Compared with Intermediate Representation (IR)-based techniques, AST-based analysis preserves source-level program structures and can be applied with lower engineering and computational cost, making it more scalable for industrial-grade NOS codebases. It allows NosRacer to efficiently identify access sites of critical vari-ables and relevant message-handling logic. However, AST-based analysis provides limited semantic information and is less precise in reasoning about aliasing, inter-procedural data flow and synchronization. In contrast, IR-based analysis enables more precise semantic reasoning, but often incurs a higher deployment and analysis cost in large production systems. 
+
+3.1.3 Preparatory test executions. Given the crucial variables, NosRacer needs concrete test executions to deter-mine whether the crucial variables are updated by concurrent message handlers. NosRacer leverages coverage informa-tion in test case profiles to select test cases that cover func-tions containing crucial-variable access sites (as recorded in the previous step in §3.1.2). NosRacer greedily selects the test case that covers the maximum number of uncovered crucial-variable access sites, until all the sites are covered. Given the test executions, NosRacer constructs the graph of operations in the test execution traces. NosRacer pairs sends and receives using message hashes recorded at the send/receive APIs. The operations are modeled as graph nodes, and an edge is added between two operations if these two operations are ordered by the happen-before relation defined in §2.2. Based on the operation graph, NosRacer can decide the concurrency between message handlers, and thus can detect concurrent accesses on crucial variables. This graph lets NosRacer determine concurrency without adding logical timestamps to messages. NosRacer uses the concur-rent accesses to construct subsequent perturbed test execu-tions. 
+
+3.2 Perturbation 
+
+The perturbation phase starts from the concurrent accesses on crucial variables (§3.1.3), as shown in Figure 4. Given con-current access 𝑎𝑐𝑐 𝑐𝑜𝑛 = (𝑣𝑎𝑟, ℎ𝑑𝑙 1, ℎ𝑑𝑙 2) in test execution 𝜎 1,message handlers ℎ𝑑𝑙 1 and ℎ𝑑𝑙 2 concurrently access crucial variable 𝑣𝑎𝑟 with respect to the happen-before relation →. In the original test execution 𝜎 1, we have ℎ𝑑𝑙 1 →𝜎 1 ℎ𝑑𝑙 2. There-fore, there exists some possible execution 𝜎 2 of the same configuration update task, in which ℎ𝑑𝑙 2 →𝜎 2 ℎ𝑑𝑙 1. The per-turbation phase primarily aims to proactively construct 𝜎 2,a test execution that reverses the concrete execution order between ℎ𝑑𝑙 1 and ℎ𝑑𝑙 2.The perturbation delays the sending operation correspond-ing to the message handler ℎ𝑑𝑙 1 in the perturbed test exe-cution 𝜎 2. The perturbation succeeds if NosRacer finds the perturbed access 𝑎𝑐𝑐 𝑝𝑒𝑟 = (𝑣𝑎𝑟, ℎ𝑑𝑙 2, ℎ𝑑𝑙 1) in 𝜎 2, correspond-ing to the original concurrent access 𝑎𝑐𝑐 𝑐𝑜𝑛 , where: 
+
+• The test inputs (i.e., the task orders among operations) remain unchanged from 𝜎 1 to 𝜎 2;
+
+• ( ℎ𝑑𝑙 1 →𝜎 1 ℎ𝑑𝑙 2) ∧ ( ℎ𝑑𝑙 2 →𝜎 2 ℎ𝑑𝑙 1).NosRacer finds a race condition if given a successful per-turbed access 𝑎𝑐𝑐 𝑝𝑒𝑟 , val 𝜎 1 (𝑣𝑎𝑟 ) ≠ val 𝜎 2 (𝑣𝑎𝑟 ).                               
+
+> 6reversed
+> Concurrent Accesses Compatible Perturbations Detection Results
+> h1 h2 𝜎 1
+> delay: send( h1 )
+> Acc1
+> var1
+> delay h5 h5 =h2 ∨h5 =h4
+> →conflict perturb
+> Group 2
+> delay h1 h1 ≠h4 ∧h3 ≠h2
+> →no conflict
+> Group 1
+> delay h3
+> not reversed →strengthening reversed var1 diff value race condition
+> Acc1
+> var2 same value not race condition
+> Acc2
+> var3 diff value race condition
+> Acc3
+> h3 h4 𝜎 2
+> delay: send( h3 )
+> Acc2
+> var2
+> h5 h6 𝜎 3
+> delay: send( h5 )
+> Acc3
+> var3 reversed
+
+Figure 4. Perturbation phase in NosRacer. The perturbation derived from a concurrent access 𝑎𝑐𝑐 𝑐𝑜𝑛 
+
+is the injection of a certain delay before the sending operation that results in ℎ𝑑𝑙 1. NosRacer consolidates perturbations within the same test execution whenever possible, thereby conserving system execution budget. At the same time, since perturbations targeting different concurrent accesses may conflict with one another, NosRacer models conflicts among perturbations, and assigns mutually conflicting perturba-tions to separate parallel test executions (§3.2.1). Since the perturbations may fail, NosRacer adaptively strengthens the perturbation (§3.2.2). 
+
+3.2.1 Grouping compatible perturbations. For concur-rent access 𝑎𝑐𝑐 𝑐𝑜𝑛 , the perturbation delays the sending oper-ation corresponding to ℎ𝑑𝑙 1. This delay increases the proba-bility that ℎ𝑑𝑙 2 accesses 𝑣𝑎𝑟 before ℎ𝑑𝑙 1. Ideally, NosRacer should only delay the single message corresponding to ℎ𝑑𝑙 1,without any side effect on the NOS under test. However, in production NOSes, it is generally difficult to achieve precise delay control over specified messages. The testing environ-ment of NosRacer does not assume a centralized overar-ching scheduler capable of controlling nondeterminism at a fine granularity, as in distributed system model checking [28, 41, 56, 61]. Another promising approach is to hack the un-derlying messaging middleware to gain precise control over delays of specific messages. However, in industrial-grade NOSes, the underlying messaging middleware is critical to the development and maintenance of the entire system. As a result, specific testing tools are typically not granted the privilege to instrument the messaging middleware. In practice, when constructing happen-before relations among message handlers, NosRacer has already established the mapping between each message-sending operation and its corresponding message handlers. For concurrent access 
+
+𝑎𝑐𝑐 𝑐𝑜𝑛 , NosRacer locates the message-sending operation corresponding to ℎ𝑑𝑙 1 and instruments the program by in-serting delay-inducing code immediately before that sending operation. At the source-level, NosRacer can identify message-sending sites and the types of messages they may send, but it can-not precisely distinguish individual runtime message in-stances. A single source-level send operation may be ex-ecuted multiple times and produce multiple messages un-der different runtime contexts. Therefore, source-level in-strumentation can only delay a group of messages. Denote the identifier of a message corresponding to message han-dler ℎ𝑑𝑙 1 as msgid (ℎ𝑑𝑙 1) = (src (ℎ𝑑𝑙 1), rcv (ℎ𝑑𝑙 1), typ (ℎ𝑑𝑙 1)) .Here, src (ℎ𝑑𝑙 1) and rcv (ℎ𝑑𝑙 1) denote the message sender and receiver respectively, and typ (ℎ𝑑𝑙 1) denotes the mes-sage type. As for concurrent access 𝑎𝑐𝑐 𝑐𝑜𝑛 , NosRacer injects delay before messages matching msgid (ℎ𝑑𝑙 1). Note that the injection of the message delay is not accurate, in the sense that all messages of a specific type between a specific sender and receiver will be delayed. To save testing budget, NosRacer batches perturbations, i.e., injections of message delays, given that the perturba-tions do not counteract each other. The basic rationale be-hind the compatibility between perturbations is as follows. For two perturbed accesses 𝑎𝑐𝑐 𝑝𝑒𝑟 = (𝑣𝑎𝑟, ℎ𝑑𝑙 2, ℎ𝑑𝑙 1) and 
+
+𝑎𝑐𝑐 ′ 
+
+> 𝑝𝑒𝑟
+
+= (𝑣𝑎𝑟 ′, ℎ𝑑𝑙 ′
+
+> 2
+
+, ℎ𝑑𝑙 ′
+
+> 1
+
+), 𝑎𝑐𝑐 𝑝𝑒𝑟 will delay ℎ𝑑𝑙 2, while 𝑎𝑐𝑐 ′
+
+> 𝑝𝑒𝑟
+
+will delay ℎ𝑑𝑙 ′
+
+> 2
+
+. If ℎ𝑑𝑙 ′ 
+
+> 2
+
+= ℎ𝑑𝑙 1, both ℎ𝑑𝑙 2 and ℎ𝑑𝑙 1 in 𝑎𝑐𝑐 𝑝𝑒𝑟 
+
+will be delayed. These two delay injections counteract each other, reducing the probability that the order between ℎ𝑑𝑙 2
+
+and ℎ𝑑𝑙 1 is reversed. In this case, the perturbations 𝑎𝑐𝑐 𝑝𝑒𝑟 
+
+and 𝑎𝑐𝑐 ′ 
+
+> 𝑝𝑒𝑟
+
+are deemed conflicting , or not compatible .NosRacer partitions the perturbations into perturbation groups in which every pair of perturbations is compatible. To execute a group of perturbations, NosRacer reruns the selected test cases and injects all the delays prescribed in the perturbations. Different perturbation groups are indepen-dent. NosRacer therefore submits multiple groups to the testing factory for parallel execution. 
+
+3.2.2 Strengthening unsuccessful perturbations. The time interval between ℎ𝑑𝑙 1 and ℎ𝑑𝑙 2 in 𝑎𝑐𝑐 𝑐𝑜𝑛 serves as the initial injected delay. It is an approximate estimation of the delay needed to reverse ℎ𝑑𝑙 1 and ℎ𝑑𝑙 2. Various factors, e.g., different types of message queues widely used in components and the message handler execution time, can possibly affect whether the order reversal succeeds. When the perturbation fails, if NosRacer can still find the original occurrence in the perturbed test execution, it simply doubles the delay injection and schedules another round of perturbation. Note that the perturbation process typically terminates af-ter only a limited number of rounds, because the side effects of perturbation increase significantly with the injected delay. As the delay increases, NosRacer soon fails to observe the original concurrent accesses in the resulting test executions. NosRacer statically analyzes the timeout values used in the system implementation to estimate an upper bound on injected message delays. NosRacer further uses a small num-ber of perturbed test executions to empirically estimate the 
+
+> 7
+
+upper bound on injected message delays. After the pertur-bation phase, NosRacer collects all successfully perturbed accesses paired with their original concurrent accesses for race condition detection and validation. 
+
+3.3 Detection and Validation 
+
+NosRacer first performs preparatory test executions to iden-tify suspected race conditions, i.e., concurrent accesses. Nos-Racer then constructs perturbed executions as evidence to confirm these suspects. 
+
+Precision analysis. In the ideal case, NosRacer is complete, in the sense that every race condition it confirms is a real one, assuming that its model of the NOS under test is accurate and complete. In real-system deployments, NosRacer does not provide strict soundness or completeness guarantees. Nevertheless, by confirming race condition suspects through perturbed executions, it produces high-precision race condition reports in practice, as shown in the experimental evaluation (§5). 
+
+Severity assessment. Detected race conditions are submit-ted to NosRacer users, i.e., testing engineers and developers, for severity assessment. Severity assessment is primarily based on comparing the behaviors of the original and per-turbed test executions. The severity of each reported race condition is measured by how quickly and to what extent it leads to user-visible abnormal program behavior. Specifically, we consider three measures of severity: 
+
+• First point of divergence . NosRacer identifies the earliest subsequent behavior at which the original and perturbed executions deviate. For NosRacer users, the first point of divergence provides a concrete starting point for under-standing the impact of a detected race condition. It helps developers localize the propagation of the race condition, and prioritize severe cases. 
+
+• Divergence in outgoing-message sequences . Analyzing di-vergence in sequences of outgoing messages helps Nos-Racer users understand whether and how the effect of a race condition propagates beyond the component where it occurs. Since NOS components interact primarily through asynchronous messages, such divergence shows how the race condition has altered the interaction among compo-nents. 
+
+• Divergence in message-handler sequences . Comparing mes-sage handler sequences across executions helps NosRacer users understand how a race condition affects the subse-quent control-plane execution. Since NOS components are message-driven, the message handler sequences provide a high-level view of how components process messages during a configuration update task. Divergence in these sequences indicates how the race condition has affected the execution path within a component. 
+
+3.4 Discussions 
+
+The current design of NosRacer incorporates several simpli-fications motivated by practical considerations. Specifically, with respect to the monitored objects, NosRacer currently focuses on simple crucial variables. Beyond simple crucial variables, NosRacer also needs to investigate how to handle complex data structures and database entries. With respect to the properties being monitored, NosRacer currently fo-cuses on crucial variables and behavior differences observed within test executions. Extending its observation model to include cross-component invariants, configuration consis-tency properties, and richer state correlations may expose a broader class of race conditions. Moreover, richer perturba-tion mechanisms, such as controlled message reordering or runtime support from messaging middleware, can improve the success rate of constructing race-exposing executions. However, enhancing the perturbation mechanism requires a broader assessment of its system-wide impact. The current design and implementation of NosRacer rep-resent the first step in a longer-term effort. Going forward, we will leverage empirical data collected from practical de-ployment (§4) and evaluation (§5) to guide our efforts in addressing the above limitations and developing the next generation of NosRacer. 
+
+## 4 Implementation and Integration 
+
+We first describe the NosRacer implementation of dynamic tracing and analysis, followed by the integration into an industrial-grade NOS. 
+
+Implementation. NosRacer is implemented as a dynamic analysis tool for NOS control planes, centered on runtime tracing and offline analysis. Runtime tracing relies on Clang-based source instrumentation [33]. The generated hooks in selected NOS components record crucial-variable accesses, message exchanges, and the execution context. Message sender-side hooks also inject message delays during per-turbation executions. Offline analysis enables perturbation planning and race condition detection. It identifies concurrent accesses on cru-cial variables, derives delay rules for perturbation executions, and compares original and perturbed executions for race condition detection. Within each execution, offline analysis distinguishes runtime instances using the source-level vari-able identifier and object address. Since object addresses may change across executions, it matches original and perturbed accesses using the variable identifier and recorded execution context, including message context and access call stacks. The NosRacer implementation consists of over 9,000 lines of C/C++ code and 25,000 lines of Python code. Appendix C provides the implementation details. 
+
+Integration. NosRacer is integrated into the testing fac-tory of the target NOS. Its deployment has been active in the production Continuous Integration (CI) pipeline for over 3 
+
+> 8
+
+months, and covers 5 control-plane components. The test-ing factory executes system-level test plans on virtualized network topologies, persistently stores test artifacts, and publishes test results for further analysis, as detailed in Ap-pendix A. To integrate NosRacer into the testing factory, an orches-trator manages each NosRacer run as a dependency graph of test executions and offline-analysis steps. The orchestrator submits test plans to the factory, retrieves test artifacts for analysis, and submits follow-up plans generated from anal-ysis results. Appendix B presents the detailed orchestrator workflow of NosRacer. Applying NosRacer to a new target component only re-quires the component name, functional labels for relevant configuration-update tests, and optional hints about related components or tasks. Preparing this configuration typically takes less than 30 minutes per component. 
+
+## 5 Evaluation 
+
+In this section, we evaluate the performance of NosRacer with respect to the following questions: 1) How effective is NosRacer in detecting race conditions and finding bugs? (§5.1); 2) How efficient is NosRacer? (§5.2). We evaluate NosRacer on 5 target components in a pro-duction on-device NOS. ARP [43], DHCP [8], and VRRP [30] are protocol-derived labels for components that provide pro-tocol/application services. MGR-A and MGR-B are anonymized labels for components that provide device-state orchestra-tion services. Each component contains more than 500k lines of code, and the testing factory provides more than 5,000 related configuration-update test cases per component on average. For each target component, NosRacer runs 200 prepara-tory executions. Each preparatory execution gives rise to 3–5 perturbation groups on average, due to conflicts between per-turbations. These groups are submitted as parallel perturbed executions. For unsuccessful perturbations, NosRacer per-forms up to 3 rounds of perturbation strengthening. The experiments mainly evaluate the effectiveness and efficiency of NosRacer. The effectiveness evaluation focuses on three aspects: NosRacer’s ability to detect race condi-tions, the severity of the detected race conditions, and the rate at which they are confirmed as real system bugs. The effectiveness evaluation further examines how perturbation strengthening affects the ability of NosRacer to detect race conditions. The efficiency evaluation focuses on the over-head incurred by NosRacer in detecting race conditions, and specifically evaluates the contribution of the concentration phase to overhead reduction. 
+
+5.1 Effectiveness 
+
+Across the 5 target components, NosRacer generates 32 race condition reports, each accompanied by severity assessment results to support developer review. Developers confirmed 66% (21 out of 32) of the reported race conditions as severe bugs. NosRacer exposed all 21 confirmed bugs using existing tests, even though the same tests had repeatedly passed in the testing factory. Among the 21 developer-confirmed bugs, 15 were previously unknown, and 6 were known bugs which were recently reported and were still open at the time. The severity assessment results provide effective guidance for developers to understand the downstream impact of the race conditions and locate the relevant buggy code fragments. All 21 confirmed bugs have now been fixed. Given the effectiveness of NosRacer as evidenced by this round of testing-factory deployment and integration, the development team is applying NosRacer to more control-plane compo-nents in our target NOS, as well as to other production NOSes having similar architecture. 
+
+5.1.1 Developer-confirmed bugs. Table 1 summarizes the 21 bug-triggering race conditions. The number of race conditions is similar across the target components (4~5 race conditions per component), suggesting that the occurrence of bug-triggering race conditions is weakly correlated with component-specific functionality and more strongly associ-ated with the pattern of asynchronous interactions among components. For each bug-triggering race condition, Table 1 reports the associated configuration update task and the crucial vari-able involved. Note that ARP#1 is the motivating example in Figure 2. For each report, the severity assessment high-lights differences in outgoing-message and message-handler sequences between the test executions with and without per-turbation. The severity assessment helps developers reason about the consequences of the reported race conditions. As shown in Table 1, most confirmed bugs have severe conse-quences, such as stale control-plane state, inconsistent device state, forwarding-state errors, and service unavailability. 
+
+5.1.2 From concurrent accesses to race conditions. 
+
+The results show a substantial reduction from observed con-current accesses to the race conditions reported by Nos-Racer. Across the 5 components, NosRacer observes over 800 concurrent accesses, with at least 120 in every compo-nent. NosRacer reports 32 race conditions in total, which are 4% of the original concurrent accesses. The majority of the false-positive filtering occurs when NosRacer attempts to obtain corresponding perturbed ac-cesses. Under the initial perturbation, less than 10% of the concurrent accesses have a corresponding perturbed access. Perturbation strengthening (§3.2.2) raises this ratio to about 20%. The message delays injected are bounded by the time-out values used in the system implementation. In practice, the perturbation strengthening runs for at most 3 rounds. Beyond 3 rounds, larger delays increase the side effects of perturbation, making it harder for NosRacer to observe the original concurrent accesses. 
+
+> 9
+
+Table 1. Developer-confirmed bugs from race condition reports. “Severity Assessment” shows outgoing-message or handler-sequence differences. “Consequence” shows the functional consequence identified by developers. 
+
+Bug ID Task Crucial Variable Severity Assessment Consequence Status ARP#1 VLAN del/add subscription state add request skipped interface unsubscribed new/fixed ARP#2 ARP-entry cleanup delete flag entry cleanup skipped obsolete ARP entry new/fixed ARP#3 VLAN-type cleanup VLAN type deletion notice incomplete outdated forwarding entry new/fixed ARP#4 VLAN group delete VLAN group state peer ARP update missed peer ARP table outdated new/fixed ARP#5 host tracking disable host-tracking state route update suppressed host route missing known/fixed DHCP#1 DHCP relay enable relay service state client request ignored client address missing new/fixed DHCP#2 session-option update session option state transient option sent session setup failed new/fixed DHCP#3 virtual-router delete server service state unsubscribe skipped subscriptions remain new/fixed DHCP#4 service/data registration service type data sent without service service record missing known/fixed VRRP#1 VRRP-entry delete node priority peer update suppressed peer priority outdated new/fixed VRRP#2 interface bind/unbind interface binding unbind skipped interface binding mismatch new/fixed VRRP#3 VRRP6 del/add node role initialization skipped route unavailable known/fixed VRRP#4 VRRP failover failover delay state delay exit missed failover delayed known/fixed MGR-A#1 user auth enable auth status config update missed stale auth state new/fixed MGR-A#2 next-hop update next-hop selection invalid next-hop retained route uses invalid next hop new/fixed MGR-A#3 service registration provider state early request ignored service availability gap new/fixed MGR-A#4 DHCP relay disable relay subscription state unsubscribe skipped relay subscription leaked new/fixed MGR-B#1 redundancy update node validity state valid-state update missed failover unavailable new/fixed MGR-B#2 service-type registration ARP service type registration skipped ARP service unavailable new/fixed MGR-B#3 EVPN config rollback EVPN service-binding state cleanup skipped IP forwarding broken known/fixed MGR-B#4 link-aggregation update link membership state stale member used traffic on removed port known/fixed 
+
+Table 2. Filtering race condition suspects. CAs are dedu-plicated concurrent accesses; PAs are CAs with correspond-ing perturbed accesses. “Init.” uses the initial perturbations; “Final” includes bounded perturbation strengthening. Per-centages are computed over # CAs in each row. 
+
+Target # CAs # Init. PAs # Final PAs # Reports ARP 173 21 (12%) 38 (22%) 8 (5%) DHCP 127 8 (6%) 18 (14%) 5 (4%) VRRP 154 16 (10%) 27 (18%) 6 (4%) MGR-A 231 19 (8%) 49 (21%) 7 (3%) MGR-B 139 11 (8%) 25 (18%) 6 (4%) Total 824 75 (9%) 157 (19%) 32 (4%) 
+
+NosRacer further checks whether the values of the crucial variable differ across the two executions. When multiple related race conditions involve the same crucial variable and have the same pattern of variable access by message handlers, NosRacer reports one race condition with the corresponding evidence for developer review. Overall, NosRacer reports 32 race conditions, which are 20% of the concurrent accesses paired with perturbed accesses. 
+
+5.2 Efficiency 
+
+The cost for race condition detection by NosRacer is shown in Table 3. For each component, NosRacer runs 200 prepara-tory executions, and no more than 720 perturbed executions. 
+
+Table 3. Execution cost for race condition detection. 
+
+“Total Time” is the cumulative runtime across executions. 
+
+Target Preparatory Perturbed #Execs. Total Time #Execs. Total Time ARP 200 16.70h 711 70.14h DHCP 200 9.87h 686 56.91h VRRP 200 14.00h 716 57.18h MGR-A 200 12.45h 710 62.77h MGR-B 200 12.17h 651 67.02h Total 1000 65.19h 3474 314.02h 
+
+These executions are based on 200 of the selected test cases, greedily chosen according to test coverage statistics (as dis-cussed in §3.1). Individual preparatory and perturbed ex-ecutions take 3~5 and 5~6 minutes, respectively. For each component, each preparatory execution derives 40 perturba-tions on average. NosRacer partitions them into only 3~5 mutually conflicting groups, which are executed in parallel. Perturbation planning keeps the execution time for each component within one day, without which the experiment time would increase by an estimated factor of 10. 
+
+5.2.1 Cost of enabling NosRacer. The execution-time and memory overheads of enabling NosRacer tracing are shown in Table 4. We normalize tracing overhead against baseline executions without enabling NosRacer. 
+
+> 10
+
+Table 4. Overhead of enabling NosRacer tracing. Base-line disables tracing on the same executions. Parenthe-ses show relative time/memory changes. CPU utilization changes are in percentage points.                         
+
+> Target Time ΔMem. ΔCPU Δ
+> ARP +6.8s (+2.8%) +543MiB (+6.3%) +0.3 DHCP +1.4s (+0.6%) +334MiB (+3.9%) +0.5 VRRP +13.9s (+7.4%) +1397MiB (+16.6%) +1.7 MGR-A +22.2s (+9.5%) +1080MiB (+12.8%) +7.4 MGR-B +2.1s (+0.8%) +1005MiB (+11.9%) +3.0 Median +6.8s (+2.8%) +1005MiB (+11.9%) +2.5
+
+Table 5. Offline analysis cost. Per-report values amortize total trace size and analysis time.                              
+
+> Target Per Execution Per Report Trace Time Trace Time ARP 6.0MB 23.5s 120.8MB 7.9min DHCP 79.1MB 14.9s 2736.9MB 8.6min VRRP 18.8MB 28.0s 470.0MB 11.7min MGR-A 10.4MB 22.5s 117.4MB 4.2min MGR-B 3.7MB 13.4s 91.3MB 5.5min Median 10.4MB 22.5s 120.8MB 7.9min
+
+For the 5 components tested, the execution-time and mem-ory overheads are no more than 10% and 20%, respectively. We also measure CPU utilization before and after enabling tracing. Enabling tracing increases CPU utilization by no more than 10%. Across different overhead metrics, NosRacer introduces only modest execution overhead, making it prac-tical for large-scale deployment in the existing testing envi-ronment for race condition detection. 
+
+5.2.2 Cost for trace analysis. NosRacer performs offline analysis on traces collected from test executions. Table 5 reports the trace size and analysis time. For most target components, the per-execution trace size is below 20 MB, and offline analysis finishes within one minute for all target components. We further amortize trace-analysis cost over the race con-ditions reported by NosRacer. For each reported race condi-tion, NosRacer usually analyzes hundreds of MB of traces and spends minutes in offline analysis. The longest analy-sis finishes within 15 minutes. Compared with the tens of hours spent on preparatory and perturbed executions for each component, the analysis cost is practical for obtaining race condition reports. 
+
+5.2.3 Impact of concentration on cost reduction. Nos-Racer reduces the cost of race condition detection along three dimensions: components, variables, and test cases, as discussed in §3.1. We first quantify, through experiments, 
+
+Table 6. Scale reduction from concentration. Each cell reports before →after concentration counts.                                                          
+
+> Target Components Variables Tests ARP 80 →41489 →412 8650 →356 DHCP 74 →5790 →125 5219 →261 VRRP 82 →8665 →183 1041 →204 MGR-A 79 →71628 →415 16198 →448 MGR-B 45 →6419 →94 5206 →405 Median 79 →6790 →183 5219 →356
+
+the reduction along the above three dimensions, and then analyze how this reduction contributes to lowering the cost of race condition detection. As shown in Table 6, the concentration phase selects less than 10 interacting components (9% on average), from tens of components involved in the configuration update task. Concentration selects tens to hundreds of crucial variables (24% on average), from hundreds to more than one thousand variables that store component state information. As for test execution, hundreds of test cases are selected for each target component (8% on average), from thousands or tens of thousands of related test cases available in the testing factory. The effectiveness of the concentration phase is clearly reflected in the substantial cost reduction in race condition detection. Compared with the no-concentration baseline, enabling concentration reduces the normalized execution-time and memory overheads from 90% to 10% and from 65% to 20%, respectively. CPU utilization also decreases from 80% to 55%. 
+
+5.3 Discussion 
+
+Our evaluation highlights the strengths and limitations of NosRacer, and offers guidance for improving its design and practical effectiveness. 
+
+5.3.1 Benign race conditions. In the evaluation, devel-opers classified 6 reported race conditions as benign. We inspected their feedback to understand why these reported race conditions are not classified as bugs. The first reason is that differences in crucial variable values may not vio-late the correctness invariant of the current configuration update task. For example, in a VRRP switchover task [30], several physical routers are configured for the same virtual router with one virtual IP address. The correctness invari-ant is that exactly one of them should be the active router for that virtual router. A different handler order may make NosRacer observe a different role value on one router for the same switchover task. If the group still has exactly one active router, developers classify the report as benign. 
+
+> 11
+
+The second reason is that some components use periodic synchronization or retry to maintain consistency with up-stream components or configuration databases. In several reports, developers explained that the value difference may cause a transient intermediate abnormal state, but later syn-chronization or retry rewrites the affected variable and re-stores the normal state. Developers therefore did not treat the report as requiring a fix. To cope with benign race conditions, a possible improve-ment is to provide, during offline analysis, an interface through which developers can specify system-specific correctness in-variants over crucial variables. These invariants can then be used to filter out benign race conditions. 
+
+5.3.2 Perturbation Effectiveness. NosRacer obtained corresponding perturbed accesses for only 19% of the concur-rent accesses (157 out of 824). To understand this reduction, we inspected the concurrent accesses not paired with per-turbed accesses. For each of these concurrent accesses, we measured the time span between the configuration update commands. The time spans between commands were usually large: less than 10% had a 1~5 second span, about 25% had a 5~10 second span, and over 60% had a span above 10 seconds. A long time interval between commands limits the effects of message delay injection. In our perturbation strengthen-ing experiments, delays above about 5 seconds often drove executions into timeout or retry paths. NosRacer then of-ten failed to observe the same concurrent access occurrence. This observation suggests that improving perturbation effec-tiveness requires test cases that place related configuration commands closer together. A practical approach is to derive such test cases from existing ones. For example, a test case can apply, withdraw, and then re-apply the same configura-tion command, so that state changes occur within a shorter interval. This gives NosRacer a better chance to obtain the corresponding perturbed access, while the side effects of delay injection remain under control. 
+
+## 6 Related Work 
+
+Existing testing techniques have limited effectiveness in race condition detection for concurrent and distributed sys-tems. In particular, system-level stress testing relies on non-deterministic scheduling and therefore cannot systematically explore rare message interleavings [3, 28, 39]. Formal meth-ods establish rigorous correctness guarantees through theo-rem proving or model checking under a formal specification [13, 27, 41, 49, 57, 59]. However, in industrial NOSes, for-mal verification is often impractical, due to its high learning curve and substantial adoption cost [2, 12, 17]. To address these limitations, prior work has explored both static and dynamic approaches for detecting race conditions in concurrent and distributed systems. Static analysis tech-niques are widely used to detect race conditions in concur-rent programs, often based on lockset analysis or happens-before inference [1, 9, 58]. Such techniques are further ex-tended for race condition detection in asynchronous event-driven programs [16, 31]. However, production NOS con-trol planes consist of loosely coupled components that com-municate through asynchronous messages. Existing static analysis techniques must conservatively over-approximate possible message interleavings and execution paths, lead-ing to combinatorial path explosion [4, 31]. This severely limits their scalability on production NOSes with million-line-scale codebases. Static analysis techniques also suffer from limited precision. Recent studies show that static de-tectors on large system codebases still produce substantial false positives that require manual validation [14, 23, 29]. Production NOSes widely employ customized optimizations, such as priority message queues and batched state commits, which further hinder existing static analysis techniques from precisely detecting race conditions. NosRacer uses static analysis primarily to identify crucial variables and message-interaction perturbation points. Race condition suspects are identified mainly from dynamic execution information and confirmed through perturbed executions. Dynamic analysis techniques improve the precision of race condition detection by observing concrete runtime be-haviors and execution states [10, 25, 44–46, 48, 63]. However, applying dynamic analysis to production NOSes remains challenging due to the high cost of executing complex dis-tributed control-plane workloads and the enormous space of possible message interleavings. Deterministic simulation and systematic exploration techniques have been proposed to improve interleaving coverage in concurrent and distributed systems [7, 11, 28, 42, 56, 61]. However, exhaustive deter-ministic control incurs substantial runtime and engineer-ing overhead, making such approaches difficult to deploy in industry-scale NOSes. In contrast, NosRacer employs probabilistic delay injection at carefully selected execution points to efficiently expose race condition-prone asynchro-nous interleavings while maintaining low execution over-head. Existing distributed concurrency-bug detectors iden-tify suspicious accesses or message orderings from recorded executions, and validate them through runtime triggering [32, 36, 37]. Recent work further uses static analysis to guide test generation for such bugs in RPC-based distributed sys-tems [5]. In both cases, bug validation largely depends on visible failure symptoms. In NOS configuration update tasks, however, race-condition-induced bugs often corrupt control-plane state silently [34, 35, 55]. NosRacer therefore makes this silent corruption observable to developers by reporting crucial-variable value differences and subsequent behavioral differences. 
+
+> 12
+
+## 7 Conclusion 
+
+In this work, we present NosRacer, a dynamic analysis framework for race condition detection in on-device NOSes. NosRacer tackles the problem with a two-phase design. The concentration phase reduces the analysis cost by exploiting the locality of configuration update tasks, while the perturba-tion phase proactively perturbs the message asynchrony to confirm race condition suspects. Integrated into the existing testing factory of a production NOS, NosRacer demonstrates that dynamic race condition detection can be made practical for large-scale actively developed NOSes. Several directions remain for future work. One direction is to support incremental analysis as the NOS codebase evolves. Future work could reuse traces and analysis results across code revisions to update race-condition candidates incre-mentally, reducing the cost of deploying NosRacer in CI pipelines. Another direction is to enrich severity analysis. NosRacer currently analyzes how race conditions affect subsequent message-sending and function-call sequences. Future work could further incorporate configuration consis-tency checks, cross-component state invariants, and user-visible service-level symptoms, to help developers prioritize detected race conditions. Finally, it would be valuable to study whether NosRacer’s two-phase design generalizes to other asynchronous multi-component systems. Production distributed control systems and cloud management platforms share similar challenges: asynchronous message interactions, large execution spaces, and limited testing budgets. 
+
+## Acknowledgments 
+
+This work is supported by the “111 Center” (No. B26023). 
+
+## References 
+
+[1] Sam Blackshear, Nikos Gorogiannis, Peter W. O’Hearn, and Ilya Sergey. 2018. RacerD: Compositional Static Race Detection. Proceedings of the ACM on Programming Languages 2, OOPSLA (2018), 1–28. [2] Marc Brooker and Ankush Desai. 2025. Systems Correctness Practices at Amazon Web Services. Commun. ACM 68, 6 (2025), 38–42. [3] Sebastian Burckhardt, Pravesh Kothari, Madanlal Musuvathi, and San-tosh Nagarakatte. 2010. A Randomized Scheduler with Probabilistic Guarantees of Finding Bugs. In Proceedings of the 15th International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS’10) .[4] Yuandao Cai, Peisen Yao, and Charles Zhang. 2021. Canary: Practical Static Detection of Inter-thread Value-flow Bugs. In Proceedings of the 42nd ACM SIGPLAN International Conference on Programming Language Design and Implementation (PLDI’21) .[5] Hongchen Cao, Jingzhu He, Ting Dai, and Guoliang Jin. 2026. Themis: Detecting Distributed Concurrency Bugs through RPC-Driven Race-Directed Test Generation and Fuzzing. In Proceedings of the 23rd USENIX Symposium on Networked Systems Design and Implementation (NSDI’26) .[6] Cisco Systems. 2014. Cisco IOS XR: Process Placement. 
+
+https://www.cisco.com/c/en/us/td/docs/routers/crs/software/crs_r5-1/sys_management/configuration/guide/b-sysman-cg51xcrs/b-sysman-cg51xcrs_chapter_01101.html 
+
+[7] Pantazis Deligiannis, Aditya Senthilnathan, Fahad Nayyar, Chris Lovett, and Akash Lal. 2023. Industrial-Strength Controlled Concur-rency Testing for C# Programs with Coyote. In Proceedings of the 29th International Conference on Tools and Algorithms for the Construction and Analysis of Systems (TACAS’23) .[8] Ralph Droms. 1997. Dynamic Host Configuration Protocol. RFC 2131. 
+
+https://www.rfc-editor.org/info/rfc2131 
+
+[9] Dawson Engler and Ken Ashcraft. 2003. RacerX: Effective, static detec-tion of race conditions and deadlocks. ACM SIGOPS operating systems review 37, 5 (2003), 237–252. [10] Cormac Flanagan and Stephen N Freund. 2009. FastTrack: efficient and precise dynamic race detection. ACM Sigplan Notices 44, 6 (2009), 121–133. [11] Cormac Flanagan and Patrice Godefroid. 2005. Dynamic partial-order reduction for model checking software. In Proceedings of the 32nd ACM SIGPLAN-SIGACT Symp. on Principles of Programming Languages (POPL’05) .[12] Hubert Garavel, Maurice H Ter Beek, and Jaco Van De Pol. 2020. The 2020 expert survey on formal methods. In International Conference on Formal Methods for Industrial Critical Systems (FMICS’20) .[13] Chris Hawblitzel, Jon Howell, Manos Kapritsos, Jacob R Lorch, Bryan Parno, Michael L Roberts, Srinath Setty, and Brian Zill. 2015. IronFleet: proving practical distributed systems correct. In Proceedings of the 25th Symposium on Operating Systems Principles (SOSP’15) .[14] Karoliine Holter, Simmo Saan, Patrick Lam, and Vesal Vojdani. 2025. Sound Static Data Race Verification for C: Is the Race Lost? ACM Trans. Program. Lang. Syst. 47, 3 (2025), 1–40. [15] Chun-Hung Hsiao, Jie Yu, Satish Narayanasamy, Ziyun Kong, Cris-tiano L. Pereira, Gilles A. Pokam, Peter M. Chen, and Jason Flinn. 2014. Race Detection for Event-Driven Mobile Applications. In Proceedings of the 35th ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI’14) .[16] Yongjian Hu and Iulian Neamtiu. 2018. Static detection of event-based races in android apps. ACM SIGPLAN Notices 53, 2 (2018), 257–270. [17] Li Huang, Sophie Ebersold, Alexander Kogtenkov, Bertrand Meyer, and Yinling Liu. 2026. Lessons from Formally Verified Deployed Software Systems. Comput. Surveys 58, 8 (2026), 1–37. [18] Huawei Technologies. 2023. Introduction to VRP8. https: //support.huawei.com/enterprise/en/doc/EDOC1100334532/ bea98f6e/introduction 
+
+[19] Huawei Technologies. 2024. VRP8 Architecture. https: //support.huawei.com/enterprise/en/doc/EDOC1100412639/ c71c2263/architecture 
+
+[20] Juniper Networks. 2025. Junos OS Architecture Overview. https: //www.juniper.net/documentation/us/en/software/junos/junos-overview/topics/concept/junos-software-architecture.html 
+
+[21] Juniper Networks. 2025. Overview for Junos OS. https://www.juniper. net/documentation/us/en/software/junos/junos-overview/ 
+
+[22] Siva Kesava Reddy Kakarla, Alan Tang, Ryan Beckett, Karthick Ja-yaraman, Todd Millstein, Yuval Tamir, and George Varghese. 2020. Finding Network Misconfigurations by Automatic Template Inference. In Proceedings of the 17th USENIX Symposium on Networked Systems Design and Implementation (NSDI’20) .[23] Baris Kasikci, Cristian Zamfir, and George Candea. 2012. Data races vs. data race bugs: telling the difference with Portend. In Proceedings of the 17th International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS’12) .[24] Hyojoon Kim, Theophilus Benson, Aditya Akella, and Nick Feamster. 2011. The evolution of network configuration: A tale of two cam-puses. In Proceedings of the 2011 ACM SIGCOMM Internet Measurement Conference (IMC’11) .[25] Rucha Kulkarni, Umang Mathur, and Andreas Pavlogiannis. 2021. Dy-namic Data-Race Detection Through the Fine-Grained Lens. In 32nd International Conference on Concurrency Theory (CONCUR’21) .
+
+> 13
+
+[26] Leslie Lamport. 1978. Time, Clocks, and the Ordering of Events in a Distributed System. Commun. ACM 21, 7 (1978), 558–565. [27] Leslie Lamport. 2002. Specifying Systems: The TLA+ Language and Tools for Hardware and Software Engineers . Addison-Wesley. [28] Tanakorn Leesatapornwongsa, Mingzhe Hao, Pallavi Joshi, Jeffrey F. Lukman, and Haryadi S. Gunawi. 2014. SAMC: Semantic-Aware Model Checking for Fast Discovery of Deep Bugs in Cloud Systems. In Pro-ceedings of the 12th USENIX Symposium on Operating Systems Design and Implementation (OSDI’14) .[29] Tuo Li, Jia-Ju Bai, Gui-Dong Han, and Shi-Min Hu. 2024. LR-Miner: Static Race Detection in OS Kernels by Mining Locking Rules. In 33rd USENIX Security Symposium (USENIX Security’24) .[30] Acee Lindem and Aditya Dogra. 2024. Virtual Router Redundancy Protocol (VRRP) Version 3 for IPv4 and IPv6. RFC 9568. https://www. rfc-editor.org/info/rfc9568 
+
+[31] Bozhen Liu, Peiming Liu, Yanze Li, Chia-Che Tsai, Dilma Da Silva, and Jeff Huang. 2021. When Threads Meet Events: Efficient and Precise Static Race Detection with Origins. In Proceedings of the 42nd ACM SIGPLAN International Conference on Programming Language Design and Implementation (PLDI’21) .[32] Haopeng Liu, Guangpu Li, Jeffrey F. Lukman, Jiaxin Li, Shan Lu, Haryadi S. Gunawi, and Chen Tian. 2017. DCatch: Automatically Detecting Distributed Concurrency Bugs in Cloud Systems. In Pro-ceedings of the 22nd International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS’17) .[33] LLVM Project. 2026. Matching the Clang AST. https://clang.llvm.org/ docs/LibASTMatchers.html 
+
+[34] Chang Lou, Yuzhuo Jing, and Peng Huang. 2022. Demystifying and Checking Silent Semantic Violations in Large Distributed Systems. In Proceedings of the 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI’22) .[35] Chang Lou, Dimas Shidqi Parikesit, Yujin Huang, Zhewen Yang, Sena-pati Diwangkara, Yuzhuo Jing, Achmad Imam Kistijantoro, Ding Yuan, Suman Nath, and Peng Huang. 2025. Deriving Semantic Checkers from Tests to Detect Silent Failures in Production Distributed Systems. In Proceedings of the 19th USENIX Symposium on Operating Systems Design and Implementation (OSDI’25) .[36] Jie Lu, Feng Li, Lian Li, and Xiaobing Feng. 2018. CloudRaid: Hunting Concurrency Bugs in the Cloud via Log-Mining. In Proceedings of the 26th ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering (ESEC/FSE’18) .[37] Jie Lu, Feng Li, Chen Liu, Lian Li, Xiaobing Feng, and Jingling Xue. 2022. CloudRaid: Detecting Distributed Concurrency Bugs via Log Mining and Enhancement. IEEE Transactions on Software Engineering 
+
+48, 2 (2022), 662–677. [38] Pallavi Maiya, Aditya Kanade, and Rupak Majumdar. 2014. Race de-tection for android applications. ACM SIGPLAN Notices 49, 6 (2014), 316–325. [39] Madanlal Musuvathi, Shaz Qadeer, Thomas Ball, Gérard Basler, Pi-ramanayagam Arumuga Nainar, and Iulian Neamtiu. 2008. Finding and Reproducing Heisenbugs in Concurrent Programs. In Proceed-ings of the 8th USENIX Symposium on Operating Systems Design and Implementation (OSDI’08) .[40] Robert HB Netzer and Barton P Miller. 1992. What are race condi-tions? Some issues and formalizations. ACM Letters on Programming Languages and Systems 1, 1 (1992), 74–88. [41] Lingzhi Ouyang, Xudong Sun, Ruize Tang, Yu Huang, Madhav Jivrajani, Xiaoxing Ma, and Tianyin Xu. 2025. Multi-grained specifications for distributed system model checking and verification. In Proceedings of the 20th European Conference on Computer Systems (EuroSys’25) .[42] Lauren Pick, Ankush Desai, and Aarti Gupta. 2023. Psym: Efficient Symbolic Exploration of Distributed Systems. Proc. ACM Program. Lang. 7, PLDI (2023), 660–685. [43] David C. Plummer. 1982. An Ethernet Address Resolution Protocol: Or Converting Network Protocol Addresses to 48.bit Ethernet Address for Transmission on Ethernet Hardware. RFC 826. https://www.rfc-editor.org/info/rfc826 
+
+[44] Veselin Raychev, Martin Vechev, and Manu Sridharan. 2013. Effective race detection for event-driven programs. In Proceedings of the 2013 ACM SIGPLAN international conference on Object oriented programming systems languages & applications (OOPSLA’13) .[45] Jake Roemer, Kaan Genç, and Michael D. Bond. 2020. SmartTrack: Efficient Predictive Race Detection. In Proceedings of the 41st ACM SIGPLAN International Conference on Programming Language Design and Implementation (PLDI’20) .[46] Stefan Savage, Michael Burrows, Greg Nelson, Patrick Sobalvarro, and Thomas Anderson. 1997. Eraser: A dynamic data race detector for multithreaded programs. ACM Transactions on Computer Systems 15, 4 (1997), 391–411. [47] Tibor Schneider, Rüdiger Birkner, and Laurent Vanbever. 2021. Snow-cap: Synthesizing Network-Wide Configuration Updates. In Proceed-ings of the ACM SIGCOMM 2021 Conference (SIGCOMM ’21) .[48] Konstantin Serebryany and Timur Iskhodzhanov. 2009. ThreadSani-tizer: Data Race Detection in Practice. In Proceedings of the Workshop on Binary Instrumentation and Applications (WBIA’09) .[49] Upamanyu Sharma, Ralf Jung, Joseph Tassarotti, Frans Kaashoek, and Nickolai Zeldovich. 2023. Grove: A separation-logic library for ver-ifying distributed systems. In Proceedings of the 29th Symposium on Operating Systems Principles (SOSP’23) .[50] Rathin Singha, Rajdeep Mondal, Ryan Beckett, Siva Kesava Reddy Kakarla, Todd D. Millstein, and George Varghese. 2024. MESSI: Be-havioral Testing of BGP Implementations. In Proceedings of the 21st USENIX Symposium on Networked Systems Design and Implementation (NSDI’24) .[51] SONiC Foundation. 2022. SONiC Wiki: Architecture. https://github. com/sonic-net/SONiC/wiki/Architecture 
+
+[52] SONiC Foundation. 2026. SONiC Wiki: Home. https://github.com/ sonic-net/SONiC/wiki 
+
+[53] Xudong Sun, Wenqing Luo, Jiawei Tyler Gu, Aishwarya Ganesan, Ramnatthan Alagappan, Michael Gasch, Lalith Suresh, and Tianyin Xu. 2022. Automatic Reliability Testing for Cluster Management Con-trollers. In Proceedings of the 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI’22) .[54] Alan Tang, Ryan Beckett, Steven Benaloh, Karthick Jayaraman, Tejas Patil, Todd Millstein, and George Varghese. 2023. Lightyear: Using Modularity to Scale BGP Control Plane Verification. In Proceedings of the ACM SIGCOMM 2023 Conference (SIGCOMM ’23) .[55] Alan Tang, Siva Kesava Reddy Kakarla, Ryan Beckett, Ennan Zhai, Matt Brown, Todd D. Millstein, Yuval Tamir, and George Varghese. 2021. Campion: Debugging Router Configuration Differences. In Proceedings of the ACM SIGCOMM 2021 Conference (SIGCOMM ’21) .[56] Ruize Tang, Xudong Sun, Yu Huang, Yuyang Wei, Lingzhi Ouyang, and Xiaoxing Ma. 2024. SandTable: Scalable Distributed System Model Checking with Specification-Level State Exploration. In Proceedings of the Nineteenth European Conference on Computer Systems (EuroSys’24) .[57] Timothy Alberdingk Thijm, Ryan Beckett, Aarti Gupta, and David Walker. 2023. Modular Control Plane Verification via Temporal Invari-ants. Proc. ACM Program. Lang. 7, PLDI (2023), 50–75. [58] Jan Wen Voung, Ranjit Jhala, and Sorin Lerner. 2007. RELAY: static race detection on millions of lines of code. In Proceedings of the 6th Joint Meeting of the European Software Engineering Conference and the ACM SIGSOFT Symposium on The Foundations of Software Engineering (ESEC/FSE’07) .[59] James R Wilcox, Doug Woos, Pavel Panchekha, Zachary Tatlock, Xi Wang, Michael D Ernst, and Thomas Anderson. 2015. Verdi: a frame-work for implementing and formally verifying distributed systems. In Proceedings of the 36th ACM SIGPLAN Conference on Programming 
+
+> 14
+
+Language Design and Implementation (PLDI’15) .[60] Xieyang Xu, Ryan Beckett, Karthick Jayaraman, Ratul Mahajan, and David Walker. 2021. Test Coverage Metrics for the Network. In Pro-ceedings of the ACM SIGCOMM 2021 Conference (SIGCOMM ’21) .[61] Junfeng Yang, Tisheng Chen, Ming Wu, Zhilei Xu, Xuezheng Liu, Haox-iang Lin, Mao Yang, Fan Long, Lintao Zhang, and Lidong Zhou. 2009. MODIST: Transparent Model Checking of Unmodified Distributed Systems. In Proceedings of the 6th USENIX Symposium on Networked Systems Design and Implementation (NSDI’09) .[62] Yifei Yuan, Fangdan Ye, Yifan Li, Jingkai Zhang, Mengqi Liu, Yuyang Sang, Ruizhen Yang, Duncheng She, Zhiqing Ye, Tianchen Guo, Xiaobo Zhu, Xinji Tang, Li Jia, Zhongyu Guan, Lingpeng Su, Ci Wang, Ruiyang Feng, Shuo Wu, Zhonghui Xie, Cheng Jin, Peng Zhang, Qing Ma, Xianlong Zeng, Dennis Cai, and Ennan Zhai. 2025. New Evolution of Hoyan: Enhancing Scalability, Usability, and Accuracy for Alibaba’s Global WAN Verification. In Proceedings of the ACM SIGCOMM 2025 Conference (SIGCOMM ’25) .[63] Minjian Zhang, Daniel Wee Soong Lim, Mosaad Al Thokair, Umang Mathur, and Mahesh Viswanathan. 2025. Efficient Timestamping for Sampling-Based Race Detection. Proc. ACM Program. Lang. 9, PLDI (2025), 150–175. 
+
+> 15
+
+## A Testing Factory of the Target NOS 
+
+The testing factory of the studied NOS is a large-scale Contin-uous Integration (CI) platform that runs workloads for NOS development and release testing. The factory runs system-level tests on virtualized multi-device topologies. These tests configure devices through Command Line Interface (CLI) commands and inject test traffic to validate NOS functional-ity, performance, and stability. Configuration-update tests constitute a large portion of these system-level tests. They apply configuration commands and validate the resulting NOS behavior. NosRacer uses these existing tests, together with their profiles and the factory execution environment. 
+
+A.1 Test Execution Environment 
+
+System-level tests are submitted to the factory as test plans .They may come from CI jobs, release-test campaigns, or developer debugging sessions. The factory schedules these plans across a pool of virtualized testbeds, tracks the state of each execution, and stores the artifacts produced by com-pleted executions. At the scale of the studied testing factory, the testbed pool contains over 10,000 virtualized testbeds, and the factory keeps over 5,000 test executions running con-currently. The factory sustains a daily throughput of over 200,000 system-level test executions. Each test plan follows a factory-defined schema that speci-fies the topology to instantiate, the workload to execute, and the checks used to determine the test outcome. The topology specification defines the nodes and links in the test: De-vice Under Test (DUT) nodes represent the network devices hosting the NOSes under test; peer nodes provide neigh-boring devices along the packet forwarding paths; traffic endpoints inject or observe test traffic; and virtual links con-nect the nodes. The workload specifies the CLI commands to issue, the test traffic to inject or observe, and the device-state queries to run. The checks validate device-local outcomes and cross-device behaviors, such as reachability, forward-ing behavior, convergence, and state consistency. Beyond topology, workload, and checks, a test plan can also include auxiliary files and execution-specific parameters. The factory manager schedules test plans across the testbed pool. It maintains queues of pending plans, tracks which testbeds are available or occupied, and chooses a compat-ible testbed for each plan based on the plan’s topology re-quirements. The manager keeps multiple plans executing in parallel by assigning queued plans to testbeds as they be-come available. When multiple plans use the same or similar topology, the manager can place them on suitable testbeds to reduce redundant topology setup. The testbed pool supplies the virtualized environments used by the test plans. A testbed manager controls each testbed. Once the factory manager assigns a plan to a testbed, the testbed manager sets up the requested topology and runs the test. During the setup of a test execution, the testbed manager prepares the requested topology. KVM-based vir-tual machines run NOS device instances for DUT nodes and for peer nodes that require a full NOS image. Docker con-tainers run traffic endpoints and auxiliary test services. The testbed manager connects these devices and services with virtual links, producing the multi-device NOS environment specified by the test plan. After the test execution environment is ready, the testbed manager starts the workload using the auxiliary files and pa-rameters specified in the test plan. For configuration-update tests, it first applies the initial configuration and checks whether the DUTs have reached the required initial state. It then applies configuration changes, queries device state, observes traffic behavior during or after the update, and checks whether the observed behavior matches the expected outcomes of configuration updates. At the end of a test execution, the testbed manager writes command outputs, device logs, traffic observations, state snapshots, and test results to the artifact store of the testing factory, which is a storage service backed by file systems and databases. The artifact store indexes these artifacts by test execution information and records each artifact’s type and storage location, allowing downstream tools to retrieve the artifacts for a given test execution. The factory also includes a unified reporting system. It presents the factory’s standard test outcomes together with analysis reports generated by external tools, and links each report to its test plan, execu-tion instance, and artifacts. This enables test engineers to inspect both execution outcomes and analysis results within the same testing workflow. The testbed is then released back to the pool for later test executions. Selected tests from Nos-Racer enter this pipeline through the orchestrator described in §4. 
+
+A.2 Configuration-Update Test Cases 
+
+The factory maintains more than 200,000 configuration-update tests. These tests exercise ordered sequences of configura-tion commands issued to one or more DUTs in the test topol-ogy. The covered update scenarios arise from operational changes, including topology changes, traffic dynamics, and policy revisions. These update scenarios can affect connec-tivity, protocol behavior, forwarding state, or access policy. Each test captures the lifecycle of a configuration update. It first establishes the pre-update device state and then applies one or more ordered configuration changes. The test checks intermediate and post-update outcomes during and after the update. Together, these tests span hundreds of NOS compo-nents and thousands of configuration features. Thousands of configuration-update tests are added or updated as the NOS evolves through each monthly release cycle. The factory maintains a profile for each configuration-update test to organize and select tests at scale. Each profile contains functional labels and coverage information. The 
+
+> 16 test_case: arp_neighbor_refresh topology: class: 3-DUT L3 ring duts: [dut-a, dut-b, dut-c] traffic_endpoints: [tg0] virtual_links: 4 workload: update_scope: multi-DUT interface-subnet update steps: - apply subnet changes on dut-a and dut-b - inject ARP/IP traffic through tg0 - query ARP table and interface state on DUTs - validate neighbor convergence and reachability profile: last_profiled: R26.05 functional_labels: nos_function: ARP service_category: neighbor discovery config_behavior: interface-subnet update execution_history: recent_runs: 128 median_duration: 7.4 min function_coverage: ARP: [refresh_neighbor, resolve_nexthop] MGR-A: [apply_intf_cfg, publish_state]
+
+Figure 5. A simplified and anonymized configuration-update test profile. labels are assigned and maintained by test engineers as test-case metadata. The functional labels classify each test by the NOS function, protocol or service category, and configura-tion behavior that the test is intended to cover. The factory maintains coverage information through a dedicated profil-ing pipeline. The pipeline periodically executes tests with coverage instrumentation enabled and updates each profile with the code exercised in the instrumented runs. Figure 5 shows a simplified, anonymized profile of one configuration-update test case. Functional labels are used to identify test cases related to each target component. In our evaluation, the label-based candidate set contains more than 5,000 configuration-update test cases per target component on average. NosRacer then uses the function-level coverage in these profiles to prioritize tests covering functions that contain crucial-variable access sites (§4). Overall, the integration of NosRacer relies on testing fac-tory support for setting up test topologies, scheduling test executions, test case profile retrieval, and artifact reporting. These are standard capabilities of production NOS CI infras-tructures. An NOS CI environment with equivalent support can serve as the execution backend for NosRacer. 
+
+## B NosRacer Workflow Orchestration 
+
+NosRacer builds its end-to-end workflow on the testing factory. The orchestrator coordinates this workflow as a dependency graph of testbed executions and offline-analysis steps. It tracks the state of each step, submits test plans when their inputs are ready, retrieves execution artifacts, and uses analysis results to submit follow-up plans. Given the target component and its functional labels, the orchestrator first invokes the build pipeline to insert message-passing hooks across NOS components. It then selects related configuration-update tests from the testing factory and sub-mits test plans that execute the instrumented NOS image to collect message traces for concentration. After concentra-tion produces the interacting components, crucial variables, and selected tests, the orchestrator invokes the build pipeline again to instrument the target-related components with both message-passing hooks and variable-access hooks. It then submits the selected tests as preparatory runs, which pro-duce the traces needed by offline analysis. Offline analysis processes preparatory traces and orga-nizes the resulting perturbations into groups. For each group, the orchestrator creates a perturbation test plan, attaches the message-delay rules generated for that group, and submits the plan to the factory. After the factory completes the per-turbed tests, the orchestrator retrieves the traces for offline analysis. When a perturbation execution needs strengthen-ing, the orchestrator submits a follow-up perturbation plan with increased message delays. Finally, offline analysis pro-duces race-condition reports, and the orchestrator publishes these reports through the testing factory’s reporting system. The orchestrator records which preparatory run each per-turbation group belongs to and which perturbed executions were launched for that group. These records let offline anal-ysis tools match perturbation traces with the corresponding preparatory traces, and let final reports link each detected race condition to concrete artifacts produced in the corre-sponding factory executions. 
+
+## C NosRacer Implementation 
+
+The implementation details below address two issues central to NosRacer. Runtime tracing must capture enough context around crucial-variable accesses and message exchanges for ordering and value analysis, while also supporting message-delay perturbation. Offline analysis must match original and perturbed access occurrences across executions even when variable instances and recorded traces differ across runs. 
+
+C.1 Runtime Tracing 
+
+NosRacer uses Clang-based AST analysis to perform source-level instrumentation [33]. Concentration provides the inter-acting components and crucial variables to be instrumented. The instrumentation inserts message-passing hooks in the 
+
+> 17
+
+target component and its interacting components, and in-serts variable-access hooks at crucial-variable access sites in the target component. The generated hook code is compiled into the corresponding NOS components. During system exe-cution, the hook code invokes the runtime library to generate execution traces. Variable-access hooks are placed at read/update access sites of crucial variables in the target component. These accesses may appear inside conditional expressions, loop conditions, function arguments, or compound update expres-sions. The insertion point therefore determines when the hook is triggered and which value is recorded. NosRacer uses Clang AST to locate these access sites, classify each ac-cess as a read or update, and choose an insertion point based on the surrounding statement. Specifically, hooks for condi-tional and loop expressions are placed after the expression is evaluated on the executed path, while hooks for update ex-pressions record the updated value. When a variable-access hook is triggered, the runtime library records the source-level variable identifier, object address, access type, access value, and runtime call stack. The NOS communication layer provides a small set of com-mon APIs for exchanging messages between components. NosRacer wraps these send/receive API calls with message-passing hooks. When a message-passing hook is triggered, the runtime library records the sender, receiver, message type, and runtime call stack. For send/receive pairing within an execution, it also records hashes of the complete mes-sages. The runtime library records a message operation only when both the sender and the receiver are either the tar-get component or one of its interacting components. When a message-receiving hook is triggered, the runtime library checks whether the received message should be recorded. If the message is recorded, the runtime library also records traces from the message handler that processes the message and associates them with the recorded incoming message. Offline analysis uses this association to link each variable-access operation to the message handler that contains it. For perturbation executions, the same runtime library reads the delay rules. Before invoking the original send API, the send-API wrapper checks each outgoing message and injects the delay specified in the delay rules. 
+
+C.2 Offline Analysis 
+
+Offline analysis first handles runtime variable instances within each execution. A source-level crucial variable may corre-spond to multiple runtime objects in the same execution. Offline analysis uses the source-level variable identifier and object address to distinguish these instances. Offline analysis then checks whether each concurrent ac-cess occurrence has a matching perturbed access occurrence across executions. This matching does not use object ad-dresses, which may change across executions. A perturbed access occurrence is matched only when it has the same recorded crucial-variable identifier as the original occur-rence and the two corresponding handler executions appear in the reversed order. Offline analysis matches handler ex-ecutions using the recorded incoming message processed by the handler and the runtime call stack of the access. The same variable and execution-context information is used to identify duplicate occurrences with the same handler order, avoiding duplicate race condition reports. Race condition detection compares the observed values in an original occurrence and its matched perturbed occurrence. Before this comparison, offline analysis checks the recorded access sequences on both sides. For each side, the check scans the recorded access sequence of the same runtime variable instance within the configuration update task. Each observed value change must have a corresponding recorded update access. The runtime library records traces only for handlers whose incoming messages are recorded. Updates performed while processing other messages may be absent from the trace. Such missing updates prevent offline analysis from reliably attributing an observed value difference to the reversal of handler order. For each access in the original and perturbed occurrences, offline analysis identifies the message handler that contains the access. It then follows recorded send/receive relations backward from that handler to identify the configuration update task to which the handler belongs. Within that task, offline analysis extracts the recorded access sequence for the same runtime variable instance. If a recorded access has a value different from the previous recorded access but is not an update access that records the new value, the update that produced the change is missing from the trace. If either occurrence contains such a missing update, NosRacer ex-cludes the matched pair from race condition detection. Other concurrent or perturbed occurrences are still analyzed.
