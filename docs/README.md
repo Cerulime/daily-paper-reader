@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-10-09</span>
+      <span class="dpr-home-dashboard-kicker">2026-10-10</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 12 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 2 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
     <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>11</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>1</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-10-09 23:18:12 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-10-10 22:57:15 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,10 +69,7 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共生成 12 篇推荐（精读 1 篇，速读 11 篇）</p>
-<p>精读：《Protecting CPU AI On Edge TEEs: WebAssembly&#x27;s Promise and Practical Challenges》（8.0/10）</p>
-<p>速读：《PEEK: Heterogeneous Parallelism for Privileged Error Detection in Safety-Critical Processors》（7.0/10）, 《Should Your Database Systems Use Hardware-Assisted Memory Safety Extensions in Production?》（7.0/10）, 《SoK: Are LLMs Reliable at Source Code Recovery? A Taxonomy and Empirical Evaluation》（7.0/10）</p>
-<p>这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。</p>
+<p>今日精读1篇、速读1篇，聚焦JavaScript引擎漏洞利用链与边缘IoT运行时安全监控。最值得看的是8.0分的JavaScript引擎缺陷级联与利用链研究，揭示单个缺陷如何串联成完整攻击路径。普通读者可优先了解JS引擎漏洞的连锁风险，并关注IoT边缘设备的运行时验证防护思路。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -84,7 +81,7 @@
     <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Protecting CPU AI On Edge TEEs: WebAssembly&#x27;s Promise and Practical Challenges">Protecting CPU AI On Edge TEEs: WebAssembly&#x27;s Promise and Practical Challenges</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="When Flaws Cascade: Understanding Vulnerabilities and Exploitation Chains in JavaScript Engines">When Flaws Cascade: Understanding Vulnerabilities and Exploitation Chains in JavaScript Engines</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
@@ -94,12 +91,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">11 篇</strong>
+    <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="PEEK: Heterogeneous Parallelism for Privileged Error Detection in Safety-Critical Processors">PEEK: Heterogeneous Parallelism for Privileged Error Detection in Safety-Critical Processors</span></li><li><span class="dpr-home-dashboard-paper-title" title="Should Your Database Systems Use Hardware-Assisted Memory Safety Extensions in Production?">Should Your Database Systems Use Hardware-Assisted Memory Safety Extensions in Production?</span></li><li><span class="dpr-home-dashboard-paper-title" title="SoK: Are LLMs Reliable at Source Code Recovery? A Taxonomy and Empirical Evaluation">SoK: Are LLMs Reliable at Source Code Recovery? A Taxonomy and Empirical Evaluation</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="A Resilient Runtime-Verification Fabric for Security Monitoring of Critical Edge-IoT Infrastructure">A Resilient Runtime-Verification Fabric for Security Monitoring of Critical Edge-IoT Infrastructure</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>11</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
 </div>
 
