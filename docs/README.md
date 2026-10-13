@@ -54,11 +54,11 @@
     <strong class="dpr-home-dashboard-count">共 6 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
-    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>2 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-10-13 01:22:54 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-10-13 23:29:37 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,10 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日共生成 6 篇推荐（精读 1 篇，速读 5 篇）</p>
-<p>精读：《Enabling Extended SGX Enclaves inside Confidential Virtual Machines》（9.0/10）</p>
-<p>速读：《ContractLens: Latent Security Knowledge for Malicious Smart Contract Detection》（6.0/10）, 《Security Is More Than a Library Call: How Security Features Live in Code》（6.0/10）, 《Learning from Failures: A Failure-Driven Prompt Refinement for LLM-Based Vulnerability Analysis》（6.0/10）</p>
-<p>这些结果覆盖了当下较热的方向，建议先看精读区论文的关键问题与方法。</p>
+<p>今日扫6篇、精读1篇速读5篇，9.0分《Enabling Extended SGX Enclaves inside Confidential Virtual Machines》领跑。</p>
+<p>最值得看的是机密计算里SGX与机密虚拟机的融合；速读侧可顺带关注LLM漏洞分析、Android组件边界安全和智能合约恶意检测。</p>
+<p>普通读者建议先读9分精读，再按兴趣挑速读，重点留意安全边界与落地风险。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -97,7 +96,7 @@
     <strong class="dpr-home-dashboard-count">5 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="ContractLens: Latent Security Knowledge for Malicious Smart Contract Detection">ContractLens: Latent Security Knowledge for Malicious Smart Contract Detection</span></li><li><span class="dpr-home-dashboard-paper-title" title="Security Is More Than a Library Call: How Security Features Live in Code">Security Is More Than a Library Call: How Security Features Live in Code</span></li><li><span class="dpr-home-dashboard-paper-title" title="Learning from Failures: A Failure-Driven Prompt Refinement for LLM-Based Vulnerability Analysis">Learning from Failures: A Failure-Driven Prompt Refinement for LLM-Based Vulnerability Analysis</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Learning from Failures: A Failure-Driven Prompt Refinement for LLM-Based Vulnerability Analysis">Learning from Failures: A Failure-Driven Prompt Refinement for LLM-Based Vulnerability Analysis</span></li><li><span class="dpr-home-dashboard-paper-title" title="A Systematic Study of Security Enforcement at Android Inter-Component Boundaries">A Systematic Study of Security Enforcement at Android Inter-Component Boundaries</span></li><li><span class="dpr-home-dashboard-paper-title" title="ContractLens: Latent Security Knowledge for Malicious Smart Contract Detection">ContractLens: Latent Security Knowledge for Malicious Smart Contract Detection</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
 </section>
