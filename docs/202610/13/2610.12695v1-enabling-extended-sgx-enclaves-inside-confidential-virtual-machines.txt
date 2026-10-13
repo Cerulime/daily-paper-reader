@@ -1,0 +1,1036 @@
+Title: Enabling Extended SGX Enclaves inside Confidential Virtual Machines
+
+URL Source: https://arxiv.org/pdf/2610.12695v1
+
+Published Time: Mon, 12 Oct 2026 00:19:34 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+Enabling Extended SGX Enclaves inside Confidential Virtual Machines 
+
+Pamenas Kariuki 
+
+TU Dresden Germany 
+
+Dong Yiliang 
+
+TU Dresden Germany 
+
+Quoc Do Le ∗
+
+StackIT Cloud Germany 
+
+Christof Fetzer 
+
+TU Dresden Germany 
+
+Abstract 
+
+Confidential Virtual Machines (CVMs), such as AMD SEV-SNP, and process enclaves, such as Intel SGX, provide work-load protection against cloud threats. However, they strongly differ in TCB, deployment cost and speed, peer workload protection, resource sharing, fine-grained isolation and at-testation, and programming capabilities. Nesting process enclaves within CVMs offers an optimal solution and an op-portunity to address long-standing SGX limitations: lack of intra-enclave protection, expensive transitions and exception paths, slow enclave cloning, and a restricted programming model that limits Library Operating Systems (LibOS). This paper introduces TEEVisor, a CVM-resident architec-ture consisting of a security monitor and a kernel driver that leverages AMD SEV-SNP Virtual Machine Privilege Levels (VMPLs) to build hardware-protected, process-level enclaves inside a guest CVM with two modes: (1) an SGX binary compatibility mode to run unmodified SGX applications; and (2) a novel extended SGX (eSGX) mode optimizing slow execution paths and offering richer enclave programming capabilities. On commercial AMD EPYC hardware, against native CVM execution, TEEVisor incurs under 5% overhead on compute- and memory-bound workloads, around 12% on I/O-heavy applications, and accelerates enclave cloning to a rate of 93 𝜇 s/MB of enclave size, demonstrating that eSGX semantics inside a CVM are practical for production use. 
+
+1 Introduction 
+
+Confidential computing has become a cornerstone primitive for running sensitive cloud workloads on shared infrastruc-ture. Two common Trusted Execution Environment (TEE) ab-stractions are: process-based enclaves such as Intel SGX [13], isolating userspace components in behind a small Trusted Computing Base (TCB), and confidential virtual machines 
+
+(CVMs) such as AMD SEV-SNP [19] and Intel TDX [6], which protect a VM from a malicious hypervisor. SGX is prevalent in server CPUs and at the core of Intel TDX attestation. Critically, neither enclaves nor CVMs alone meet the de-mands of modern cloud services: enclaves retain a small, auditable TCB but impose rigid memory layouts, expensive transitions, and a poor programming model; CVMs offer bi-nary compatibility and rich OS services but expose a large attack surface [14, 22]. This tension has concrete operational consequences. Work-load isolation, resource sharing, deployment cost, and TCB 
+
+> ∗Quoc Do Le performed this work at TU Dresden.
+
+size constrain confidential cloud orchestration: OS-level con-tainers CVM offer limited protection against a compromised guest OS, while a single workload per CVM is costly, slow to provision, hard to scale, and weakens per-workload at-testation. MicroCVM isolation (e.g., unikernels) reduce TCB but has same scaling issues. Some domains have strict re-quirements (e.g., healthcare [15]) for confidential isolation of workloads, and demand either enclaves or exclusive CVM per workload that is costlier or has higher orchestration com-plexity. Thus, we are motivated to explore solutions at the intersection of CVMs and process-based enclaves. Architectural bottlenecks in SGX have hindered its broader adoption: enclave exceptions force costly transitions and host interaction, degrading memory management and latency in exception-heavy applications (JVM [44]); host-mediated signaling and transitions for preemption; and emulating 
+
+fork /clone using sealing and state copying has significant overheads despite SGXv2 improvements and runtimes like Haven [9], SCONE [7], Graphene-SGX [37] and Occlum [35]. Lack of in-enclave privilege layers prevents efficient en-forcement of trust and isolation. As such, LibOS secrets can-not be robustly isolated and protected from buggy or com-promised enclave applications, especially in multi-party en-claves. Software-based isolation mechanisms —MPK-based [28, 38], nested enclaves [31], and compiler-based compartmen-talization [35]—mitigate some risks but still demand host cooperation, restrict the programming model, may impose performance overheads, or leave enforcement gaps. Address-ing this issue allows new capabilities: faster handling of syscalls and exceptions inside enclaves without software recompilation or enclave transitions; adding timers; easy preemptive scheduling and switching of threads; leading to efficient and richer enclave computing. Comparatively, CVMs avoid these problems by reusing conventional OS stacks, but attempts to shrink the CVM TCB (unikernels [14], micro-VMs [22, 42], and hardened minimal images [12]) trade one set of compatibility challenges for an-other without restoring the small, auditable TCB of enclaves. Recent CVM extensions, AMD SEV-SNP’s Virtual Machine Privilege Levels (VMPLs) [2] and Intel TDX partitioning [4], expose primitives that allow a security monitor (SM) to cre-ate process-level isolation, protected from the guest OS, in a CVM. Prior related efforts—NestedSGX [39], vSGX [43], Veil [5], and Gramine-TDX [22]—demonstrate important di-rections but leave the SGX–CVM gap open: they either re-quire modifications of applications or runtimes, incur large cross-VM transitions, or need hypervisor changes. arXiv:2610.12695v1 [cs.CR] 8 Oct 2026 Our insight is that a single CVM-resident SM can expose the full, unmodified SGX ISA to legacy enclaves and offer new enclave extensions that fix SGX’s long-standing limitations— all without hypervisor, hardware, or host-kernel changes. The core idea combines VMPL isolation, a new in-enclave 
+
+horizontal privilege separation , and a kernel driver outside the enclave TCB for resource management. We present TEEVisor, a CVM firmware built on Coconut SVSM [3] and AMD SEV-SNP. It provides two enclave modes: (1) bit-for-bit SGX compatibility for unmodified binaries, and (2) a novel extended SGX mode with; horizontal privilege levels, copy-on-write cloning, in-enclave exception handling, direct memory management, soft timers, short syscall loops, new context-switch instructions, and SGX-style attestation while keeping resource management under guest OS. We implement TEEVisor as a Rust SM and Linux kernel driver, evaluated on AMD EPYC 7313. An EENTER /ERESUME 
+
+takes 9.7 𝜇 s (dominated by a 4.5–5.5 𝜇 s VMPL transition). Compute/memory workloads see 4.8% average overhead on nbench; no overhead on LMbench bw_mem , WolfSSL, or SGX-Gauge hash-join. TEEVisor adds under 5% overhead on Redis (SCONE), improves Nginx throughput by 25% (Gramine EX-ITLESS [18]), and incurs ∼12% on MariaDB (SCONE). COW-Cloning scales linearly (93 𝜇 s/MB), allowing elimination of costly page re-encryption steps in fork [8, 18]. This paper makes the following contributions: 1. Zero-modification SGX on CVMs. TEEVisor ex-ecutes unmodified SGX binaries, and runtimes (e.g., Gramine, SCONE) in a CVM, enabling drop-in adop-tion of the SGX ecosystem. 2. Extended SGX (eSGX) novelties. eSGX introduces horizontal privilege levels, architectural enclave cloning, in-enclave exception handling and direct memory management, soft timers, and short syscall paths to address core SGX overheads and gaps. 3. Minimal-TCB SM. TEEVisor excludes the guest OS from the enclave TCB, keeps resource management under the untrusted host, and composes with exist-ing CVM attestation without requiring hypervisor or hardware changes. 4. Implementation and evaluation. We implement TEEVisor on Coconut SVSM and SEV-SNP and demon-strate low overheads on compute- and memory-bound workloads, modest overhead on I/O-bound applica-tions, and significant speedups for workloads previ-ously dominated by exits, demonstrating practicality for production use. 
+
+2 Background 
+
+2.1 Intel SGX 
+
+Intel Software Guard Extensions (SGX) isolates regions of virtual address space, enclaves , from the OS and other un-trusted code. Enclave memory resides in encrypted Processor Reserved Memory (PRM): the OS maps enclave virtual ad-dresses into the Enclave Page Cache (EPC), and integrity is enforced through Enclave Page Cache Metadata (EPCM). Enclaves are managed via ENCLS (ring 0) and executed via 
+
+ENCLU (ring 3). Thread Control Structures (TCS) define per-thread execution contexts. At initialization, SGX measures enclave code and data into MRENCLAVE and can emit reports bound to this measurement for local or remote attestation; Quoting Enclaves (QEs) sign reports with secure keys [13]. 
+
+Exception model. Any exception or interrupt during enclave execution triggers an asynchronous exit (AEX): the CPU saves enclave state into the current state save area (CSSA) frame, clears sensitive state, and leaves enclave mode. The OS may handle the event or deliver a signal to a user-space AEX handler. ERESUME restores the saved state. SGX enclave dynamic memory management (EDMM) relies on AEX for resource management with the OS. 
+
+2.2 AMD SEV-SNP 
+
+AMD SEV-SNP, is the latest AMD’s CVM extension that builds on SEV/SEV-ES memory and register protections by adding integrity protection, secure interrupt handling, and flexible attestation using an isolated Secure Processor (SP) running firmware independent of normal CPU cores. 
+
+Reverse Map Table (RMP). The SP-managed RMP in-jectively maps every System Physical Address (SPA) to a Guest Physical Address (GPA) while recording ownership and permissions. A page is owned by the hypervisor (HV), a guest VM, or the SP firmware. Writes are allowed only by the owner; HV reads return encrypted data. The RMPUPDATE 
+
+instruction and the SEV-SNP API modify RMP entries. To pre-vent remap attacks, every page must be explicitly accepted via PVALIDATE inside the CVM; use of an unvalidated page raises a VMM Communication Exception ( #VC ). 
+
+Virtual Machine Privilege Levels (VMPLs). This fea-ture provides hierarchical privilege domains in a CVM. It has 4 levels (VMPL0-VMPL3) each with a Virtual Machine Save Area (VMSA). Per-page permissions (read, write, user- and supervisor-executable) are recorded per VMPL in RMP ta-ble. VMPL0 is the most privileged level; the CVM boots into VMPL0 with full permissions granted on all memory pages. VMPL0 creates higher VMPLs via RMPADJUST and PVALIDATE 
+
+on private pages, and initializes VMSAs before updating the RMP. Permissions checks enforce RMP permissions. 
+
+Interrupts. SEV-SNP has two interrupt interfaces. Re-stricted injection with a doorbell exception ( #HV ) polling a par-avirtualized queue. Alternate injection uses guest-controlled queuing and injection, and a VMSA to emulate APIC/x2APIC. 
+
+VMPL switching. VMRUN binds a vCPU to a specific VMPL via a VMSA pointer in the Virtual Machine Control Block (VMCB); only one VMPL is active per vCPU at any time. I/O and CPUID instructions force a non-automatic exit to VMPL0 for handling when REFLECT #VC attribute is configured. 
+
+> 2
+
+The guest may also request the HV for a VMPL switch via the Guest-Host Communication Block (GHCB). 
+
+Attestation and sealing. At VMLAUNCH , the SP measures all guest data and metadata pages into a Launch Digest; an optional signed Identity Block (IDB) can bind expected di-gests. After launch, the guest obtains attestation reports from the SP over a secure channel, signed by the Versioned Chip Endorsement Key (VCEK) or Versioned Loaded Encryption Key (VLEK) registered with the AMD Key Distribution Ser-vice. Sealing keys can be derived from VCEK, VLEK, or a migration-agent-supplied VM Root Key (VMRK). 
+
+2.3 Secure VM Service Module (SVSM) 
+
+SVSM defines an execution environment for hosting privi-leged VMPL0 service modules, and protocols to discover and interact with them. The SVSM binary, VM secrets, and meta-data are measured at launch; additional firmware or binaries can be loaded at other VMPLs under the same measurement model. COCONUT-SVSM [3] is an open-source, Rust-based SVSM reference implementation of the protocol. 
+
+2.4 Library OSes for SGX 
+
+Running unmodified applications in SGX usually requires a LibOS that services syscalls inside the enclave. Represen-tative systems range from libc shims to full in-enclave ker-nels: Panoply [36], SCONE [7], Gramine (formerly Graphene-SGX) [37], SGX-LKL [32], and Occlum [35]. SGXv2 [25] added EDMM and richer exception information, easing Li-bOS integration, but the architectural constraints that mo-tivate TEEVisor’s design; host-mediated exceptions; lack of intra-enclave privilege and isolation between an enclave application and LibOS, page-table control, and architectural enclave cloning support; and coarse AEX-based preemption, are unaddressed in SGXv2 and are revisited in §4.2. 
+
+3 Overview 
+
+TEEVisor is designed to execute unmodified SGX binaries transparently inside AMD SEV-SNP CVMs, while introduc-ing new primitives that strengthen SGX’s security properties and address its architectural limitations. This section states the design goals, threat model, and overall architecture. 
+
+3.1 Design Goals 
+
+TEEVisor pursues five goals:  
+
+> 1
+
+Userspace binary and ISA compatibility. Unmodified SGX binaries, SDKs, and LibOSes run on TEEVisor without recompilation. TEEVisor implements the Intel SGX ISA and matches its execution semantics.  
+
+> 2
+
+Memory flexibility. TEEVisor lets any guest memory back an enclave, enabling dynamic mapping of guest OS memory as private enclave memory unlike SGX’s fixed EPC.  
+
+> 3
+
+Rich LibOS abstractions. TEEVisor brings new ISA extensions and features for greater LibOS capabilities while retaining SGX security and resource control model.  
+
+> 4
+
+Strengthened isolation. A dedicated VMPL hosts en-claves, hardening the boundary between enclave, SM, and untrusted guest OS.  
+
+> 5
+
+Attestation support. TEEVisor exposes SGX-compatible attestation workflows so applications can verify they run on genuine, attested hardware and CVM. 
+
+3.2 Threat Model 
+
+TEEVisor minimizes the trusted surface while accounting for adversaries both inside and outside the CVM. TEEVi-sor adopts SGX and AMD SEV-SNP threat models except hardware attacks outside their scope, and DoS attacks. The TCB includes only the SM and the enclave; the guest OS and its drivers are explicitly outside this boundary. TEEVisor defends against four adversary classes: 
+
+Malicious hypervisor. TEEVisor relies on SEV-SNP hard-ware primitives to protect enclave memory and page tables from host observation or tampering. 
+
+Compromised guest OS. Even a fully compromised guest kernel cannot access enclave data: the SM enforces isolation through VMPL permissions independently of the guest OS. 
+
+Untrusted peer applications. VMPL hardware isolation protects enclaves from guest OS and other applications. 
+
+Trust enforcement of enclave code. Third-party code run-ning inside an enclave may be malicious, incorrect or buggy. TEEVisor partitions the enclave into a trusted runtime range and an enclave-application user range, enforced by separate page tables so user code cannot corrupt, access or randomly execute in runtime. These ideas are illustrated in Figure 1. Typically LibOS(e.g., SCONE) spans new Enclave Runtime 
+
+region with the application residing in Enclave App .Untrusted   
+
+> Runtime Enclave
+> Untrusted
+> Runtime
+> Enclave App
+> Enclave Runtime
+> (a)
+> (b)
+> Access No Access
+
+Figure 1. TEEVisor modes: (a) SGX and (b) eSGX split appli-cation models showing relative access restrictions of trusted and untrusted parts of an application. 
+
+Security of eSGX . eSGX improves and retains SGX security guarantees by restricting the enclave application (horizon-tal privilege, switching instructions), from accessing non-enclave memory while VMPL permissions (rather than cache flushing as in SGX) protects access to enclaves for exits. New paths (timers, internal exceptions, syscall) retain SGX SSA-based exception model. Clones have special tokens to ensure 
+
+> 3
+
+correct parent-child matching, while the memory owner-ship model (see §B) ensures correct COW enclave-group memory mapping (i.e., no cross-enclave mapping). Rollback protection is guaranteed by platform attestation (§4.4). 
+
+3.3 Architecture 
+
+Figure 2 shows TEEVisor’s architecture. The SM runs in VMPL0 kernel space and services ENCLS requests from the guest (VMPL2), managing enclaves and granting or revok-ing VMPL permissions aptly. In VMPL1 kernel space, the SM services ENCLU requests and emulates context switches for enclave transitions; enclave code runs in VMPL1 user space. ENCLU instructions issued from inside an enclave (e.g., 
+
+EACCEPT ) are emulated by the exception handler. With hori-zontal privilege modes, enclaves can switch between trusted runtime and untrusted user execution with isolated memory. The TEEVisor driver runs in the guest Linux kernel (VMPL2) to trap userspace ENCLU instructions and to expose an ENCLS 
+
+interface compatible with existing SGX driver. The SVSM protocol is extended to handle complex requests. Security Monitor Enclave Runtime Enclave App ENCLS Emulation VMPL Permission  
+
+> Management VMPL0 VMPL1 VMPL2 ENCLU Emulation
+> Ring 0
+> Exception Handler Enclave Untrusted Runtime Address Space Management TEEVisor Driver Guest OS Enclave Page Table Management High Privilege Low Privilege EPCM Management
+> Ring 0 Ring 3 Ring 0 Ring 3
+> VMM (QEMU)
+> enclave VA range
+
+Figure 2. TEEVisor system overview. 
+
+3.4 Comparison with Existing Approaches 
+
+Table 1 compares TEEVisor with three SEV-SNP-based de-signs. vSGX [43] preserves binary compatibility by splitting the application across a normal VM and a CVM; trap han-dlers in both VMs decode enclave instructions and drive SGX emulation. The cross-VM path introduces large round-trip overheads and requires hypervisor adaptation. Veil [5] uses VMPLs to create enclaves inside a single CVM with a dedi-cated VMPL0 monitor, but defines its own SGX-like ABI and relies on hypervisor changes, so it cannot accept unmodified SGX binaries. NestedSGX [39] extends COCONUT-SVSM to host enclaves in SVSM-reserved memory and emulates SGX via ioctls and syscalls, but it does not fully support the SGX model due to missing binary compatibility and incomplete shared-memory synchronization. TEEVisor also builds on COCONUT-SVSM and dedicates a VMPL to enclaves, but is unique in that it runs unmodified SGX binaries at low VMPL-transition overhead and adds features beyond SGX, including in-enclave exception and syscall handling, and architectural COW cloning with page sharing across enclaves. 
+
+Table 1. Comparison between TEEVisor and state-of-the-art systems. Flexible memory conversion SGX binary compatibility No hypervisor adaption Low-overhead switches Internal exception handling vSGX [43] × ✓ × × ×               
+
+> Veil [5] ✓××✓×
+> NestedSGX [39] ××✓✓×
+> TEEVisor ✓✓✓✓✓
+
+4 Design 
+
+We first describe the enclave life cycle (§4.1) and how TEEVi-sor achieves userspace binary compatibility 1 and extended SGX (eSGX) features 3 (§4.2). We then present the memory-management design that delivers memory flexibility 2 and strengthened isolation 4 (§4.3), and close with TEEVisor’s attestation chain 5 (§4.4). 
+
+4.1 Enclave Life Cycle 
+
+We describe the control-flow transfers among TEEVisor’s parts during enclave creation, execution, and destruction. 
+
+4.1.1 Enclave Creation. All ENCLS instructions are han-dled by the SM in VMPL0. Untrusted Runtime interacts with the driver via ioctls as in SGX. The driver emulates ENCLS leaf instructions via dedicated SVSM calls. ECREATE creates an enclave in VMPL1 by initializing an SGX Enclave Control Structure (SECS) page, enclave’s root identity. SECS spec-ifies the enclave’s attributes and enables the Runtime and Clone extensions. EADD adds regular pages with customized permissions or TCS pages to the enclave identified by its SECS. EEXTEND measures each newly added page into the en-clave’s digest. After all pages are added and measured, EINIT 
+
+submits a signature structure (SIGSTRUCT) to verify that measurements and attributes match expectations, finalizes the measurement, and makes the enclave executable. 
+
+4.1.2 Enclave Execution. Enclave execution comprises launch, exit, and destruction. 
+
+Enclave Launch. Figure 3 shows how TEEVisor pre-serves binary compatibility during launch. When user-space code executes EENTER , the TEEVisor driver’s die-notifier hook, invoked on the #UD exception path, parses the fault-ing instruction. If it is an ENCLU , the handler enqueues the emulation task on the current task’s work list and marks the exception as handled. Before returning to user space, the kernel executes the emulation, which switches to VMPL1 via the SVSM protocol; the VMPL1 ENCLU handler then loads the enclave context and enters the enclave.  
+
+> 4Enclave
+> VMPL1 VMPL2
+> Untrusted Runtime TEEVisor
+> Driver
+> 7. SVSM_Protocol (EENTER)
+> Security Monitor ENCLU Emulator Die Notifier Handler ENCLU Handler
+> 8. load context
+> Guest OS Scheduler
+> 2. invoke handler 4. handler return 5. schedule task 6. run work 1. ENCLU
+> Exception Handler
+> Ring 0 Ring 3 Ring 0 Ring 3
+> High Privilege Low Privilege
+> 3. call add work
+> enclave VA range
+
+Figure 3. TEEVisor enclave launch control flow. 
+
+Enclave Exit. A synchronous exit can occur on EEXIT 
+
+or a new ECLONE (§4.2.2). An AEX occurs on exceptions or 
+
+ERAISE . As in Fig. 4, both exits are handled by the VMPL1 SM exception handler, which then returns to VMPL2. The TEEVisor driver’s ENCLU emulator then updates the task context from the protocol parameters and prepares execu-tion for resumption. For AEXes, the emulator decodes the exception vector from the protocol parameters and attempts to resolve the fault internally rather than invoking the native Linux handler; if TEEVisor cannot resolve it, the correct sig-nal is delivered to the untrusted task. Finally, the scheduler resumes the untrusted task with updated context. Enclave   
+
+> VMPL1 VMPL2
+> Untrusted Runtime TEEVisor
+> Driver Security Monitor ENCLU Emulator ENCLU Handler Exception Handler
+> 1. ENCLU/exceptions 2. restore context 3. SVSM_Protocol (Return)
+> Guest OS Scheduler
+> 4. return work 5. continue task
+> Ring 0 Ring 3 Ring 0 Ring 3
+> High Privilege Low Privilege enclave VA range
+
+Figure 4. TEEVisor enclave exit control flow. 
+
+4.1.3 Enclave Destruction. The TEEVisor driver initi-ates destruction when the guest OS terminates the host process. ECCLEARCACHE , ESYNC , and EREMOVE reclaim cache blocks, shared pages, and other resources from the SM; all remaining state is released once the SECS page is removed. 
+
+4.2 Binary Compatibility and eSGX 
+
+To meet 1 , TEEVisor preserves the SGX binary interface and emulates SGX semantics precisely: ENCLU instructions in untrusted code are trapped by the TEEVisor driver at VMPL2, while those inside enclaves are trapped by the SM at VMPL1. This uniform trapping mechanism also lets TEE-Visor correctly emulate instructions that hardware cannot execute directly. Beyond binary compatibility, TEEVisor de-livers eSGX through five features (F1–F5). It is enabled by two new SECS flags; Runtime and Clone . Jointly, F1–F5 ad-dress the SGX limitations summarized in §2.4 and advance goals 1 – 4 :
+
+F1: Horizontal privilege layers. The enclave address space is split into Enclave Runtime (ER) and Enclave Userspace (EU) .ER can read and modify EU memory, but not vice versa, and holds the privilege to execute enclave-management in-structions and handle exceptions that enable running an unmodified application in EU with low overhead. 
+
+F2: In-enclave memory management. ER manages en-clave memory attributes inside, reducing exits and speeding applications with frequent attribute modifications. 
+
+F3: Flexible exception handling. Exceptions raised in-side the enclave are handled by Runtime handlers when configured; unresolved events can be re-raised to the host. Unconfigured exception handlers trigger a normal AEX. 
+
+F4: Controlled runtime/user transitions. TEEVisor pro-vides syscall- and iret -like instructions enabling: (1) tran-sitions between ER and EU; (2) triggering correct Runtime handler, and (3) enabling a mode or context switch. 
+
+F5: Enclave cloning. TEEVisor supports page-granularity COW cloning of a running enclave, preserving integrity and preventing misuse by untrusted parties. 
+
+4.2.1 Enclave Runtime. ER enforces isolation at mem-ory and instruction-privilege levels. Code in ER can access the whole enclave; EU code sees user range only, with the runtime range placed at higher (non-overlapping) addresses. Metadata pages (SSA, TCS, handler pages) and the enclave en-try point must reside in the runtime range; execution begins in runtime mode. Shared memory with guest OS is accessible only from the ER. A dedicated User SSA (USSA) saves EU context alongside the existing SSA range and is repointable via ESETUSSA . In EU, ENCLU is illegal ( #UD ) while syscall is legal and triggers a mode switch. Since TEEVisor owns the enclave page table, EMODPE and EMODPR are replaced with 
+
+EMODP for permission control without guest OS interaction. 
+
+Syscall and exception fast paths. Fig. 5 shows in-enclave syscall and exception handling. The trap handler redirects an EU syscall to a syscall entry in the handler page, switching modes; sysret switches back to EU. SGX-supported excep-tions (with vectors in SSA) redirect to their corresponding entries, incrementing CSSA and saving context in the SSA. Other interrupts and guest OS shared-memory #PFs follow AEX flow. To request guest OS support (e.g., handling #PF via 
+
+ESYNC /EAUG ), ERAISE re-raises SGX-supported exceptions to trigger an AEX. ESWITCH restores EU context in USSA.   
+
+> 5Enclave Runtime
+> VMPL2 ENCLU Handler Untrusted Runtime 9. ERESUME
+> Ring 3 Ring 0 Ring 0
+> Ring 3 VMPL1 ENCLU Handler Trap Handler 11. resume enclave
+> 10. SVSM(ENCLU)
+> 2. handler jump
+> 3. ERAISE
+> 5. SVSM Return TEEVisor Exception Handler 6. handle exception ENCLS Handler
+> Ring 0
+> VMPL0 7 a). SVSM(ESYNC/EAUG) 8. to AEP 7 b). Set SIGNAL
+> Enclave resume Runtime to App switch Enclave exit
+> 4. AEX ESWITCH/ sysret 1. Exception/ syscall Enclave App Exception handler page
+> Default #DE #DB #BP #UD #GP #PF #MF #AC #XF #CP syscall Timer RSVD RSVD
+
+Figure 5. TEEVisor runtime exception handling flow. 
+
+4.2.2 Enclave Clone (F5). Clone extends the Runtime feature to accelerate child-enclave creation via COW; ini-tially duplicating only metadata pages. It offers consistency and reliability by enforcing a single active TCS at clone, before the SM freezes enclave state. ECLONE freezes an en-clave, exits synchronously with context saved and writes 
+
+ECloneMetadata to guest OS buffer. An ioctl binds the child using this metadata, and the TEE-Visor driver drives the child’s ECCREATE /ECLONEINFO /ECADD /
+
+ECINIT sequence during a fork , unfreezing the parent on success or calling ECABORT on failure. Post-clone, ERESUME 
+
+continues execution on the cloned TCS. Regular pages are shared until a write or EPCM change triggers a COW, which is serviced from an in-enclave block cache ( ECADDCACHE ), synchronizing mapping states via a polled slotted page. Sec-tion C details the full cloning sequence (Fig. 14). 
+
+4.2.3 SGX Instruction Emulation. Table 4 lists every SGX instruction supported in TEEVisor. Because TEEVisor disallows memory swapping in favor of flexible memory conversion (§4.3), the swap-related ENCLS instructions are not supported. AEXNOTIFY, and its associated EDECCSSA , is likewise unnecessary for Runtime-enabled enclaves, which observe exceptions directly. Two new common instructions, 
+
+ESYNC and EADDB (§4.2.4), fill emulation gaps. Some legacy in-structions are disabled under the Runtime feature to harden the enclave against a malicious guest OS, since the SM man-ages page attributes without exiting to the host. 
+
+4.2.4 Common New Instructions. TEEVisor introduces two new ENCLS instructions common to all enclave modes: 
+
+ESYNC and EADDB . ESYNC manages shared pages inside the en-clave and is callable only by the driver, to preserve userspace compatibility and SGX memory guarantees. EADDB accel-erates batch page initialization by using an SVSM buffer to describe contiguous page runs instead of registers (as in 
+
+EADD ). It processes pages sequentially, updating a count, and returns the total pages added to an enclave. 
+
+4.2.5 Modified and New Instructions (summary). To support F1–F5, TEEVisor extends a handful of SGX struc-tures (SECS, TCS, GPRSGX) and EADD /EENTER /ERESUME with fields and sanity checks for the runtime range, USSA, and handler page. It adds six new ENCLU instructions for the Runtime feature, syscall /sysret for fast mode transitions, 
+
+ERAISE for host-assisted exception delivery, ESETUSSA for USSA repointing, ESETTIMER for runtime scheduling, and 
+
+ESWITCH for mode-aware context restore, plus EMODP , which unifies EMODPR /EMODPE for in-enclave page-permission con-trol. The Clone feature introduces a new SECS attribute bit, requires EREMOVE and EMODT to take an enclave SECS under page sharing, and adds a family of EC* ENCLS in-structions, ECCREATE , ECADD , ECLONEINFO , ECINIT , ECABORT ,
+
+ECADDCACHE , ECCLEARCACHE , ECSYNC , together with ECLONE 
+
+on the ENCLU side. Table 2 lists the headline new instructions. 
+
+Table 2. Headline instructions introduced by TEEVisor. See §A for the full catalogue and details.               
+
+> Instruction Class Purpose
+> ESYNC ENCLS , common Sync shared pages into the enclave
+> EADDB ENCLS , common Batch page add at initialization
+> EMODP ENCLU , Runtime Unified in-enclave permission control
+> ERAISE ENCLU , Runtime Raise exception to guest OS (AEX)
+> ESWITCH ENCLU , Runtime Switch runtime/user mode on exit
+> ECLONE ENCLU , Clone Begin parent-enclave clone
+
+4.3 Memory Management 
+
+TEEVisor separates memory into guest-managed normal memory and SM managed secure memory. VMPL permis-sions isolate the two regions, while the SM can dynamically convert normal pages into enclave memory on demand. TEE-Visor extends EPCM metadata to track page state, sharing, and ownership throughout the enclave lifecycle. During en-clave construction, pages are converted and mapped with enclave permissions; during destruction, their mappings and references are released, and pages with no remaining users are cleared and returned to the guest OS. See Section H. 
+
+4.4 Attestation 
+
+TEEVisor uses two attestations: (1) Platform attestation to verify CVM setup and identity, provision it, and guard against 
+
+rollback attacks ; and (2) SGX-style attestation for application enclaves. SM includes embedded metadata to match identity and measurements of a Platform Initialization Enclave (PIE) and a Quoting Enclave (QE). At boot, the SM generates an ephemeral attestation key pair (SMpub/SMpriv) to anchor local and remote attestations. After registering SMpub with a Key Broker Service (KBS) via SEV-SNP report, SMpriv signs enclave quotes and derives 
+
+local attestation and ephemeral sealing (per boot) keys. KBS’s public key (KBSpub), embedded in the boot image, validates the CVM. Currently, TEEVisor does not support migration .
+
+> 6
+
+4.4.1 Platform Attestation. A platform attestation and initialization service (PAIS) runs on the guest OS to attest the platform via PIE. The SM gives PIE extended privileged ac-cess. PIE fetches a public key and nonce from KBS, requests a VMPL0 report containing hash(SMpub, nonce, MRENCLAVE) as REPORT_DATA, and submits them back. On verification, SMpub is registered and KBS returns secrets encrypted with it which the PIE provisions the SM with ESMPROV instruction. The SM validates signatures using KBSpub, confirms cor-rect KBS ownership, and accepts the secrets. All subsequent reports signed by SMpriv are accepted by KBS. Figure 15 illustrates this flow. 
+
+4.4.2 Local and Remote Attestation. TEEVisor preserves SGX report structure with compatible local and remote at-testation anchored, which use QE, in SEV-SNP hardware and registered keys (SMpub/SMpriv). Section D provides the chain-of-trust and key-derivation details. 
+
+5 Implementation 
+
+We implement TEEVisor on top of the COCONUT-SVSM software stack [3]. In addition to a new Linux kernel driver (TEEVisor Driver, 3000 LOC) and an extension of the secu-rity monitor (TEEVisor Security Monitor, 11,500 LOC), TEE-Visor reuses several VMPL-enlightened components from COCONUT-SVSM to realize its functionality; Linux Kernel, QEMU and Open Virtual Machine Firmware (OVMF). 
+
+5.1 Security Monitor 
+
+The SM runs in VMPL0 and services requests from lower VMPLs. It extends the COCONUT-SVSM SM (Rust with sup-porting assembly). As noted in §2.3, SVSM passes parameters through registers plus a registered buffer (CAA page); we add a new request category for extended enclave operations alongside the existing Core, Attestation, and vTPM cate-gories. This subsection covers the implementation details and non-trivial challenges in the SM. 
+
+5.1.1 Security Monitor Initialization Across VMPLs. 
+
+The SVSM SM runs exclusively in VMPL0 with full VMPL permissions; in TEEVisor it emulates ENCLU in VMPL1 while handling other requests in VMPL0, which demands careful permission setup across both levels (Fig. 6). Initialisation pro-ceeds in two stages. During BSP bring-up, TEEVisor parses the IGVM launch info, grants VMPL1 permissions over the SM range, and installs a VMPL1-specific IDT; each AP then follows the same flow and boots into VMPL1 before return-ing to VMPL0. Each vCPU keeps VMPL-exclusive per-CPU state that points at a shared CAA page. Once every vCPU is up, the monitor constructs the EPCM from the guest memory layout; its size scales with guest memory, so a sufficiently large heap is reserved (optionally capped). 
+
+5.1.2 Protocol Buffers and ABI. As §4.3 explains, VMPL permissions change in an enclave’s life cycle. ENCLU requests BSP  AP  
+
+> 1.boot
+> BSP
+> 2. notify
+> 3. switch
+> VMPL0
+> VMPL1
+> VMPL2
+> SVSM TEEVisor
+> BSP
+> BSP
+> 1.boot
+> 6. notify
+> 2. switch
+> 3.boot
+> AP
+> 4.boot
+> AP
+> BSP
+> 7. switch
+> 5. switch
+
+Figure 6. TEEVisor vCPU bootstrap flow. are handled in VMPL1, thus the SVSM protocol’s CAA page must be accessible there; we update VMPL0/VMPL1 map-pings and CAA permissions whenever OVMF or the guest OS registers or modifies it. The SVSM protocol passes up to three register arguments (return value in RAX) and uses pointers for longer structures. For VMPL1 ENCLU requests, VMPL permissions block arbi-trary guest page access, restricting CPU state to the CAA page’s reserved region and requiring register pointers to match the correct CAA offset. For VMPL0 ENCLS requests, buffer addresses are validated against the PVALIDATE bit (§H.1) to avoid faults on unaccepted pages. The driver passes physical addresses when emulating across VMPLs because the guest OS lacks enclave page map-pings. However, for an ENCLU originating inside the enclave, binary compatibility demands virtual addresses, which the SM resolves by walking its own enclave page tables. The SM returns an SGX error code or an x86 exception vector (encoded) in RAX on return to the guest OS. 
+
+5.1.3 Exception Model. Logically a single vCPU switches between VMPLs, but the HV views the vCPU’s VMPLs as multiple vCPUs with separate contexts that share one APIC ID. Our baseline SVSM lacks Alternate Injection, so TEEVi-sor uses Restricted Injection: KVM emulates the APIC and injects interrupts into the target VMPL via #HV vector. I/O interrupts always go to the active lowest-privilege VMPL (VMPL2 in the normal path), IPIs are routed to the target vCPU in the same VMPL, and timer interrupts are injected into the originating vCPU. Because guest-OS-armed timers cannot cross VMPL boundaries, TEEVisor arms a VMPL1 periodic timer at 100 Hz to preempt enclave execution into SM, then do an AEX; a one-shot timer would be more faithful but costs ∼10,000 cycles per x2APIC MSR access. 
+
+5.1.4 Page Ownership with Clone Feature. Under Clone, an EPCM entry can be shared across enclaves, and SGX’s assumption that every enclave page is removed before its SECS no longer holds. This breaks SECS-based ownership: reusing a destroyed parent’s SECS page for a new enclave creates an ABA-style confusion in which shared pages ap-pear to belong to the wrong enclave. TEEVisor resolves this 
+
+> 7
+
+by tracking each enclave via a unique identifier and an ac-tive descendant counter in an enclave-node list, which safely validates ownership on every EPCM modification (detailed in Section B). 
+
+5.1.5 Page Table Optimization. For eSGX enclaves, the SM keeps two page tables to enforce memory isolation. Be-cause the user range appears in both tables with identical attributes, TEEVisor shares the corresponding page-table entries across the two tables after aligning each level. A re-served bit marks entries that also belong to the runtime table so they are correctly reclaimed when the enclave is removed. 
+
+5.2 TEEVisor Driver 
+
+The driver runs in the Linux kernel at VMPL2 and is invoked by userspace programs to manage enclave life cycles. We preserve binary compatibility and minimize porting effort by retaining the device node /dev/sgx_enclave and its ioctls, and adding new ones for the Clone feature. To run on stock kernels, TEEVisor driver re-implements unexported kernel helpers. Driver implementation details are covered hereafter. 
+
+5.2.1 ENCLU Emulation. ENCLU instruction raises #UD ex-ception, which the kernel dispatches through its exception chain. The driver registers a die notifier that hooks every 
+
+#UD and, on matching an ENCLU , starts instruction emulation and marks the exception handled. Per Linux conventions the notifier stays short and lock-free, so TEEVisor defers the actual work by enqueueing an emulation task at the head of the current task’s work list to run in a safe context. The emulator stores the user context and timer state into the CAA page, switches to VMPL1, and on return reloads the user context and dispatches on the exit reason filled in by the SM: Interrupt (emulator handles the vector before returning to user space so signals are delivered correctly), EEXIT and 
+
+Timer (returns to user space directly as in §5.1.3), Clone 
+
+(ECLONE triggers a synchronous exit and the driver marks the enclave as in-clone), Cache (COW ran out of cache pages, driver calls ECADDCACHE ), and NO_FREE_SLOT (no free slot on the synchronisation page, driver drains and resumes). 
+
+5.2.2 Shared Memory Synchronization. ESYNC lazily synchronises shared memory (§4.2.4): the driver tracks shared-memory mappings like enclave pages and unmaps them be-fore destruction. On a shared-memory page fault, the ENCLU 
+
+emulator’s post-AEX page-fault path calls handle_mm_fault 
+
+to populate the mapping and syncs it into the enclave via 
+
+ESYNC . TEEVisor installs an mmu_notifier on the enclave’s address space; its invalidate_range_start hook removes affected shared mappings via ESYNC before the kernel mu-tates them, and they are re-mapped lazily on next access. 
+
+5.2.3 Clone/Fork Support. During enclave cloning (as shown in Fig. 14), the TEEVisor driver multiplexes enclaves on a single fd using an address-space-keyed xarray so par-ent and child processes can resolve their instances after 
+
+fork . The workflow is triggered within fork by the VMA’s 
+
+vma_open callback; if CLONE_BIND metadata is present, it runs the creation sequence ( ECCREATE , ECLONEINFO , ECADD ,
+
+ECINIT ). Failures trigger ECABORT , with the status retrieved via CLONE_RESULT since vma_open cannot propagate errors. COW-Clone copies only private metadata pages. Shared pages are marked read-only with incremented reference counts; subsequent page faults check EPCM permissions to enter the COW path. Shared pages use refcounted structures, cache blocks are freed when relevant pages are released, and a kernel thread synchronizes new COW pages to the guest OS. Section C details the xarray, ioctls, and state machines. 
+
+5.2.4 Timer. ESETTIMER avails and runs a per-TCS timer (100 𝜇 s resolution) that pauses on OS yields, AEX , or EEXIT ,and raises a Timer exception upon expiry. 
+
+6 Evaluation 
+
+We evaluated TEEVisor on an AMD EPYC 7313 server (16 phys-ical cores, 2 threads per core, 128 GB DDR4 RAM), with the CVM configured at 16 vCPUs pinned to 3 GHz and 8 GB of RAM. Host and guest ran Ubuntu 22.04 with Linux 6.11.0 (SVSM branch, commit 3b04c21 ); the TEEVisor SM was built in Rust release mode. We used Intel SGX SDK v2.27, Gramine v1.9 and SCONE v6.0.4 for workload evaluation. We report micro-benchmarks (§6.1) and real-world applications under Gramine (§6.2) and SCONE (§6.3). 
+
+6.1 Micro-benchmarks 
+
+We first measured the execution time of individual emu-lated SGX leaf instructions and the overhead of each stage of control-flow transfers across the enclave boundary, and verified correctness with targeted unit tests. We evaluated TEEVisor on a suite of micro-benchmarks covering diverse workloads : (i) Linux/Unix nbench [24] as a compute- and memory-intensive CPU benchmark; (ii) LM-bench [26] for low-level memory latency and bandwidth; 
+
+(iii) WolfSSL [41] for compute-intensive cryptography work-loads; (iv) SGXGauge hash-join benchmark for memory-intensive database workloads; and (v) UnixBench fstime 
+
+(small-block I/O) and IOzone (large-block I/O) for IO perfor-mance. 
+
+6.1.1 Instruction Performance. Normal Instructions. Table 3 reports the latency of the instructions available in both SGX and eSGX. For ENCLS ,most of the latency came from the two VMPL transitions. 
+
+EADDB combines EADD and EEXTEND and therefore scales with the number of pages added. EINIT , EREPORT , and the mea-surement phase of EADDB incurred higher latency due to their cryptographic work. TEEVisor exhibits higher latency than NestedSGX for ENCLS instructions, primarily due to (1) a higher VMPL switch overhead (5 𝜇 s vs. 3 𝜇 s), poten-tially caused by the use of an additional VMPL; (2) extra driver management and emulation code with sanity checks 
+
+> 8
+
+(a) nbench normalized to SIM. (b) LMbench bw_mem bandwidth. 
+
+(c) WolfSSL normalized to SIM. 
+
+Figure 7. Compute- and memory-intensive microbenchmarks. 
+
+Table 3. TEEVisor latency for common instructions.                                                                
+
+> Group Instruction TEEVisor NestedSGX
+> ENCLS EADDB (EXTEND) 17.7 𝜇 s + 25.3 𝜇 s/page /EADDB (NO EXTEND) 16.5 𝜇 s + 1.0 𝜇 s/page /ECREATE 22.3 𝜇 s8.4 𝜇 sEDBGRD 13.3 𝜇 s/EDBGWR 12.5 𝜇 s/EINIT 43.0 𝜇 s46 𝜇 sEMODPR 13.4 𝜇 s9.9 𝜇 sEMODT 14.7 𝜇 s/EREMOVE 13.9 𝜇 s7.8 𝜇 sESYNC 15.3 𝜇 s/ENCLU EACCEPT 1.7 𝜇 s/EENTER / ERESUME 9.7 𝜇 s5–6 𝜇 s∗
+> EEXIT 9.9 𝜇 s5–6 𝜇 s∗
+> EGETKEY 10.8 𝜇 s17 𝜇 sEMODPE 4.0 𝜇 s/EREPORT 21.5 𝜇 s30 𝜇 s
+> ∗NestedSGX performs an OCALL/ECALL in 10–12 𝜇 s.
+
+required for binary compatibility; and (3) additional SM logic needed to support eSGX compatibility. The modification of userspace code in NestedSGX eliminates the compute in the driver needed to distinguish instructions from each other. 
+
+Runtime and Clone Instructions . Runtime instructions in VMPL1 only ( EMODP 4.4 𝜇 s, ESETUSSA 3.4 𝜇 s, ESWITCH 4.1 𝜇 s, in-enclave exception 2.5 𝜇 s, syscall 2.3 𝜇 s, sysret 1.1 𝜇 s) avoid boundary crossings and are thus fast; ERAISE is the exception at 7.8 𝜇 s because it exits to the host. syscall and 
+
+sysret are emulated via #UD trapping, hence slower than a native syscall. Enclave cloning scales linearly at rate of 93 𝜇 s/MB of enclave size (for a 4-1024 MB user + 64 MB runtime) measured at the driver hook, 20x faster than en-clave creation, dominated by driver management code and 
+
+ECINIT (114.8 𝜇 s + 8.1 𝜇 s per MB of page-table content). 
+
+ECADD and ECLONE scale with metadata-page count ( ∼1.1 and 0.1 𝜇 s/page). ECADDCACHE /ECCLEARCACHE (343.8 / 386.4 𝜇 s, each updating EPCM and RMP VMPL permissions for every page in a 4 MB block) are triggered later in COW handling. Full per-instruction breakdowns are in §E and §F. 
+
+Control Handover Stages. The TEEVisor driver and the SM each take roughly 2–3 𝜇 s per traversal, while the VMPL1–VMPL2 transition takes 4.5–5.5 𝜇 s and dominates boundary-crossing overhead. AEX emulation in the driver varies with exception type and is therefore not included. The full per-stage breakdown (for EENTER /ERESUME , EEXIT , and AEX) is in Table 5 (§E). 
+
+(a) Hash-join lookup latency. (b) UnixBench fstime .
+
+Figure 8. Hash-join lookup and UnixBench performance. 
+
+> 9
+
+6.1.2 Correctness Tests. We verified correctness of every native-SGX path and every new control-flow path introduced by TEEVisor with targeted unit tests: vDSO self-tests for native SGX, plus instruction-level positive and negative tests for each Runtime and Clone instruction (§F). All tests pass. 
+
+6.1.3 Clone and COW Performance. We provide a de-tailed evaluation of enclave cloning and COW performance in §G. We show that enclave cloning scales linearly with enclave size at approximately 93 𝜇 s/MB, while clone+COW remains about 1.4–1.7 × faster than creating a new enclave for the evaluated enclave sizes in addition to memory savings it provides. 
+
+6.1.4 Compute and Cryptography Microbenchmarks. 
+
+We used three compute- and memory-intensive microbench-marks to measure overheads outside the syscall path. Lin-ux/Unix nbench [24], run via sgx-nbench [1], exercises CPU, FPU, and memory subsystems; TEEVisor adds 4.8% aver-age overhead over the SIM baseline, primarily dominated by context-switching cost (Fig. 7a). LMbench bw_mem [26] via sgx-bench [34] with a 2 MB block size shows no measurable memory-bandwidth overhead (Fig. 7b); the small differences come from extra OCALLs used for in-enclave time measure-ment. WolfSSL’s built-in cryptographic benchmarks [41] match SIM throughput (Fig. 7c). 
+
+Figure 9. IOzone Throughput. 
+
+6.1.5 SGXGauge Hash Join. SGXGauge [21] is a bench-mark suite for Intel SGX. We used its native hash-join bench-mark to stress pointer-chasing memory access: the inner table was built by hashing every element, and probes then hashed keys from the outer table. We fixed the inner table at 100 K entries and varied the outer table from 500 K to 1 M entries, running two rounds that repeated the outer-table lookups 100 and 250 times respectively. As Figure 8a shows, TEEVisor adds almost no latency. 
+
+6.1.6 File-System I/O: UnixBench fstime and IOzone. 
+
+We measured small- and large-block file I/O under Gramine using UnixBench fstime [23] and IOzone [30] (4, 64, and 512 KB buffers; 4 KB–256 MB files). As Fig. 8b shows, Gramine SYNC suffers from frequent enclave exits (IOzone, 10 runs: EENTER/EEXIT 564,543/564,537 vs. 65.8/59.8 for EXITLESS; AEX 3,002/3,315). EXITLESS incurs buffer-copy and shared-queue overhead, while IOzone (Fig. 9) shows exitless OCALLs falling back to blocking on timeout, making EXITLESS slower than SYNC at large buffers. Enclave-exit costs diminish as file and buffer sizes grow. 
+
+6.2 Application Benchmarks with Gramine 
+
+We evaluated TEEVisor with Gramine on representative applications: Nginx for high-concurrency HTTP serving and OpenSSL for TLS-heavy cryptography; Redis and Mem-cached for low-latency, memory-bound key-value stores; and MariaDB for I/O-heavy relational workloads. Some results are grouped in Fig. 10; we omit OpenSSL 
+
+and Nginx . OpenSSL s_server /s_time workload collapses in both SYNC and EXITLESS due to Gramine’s futex-based file-system synchronisation and the absence of an fd cache, a LibOS-level limitation. In contrast, for Nginx serving a 10 KB HTML file under wrk, fd caching and sendfile allow EXITLESS to achieve a 25% speedup by avoiding context switches, whereas SYNC loses 50% over simulation mode. 
+
+Redis : the built-in benchmark at 50 concurrent clients and 100K requests per command; EXITLESS loses ∼10% to syscall-queue management; SYNC plateaus at ∼7K op-s/s (Fig. 10a). Memcached : memtier_benchmark [33] at 4 threads, 50 connections/thread, 10K requests/client; EXIT-LESS loses 40% (higher than Redis due to multi-threaded coordination), SYNC over 80% (Fig. 10b). MariaDB : Sys-bench [20] oltp_read_write on 10 tables × 600,000 rows at 1–4 threads with the default 128 MB buffer pool; EXITLESS accumulates management overhead with more threads while SYNC loses up to 50% (Fig. 10c). 
+
+6.3 Application Benchmarks with SCONE 
+
+We also evaluated TEEVisor under SCONE on Redis, Mem-cached, and MariaDB to quantify the additional latency in-troduced by TEEVisor and to compare how different LibOS frameworks shape the overall overhead. We ran the same Redis benchmark and memtier_benchmark with default pa-rameters, raising SCONE_SSPINS to 10,000 to lengthen the enclave-thread spin window and reduce context switches. As Fig. 11 shows, TEEVisor adds under 5% overhead on Redis, essentially matches the baseline on Memcached (HW mode is slightly faster, likely from reduced scheduling overhead), and adds about 12% on MariaDB. 
+
+6.4 Discussion 
+
+VMPL transitions are the dominant source of TEEVisor over-head. This is largely invisible for compute-intensive work-loads, where the boundary cost is a small fraction of total ex-ecution time, but becomes significant for I/O-intensive work-loads with frequent syscalls. A well implemented shared-syscall-buffer LibOS (as in SCONE, or EXITLESS in Gramine) can substantially mask this cost.      
+
+> 10 (a) Redis. (b) Memcached. (c) MariaDB.
+
+Figure 10. Application throughput under Gramine.      
+
+> (a) Redis throughput. (b) Memcached throughput. (c) MariaDB throughput.
+
+Figure 11. Application throughput under SCONE (HW represents TEEVisor). Frequent access to unmapped shared memory and permis-sion changes on already-synchronized shared pages intro-duce latency by triggering an extra page-table synchroniza-tion operation in TEEVisor. Applications designed for SGX, and for TEEVisor, should avoid these patterns. eSGX exception mechanism reduces minimal overhead to 3.4 μs compared to AEX enclave exit-and-resume cycle in SGX of at least 36.5 μs. The exception table further enables safer and more efficient exception identification. EMODP ac-celerates page permission changes entirely in-enclave, while ESETUSSA multiplexes enclave application threads over a single TCS through a simple pointer update. 
+
+7 Related Work 
+
+Minimizing the CVM TCB. Gramine-TDX [22] offloads network and filesystem operations to the host via paravirtual-ized interfaces but still carries a LibOS. Unikernel- and micro-VM-based confidential runtimes, IncognitOS [14], KylinX-style dynamic library OSes [42], and hardened minimal im-ages [12], shrink the guest at the cost of compatibility. Intra-CVM privilege separation via VMPLs is complementary: Veil [5], Cabin [27], and Wallet [10] carve CVMs into small trustlets that treat the guest OS as untrusted. TEEVisor sits in this family, guest OS is outside the enclave TCB, VMPL-based enclave isolation and page-table based horizontal priv-ilege separation, host-managed resources. 
+
+VMPL-based SGX on CVMs. NestedSGX [39] emulates SGX leaf functions at the highest VMPL but requires modi-fying every SGX application’s untrusted code and exposes no extended semantics. vSGX [43] preserves binary compat-ibility by splitting the application across a normal VM and a CVM, incurring millisecond cross-VM transitions. Veil [5] defines its own SGX-style ABI at VMPL0 but cannot run unmodified SGX binaries and requires hypervisor changes. TEEVisor is the first VMPL-based monitor to execute unmod-ified SGX binaries, SDKs, and shielding runtimes (Gramine, SCONE) inside a CVM, and adds extended semantics (eSGX) absent from prior VMPL designs. 
+
+Userspace SGX binary compatibility. Haven [9], Oc-clum [35], SCONE [7], Panoply [36], Gramine [37], and SGX-LKL [32] interpose on in-enclave syscalls via LibOSes or shims, improving compatibility at the cost of in-enclave TCB and often bespoke toolchains. TEEVisor preserves this path unchanged: unmodified binaries under SCONE and Gramine execute on TEEVisor without recompilation. 
+
+Extended enclave primitives. MPK-based in-process isolation and privilege hierarchies for SGX are explored in En-claveDom [28], SGXLock [11], and LightEnclave [17]; Nested Enclave [31] proposes multi-layered privilege as a hardware extension; RISC-V proposals such as Timber-V [40] explore fine-grained isolation with shared memory. Software-only enclave cloning is explored in MigSGX [29] and in sealing-based work [16], neither has hardware memory sharing. TEEVisor differs by combining horizontal privilege levels, in-enclave exception and syscall handling, direct memory management, and architectural COW cloning, all in a CVM, without HV changes and keeping SGX-binary compatibility. 
+
+> 11
+
+8 Conclusion 
+
+TEEVisor uses AMD SEV-SNP VMPLs to build hardware-protected, process-level enclaves inside a guest CVM, closing the gap between SGX-style isolation and CVM flexibility: the guest OS is outside the TCB, enclaves can be backed by ar-bitrary guest memory, and strict privilege and exception boundaries are preserved while keeping full userspace bi-nary compatibility with existing SGX stacks. Compute- and memory-bound workloads incur under 5% overhead (nbench averages 4.8%); I/O-heavy workloads depend on the libOS, Memcached under Gramine SYNC loses over 80% throughput, EXITLESS ∼40%, and under SCONE both Redis and Mem-cached stay within 5%. COW Clone enables fast, memory efficient and practical fork for LibOS multiprocessing. 
+
+References 
+
+[1] 2017. SGX NBench. https://github.com/utds3lab/sgx-nbench . Ac-cessed: May 2026. [2] 2022. SEV Secure Nested Paging Firmware ABI Specification. (2022). [3] 2025. coconut-svsm/svsm. https://github.com/coconut-svsm/svsm .original-date: 2023-03-13T09:02:31Z. [4] 2026. intel-tdx-module-1.5-td-partitioning-spec-354807002. Accessed: May 2026. [5] Adil Ahmad, Botong Ou, Congyu Liu, Xiaokuan Zhang, and Pedro Fonseca. 2023. Veil: A Protected Services Framework for Confiden-tial Virtual Machines. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 4 .[6] Pau-Chen Cheng et al. 2023. Intel TDX Demystified: A Top-Down Approach. https://doi.org/10.48550/arXiv.2303.15540 . Publication Title: CoRR Volume: abs/2303.15540. [7] Sergei Arnautov et al. 2016. SCONE: Secure Linux Containers with Intel SGX. In Proceedings of the 12th USENIX Conference on Operating Systems Design and Implementation (OSDI’16) .[8] Andrew Baumann, Jonathan Appavoo, Orran Krieger, and Timothy Roscoe. 2019. A fork() in the road. In Proceedings of the Workshop on Hot Topics in Operating Systems .[9] Andrew Baumann, Marcus Peinado, and Galen Hunt. 2015. Shielding Applications from an Untrusted Cloud with Haven. ACM Transactions on Computer Systems (2015). [10] Patrick Sabanic Masanori Misono Teofil Bodea, Julian Pritzi, and Michael Hackl Dimitrios Stavrakakis Pramod Bhatotia. 2026. Wallet: Confidential serverless computing. (2026). [11] Yuan Chen, Jiaqi Li, Guorui Xu, Yajin Zhou, Zhi Wang, Cong Wang, and Kui Ren. 2026. SGXLock: Towards Efficiently Establishing Mutual Distrust Between Host Application and Enclave for SGX. (2026). Accessed: May 2026. [12] Confidential Containers Community. 2026. Confidential Containers. 
+
+https://github.com/confidential-containers . Accessed: May 2026. [13] Victor Costan and S. Devadas. 2016. Intel SGX Explained. IACR Cryptol. ePrint Arch. (2016). [14] Kha Dinh Duy, Jaeyoon Kim, Hajeong Lim, and Hojoon Lee. 2025. INCOGNITOS: A Practical Unikernel Design for Full-System Obfus-cation in Confidential Virtual Machines. In 2025 IEEE Symposium on Security and Privacy (SP) .[15] Gematik GmbH. 2025. Whitepaper Datenschutz und Information-ssicherheit in der Telematikinfrastruktur . Technical Report. gematik GmbH. https://www.gematik.de/media/gematik/Medien/Newsroom/ Publikationen/Informationsmaterialien/gematik_Whitepaper_ Datenschutz_web_20250707.pdf Accessed: 2026-08-27. [16] Jinyu Gu, Zhichao Hua, Yubin Xia, Haibo Chen, Binyu Zang, Haibing Guan, and Jinming Li. 2026. Secure Live Migration of SGX Enclaves on Untrusted Cloud. (2026). Accessed: May 2026. [17] Jinyu Gu, Bojun Zhu, Mingyu Li, Wentai Li, Yubin Xia, and Haibo Chen. 2026. A Hardware-Software Co-design for Efficient Intra-Enclave Isolation. (2026). Accessed: May 2026. [18] Intel Corporation. [n. d.]. Gramine documentation — Gramine doc-umentation. https://gramine.readthedocs.io/en/stable/ . Accessed: March 2026. [19] David Kaplan. [n. d.]. AMD SEV-SNP: Strengthening VM Isolation with Integrity Protection and More. ([n. d.]). Accessed: May 2026. [20] Alexey Kopytov. 2026. sysbench. https://github.com/akopytov/ sysbench . Accessed: May 2026. [21] Sandeep Kumar. 2026. SGXGauge Benchmark. https://github.com/ sandeep007734/SGXGauge-Benchmark . Accessed: May 2026. [22] Dmitrii Kuvaiskii, Dimitrios Stavrakakis, Kailun Qin, Cedric Xing, Pramod Bhatotia, and Mona Vij. 2024. Gramine-TDX: A Lightweight OS Kernel for Confidential VMs. In Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security .[23] Kenneth D. Lucas. 2026. Byte UnixBench. https://github.com/kdlucas/ byte-unixbench . Accessed: May 2026. [24] Uwe F Mayer. 2003. Linux/unix nbench. [25] Frank McKeen, Ilya Alexandrovich, Ittai Anati, Dror Caspi, Simon Johnson, Rebekah Leslie-Hurd, and Carlos Rozas. 2016. Intel® soft-ware guard extensions (intel® sgx) support for dynamic memory management inside an enclave. In Proceedings of the Hardware and Architectural Support for Security and Privacy 2016 .[26] Larry McVoy and Carl Staelin. 2026. LMbench: Tools for Performance Analysis. https://lmbench.sourceforge.net/ . Accessed: May 2026. [27] Benshan Mei, Saisai Xia, Wenhao Wang, and Dongdai Lin. 2024. Cabin: Confining Untrusted Programs within Confidential VMs. In Proceed-ings of the International Conference on Information and Communications Security .[28] Marcela S. Melara, Michael J. Freedman, and Mic Bowman. 2020. EnclaveDom: Privilege Separation for Large-TCB Applications in Trusted Execution Environments. http://arxiv.org/abs/1907.13245 .arXiv:1907.13245 [cs]. [29] Kenji Nakashima and Kenichi Kourai. 2021. MigSGX: a migration mechanism for containers including SGX applications. In Proceedings of the 14th IEEE/ACM International Conference on Utility and Cloud Computing .[30] William Norcott and Don Capps. 2026. IOzone Filesystem Benchmark. 
+
+https://www.iozone.org/ . Accessed: May 2026. [31] Joongun Park, Naegyeong Kang, Taehoon Kim, Youngjin Kwon, and Jaehyuk Huh. 2020. Nested Enclave: Supporting Fine-grained Hierar-chical Isolation with SGX. In 2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture (ISCA) .[32] Christian Priebe, Divya Muthukumaran, Joshua Lind, Huanzhou Zhu, Shujie Cui, Vasily A. Sartakov, and Peter Pietzuch. 2020. SGX-LKL: Securing the Host OS Interface for Trusted Execution. arXiv:1908.11143 [cs] (2020). [33] Redis. 2026. memtier_benchmark. https://github.com/redis/memtier_ benchmark . Accessed: May 2026. [34] Ryan Riley. [n. d.]. SGX Bench. https://github.com/vsecurity-research/ sgx-bench . Accessed: May 2026. [35] Youren Shen, Hongliang Tian, Yu Chen, Kang Chen, Runji Wang, Yi Xu, and Yubin Xia. 2020. Occlum: Secure and Efficient Multitasking Inside a Single Enclave of Intel SGX. In Proceedings of the Twenty-Fifth International Conference on Architectural Support for Programming Languages and Operating Systems .[36] Shweta Shinde, Dat Le Tien, Shruti Tople, and Prateek Saxena. 2017. Panoply: Low-TCB Linux Applications with SGX Enclaves. In Proceed-ings 2017 Network and Distributed System Security Symposium .                  
+
+> 12 [37] Chia-Che Tsai, Donald E. Porter, and Mona Vij. 2017. Graphene-SGX: A Practical Library {OS} for Unmodified Applications on {SGX}. [38] Anjo Vahldiek-Oberwagner, Eslam Elnikety, Nuno O Duarte, Michael Sammler, Peter Druschel, and Deepak Garg. 2026. ERIM: Secure, Efficient In-process Isolation with Protection Keys (MPK). (2026). Accessed: May 2026. [39] Wenhao Wang, Linke Song, Benshan Mei, Shuang Liu, Shijun Zhao, Shoumeng Yan, XiaoFeng Wang, Dan Meng, and Rui Hou. 2025. The Road to Trust: Building Enclaves within Confidential VMs. In Proceed-ings 2025 Network and Distributed System Security Symposium .[40] Samuel Weiser, Mario Werner, Ferdinand Brasser, Maja Malenko, Ste-fan Mangard, and Ahmad-Reza Sadeghi. 2019. TIMBER-V: Tag-Isolated Memory Bringing Fine-grained Enclaves to RISC-V. In Proceedings 2019 Network and Distributed System Security Symposium .[41] wolfSSL. 2026. The wolfSSL library. https://github.com/wolfSSL/ wolfssl . Accessed: May 2026. [42] Yiming Zhang, Jon Crowcroft, Dongsheng Li, Chengfen Zhang, Huiba Li, Yaozheng Wang, Kai Yu, Yongqiang Xiong, and Guihai Chen. 2018. KylinX: A dynamic library operating system for simplified and efficient cloud virtualization. In 2018 USENIX Annual Technical Conference (USENIX ATC 18) .[43] Shixuan Zhao, Mengyuan Li, Yinqian Zhangyz, and Zhiqiang Lin. 2022. vSGX: Virtualizing SGX Enclaves on AMD SEV. In 2022 IEEE Symposium on Security and Privacy (SP) .[44] Yudi Zheng, Lubomír Bulej, and Walter Binder. 2017. An Empirical Study on Deoptimization in the Graal Compiler. LIPIcs, Volume 74, ECOOP 2017 (2017).
+
+A Complete SGX Instruction Catalogue 
+
+This appendix lists the full set of SGX structures and instruc-tions adapted or introduced by TEEVisor, and the complete instruction-feature matrix summarised in §4.2. 
+
+A.1 Modified and New Structures and Instructions 
+
+The following SGX structures and instructions are adapted to support the Runtime feature: 
+
+SECS. The existing base/size fields now define the user range; new runtime base and runtime size fields define the runtime range. A new attribute bit enables the Runtime feature. 
+
+TCS. A new OUSSA field records the USSA offset from the enclave base, analogous to OSSA .
+
+GPRSGX. A new SwitchFlag field restores the correct exe-cution mode on ERESUME after an AEX. 
+
+EADD . Extended with sanity checks that force metadata pages into the runtime range. A new handler-page type is added via EADD ; it holds the predefined entry points for exception and syscall handlers, all of which must be non-empty. 
+
+EENTER /ERESUME . Launch-time checks verify that the han-dler page is present and that the entire SSA range, including the USSA, is valid, since the runtime exception path can advance CSSA without exiting. New instructions introduced for the Runtime feature: 
+
+syscall . In user mode, syscall switches to runtime mode and dispatches to the corresponding handler-page entry; no context is saved in the USSA. 
+
+sysret . In runtime mode, sysret returns to user mode, jumping to RCX with sanitized flags in R11; no context is restored from the USSA. 
+
+ERAISE and EraiseInfo . ERAISE raises an SGX-supported exception described in EraiseInfo to the guest OS via the AEX flow. EraiseInfo combines the existing ExitInfo (vec-tor, exit type, validity) and EXINFO (extended info, e.g., page-fault details). 
+
+ESETTIMER . Sets the TCS timer count in 100 𝜇 s units with the highest bit requesting a periodic mode. It is cleared by setting the counter to 0. 
+
+ESETUSSA . Resets the USSA to the address in RBX, updating 
+
+OUSSA in the current TCS after sanity checks. 
+
+ESWITCH and SwitchFlag . ESWITCH consumes a SwitchFlag 
+
+in RBX to load context from the specified SSA/USSA, switch mode, and decrement CSSA as needed. SwitchFlag contains a USER bit (mode), an SSE_IGNORE bit (whether to load SSE state), and a 4-bit target SSA index. USER may only be set with target index 0 (the USSA). ESWITCH additionally checks that the USER and SSE_IGNORE bits in the target GPRSGX match the input flag. 
+
+EMODP . Unifies EMODPR and EMODPE under a single ABI for complete in-enclave permission control over regular pages. Additional adaptations and instructions support the Clone feature: 
+
+SECS. A new attribute bit enables the Clone feature. 
+
+EREMOVE /EMODT . Because pages can now be shared across enclaves, the caller must pass the target enclave’s SECS to disambiguate ownership. 
+
+ESMPROV . The provisioning interface used by PIE to transfer the KBS-provided provisioning blob into the SM. 
+
+ENCLS in clone state. All ENCLS except ESYNC are disabled while an enclave is mid-clone. 
+
+ECLONE and ECloneMetadata . ECLONE initiates cloning by exiting to a target address and populating ECloneMetadata 
+
+at a shared address. The metadata carries the clone hash, total page count, and metadata-page count, enough to uniquely identify the clone and coordinate with the driver. 
+
+ECCREATE and ECCreateInfo . ECCREATE creates the child enclave by copying the parent SECS and binds parent and child via ECCreateInfo . The child is created only when ev-ery non-SECS field in ECCreateInfo matches the parent’s metadata. 
+
+ECLONEINFO and request page. ECLONEINFO queries un-mapped virtual addresses for a specific metadata-page type (TCS or SSA). ECLONEINFORequest begins the request page, followed by per-mapping entries; the security monitor fills in the virtual addresses and the valid-entry count. 
+
+ECADD and request page. ECADD installs the queried meta-data mappings. ECLONEINFORequest is transformed into the request page by filling in physical addresses and bumping the next-entry index. 
+
+ECINIT . Verifies that all metadata pages have been added, initializes the child enclave, and unfreezes the parent. The input is ECCreateInfo , used to validate binding and memory requirements. 
+
+> 13
+
+ECABORT . Aborts cloning on a parent enclave identified by its SECS, reverting security-monitor state and unfreezing the parent. 
+
+ECADDCACHE . Adds a cache block (base, size) to the target enclave; pages are validated and will be allocated during COW. Each enclave has at most one cache block, removed by the monitor once consumed. 
+
+ECCLEARCACHE . Removes all unallocated pages from the cur-rent cache block. 
+
+ECSYNC . Registers a COW synchronization page for the tar-get enclave; the page is reclaimed by EREMOVE during de-struction. 
+
+A.2 Instruction-Feature Matrix 
+
+B Page Ownership and ABA Avoidance 
+
+Each EPCM entry records the owner of a physical page (§H.1). Under Clone, an entry can be shared across enclaves, so the security monitor must ensure that ENCLS /ENCLU requests target pages that actually belong to the intended enclave. Re-quests originate either from the guest OS via ENCLS (outside the enclave) or from enclave code via ENCLU (inside). 
+
+ENCLU operations need no ownership check: the running enclave’s identity is known and the security monitor main-tains its page table, so any mapping inside the enclave’s virtual range belongs to that enclave. 
+
+ENCLS operations that cross VMPL boundaries do need validation. Since the EPCM entry alone does not uniquely identify the owner under sharing, the caller must pass the target enclave’s SECS, and the monitor verifies that the page belongs to that enclave or one of its descendants. Because page ownership now changes only on page add or COW with refcount 1, SGX’s original assumption, that all enclave pages are removed before the SECS, no longer holds. As a result, the SECS page can no longer safely serve as the enclave identity for cross-enclave ownership tracking. Figure 12 illustrates the failure: an enclave creates a child, the child never writes the shared pages (so COW never runs), and the parent is destroyed. The EPCM still lists the parent as owner. If a new enclave reuses the same physical page for its SECS, the EPCM misleadingly associates the shared pages with a different enclave, an ABA-style ownership confusion that breaks the SGX identity model under sharing. To resolve this, TEEVisor explicitly tracks cross-enclave relationships. As Fig. 13 shows, the security monitor main-tains an enclave-node list and allocates a free slot per enclave. Each slot stores the parent’s index and a counter of active enclaves in its subtree (itself plus all descendants). On child creation, the monitor increments the counter for the parent and all ancestors; on destruction, it decrements them. The monitor can therefore always tell whether an enclave has active descendants, which suffices for safe own-ership validation on EPCM modification and eliminates the ABA confusion above. 
+
+Table 4. SGX instructions supported by TEEVisor across features. Instruction Group Instruction SGX Compatible Runtime Runtime and Clone ENCLS SGX EADD ✓ ✓ ✓                                                                                                                                    
+
+> EAUG ✓✓✓
+> EBLOCK ×××
+> ECREATE ✓✓✓
+> EDBGRD ✓✓✓
+> EDBGWR ✓✓✓
+> EEXTEND ✓✓✓
+> EINIT ✓✓✓
+> ELDBC ×××
+> ELDB ×××
+> ELDUC ×××
+> ELDU ×××
+> EMODPR ✓××
+> EMODT ✓✓✓
+> EPA ×××
+> ERDINFO ×××
+> EREMOVE ✓✓✓
+> ETRACKC ×××
+> ETRACK ×××
+> EWB ×××
+> ENCLS TEEVisor EADDB ✓✓✓
+> ECABORT ××✓
+> ECADD ××✓
+> ECADDCACHE ××✓
+> ECCLEARCACHE ××✓
+> ECLONEINFO ××✓
+> ECCREATE ××✓
+> ECINIT ××✓
+> ECSYNC ××✓
+> ESYNC ✓✓✓
+> ENCLU SGX EACCEPTCOPY ×××
+> EACCEPT ✓✓✓
+> EDECCSSA ×××
+> EENTER ✓✓✓
+> EEXIT ✓✓✓
+> EGETKEY ✓✓✓
+> EMODPE ✓××
+> EREPORT ✓✓✓
+> ERESUME ✓✓✓
+> ENCLU TEEVisor ECLONE ××✓
+> EMODP ×✓✓
+> ERAISE ×✓✓
+> ESETUSSA ×✓✓
+> ESWITCH ×✓✓
+> ESMPROV ✓××
+
+C Clone/Fork Driver Internals 
+
+During enclave cloning (Fig. 14), parent and child processes share the TEEVisor driver through the same file descriptor. The stock SGX driver maps each fd to a single enclave; we extend this to store an xarray in the fd’s private data, indexed by address-space pointer. Once a child enclave is created during fork , a new instance is inserted into the xarray under the child’s address-space pointer. 
+
+> 14
+
+0x11000  0x10000 
+
+Address  Ownership(SECS)  Counter 
+
+1
+
+0x11000  0x10000 
+
+Address  Ownership(SECS)  Counter 
+
+2
+
+Type 
+
+REG 
+
+Owner EID 
+
+REG 
+
+0x10000  0x10000  1 SECS 
+
+0x10000  0x10000  1 SECS 
+
+Owner EID 
+
+1
+
+Owner EID 
+
+1, 2 
+
+1
+
+1
+
+0x11000  0x10000 
+
+Address  Ownership(SECS)  Counter 
+
+1
+
+Owner EID 
+
+REG 
+
+0x10000  0
+
+Owner EID 
+
+2
+
+0x11000  0x10000 
+
+Address  Ownership(SECS)  Counter 
+
+1
+
+Owner EID 
+
+REG 
+
+0x10000  0x10000  0 SECS 
+
+Owner EID 
+
+2
+
+3Figure 12. SECS ownership ABA problem. idx 
+
+parent_idx 
+
+active_count 
+
+secs 
+
+0
+
+0
+
+0
+
+0
+
+Reserved 
+
+1
+
+0
+
+3
+
+0x1000 
+
+2
+
+1
+
+2
+
+0x2000 
+
+3
+
+0
+
+1
+
+0x3000 
+
+4
+
+2
+
+1
+
+0x4000 
+
+Figure 13. Enclave node ownership list. To run the entire clone workflow inside fork , TEEVisor hooks the vma_open callback of the enclave VMA. Before the CLONE_BIND ioctl returns, the driver allocates a clone-metadata structure and stores a pointer to it in the current enclave. When the kernel duplicates the enclave VMA during 
+
+fork , the hook runs and starts the clone if the metadata is present and the enclave is in clone state; on failure it invokes 
+
+ECABORT and frees resources. Because Linux does not check the hook’s return value, fork can succeed even when cloning fails, so we add a CLONE_RESULT ioctl for user space to query the status of the most recent clone. Each enclave page is described by a two-layer structure in the SGX driver: a page-description structure that records attributes and points to a physical-mapping structure. TEE-Visor preserves this layout and extends it for Clone: each en-clave keeps its own page-description structure, but multiple enclaves may reference a shared physical-mapping structure whose reference counter gates physical-memory release. Cache blocks likewise need careful refcounting. Each block is allocated at the maximum size (4 MB) and can only be freed once every page within it has been released. The meta-data records a reference counter and a state. Whenever the security monitor allocates a page and publishes it via the synchronization page, the driver creates a physical-mapping structure for the page and increments the block’s counter. When a page is released, if it belongs to a cache block the driver only decrements the block’s counter; the block is freed only once the counter reaches zero and the state is marked Enclave   
+
+> Runtime(child)
+> Untrusted
+> Runtime(child)
+> Linux/driver
+> SVSM_EEXIT set parent enclave
+> to clone state
+> Check whether has
+> enough memory
+> Enclave
+> Runtime
+> SVSM_ERESUME
+> Security
+> Monitor
+> ECLONE(exit_addr,
+> &clone_metadata)
+> sanity check
+> sanity check
+> & create child enclave
+> SVSM_SUCCESS
+> SVSM_SUCCESS
+> SVSM_SUCCESS
+> SVSM_PROTOCOL(
+> ECCREATE,
+> &ECCreateInfo)
+> SVSM_PROTOCOL(
+> ECLONEINFO,&buffer)
+> SVSM_PROTOCOL(
+> ECINIT, secs_paddr)
+> sanity check
+> & create page table
+> SVSM_SUCCESS
+> Untrusted
+> Runtime
+> EEXIT
+> fork()
+> return 0
+> return child pid
+> ERESUME
+> EENTER
+> ioctl(enclave_fd,
+> CLONE_BIND,
+> clone_metadata)
+> calculate enclave
+> memory size and
+> create clone metadata
+> return 0
+> SVSM_EENTER
+> Repeat until all
+> pages are added
+> SVSM_PROTOCOL(
+> ECADD,&buffer)
+
+Figure 14. Clone workflow in TEEVisor. 
+
+15 freeable. The state becomes freeable either when the counter has reached its maximum (all pages allocated) or when the enclave terminates and the block is removed. For Clone-enabled enclaves, the driver installs a synchro-nization page at creation and adds it to an array tracking every synchronization page. A kernel thread periodically walks this array, consuming allocated-page entries and up-dating the corresponding enclave instances’ mappings. 
+
+D Attestation Protocol Details 
+
+D.1 Platform Attestation 
+
+A platform attestation and initialization service (PAIS) runs on the guest OS to attest the platform via PIE. The SM rec-ognizes PIE by SIGSTRUCT and grants extended privileged access. PIE obtains a public key and nonce from KBS, requests a VMPL0 report with REPORT_DATA as hash(SMpub, nonce, MRENCLAVE), and submits both to KBS. On verification, SMpub is registered and KBS returns secrets encrypted with it. The SM validates signatures using KBSpub, confirms cor-rect KBS ownership, and accepts the secrets. All subsequent reports signed by SMpriv are accepted by KBS. Figure 15 illustrates this flow. Remote KBS          
+
+> Security Monitor (VMPL1/0)
+> AMD SP PIE Enclave (VMPL1)
+> KBS pub, SM pub & SM priv
+> 1. Init attestation session. 2. Return (cryptographic nonce). 3. Execute EGETKEY(CVM + PIE_REPORT, nonce). 4. Hash = SHA384(SM pub || Nonce || PIE MRENCLAVE ). 5. Report request(Hash). 6. Return VMPL0 report(REPORT_DATA=Hash). 7. Return (SEV-SNP Report, public key). 8. Attest(Report, PIE metadata, SMpub). 9. Verify (VMPL == 0); Recompute hash; Validate LAUNCH_DIGEST; register and recognize SMpub. 10. Return encrypted platform secrets ( locked to SMpub). 11. Provision secrets via EGETKEY
+> 12. Decrypt secrets and initialize Security Monitor. 13. Return success on verification.
+> 123456711 13 8910 12
+
+Figure 15. Platform attestation and initialization flow of TEEVisor. 
+
+D.2 Local Attestation 
+
+Local attestation uses the report key, derived by EGETKEY 
+
+from ephemeral root keys and additional user input; ver-ification recomputes the MAC over the signed portion of the report and compares it to the MAC field in the report. Because local attestation only verifies locality rather than identity, TEEVisor uses ephemeral root keys generated ran-domly at bootstrap, every enclave running under the same TEEVisor instance can derive the matching report key. 
+
+D.3 Remote Attestation 
+
+Because a verifiable hardware-embedded key is not directly accessible inside a CVM, TEEVisor bootstraps a monitor-held signing key from the SEV-SNP attestation mechanism in Section D. At bootstrap, the monitor generates an attestation key pair (SMpub/SMpriv); after attestation and registration of SMpub a Key Broker Service (KBS). Then, the SMpriv signed report can be verified and accepted by the target KBS. 
+
+E Instruction-level Latency Breakdowns 
+
+Table 5. Latency of control-handover stages.                                       
+
+> Instruction Stage Latency
+> EENTER/ERESUME 12.5 𝜇 s24.5 𝜇 s32.8 𝜇 sEEXIT 42.3 𝜇 s55.4 𝜇 s62.3 𝜇 sAEX 41.8 𝜇 s55.3 𝜇 s
+> Stage Description
+> 1Untrusted helper code →TEEVisor driver end 2VMPL2 →VMPL1 3Security monitor start →enclave 4Enclave →security monitor end 5VMPL1 →VMPL2 6TEEVisor driver start →untrusted helper code
+
+Table 6. TEEVisor Runtime extension latency. 
+
+Group Instruction Latency 
+
+ENCLU EMODP 4.4 𝜇 sERAISE 7.8 𝜇 sESETUSSA 3.4 𝜇 sESWITCH 4.1 𝜇 sEXCEPTION 2.5 𝜇 sSYSCALL 2.3 𝜇 sSYSRET 1.1 𝜇 s
+
+Table 7. TEEVisor Clone extension latency. 
+
+Group Instruction Latency 
+
+ENCLS ECABORT 16.1 𝜇 sECADD 14.7 𝜇 s + 1.1 𝜇 s/page ECADDCACHE 343.8 𝜇 sECCLEARCACHE 386.4 𝜇 sECCREATE 19.2 𝜇 sECINIT 114.8 𝜇 s + 8.1 𝜇 s/MB size ECLONEINFO 14.5 𝜇 sECSYNC 15.0 𝜇 sENCLU ECLONE 12.5 𝜇 s + 0.1 𝜇 s/page 
+
+F Unit Tests 
+
+We ran unit tests to verify instruction correctness, ensur-ing that the driver and the security monitor take the right execution path along both the native SGX flow and the ex-tended control flow introduced by TEEVisor. Native SGX was validated via the vDSO self-tests, summarized in Table 8. The Runtime tests in Table 9 exercised enclave creation, page additions, SSA/USSA ranges, and control-flow transi-tions. To evaluate the Clone feature, the additional test cases in Table 10 verified the correct behavior of cloning opera-tions. 
+
+16 Table 8. TEEVisor unit tests for native SGX. 
+
+Description Passed 
+
+Debug read/write correctness ✓
+
+PTE permission change and #PF handling ✓
+
+EPCM permission modification and AEX handling ✓
+
+Dynamic page addition (augment) with EACCEPT ✓
+
+TCS creation/removal and stack/SSA validation ✓
+
+Table 9. TEEVisor unit tests for the Runtime feature.                                              
+
+> Instruction Description Expected Passed
+> ECREATE Runtime size is <8 KB or not a power of 2 ×Fail ✓
+> Runtime base is lower than user end ×Fail ✓
+> Runtime base, size, and features are valid ✓Succeed ✓
+> EADD Handler page has a null entry in handle range ×Fail ✓
+> Handler page is not readable/executable ×Fail ✓
+> TCS page is not in runtime range ×Fail ✓
+> TCS page oentry is not in runtime range ×Fail ✓
+> EENTER/ERESUME SSA or USSA range is not within runtime range ×Fail ✓
+> Handler page has not been added ×Fail ✓
+> Enclave is actively performing clone ×Fail ✓
+> TCS has invalid/missing SSA page ×Fail ✓
+> ESWITCH User switchflag set but target SSA is not 0 ×Fail ✓
+> Switchflag in RBX mismatch ×Fail ✓
+> ERAISE Interrupt type is not supported ×Fail ✓
+> Eraiseinfo locates outside runtime range ×Fail ✓
+> ESETUSSA USSA range is outside runtime range ×Fail ✓
+> USSA range fails SSA sanity check ×Fail ✓
+> EMODPE Runtime feature is enabled ×Fail ✓
+
+Table 10. TEEVisor unit tests for the Clone feature.                                              
+
+> Instruction Description Expected Passed
+> ECREATE Clone enabled but runtime disabled ×Fail ✓
+> EENTER/ERESUME Clone enabled but sync page not registered ×Fail ✓
+> ECLONE Clone feature is not enabled ×Fail ✓
+> Other active TCS exists in enclave ×Fail ✓
+> Metadata page not writable/shared ×Fail ✓
+> ECCREATE Info mismatch across pages ×Fail ✓
+> Child SECS invalid during init ×Fail ✓
+> Info consistency violated ×Fail ✓
+> ECLONEINFO Enclave is not a child enclave ×Fail ✓
+> ECADD Metadata type/address incorrect ×Fail ✓
+> ECADDCACHE Enclave does not support clone ×Fail ✓
+> Cache blocks already used ×Fail ✓
+> ECCLEARCACHE Cache state is invalid ×Fail ✓
+> No cache block exists ✓Succeed ✓
+> ECSYNC Clone feature not enabled ×Fail ✓
+> Target page already used ×Fail ✓
+> EAUG, EREMOVE, EMODT Enclave is performing clone ×Fail ✓
+
+Description Passed 
+
+ECABORT triggers if thread exits between ECLONE and ECINIT ✓
+
+TCS of cloned enclave can enter/resume after clone success ✓
+
+Parent/cloned enclave persists after the other is destroyed ✓
+
+COW triggers on page write or permission modification ✓
+
+G Clone Performance 
+
+The cloning time, as measured during duplication of the enclave VMA region by the Linux kernel, during forking, is shown in Fig. 16, showing a gradient of 93 𝜇 s per 1 MB increment of enclave size. The enclave creation time at low enclave sizes is dominated by the TEEVisor enclave man-agement metadata and TEEVisor driver’s operations in com-parison to the same enclave’s cloning operations. 
+
+Figure 16. Variation of TEEVisor clone time with a runtime of 64 MB and varying sizes of enclave app, and the associated ratio of enclave creation time to enclave time. The measure-ments were made at the start and end of the invocation of VMA duplication of the enclave range during fork operation in the kernel. Fig. 16 shows that fork time scales linearly with the size of the enclave. This dissociates previous SGX forks that scaled with both the size and contents of the enclave. Minimum enclave time is determined by the size of the enclave metadata (SSA,TCS) and invoked clone instructions. The total time then scales linearly with enclave size at ap-proximately 93 𝜇 s/MB, with most time spent allocating and initializing driver management structures for each enclave page. 
+
+Figure 17. TEEVisor clone COW performance Fig. 17 illustrates the COW performance for user-space enclave sizes ranging from 512 MB to 2 GB and compares the cost of enclave cloning and COW with creating a new enclave in TEEVisor. With the synchronization thread utiliz-ing around 60% CPU, clone+COW is approximately 1.4–1.7 ×
+
+faster than creating a new enclave, even without accounting for the additional cost of copying enclave data. 
+
+17 H Memory Management 
+
+Figure 18 shows the layout of physical memory after TEEVi-sor initialization: normal memory , maintained by the guest OS, and secure memory , managed by the security monitor. VMPL0 has full access to both; VMPL1 accesses only se-cure memory; VMPL2 accesses only normal memory. Unlike SGX’s fixed EPC, any normal memory page can be converted to enclave memory on demand. The VMPL0 security moni-tor updates VMPL1 and VMPL2 permissions throughout the enclave life cycle. EPCM                                                                 
+
+> Entry 0
+> Entry 3
+> Entry 2
+> Entry 1
+> VMPL0/VMPL1
+> Enclave 1 Page Table Security Monitor
+> Physical Memory
+> User Runtime
+> VMPL2
+> Guest OS
+> 10
+> 10
+> 10
+> 01
+> Guest OS
+> Security Monitor
+> VMPL 0
+> VMPL 1
+> VMPL 2
+> Accessible
+> Inaccesible
+> Type
+> REG
+> REG
+> REG
+> HANDLER
+> Entry 4 10TCS
+> Entry n 00REG
+> Virtual Low
+> Virtual High
+> Valid Shared
+> Enclave
+> User  Runtime
+> XRWUXRWU
+> ***1
+> 0000
+> 0000
+> 0000
+> 0000
+> ***0
+> ***0
+> Security Monitor
+> ***1
+> ***1
+> 1101
+> 0110
+> ***1
+> ***0
+> ***0
+> TEEVisor Driver
+> ENCLS
+> Enclave 1 Mapping
+> Shared Page List
+> Enclave Page List
+> APP
+> Page Table App 1 Virtual Low
+> Virtual High
+> Enclave
+> User  Runtime
+> XRWU
+> Security Monitor
+> 0000
+> 0000
+> 0000
+> 0000
+> ***1
+> ***0
+> ***0
+> APP
+> CHECK
+
+Figure 18. VMPL Layout in TEEVisor. 
+
+H.1 EPCM and Memory State 
+
+TEEVisor extends each EPCM entry with four fields to sup-port memory conversion and sharing: a shared bit (since any normal page can back an enclave, a simple valid bit no longer suffices), a Pvalidate bit (tracking SEV-SNP acceptance state so the monitor refuses access to unvalidated pages), an 8-bit 
+
+reference counter (for cross-enclave sharing and COW ac-counting), and a unique ownership identifier that replaces the raw SECS reference to avoid ABA confusion after a COW clone. TEEVisor allocates one EPCM entry per normal-memory page at initialisation, a memory trade-off for flexibility, and grants VMPL1 access to secure memory and VMPL2 to nor-mal memory before yielding to the guest OS. The SVSM page-state-change path is piggybacked to keep EPCM accep-tance state in sync with the RMP. During enclave construc-tion , the monitor revokes VMPL2 access and grants VMPL1 access, maps each page into the enclave’s page table with permissions matching its EPCM entry, builds a second run-time page table when Runtime is enabled, and requires an 
+
+ECSYNC -registered synchronisation page under Clone. At ex-ecution , shared-memory mappings are installed lazily via 
+
+ESYNC during page faults; mode transitions under Runtime switch the active page table; Clone increments shared-page counters on successful child creation and services COW faults from pre-registered cache blocks, with a sole-owner optimisation analogous to Linux COW. At destruction , the monitor unmaps and decrements counters; when a page has no remaining users, its contents are cleared, its EPCM reset, VMPL2 access restored, and VMPL1 access revoked. 
+
+18
