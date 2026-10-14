@@ -48,17 +48,17 @@
 <section class="dpr-home-dashboard-card dpr-home-report-card">
   <div class="dpr-home-dashboard-header">
     <div>
-      <span class="dpr-home-dashboard-kicker">2026-10-13</span>
+      <span class="dpr-home-dashboard-kicker">2026-10-14</span>
       <h3 class="dpr-home-dashboard-title">今日汇总</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">共 6 篇</strong>
+    <strong class="dpr-home-dashboard-count">共 5 篇</strong>
   </div>
   <dl class="dpr-home-dashboard-stats">
-    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>2 次</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>1 次</dd></div>
     <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>1</dd></div>
-    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>5</dd></div>
+    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>4</dd></div>
   </dl>
-  <p class="dpr-home-dashboard-body">最近更新：2026-10-13 23:29:37 UTC<br>状态：成功</p>
+  <p class="dpr-home-dashboard-body">最近更新：2026-10-14 22:11:59 UTC<br>状态：成功</p>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-brief-card">
   <div class="dpr-home-dashboard-header">
@@ -69,9 +69,9 @@
     <strong class="dpr-home-dashboard-count">AI</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<p>今日扫6篇、精读1篇速读5篇，9.0分《Enabling Extended SGX Enclaves inside Confidential Virtual Machines》领跑。</p>
-<p>最值得看的是机密计算里SGX与机密虚拟机的融合；速读侧可顺带关注LLM漏洞分析、Android组件边界安全和智能合约恶意检测。</p>
-<p>普通读者建议先读9分精读，再按兴趣挑速读，重点留意安全边界与落地风险。</p>
+<p>今日筛选 5 篇安全论文，精读 ARM 应用运行时的分层证明扩展（8.0），速读覆盖 AI 编码代理越权约束、LLM 代码审计与硬件辅助勒索检测。</p>
+<p>最值得看的是 ARM 运行时证明如何落地到应用层，以及&quot;名称非对象&quot;式约束能否真正限制被攻陷的 AI 编码代理。</p>
+<p>普通读者可先读这两篇摘要，关注代理权限边界与代码审计假设校验，再决定是否跟进勒索检测细节。</p>
   </div>
 </section>
 <section class="dpr-home-dashboard-card dpr-home-deep-card">
@@ -83,7 +83,7 @@
     <strong class="dpr-home-dashboard-count">1 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Enabling Extended SGX Enclaves inside Confidential Virtual Machines">Enabling Extended SGX Enclaves inside Confidential Virtual Machines</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Extending Layered Attestation into ARM Application Run-Times">Extending Layered Attestation into ARM Application Run-Times</span></li></ul>
   </div>
   <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>1</strong></span></div>
 </section>
@@ -93,12 +93,12 @@
       <span class="dpr-home-dashboard-kicker">今日累计</span>
       <h3 class="dpr-home-dashboard-title">速读推荐</h3>
     </div>
-    <strong class="dpr-home-dashboard-count">5 篇</strong>
+    <strong class="dpr-home-dashboard-count">4 篇</strong>
   </div>
   <div class="dpr-home-dashboard-body">
-<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Learning from Failures: A Failure-Driven Prompt Refinement for LLM-Based Vulnerability Analysis">Learning from Failures: A Failure-Driven Prompt Refinement for LLM-Based Vulnerability Analysis</span></li><li><span class="dpr-home-dashboard-paper-title" title="A Systematic Study of Security Enforcement at Android Inter-Component Boundaries">A Systematic Study of Security Enforcement at Android Inter-Component Boundaries</span></li><li><span class="dpr-home-dashboard-paper-title" title="ContractLens: Latent Security Knowledge for Malicious Smart Contract Detection">ContractLens: Latent Security Knowledge for Malicious Smart Contract Detection</span></li></ul>
+<ul class="dpr-home-dashboard-paper-list"><li><span class="dpr-home-dashboard-paper-title" title="Names Are Not Objects: Object-Bound Confinement for Compromised AI Coding Agents">Names Are Not Objects: Object-Bound Confinement for Compromised AI Coding Agents</span></li><li><span class="dpr-home-dashboard-paper-title" title="LLM-based Code Auditing by Inferring and Evaluating Developer Assumptions">LLM-based Code Auditing by Inferring and Evaluating Developer Assumptions</span></li><li><span class="dpr-home-dashboard-paper-title" title="Hardware-Assisted Multi-Stage Ransomware Detection with Adaptive Machine Learning">Hardware-Assisted Multi-Stage Ransomware Detection with Adaptive Machine Learning</span></li></ul>
   </div>
-  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>5</strong></span></div>
+  <div class="dpr-home-dashboard-tags"><span class="dpr-home-dashboard-tag">sys-security <strong>4</strong></span></div>
 </section>
 </div>
 
